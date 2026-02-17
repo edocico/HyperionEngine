@@ -1,0 +1,15 @@
+{
+  "name": "hyperion-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:wasm": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm"
+  },
+  "devDependencies": {
+    "typescript": "^5.7",
+    "vite": "^6.1"
+  }
+}
