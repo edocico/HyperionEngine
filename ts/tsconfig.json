@@ -8,6 +8,7 @@
     "noUnusedParameters": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "types": ["@webgpu/types"],
     "outDir": "dist",
     "rootDir": "src"
   },
