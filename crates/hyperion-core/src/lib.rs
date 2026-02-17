@@ -13,6 +13,7 @@ use engine::Engine;
 use ring_buffer::RingBufferConsumer;
 
 static mut ENGINE: Option<Engine> = None;
+#[allow(dead_code)]
 static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 
 /// Initialize the engine. Called once from the Worker.
@@ -25,35 +26,46 @@ pub fn engine_init() {
 }
 
 /// Attach a ring buffer for command consumption.
-/// `ptr` is a pointer into SharedArrayBuffer memory.
-/// `capacity` is the data region size (total - 16 byte header).
+/// Kept for backward compatibility; prefer `engine_push_commands` instead.
 ///
 /// # Safety
-/// The SharedArrayBuffer must outlive the engine and `ptr` must
-/// point to a valid region of at least `16 + capacity` bytes.
+/// The SharedArrayBuffer must outlive the engine.
 #[wasm_bindgen]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn engine_attach_ring_buffer(ptr: *mut u8, capacity: usize) {
-    // SAFETY: wasm32 is single-threaded; RingBufferConsumer::new safety
-    // requirements are upheld by the caller (JS Worker).
+    // SAFETY: wasm32 is single-threaded; pointer valid by caller contract.
     unsafe {
         addr_of_mut!(RING_BUFFER).write(Some(RingBufferConsumer::new(ptr, capacity)));
     }
 }
 
+/// Push raw command bytes into the engine.
+///
+/// The Worker extracts unread bytes from the SharedArrayBuffer ring buffer
+/// and passes them here. wasm-bindgen handles the `&[u8]` → WASM memory
+/// copy automatically.
+///
+/// Call this BEFORE `engine_update()` each frame.
+#[wasm_bindgen]
+pub fn engine_push_commands(data: &[u8]) {
+    let commands = ring_buffer::parse_commands(data);
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut engine) = *addr_of_mut!(ENGINE) {
+            engine.process_commands(&commands);
+        }
+    }
+}
+
 /// Run one frame update. `dt` is seconds since last frame.
-/// Drains the ring buffer, processes commands, and runs the ECS tick loop.
+/// Runs physics ticks, recomputes transforms, and collects render state.
+///
+/// Call `engine_push_commands()` first if there are commands to process.
 #[wasm_bindgen]
 pub fn engine_update(dt: f32) {
-    // SAFETY: wasm32 is single-threaded; no concurrent access to these statics.
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
     unsafe {
-        let commands = match &*addr_of_mut!(RING_BUFFER) {
-            Some(rb) => rb.drain(),
-            None => Vec::new(),
-        };
-
-        if let Some(engine) = &mut *addr_of_mut!(ENGINE) {
-            engine.process_commands(&commands);
+        if let Some(ref mut engine) = *addr_of_mut!(ENGINE) {
             engine.update(dt);
         }
     }
@@ -62,12 +74,44 @@ pub fn engine_update(dt: f32) {
 /// Returns the number of fixed ticks elapsed.
 #[wasm_bindgen]
 pub fn engine_tick_count() -> u64 {
-    // SAFETY: wasm32 is single-threaded; read-only access.
+    // SAFETY: wasm32 is single-threaded.
+    unsafe { (*addr_of_mut!(ENGINE)).as_ref().map_or(0, |e| e.tick_count()) }
+}
+
+/// Returns the number of active entities with render data.
+#[wasm_bindgen]
+pub fn engine_render_state_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
     unsafe {
-        match &*addr_of_mut!(ENGINE) {
-            Some(e) => e.tick_count(),
-            None => 0,
-        }
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.count())
+    }
+}
+
+/// Returns a pointer to the model matrix buffer in WASM linear memory.
+/// The buffer contains `engine_render_state_count() * 16` f32 values
+/// (each matrix is 16 floats, column-major).
+///
+/// The pointer is valid until the next call to `engine_update()`.
+#[wasm_bindgen]
+pub fn engine_render_state_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.as_ptr())
+    }
+}
+
+/// Returns total f32 count in render state (count * 16).
+#[wasm_bindgen]
+pub fn engine_render_state_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.f32_len())
     }
 }
 
