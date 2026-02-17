@@ -1,0 +1,16 @@
+[package]
+name = "hyperion-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+glam = { version = "0.29", features = ["bytemuck"] }
+hecs = "0.11"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
