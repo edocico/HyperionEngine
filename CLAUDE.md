@@ -4,29 +4,89 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Test Commands
 
-```bash
-# Rust — build and test the WASM core
-cargo test -p hyperion-core          # Run all Rust unit tests (32 tests)
-cargo clippy -p hyperion-core        # Lint check
+### Quick Reference
 
-# WASM — compile Rust to WebAssembly (outputs to ts/wasm/)
+```bash
+# Full validation (run before committing)
+cargo test -p hyperion-core && cargo clippy -p hyperion-core && cd ts && npm test && npx tsc --noEmit
+
+# Full rebuild + visual test
+cd ts && npm run build:wasm && npm run dev
+```
+
+### Rust
+
+```bash
+cargo test -p hyperion-core                  # All Rust unit tests (32 tests)
+cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
+cargo build -p hyperion-core                 # Build crate (native, not WASM)
+cargo doc -p hyperion-core --open            # Generate and open API docs
+
+# Run specific test groups
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (12 tests)
+cargo test -p hyperion-core engine           # Engine tests only (5 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (4 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (5 tests)
+cargo test -p hyperion-core systems          # Systems tests only (3 tests)
+cargo test -p hyperion-core components       # Component tests only (3 tests)
+
+# Run a single test by full path
+cargo test -p hyperion-core engine::tests::spiral_of_death_capped
+```
+
+### WASM
+
+```bash
+# Compile Rust to WebAssembly (outputs to ts/wasm/)
 cd ts && npm run build:wasm
 # Equivalent to: wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm
 
-# TypeScript — test, type-check, dev server
-cd ts && npm test                    # Run all vitest tests (20 tests)
-cd ts && npm run test:watch          # Watch mode
-cd ts && npx tsc --noEmit            # Type-check only
-cd ts && npm run dev                 # Vite dev server with COOP/COEP headers
+# After building, check generated TypeScript types
+cat ts/wasm/hyperion_core.d.ts
+```
 
-# Run a single Rust test
-cargo test -p hyperion-core engine::tests::spiral_of_death_capped
+### TypeScript
 
-# Run a single TypeScript test file
-cd ts && npx vitest run src/ring-buffer.test.ts
+```bash
+cd ts && npm test                            # All vitest tests (20 tests)
+cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
+cd ts && npx tsc --noEmit                    # Type-check only (no output files)
+cd ts && npm run build                       # Production build (tsc + vite build)
+cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
-# Visual testing — build WASM then start dev server
+# Run specific test files
+cd ts && npx vitest run src/ring-buffer.test.ts        # Ring buffer producer (5 tests)
+cd ts && npx vitest run src/ring-buffer-utils.test.ts  # extractUnread helper (4 tests)
+cd ts && npx vitest run src/camera.test.ts             # Camera math (5 tests)
+cd ts && npx vitest run src/capabilities.test.ts       # Capability detection (4 tests)
+cd ts && npx vitest run src/integration.test.ts        # E2E integration (2 tests)
+```
+
+### Development Workflow
+
+```bash
+# 1. Make Rust changes → test → rebuild WASM
+cargo test -p hyperion-core && cd ts && npm run build:wasm
+
+# 2. Make TypeScript changes → test → type-check
+cd ts && npm test && npx tsc --noEmit
+
+# 3. Visual testing in browser (http://localhost:5173)
+cd ts && npm run dev
+
+# 4. Full pipeline: Rust → WASM → dev server
 cd ts && npm run build:wasm && npm run dev
+```
+
+### Dependencies
+
+```bash
+# Install TypeScript dependencies (run once after clone)
+cd ts && npm install
+
+# Required global tools
+# - wasm-pack: cargo install wasm-pack
+# - Rust with wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown
 ```
 
 ## Architecture
