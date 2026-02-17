@@ -1,4 +1,5 @@
-// Instanced colored quad shader with GPU-driven visibility indirection.
+// Instanced quad shader with GPU-driven visibility indirection
+// and multi-tier Texture2DArray sampling.
 
 struct CameraUniform {
     viewProjection: mat4x4f,
@@ -6,20 +7,27 @@ struct CameraUniform {
 
 struct EntityData {
     model: mat4x4f,
-    boundingSphere: vec4f,  // xyz = position, w = radius (unused in render)
+    boundingSphere: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(0) @binding(1) var<storage, read> entities: array<EntityData>;
 @group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
-@group(0) @binding(3) var texArray: texture_2d_array<f32>;
-@group(0) @binding(4) var texSampler: sampler;
+@group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;
+
+// Tier 0-3 texture arrays (64, 128, 256, 512 px)
+@group(1) @binding(0) var tier0Tex: texture_2d_array<f32>;
+@group(1) @binding(1) var tier1Tex: texture_2d_array<f32>;
+@group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;
+@group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;
+@group(1) @binding(4) var texSampler: sampler;
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
-    @location(0) color: vec4f,
-    @location(1) uv: vec2f,
-    @location(2) @interpolate(flat) entityIdx: u32,
+    @location(0) uv: vec2f,
+    @location(1) @interpolate(flat) entityIdx: u32,
+    @location(2) @interpolate(flat) texTier: u32,
+    @location(3) @interpolate(flat) texLayer: u32,
 };
 
 @vertex
@@ -27,30 +35,43 @@ fn vs_main(
     @location(0) position: vec3f,
     @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
-    // Indirection: instance_index → visible slot → entity index
     let entityIdx = visibleIndices[instanceIdx];
     let model = entities[entityIdx].model;
 
+    // Decode texture tier and layer from packed u32
+    let packed = texLayerIndices[entityIdx];
+    let tier = packed >> 16u;
+    let layer = packed & 0xFFFFu;
+
     var out: VertexOutput;
     out.clipPosition = camera.viewProjection * model * vec4f(position, 1.0);
-
-    // Deterministic color from entity index (not instance index)
-    let r = f32((entityIdx * 7u + 3u) % 11u) / 10.0;
-    let g = f32((entityIdx * 13u + 5u) % 11u) / 10.0;
-    let b = f32((entityIdx * 17u + 7u) % 11u) / 10.0;
-    out.color = vec4f(r, g, b, 1.0);
-
-    // UV for future texture sampling
     out.uv = position.xy + 0.5;
-
     out.entityIdx = entityIdx;
+    out.texTier = tier;
+    out.texLayer = layer;
 
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let layer = in.entityIdx % 8u;
-    let texColor = textureSample(texArray, texSampler, in.uv, layer);
-    return mix(in.color, texColor, 0.6);
+    var texColor: vec4f;
+
+    // Sample from the correct tier's Texture2DArray
+    switch in.texTier {
+        case 1u: {
+            texColor = textureSample(tier1Tex, texSampler, in.uv, in.texLayer);
+        }
+        case 2u: {
+            texColor = textureSample(tier2Tex, texSampler, in.uv, in.texLayer);
+        }
+        case 3u: {
+            texColor = textureSample(tier3Tex, texSampler, in.uv, in.texLayer);
+        }
+        default: {
+            texColor = textureSample(tier0Tex, texSampler, in.uv, in.texLayer);
+        }
+    }
+
+    return texColor;
 }
