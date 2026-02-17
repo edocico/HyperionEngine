@@ -138,6 +138,15 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                 }
             }
 
+            CommandType::SetTextureLayer => {
+                if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    let packed = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if let Ok(mut tex) = world.get::<&mut TextureLayerIndex>(entity) {
+                        tex.0 = packed;
+                    }
+                }
+            }
+
             CommandType::Noop => {}
         }
     }
@@ -231,6 +240,28 @@ mod tests {
         map.remove(id1);
         let id3 = map.allocate();
         assert_eq!(id3, 0); // recycled
+    }
+
+    #[test]
+    fn set_texture_layer_updates_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+
+        let packed: u32 = (2 << 16) | 10; // tier 2, layer 10
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&packed.to_le_bytes());
+        let cmd = Command {
+            cmd_type: CommandType::SetTextureLayer,
+            entity_id: 0,
+            payload,
+        };
+        process_commands(&[cmd], &mut world, &mut map);
+
+        let entity = map.get(0).unwrap();
+        let tex = world.get::<&TextureLayerIndex>(entity).unwrap();
+        assert_eq!(tex.0, packed);
     }
 
     #[test]

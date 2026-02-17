@@ -30,6 +30,7 @@ pub enum CommandType {
     SetRotation = 4,
     SetScale = 5,
     SetVelocity = 6,
+    SetTextureLayer = 7,
 }
 
 impl CommandType {
@@ -43,6 +44,7 @@ impl CommandType {
             4 => Some(Self::SetRotation),
             5 => Some(Self::SetScale),
             6 => Some(Self::SetVelocity),
+            7 => Some(Self::SetTextureLayer),
             _ => None,
         }
     }
@@ -53,6 +55,7 @@ impl CommandType {
             Self::Noop | Self::SpawnEntity | Self::DespawnEntity => 0,
             Self::SetPosition | Self::SetScale | Self::SetVelocity => 12, // 3 x f32
             Self::SetRotation => 16, // 4 x f32
+            Self::SetTextureLayer => 4, // 1 x u32
         }
     }
 
@@ -483,6 +486,20 @@ mod tests {
     }
 
     // -- drain tests (continued) ----------------------------------------------
+
+    #[test]
+    fn parse_commands_reads_set_texture_layer() {
+        let mut data = Vec::new();
+        data.push(CommandType::SetTextureLayer as u8);
+        data.extend_from_slice(&5u32.to_le_bytes());       // entity_id = 5
+        data.extend_from_slice(&0x0002_000Au32.to_le_bytes()); // tier 2, layer 10
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetTextureLayer);
+        assert_eq!(cmds[0].entity_id, 5);
+        let packed = u32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        assert_eq!(packed, 0x0002_000A);
+    }
 
     #[test]
     fn drain_advances_read_head() {
