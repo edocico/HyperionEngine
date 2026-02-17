@@ -36,6 +36,12 @@ pub struct ModelMatrix(pub [f32; 16]);
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
 
+/// Bounding sphere radius for frustum culling.
+/// The sphere center is the entity's Position.
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct BoundingRadius(pub f32);
+
 impl Default for Position {
     fn default() -> Self {
         Self(Vec3::ZERO)
@@ -66,6 +72,12 @@ impl Default for ModelMatrix {
     }
 }
 
+impl Default for BoundingRadius {
+    fn default() -> Self {
+        Self(0.5) // unit quad default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +105,18 @@ mod tests {
         let m = ModelMatrix::default();
         let bytes = bytemuck::bytes_of(&m);
         assert_eq!(bytes.len(), 64); // 16 floats * 4 bytes
+    }
+
+    #[test]
+    fn default_bounding_radius_is_half() {
+        let b = BoundingRadius::default();
+        assert_eq!(b.0, 0.5);
+    }
+
+    #[test]
+    fn bounding_radius_is_pod() {
+        let b = BoundingRadius(1.0);
+        let bytes = bytemuck::bytes_of(&b);
+        assert_eq!(bytes.len(), 4);
     }
 }

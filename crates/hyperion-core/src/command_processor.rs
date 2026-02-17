@@ -79,6 +79,7 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     Scale::default(),
                     Velocity::default(),
                     ModelMatrix::default(),
+                    BoundingRadius::default(),
                     Active,
                 ));
                 entity_map.insert(cmd.entity_id, entity);
