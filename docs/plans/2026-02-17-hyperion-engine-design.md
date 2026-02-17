@@ -42,6 +42,13 @@ The engine operates in one of three execution modes, selected at startup via fea
 - **Communication:** Direct function calls, no Ring Buffer needed
 - **Note:** Viable for scenes under ~10k entities at 60fps
 
+### Mode C without WebGPU — Simulation Only
+
+When WebGPU is unavailable, Mode C still runs the full ECS/WASM simulation (commands, physics, transforms) but rendering is disabled. The engine currently displays a text overlay with FPS and entity count. A future phase should introduce a fallback renderer:
+
+- **WebGL 2 fallback (preferred):** Near-universal browser support. Requires GLSL shaders instead of WGSL and CPU-side frustum culling (no compute shaders in WebGL 2). The `Renderer` interface in `renderer.ts` is already decoupled from the bridge, so a `WebGLRenderer` implementing the same interface would slot in transparently.
+- **Canvas 2D fallback (minimal):** Trivial to implement, useful only for debug/wireframe visualization. Not suitable for production rendering.
+
 The Rust WASM module is agnostic to which thread it runs on. It consumes a command buffer and produces a render state buffer, regardless of transport.
 
 ### Deployment Requirement
@@ -152,6 +159,15 @@ At 64 bytes per entity, 100k entities = ~6.4MB (well within WebGPU's guaranteed 
 ### Mode B/C Compatibility
 
 Compute culling executes on GPU regardless of execution mode. The only difference is whether `device.queue.submit()` is called from a Worker or the Main Thread.
+
+### Buffer Upload Optimization (Future)
+
+The current pipeline re-uploads all entity data every frame via `writeBuffer` (80 bytes/entity). At 100k entities this is ~7.6 MB/frame — the primary CPU→GPU bandwidth bottleneck. The following strategies should be adopted incrementally as entity counts scale:
+
+1. **Dirty-flag + partial upload:** Track which entities changed position/rotation/scale since last frame. Use `writeBuffer` with byte offset to update only dirty regions. At 5% movement rate, reduces upload from 7.6 MB to ~380 KB/frame.
+2. **Stable entity slots in GPU buffer:** Assign each entity a fixed index in the GPU storage buffer (the `EntityMap` free-list in `command_processor.rs` already supports this). Entity creation/destruction updates only one slot. Prerequisite for dirty tracking.
+3. **Double-buffering with `mapAsync`:** Replace `writeBuffer` with two mappable staging buffers (ping-pong). Frame N writes to buffer A while GPU reads buffer B. Eliminates internal copies that `writeBuffer` performs.
+4. **CPU-side frustum pre-culling:** Before uploading, run a coarse frustum test on the CPU (e.g., spatial hash or octree) to skip entities far outside the camera. Reduces both upload volume and GPU compute dispatch size. Complements GPU culling rather than replacing it.
 
 ---
 

@@ -169,6 +169,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`extractFrustumPlanesInternal` duplicated** — both `renderer.ts` and `render-worker.ts` have local copies of frustum extraction to avoid import issues in worker context. Keep both in sync.
 - **WebGPU can't be tested in headless browsers** — Playwright/Puppeteer headless mode has no GPU adapter. `requestAdapter()` returns null. Visual WebGPU testing requires a real browser with GPU acceleration (e.g., `npm run dev` → open Chrome).
 - **Depth texture not recreated on resize** — `renderer.ts` creates the depth texture once at initialization. If the canvas resizes, the depth texture dimensions won't match the render target. This needs fixing in a future phase.
+- **No rendering fallback without WebGPU** — When WebGPU is unavailable, the engine runs the ECS/WASM simulation but rendering is completely disabled (`renderer` stays `null`). A future phase should add a WebGL 2 fallback renderer (CPU-side culling, GLSL shaders) implementing the same `Renderer` interface. Canvas 2D is an option for debug/wireframe only.
+- **Full entity buffer re-upload every frame** — `renderer.ts` uploads all entity data (80 bytes/entity) via `writeBuffer` each frame, even if most entities haven't moved. At 100k entities this is ~7.6 MB/frame. Future optimizations: (1) dirty-flag + partial upload for changed entities only, (2) stable entity slots in GPU buffer via `EntityMap` free-list, (3) double-buffering with `mapAsync` to eliminate `writeBuffer` internal copies, (4) CPU-side frustum pre-culling to skip off-screen entities before upload.
 
 ## Conventions
 
