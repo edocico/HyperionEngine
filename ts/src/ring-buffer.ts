@@ -115,3 +115,44 @@ export function createRingBuffer(capacity: number): SharedArrayBuffer | ArrayBuf
   }
   return new ArrayBuffer(totalSize);
 }
+
+/**
+ * Extract unread bytes from a ring buffer SharedArrayBuffer.
+ *
+ * Returns a contiguous Uint8Array of command bytes (handling wrap-around)
+ * and advances the read head to the current write head.
+ *
+ * Used by the Worker to bridge SAB → engine_push_commands().
+ */
+export function extractUnread(sab: SharedArrayBuffer): {
+  bytes: Uint8Array;
+  capacity: number;
+} {
+  const header = new Int32Array(sab, 0, 4);
+  const capacity = sab.byteLength - HEADER_SIZE;
+  const writeHead = Atomics.load(header, WRITE_HEAD_OFFSET);
+  const readHead = Atomics.load(header, READ_HEAD_OFFSET);
+
+  if (writeHead === readHead) {
+    return { bytes: new Uint8Array(0), capacity };
+  }
+
+  const data = new Uint8Array(sab, HEADER_SIZE, capacity);
+  let bytes: Uint8Array;
+
+  if (writeHead > readHead) {
+    bytes = data.slice(readHead, writeHead);
+  } else {
+    // Wrap-around: readHead..end + 0..writeHead
+    const part1 = data.slice(readHead);
+    const part2 = data.slice(0, writeHead);
+    bytes = new Uint8Array(part1.length + part2.length);
+    bytes.set(part1);
+    bytes.set(part2, part1.length);
+  }
+
+  // Advance read head
+  Atomics.store(header, READ_HEAD_OFFSET, writeHead);
+
+  return { bytes, capacity };
+}

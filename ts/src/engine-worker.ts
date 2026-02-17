@@ -2,23 +2,27 @@
 
 /**
  * Engine Logic Worker.
- * Loads the WASM module, attaches the shared ring buffer,
- * and runs the engine tick loop on each frame signal.
+ * Loads the WASM module, extracts commands from the shared ring buffer,
+ * and runs the engine tick loop. After each tick, exports render state
+ * (model matrices) as a transferable ArrayBuffer.
  */
 
+import { extractUnread } from "./ring-buffer";
+
 interface WasmEngine {
+  default(): Promise<void>;
   engine_init(): void;
-  engine_attach_ring_buffer(ptr: number, capacity: number): void;
+  engine_push_commands(data: Uint8Array): void;
   engine_update(dt: number): void;
   engine_tick_count(): bigint;
+  engine_render_state_count(): number;
+  engine_render_state_ptr(): number;
+  engine_render_state_f32_len(): number;
   memory: WebAssembly.Memory;
 }
 
 let wasm: WasmEngine | null = null;
-let commandBufferRef: SharedArrayBuffer | null = null;
-
-/** Ring buffer header size in bytes (write_head + read_head + capacity + padding). */
-const HEADER_SIZE = 16;
+let commandBuffer: SharedArrayBuffer | null = null;
 
 interface InitMessage {
   type: "init";
@@ -41,19 +45,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         const wasmModule = await import("../wasm/hyperion_core.js");
         await wasmModule.default();
         wasm = wasmModule as unknown as WasmEngine;
+        commandBuffer = msg.commandBuffer;
 
         wasm.engine_init();
-
-        // Store the command buffer for Phase 2 ring buffer attachment.
-        commandBufferRef = msg.commandBuffer;
-
-        // Note: Ring buffer attachment requires passing the SAB pointer
-        // into WASM memory. For Phase 0-1, the ring buffer consumer
-        // reads directly from the SAB. Full integration with
-        // engine_attach_ring_buffer requires wasm-bindgen SharedArrayBuffer
-        // support, which will be completed in Phase 2.
-        void commandBufferRef;
-        void HEADER_SIZE;
 
         self.postMessage({ type: "ready" });
       } catch (e) {
@@ -63,15 +57,47 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     }
 
     case "tick": {
-      if (!wasm) return;
+      if (!wasm || !commandBuffer) return;
 
+      // 1. Extract unread commands from the SAB ring buffer.
+      const { bytes } = extractUnread(commandBuffer);
+      if (bytes.length > 0) {
+        wasm.engine_push_commands(bytes);
+      }
+
+      // 2. Run physics + transform + collect render state.
       wasm.engine_update(msg.dt);
 
-      self.postMessage({
-        type: "tick-done",
-        dt: msg.dt,
-        tickCount: Number(wasm.engine_tick_count()),
-      });
+      // 3. Export render state as transferable ArrayBuffer.
+      const count = wasm.engine_render_state_count();
+      const tickCount = Number(wasm.engine_tick_count());
+
+      if (count > 0) {
+        const ptr = wasm.engine_render_state_ptr();
+        const f32Len = wasm.engine_render_state_f32_len();
+        const wasmMatrices = new Float32Array(wasm.memory.buffer, ptr, f32Len);
+
+        // Copy to a transferable buffer (WASM memory can't be transferred).
+        const transferBuf = new Float32Array(f32Len);
+        transferBuf.set(wasmMatrices);
+
+        self.postMessage(
+          {
+            type: "tick-done",
+            dt: msg.dt,
+            tickCount,
+            renderState: { count, matrices: transferBuf.buffer },
+          },
+          [transferBuf.buffer]
+        );
+      } else {
+        self.postMessage({
+          type: "tick-done",
+          dt: msg.dt,
+          tickCount,
+          renderState: null,
+        });
+      }
       break;
     }
   }
