@@ -73,12 +73,22 @@ async function main() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  // Spawn test entities in a grid.
-  for (let i = 0; i < 50; i++) {
+  // Spawn test entities: 50 inside frustum, 50 outside.
+  const ENTITY_COUNT = 100;
+  for (let i = 0; i < ENTITY_COUNT; i++) {
     bridge.commandBuffer.spawnEntity(i);
-    const col = i % 10;
-    const row = Math.floor(i / 10);
-    bridge.commandBuffer.setPosition(i, (col - 4.5) * 2, (row - 2.5) * 2, 0);
+
+    if (i < 50) {
+      // Inside frustum: grid within the camera's visible area
+      const col = i % 10;
+      const row = Math.floor(i / 10);
+      bridge.commandBuffer.setPosition(i, (col - 4.5) * 2, (row - 2.5) * 2, 0);
+    } else {
+      // Outside frustum: far to the right and left
+      const offset = i - 50;
+      const x = offset < 25 ? -20 - offset : 20 + (offset - 25);
+      bridge.commandBuffer.setPosition(i, x, 0, 0);
+    }
   }
 
   // Main loop.
