@@ -4,7 +4,7 @@ import {
   logCapabilities,
   ExecutionMode,
 } from "./capabilities";
-import { createWorkerBridge, createDirectBridge, type EngineBridge } from "./worker-bridge";
+import { createWorkerBridge, createFullIsolationBridge, createDirectBridge, type EngineBridge } from "./worker-bridge";
 
 async function main() {
   const info = document.getElementById("info")!;
@@ -18,7 +18,10 @@ async function main() {
 
   let bridge: EngineBridge;
 
-  if (mode === ExecutionMode.FullIsolation || mode === ExecutionMode.PartialIsolation) {
+  if (mode === ExecutionMode.FullIsolation) {
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    bridge = createFullIsolationBridge(canvas);
+  } else if (mode === ExecutionMode.PartialIsolation) {
     bridge = createWorkerBridge(mode);
   } else {
     bridge = await createDirectBridge();
