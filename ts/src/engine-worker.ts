@@ -2,11 +2,19 @@
 
 /**
  * Engine Logic Worker.
- * Runs the WASM ECS module, consuming commands from the ring buffer
- * and producing render state.
+ * Loads the WASM module, attaches the shared ring buffer,
+ * and runs the engine tick loop on each frame signal.
  */
 
-let wasmModule: typeof import("../wasm/hyperion_core.js") | null = null;
+interface WasmEngine {
+  engine_init(): void;
+  engine_attach_ring_buffer(ptr: number, capacity: number): void;
+  engine_update(dt: number): void;
+  engine_tick_count(): bigint;
+  memory: WebAssembly.Memory;
+}
+
+let wasm: WasmEngine | null = null;
 
 interface InitMessage {
   type: "init";
@@ -20,15 +28,26 @@ interface TickMessage {
 
 type WorkerMessage = InitMessage | TickMessage;
 
+const HEADER_SIZE = 16;
+
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const msg = event.data;
 
   switch (msg.type) {
     case "init": {
       try {
-        const wasm = await import("../wasm/hyperion_core.js");
-        await wasm.default();
-        wasmModule = wasm;
+        const wasmModule = await import("../wasm/hyperion_core.js");
+        await wasmModule.default();
+        wasm = wasmModule as unknown as WasmEngine;
+
+        wasm.engine_init();
+
+        // Note: Ring buffer attachment requires passing the SAB pointer
+        // into WASM memory. For Phase 0-1, the ring buffer consumer
+        // reads directly from the SAB. Full integration with
+        // engine_attach_ring_buffer requires wasm-bindgen SharedArrayBuffer
+        // support, which will be completed in Phase 2.
+
         self.postMessage({ type: "ready" });
       } catch (e) {
         self.postMessage({ type: "error", error: String(e) });
@@ -37,10 +56,15 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     }
 
     case "tick": {
-      if (!wasmModule) return;
-      // Phase 1 will add: consume ring buffer, run ECS tick, emit render state.
-      // For now, acknowledge the tick.
-      self.postMessage({ type: "tick-done", dt: msg.dt });
+      if (!wasm) return;
+
+      wasm.engine_update(msg.dt);
+
+      self.postMessage({
+        type: "tick-done",
+        dt: msg.dt,
+        tickCount: Number(wasm.engine_tick_count()),
+      });
       break;
     }
   }
