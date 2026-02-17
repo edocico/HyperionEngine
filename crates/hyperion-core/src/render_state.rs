@@ -2,7 +2,7 @@
 
 use hecs::World;
 
-use crate::components::{Active, BoundingRadius, ModelMatrix, Position};
+use crate::components::{Active, BoundingRadius, ModelMatrix, Position, TextureLayerIndex};
 
 /// Per-entity GPU data stride: 20 floats (80 bytes).
 /// Layout: mat4x4f (64 bytes) + vec4f boundingSphere (16 bytes).
@@ -16,6 +16,7 @@ pub struct RenderState {
 
     // GPU-driven pipeline data
     gpu_data: Vec<f32>,
+    gpu_tex_indices: Vec<u32>,
     gpu_count: u32,
 }
 
@@ -24,6 +25,7 @@ impl RenderState {
         Self {
             matrices: Vec::new(),
             gpu_data: Vec::new(),
+            gpu_tex_indices: Vec::new(),
             gpu_count: 0,
         }
     }
@@ -59,15 +61,18 @@ impl RenderState {
 
     /// Collect entity data for GPU-driven pipeline.
     /// Each entity produces 20 floats: 16 (model matrix) + 4 (bounding sphere).
+    /// Also collects a parallel `Vec<u32>` of texture layer indices.
     pub fn collect_gpu(&mut self, world: &World) {
         self.gpu_data.clear();
+        self.gpu_tex_indices.clear();
         // Vec::clear retains capacity, so subsequent frames avoid reallocation.
         // Reserve on first frame or if entity count grew.
         self.gpu_data.reserve(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY);
+        self.gpu_tex_indices.reserve(self.gpu_count as usize);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, _active) in
-            world.query::<(&Position, &ModelMatrix, &BoundingRadius, &Active)>().iter()
+        for (pos, matrix, radius, tex_layer, _active) in
+            world.query::<(&Position, &ModelMatrix, &BoundingRadius, &TextureLayerIndex, &Active)>().iter()
         {
             // Model matrix: 16 floats
             self.gpu_data.extend_from_slice(&matrix.0);
@@ -77,10 +82,13 @@ impl RenderState {
             self.gpu_data.push(pos.0.z);
             self.gpu_data.push(radius.0);
 
+            self.gpu_tex_indices.push(tex_layer.0);
+
             self.gpu_count += 1;
         }
 
         debug_assert_eq!(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY, self.gpu_data.len());
+        debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
     }
 
     /// Number of entities in the GPU buffer.
@@ -105,6 +113,25 @@ impl RenderState {
     /// Total number of f32 values in the GPU buffer.
     pub fn gpu_buffer_f32_len(&self) -> u32 {
         self.gpu_data.len() as u32
+    }
+
+    /// Texture layer indices, one per GPU entity (parallel to gpu_data).
+    pub fn gpu_tex_indices(&self) -> &[u32] {
+        &self.gpu_tex_indices
+    }
+
+    /// Raw pointer to the texture layer indices for WASM export. Returns null if empty.
+    pub fn gpu_tex_indices_ptr(&self) -> *const u32 {
+        if self.gpu_tex_indices.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_tex_indices.as_ptr()
+        }
+    }
+
+    /// Number of texture layer indices (same as gpu_entity_count).
+    pub fn gpu_tex_indices_len(&self) -> u32 {
+        self.gpu_tex_indices.len() as u32
     }
 }
 
@@ -199,6 +226,7 @@ mod tests {
             Velocity::default(),
             ModelMatrix::default(),
             BoundingRadius(0.5),
+            TextureLayerIndex::default(),
             Active,
         ));
 
@@ -237,6 +265,7 @@ mod tests {
                 Velocity::default(),
                 ModelMatrix::default(),
                 BoundingRadius(1.0),
+                TextureLayerIndex::default(),
                 Active,
             ));
         }
@@ -252,7 +281,7 @@ mod tests {
     #[test]
     fn collect_gpu_skips_entities_without_bounding_radius() {
         let mut world = World::new();
-        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), BoundingRadius(1.0), Active));
+        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), BoundingRadius(1.0), TextureLayerIndex::default(), Active));
         // Entity missing BoundingRadius — visible to collect() but not collect_gpu()
         world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), Active));
 
@@ -262,5 +291,50 @@ mod tests {
 
         state.collect_gpu(&world);
         assert_eq!(state.gpu_entity_count(), 1);
+    }
+
+    #[test]
+    fn collect_gpu_gathers_texture_layer_indices() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::new(1.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(0.5),
+            TextureLayerIndex((2 << 16) | 10), // tier 2, layer 10
+            Active,
+        ));
+        world.spawn((
+            Position(Vec3::new(2.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(0.5),
+            TextureLayerIndex(0), // default
+            Active,
+        ));
+        crate::systems::transform_system(&mut world);
+
+        let mut state = RenderState::new();
+        state.collect_gpu(&world);
+
+        assert_eq!(state.gpu_entity_count(), 2);
+        let indices = state.gpu_tex_indices();
+        assert_eq!(indices.len(), 2);
+        // Order depends on hecs archetype iteration, but both values should be present
+        assert!(indices.contains(&((2 << 16) | 10)));
+        assert!(indices.contains(&0));
+    }
+
+    #[test]
+    fn gpu_tex_indices_empty_when_no_entities() {
+        let world = World::new();
+        let mut state = RenderState::new();
+        state.collect_gpu(&world);
+        assert!(state.gpu_tex_indices().is_empty());
+        assert!(state.gpu_tex_indices_ptr().is_null());
     }
 }
