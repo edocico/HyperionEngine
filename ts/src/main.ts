@@ -107,11 +107,11 @@ async function main() {
 
     bridge.tick(dt);
 
-    if (renderer && bridge.latestRenderState && bridge.latestRenderState.count > 0) {
-      renderer.render(bridge.latestRenderState.matrices, bridge.latestRenderState.count, camera);
+    if (renderer && bridge.latestRenderState && bridge.latestRenderState.entityCount > 0) {
+      renderer.render(bridge.latestRenderState.entityData, bridge.latestRenderState.entityCount, camera);
     }
 
-    const entityCount = bridge.latestRenderState?.count ?? 0;
+    const entityCount = bridge.latestRenderState?.entityCount ?? 0;
     const renderTarget = rendererOnMainThread ? "Main Thread" : "Render Worker";
     overlay.textContent =
       "Hyperion Engine\n" +

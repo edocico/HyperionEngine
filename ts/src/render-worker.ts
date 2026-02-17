@@ -34,8 +34,8 @@ const camera = new Camera();
 let currentEntityCount = 0;
 
 interface RenderState {
-  count: number;
-  matrices: ArrayBuffer;
+  entityCount: number;
+  entityData: ArrayBuffer;
 }
 
 let latestRenderState: RenderState | null = null;
@@ -164,11 +164,11 @@ function renderLoop(): void {
       camera.viewProjection as Float32Array<ArrayBuffer>
     );
 
-    if (latestRenderState && latestRenderState.count > 0) {
-      const matrices = new Float32Array(latestRenderState.matrices);
-      const byteLen = latestRenderState.count * 64;
-      device.queue.writeBuffer(matricesBuffer, 0, matrices.buffer, 0, byteLen);
-      currentEntityCount = latestRenderState.count;
+    if (latestRenderState && latestRenderState.entityCount > 0) {
+      const entityData = new Float32Array(latestRenderState.entityData);
+      const byteLen = latestRenderState.entityCount * 80;  // 20 floats × 4 bytes
+      device.queue.writeBuffer(matricesBuffer, 0, entityData.buffer, 0, byteLen);
+      currentEntityCount = latestRenderState.entityCount;
     }
 
     const commandEncoder = device.createCommandEncoder();
