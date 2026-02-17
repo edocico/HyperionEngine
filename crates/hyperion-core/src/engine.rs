@@ -4,6 +4,7 @@
 use hecs::World;
 
 use crate::command_processor::{process_commands, EntityMap};
+use crate::render_state::RenderState;
 use crate::ring_buffer::Command;
 use crate::systems::{transform_system, velocity_system};
 
@@ -14,6 +15,7 @@ pub const FIXED_DT: f32 = 1.0 / 60.0;
 pub struct Engine {
     pub world: World,
     pub entity_map: EntityMap,
+    pub render_state: RenderState,
     accumulator: f32,
     tick_count: u64,
 }
@@ -29,20 +31,23 @@ impl Engine {
         Self {
             world: World::new(),
             entity_map: EntityMap::new(),
+            render_state: RenderState::new(),
             accumulator: 0.0,
             tick_count: 0,
         }
     }
 
-    /// Advance the engine by `dt` seconds (variable, from requestAnimationFrame).
-    /// Internally uses fixed-timestep accumulation.
-    ///
-    /// `commands` are processed once before any physics ticks for this frame.
-    pub fn update(&mut self, dt: f32, commands: &[Command]) {
-        // 1. Process all commands from the ring buffer.
+    /// Apply a batch of commands to the ECS world.
+    /// Called before `update()` each frame.
+    pub fn process_commands(&mut self, commands: &[Command]) {
         process_commands(commands, &mut self.world, &mut self.entity_map);
+    }
 
-        // 2. Accumulate time and run fixed-timestep ticks.
+    /// Advance the engine by `dt` seconds (variable, from requestAnimationFrame).
+    /// Runs fixed-timestep physics ticks, then recomputes transforms and
+    /// collects render state.
+    pub fn update(&mut self, dt: f32) {
+        // 1. Accumulate time and run fixed-timestep ticks.
         self.accumulator += dt;
 
         // Cap accumulator to prevent spiral of death.
@@ -56,8 +61,11 @@ impl Engine {
             self.tick_count += 1;
         }
 
-        // 3. Recompute model matrices after all ticks.
+        // 2. Recompute model matrices after all ticks.
         transform_system(&mut self.world);
+
+        // 3. Collect render state for GPU upload.
+        self.render_state.collect(&self.world);
     }
 
     /// A single fixed-timestep tick.
@@ -107,35 +115,35 @@ mod tests {
         let mut engine = Engine::new();
 
         // Spawn entity and set velocity.
-        engine.update(0.0, &[spawn_cmd(0), velocity_cmd(0, 60.0, 0.0, 0.0)]);
+        engine.process_commands(&[spawn_cmd(0), velocity_cmd(0, 60.0, 0.0, 0.0)]);
 
         // Run for exactly 1 fixed tick (1/60th second).
-        engine.update(FIXED_DT, &[]);
+        engine.update(FIXED_DT);
 
         let entity = engine.entity_map.get(0).unwrap();
         let pos = engine.world.get::<&crate::components::Position>(entity).unwrap();
-        assert!((pos.0.x - 1.0).abs() < 0.001); // 60 units/s * 1/60s = 1 unit
+        assert!((pos.0.x - 1.0).abs() < 0.001);
     }
 
     #[test]
     fn fixed_timestep_accumulates() {
         let mut engine = Engine::new();
-        engine.update(0.0, &[spawn_cmd(0), velocity_cmd(0, 60.0, 0.0, 0.0)]);
+        engine.process_commands(&[spawn_cmd(0), velocity_cmd(0, 60.0, 0.0, 0.0)]);
 
-        // Run for half a tick -- should not advance physics.
-        engine.update(FIXED_DT * 0.5, &[]);
+        // Run for half a tick — should not advance physics.
+        engine.update(FIXED_DT * 0.5);
         assert_eq!(engine.tick_count(), 0);
 
-        // Run for another half -- now one full tick should fire.
-        engine.update(FIXED_DT * 0.5, &[]);
+        // Run for another half — now one full tick should fire.
+        engine.update(FIXED_DT * 0.5);
         assert_eq!(engine.tick_count(), 1);
     }
 
     #[test]
     fn spiral_of_death_capped() {
         let mut engine = Engine::new();
-        // Pass a huge dt -- should be capped to 10 ticks max.
-        engine.update(100.0, &[]);
+        // Pass a huge dt — should be capped to 10 ticks max.
+        engine.update(100.0);
         assert!(engine.tick_count() <= 10);
     }
 
@@ -151,14 +159,23 @@ mod tests {
         pos_cmd.payload[4..8].copy_from_slice(&10.0f32.to_le_bytes());
         pos_cmd.payload[8..12].copy_from_slice(&15.0f32.to_le_bytes());
 
-        engine.update(0.0, &[spawn_cmd(0), pos_cmd]);
-        engine.update(FIXED_DT, &[]);
+        engine.process_commands(&[spawn_cmd(0), pos_cmd]);
+        engine.update(FIXED_DT);
 
         let entity = engine.entity_map.get(0).unwrap();
         let matrix = engine.world.get::<&crate::components::ModelMatrix>(entity).unwrap();
-        // Translation in column-major: indices 12, 13, 14
         assert!((matrix.0[12] - 5.0).abs() < 0.001);
         assert!((matrix.0[13] - 10.0).abs() < 0.001);
         assert!((matrix.0[14] - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn render_state_collected_after_update() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0), spawn_cmd(1)]);
+        engine.update(FIXED_DT);
+
+        assert_eq!(engine.render_state.count(), 2);
+        assert!(!engine.render_state.as_ptr().is_null());
     }
 }

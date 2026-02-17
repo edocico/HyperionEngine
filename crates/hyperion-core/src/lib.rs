@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 pub mod command_processor;
 pub mod components;
 pub mod engine;
+pub mod render_state;
 pub mod ring_buffer;
 pub mod systems;
 
@@ -41,7 +42,7 @@ pub fn engine_attach_ring_buffer(ptr: *mut u8, capacity: usize) {
 }
 
 /// Run one frame update. `dt` is seconds since last frame.
-/// Drains the ring buffer and runs the ECS tick loop.
+/// Drains the ring buffer, processes commands, and runs the ECS tick loop.
 #[wasm_bindgen]
 pub fn engine_update(dt: f32) {
     // SAFETY: wasm32 is single-threaded; no concurrent access to these statics.
@@ -52,7 +53,8 @@ pub fn engine_update(dt: f32) {
         };
 
         if let Some(engine) = &mut *addr_of_mut!(ENGINE) {
-            engine.update(dt, &commands);
+            engine.process_commands(&commands);
+            engine.update(dt);
         }
     }
 }
