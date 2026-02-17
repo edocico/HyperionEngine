@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "build:wasm": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm"
+    "build:wasm": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "typescript": "^5.7",
-    "vite": "^6.1"
+    "vite": "^6.1",
+    "vitest": "^4.0.18"
   }
 }
