@@ -17,18 +17,18 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (37 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (44 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
-cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (12 tests)
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (13 tests)
 cargo test -p hyperion-core engine           # Engine tests only (5 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (8 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (5 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (10 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (6 tests)
 cargo test -p hyperion-core systems          # Systems tests only (4 tests)
-cargo test -p hyperion-core components       # Component tests only (5 tests)
+cargo test -p hyperion-core components       # Component tests only (8 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -48,19 +48,20 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (33 tests)
+cd ts && npm test                            # All vitest tests (46 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run specific test files
-cd ts && npx vitest run src/ring-buffer.test.ts        # Ring buffer producer (5 tests)
+cd ts && npx vitest run src/ring-buffer.test.ts        # Ring buffer producer (6 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts  # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts             # Camera math + frustum (10 tests)
 cd ts && npx vitest run src/capabilities.test.ts       # Capability detection (4 tests)
-cd ts && npx vitest run src/integration.test.ts        # E2E integration (3 tests)
+cd ts && npx vitest run src/integration.test.ts        # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts            # Frustum culling accuracy (7 tests)
+cd ts && npx vitest run src/texture-manager.test.ts    # Texture manager (10 tests)
 ```
 
 ### Development Workflow
@@ -132,13 +133,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling) + `process_commands` |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum, `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `Active` — all `#[repr(C)]` Pod |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `Active` — all `#[repr(C)]` Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active` |
-| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for EntityGPUData (mat4x4 + bounding sphere, 80B/entity) |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for EntityGPUData (mat4x4 + bounding sphere, 80B/entity) + parallel texture indices buffer |
 
 ### TypeScript: ts/src/
 
@@ -149,10 +150,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C) |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame |
 | `main.ts` | Entry point: detect capabilities → create bridge → requestAnimationFrame loop |
-| `renderer.ts` | GPU-driven renderer: compute culling pipeline + indirect draw + Texture2DArray |
+| `renderer.ts` | GPU-driven renderer: compute culling pipeline + indirect draw + TextureManager + multi-tier Texture2DArrays |
+| `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray management, `createImageBitmap` loading pipeline, concurrency limiter |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
-| `render-worker.ts` | Mode A render worker: OffscreenCanvas + GPU-driven pipeline |
-| `shaders/basic.wgsl` | Render shader with visibility indirection + texture array sampling |
+| `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()` (reuses renderer.ts pipeline) |
+| `shaders/basic.wgsl` | Render shader with visibility indirection + multi-tier Texture2DArray sampling via per-entity texture index |
 | `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling, atomicAdd for indirect draw |
 | `vite-env.d.ts` | Type declarations for WGSL ?raw imports and Vite client |
 
@@ -166,11 +168,15 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`wasm-pack --out-dir`** is relative to the crate directory, not the workspace root.
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
-- **`extractFrustumPlanesInternal` duplicated** — both `renderer.ts` and `render-worker.ts` have local copies of frustum extraction to avoid import issues in worker context. Keep both in sync.
+- **`extractFrustumPlanesInternal` lives only in `renderer.ts`** — `render-worker.ts` now uses `createRenderer()` from `renderer.ts`, so the frustum extraction is no longer duplicated.
 - **WebGPU can't be tested in headless browsers** — Playwright/Puppeteer headless mode has no GPU adapter. `requestAdapter()` returns null. Visual WebGPU testing requires a real browser with GPU acceleration (e.g., `npm run dev` → open Chrome).
 - **Depth texture not recreated on resize** — `renderer.ts` creates the depth texture once at initialization. If the canvas resizes, the depth texture dimensions won't match the render target. This needs fixing in a future phase.
 - **No rendering fallback without WebGPU** — When WebGPU is unavailable, the engine runs the ECS/WASM simulation but rendering is completely disabled (`renderer` stays `null`). A future phase should add a WebGL 2 fallback renderer (CPU-side culling, GLSL shaders) implementing the same `Renderer` interface. Canvas 2D is an option for debug/wireframe only.
 - **Full entity buffer re-upload every frame** — `renderer.ts` uploads all entity data (80 bytes/entity) via `writeBuffer` each frame, even if most entities haven't moved. At 100k entities this is ~7.6 MB/frame. Future optimizations: (1) dirty-flag + partial upload for changed entities only, (2) stable entity slots in GPU buffer via `EntityMap` free-list, (3) double-buffering with `mapAsync` to eliminate `writeBuffer` internal copies, (4) CPU-side frustum pre-culling to skip off-screen entities before upload.
+- **`createImageBitmap` not available in Workers on all browsers** — Firefox and Chrome support it. Safari has partial support. The `TextureManager` should only be instantiated where `createImageBitmap` is available.
+- **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. The `TextureManager` allocates 256 layers per tier. On devices with fewer layers, loading will fail. Future: query `device.limits.maxTextureArrayLayers`.
+- **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. The fragment shader uses a `switch` on the tier value. Adding new tiers requires updating the shader.
+- **Texture indices buffer parallel to entity buffer** — The `texLayerIndices` storage buffer must be indexed by the same entity index as the `entities` buffer. Both are populated in the same `collect_gpu()` loop in Rust, ensuring alignment.
 
 ## Conventions
 
@@ -184,7 +190,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-3 are complete. The architecture design doc is at `docs/plans/2026-02-17-hyperion-engine-design.md`. Phase 4 (Asset Pipeline & Textures) is next.
+Phases 0-4 are complete. The architecture design doc is at `docs/plans/2026-02-17-hyperion-engine-design.md`. Phase 5 (TypeScript API & Lifecycle) is next.
 
 ## Documentation
 
