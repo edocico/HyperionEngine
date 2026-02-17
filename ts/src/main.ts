@@ -118,7 +118,12 @@ async function main() {
     bridge.tick(dt);
 
     if (renderer && bridge.latestRenderState && bridge.latestRenderState.entityCount > 0) {
-      renderer.render(bridge.latestRenderState.entityData, bridge.latestRenderState.entityCount, camera);
+      renderer.render(
+        bridge.latestRenderState.entityData,
+        bridge.latestRenderState.entityCount,
+        camera,
+        bridge.latestRenderState.texIndices,
+      );
     }
 
     const entityCount = bridge.latestRenderState?.entityCount ?? 0;
