@@ -11,6 +11,7 @@ import {
   type EngineBridge,
 } from "./worker-bridge";
 import { createRenderer, type Renderer } from "./renderer";
+import { Camera } from "./camera";
 
 async function main() {
   const overlay = document.getElementById("overlay")!;
@@ -39,10 +40,17 @@ async function main() {
 
   await bridge.ready();
 
+  // Initialize camera.
+  const camera = new Camera();
+
   // Initialize the renderer (Mode B/C on Main Thread; Mode A in Render Worker).
   let renderer: Renderer | null = null;
   if (rendererOnMainThread && caps.webgpu) {
-    renderer = await createRenderer(canvas);
+    try {
+      renderer = await createRenderer(canvas);
+    } catch {
+      renderer = null;
+    }
   }
 
   if (!renderer && rendererOnMainThread) {
@@ -56,7 +64,10 @@ async function main() {
     const width = Math.floor(canvas.clientWidth * dpr);
     const height = Math.floor(canvas.clientHeight * dpr);
     if (canvas.width !== width || canvas.height !== height) {
-      renderer?.resize(width, height);
+      canvas.width = width;
+      canvas.height = height;
+      const aspect = width / height;
+      camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
     }
   }
   resizeCanvas();
@@ -96,8 +107,8 @@ async function main() {
 
     bridge.tick(dt);
 
-    if (renderer) {
-      renderer.render(bridge.latestRenderState);
+    if (renderer && bridge.latestRenderState && bridge.latestRenderState.count > 0) {
+      renderer.render(bridge.latestRenderState.matrices, bridge.latestRenderState.count, camera);
     }
 
     const entityCount = bridge.latestRenderState?.count ?? 0;
