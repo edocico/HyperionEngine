@@ -1,0 +1,3 @@
+[      72ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:5173/favicon.ico:0
+[     314ms] [ERROR] Render Worker error: Error: No GPU adapter in Render Worker @ http://localhost:5173/src/worker-bridge.ts:92
+[   46821ms] [WARNING] No available adapters. @ http://localhost:5173/:0

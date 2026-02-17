@@ -8,10 +8,13 @@ import {
 const RING_BUFFER_CAPACITY = 64 * 1024; // 64KB command buffer
 
 /** Render state transferred from the engine each frame. */
-export interface RenderStateSnapshot {
-  count: number;
-  matrices: Float32Array;
+export interface GPURenderState {
+  entityCount: number;
+  entityData: Float32Array;  // 20 floats per entity (mat4x4 + vec4 boundingSphere)
 }
+
+/** @deprecated Use GPURenderState instead */
+export type RenderStateSnapshot = GPURenderState;
 
 export interface EngineBridge {
   mode: ExecutionMode;
@@ -22,8 +25,8 @@ export interface EngineBridge {
   ready(): Promise<void>;
   /** Shut down the engine. */
   destroy(): void;
-  /** Get the latest render state (model matrices). */
-  latestRenderState: RenderStateSnapshot | null;
+  /** Get the latest render state (GPU entity data: 20 floats per entity). */
+  latestRenderState: GPURenderState | null;
 }
 
 /**
@@ -45,7 +48,7 @@ export function createWorkerBridge(
     readyResolve = resolve;
   });
 
-  let latestRenderState: RenderStateSnapshot | null = null;
+  let latestRenderState: GPURenderState | null = null;
 
   worker.onmessage = (event) => {
     const msg = event.data;
@@ -55,8 +58,8 @@ export function createWorkerBridge(
       console.error("Engine Worker error:", msg.error);
     } else if (msg.type === "tick-done" && msg.renderState) {
       latestRenderState = {
-        count: msg.renderState.count,
-        matrices: new Float32Array(msg.renderState.matrices),
+        entityCount: msg.renderState.entityCount,
+        entityData: new Float32Array(msg.renderState.entityData),
       };
     }
   };
@@ -127,7 +130,7 @@ export function createFullIsolationBridge(
       // Forward render state to Render Worker.
       channel.port1.postMessage(
         { renderState: msg.renderState },
-        [msg.renderState.matrices]
+        [msg.renderState.entityData]
       );
     }
   };
@@ -190,15 +193,20 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_init(): void;
     engine_push_commands(data: Uint8Array): void;
     engine_update(dt: number): void;
+    // Legacy render state exports (backward compat)
     engine_render_state_count(): number;
     engine_render_state_ptr(): number;
     engine_render_state_f32_len(): number;
+    // GPU entity data exports (20 floats per entity)
+    engine_gpu_entity_count(): number;
+    engine_gpu_data_ptr(): number;
+    engine_gpu_data_f32_len(): number;
     memory: WebAssembly.Memory;
   };
 
   engine.engine_init();
 
-  let latestRenderState: RenderStateSnapshot | null = null;
+  let latestRenderState: GPURenderState | null = null;
 
   return {
     mode: ExecutionMode.SingleThread,
@@ -213,18 +221,19 @@ export async function createDirectBridge(): Promise<EngineBridge> {
       // 2. Run physics + transforms + collect render state.
       engine.engine_update(dt);
 
-      // 3. Read render state directly from WASM memory.
-      const count = engine.engine_render_state_count();
-      if (count > 0) {
-        const ptr = engine.engine_render_state_ptr();
-        const f32Len = engine.engine_render_state_f32_len();
-        // Copy — WASM memory view may be invalidated by future calls.
+      // 3. Read GPU entity data directly from WASM memory (20 floats per entity).
+      const count = engine.engine_gpu_entity_count();
+      const ptr = engine.engine_gpu_data_ptr();
+      const f32Len = engine.engine_gpu_data_f32_len();
+
+      if (count > 0 && ptr !== 0) {
         const wasmView = new Float32Array(engine.memory.buffer, ptr, f32Len);
-        const copy = new Float32Array(f32Len);
-        copy.set(wasmView);
-        latestRenderState = { count, matrices: copy };
+        latestRenderState = {
+          entityCount: count,
+          entityData: new Float32Array(wasmView),
+        };
       } else {
-        latestRenderState = { count: 0, matrices: new Float32Array(0) };
+        latestRenderState = { entityCount: 0, entityData: new Float32Array(0) };
       }
     },
     async ready() {

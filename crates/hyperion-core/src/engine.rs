@@ -66,6 +66,9 @@ impl Engine {
 
         // 3. Collect render state for GPU upload.
         self.render_state.collect(&self.world);
+
+        // 4. Collect GPU-driven pipeline data.
+        self.render_state.collect_gpu(&self.world);
     }
 
     /// A single fixed-timestep tick.

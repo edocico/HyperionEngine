@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { orthographic, Camera } from "./camera";
+import { orthographic, Camera, extractFrustumPlanes, isPointInFrustum, isSphereInFrustum } from "./camera";
 
 // Helper: multiply a 4x4 column-major matrix by a point (x, y, z, 1)
 function transformPoint(
@@ -60,5 +60,50 @@ describe("Camera", () => {
     // A point at world (5, 0, 0) should map to screen center
     const [x] = transformPoint(vp, 5, 0, 0);
     expect(x).toBeCloseTo(0);
+  });
+});
+
+describe("extractFrustumPlanes", () => {
+  it("extracts 6 planes from an orthographic VP matrix", () => {
+    const camera = new Camera();
+    camera.setOrthographic(20, 15, 0, 100);
+    const vp = camera.viewProjection;
+    const planes = extractFrustumPlanes(vp);
+    expect(planes.length).toBe(24);
+  });
+
+  it("classifies a point inside the frustum as visible", () => {
+    const camera = new Camera();
+    camera.setOrthographic(20, 15, 0, 100);
+    const planes = extractFrustumPlanes(camera.viewProjection);
+    const visible = isPointInFrustum(planes, 0, 0, -50);
+    expect(visible).toBe(true);
+  });
+
+  it("classifies a point outside the frustum as not visible", () => {
+    const camera = new Camera();
+    camera.setOrthographic(20, 15, 0, 100);
+    const planes = extractFrustumPlanes(camera.viewProjection);
+    const visible = isPointInFrustum(planes, 100, 0, -50);
+    expect(visible).toBe(false);
+  });
+
+  it("classifies a sphere partially inside as visible", () => {
+    const camera = new Camera();
+    camera.setOrthographic(20, 15, 0, 100);
+    const planes = extractFrustumPlanes(camera.viewProjection);
+    // Sphere at x=10.3, radius=0.5 — center is just outside right plane (10.0),
+    // but sphere overlaps. Should be visible.
+    const visible = isSphereInFrustum(planes, 10.3, 0, -50, 0.5);
+    expect(visible).toBe(true);
+  });
+
+  it("classifies a sphere fully outside as not visible", () => {
+    const camera = new Camera();
+    camera.setOrthographic(20, 15, 0, 100);
+    const planes = extractFrustumPlanes(camera.viewProjection);
+    // Sphere at x=20, radius=0.5 — fully outside right plane (10.0)
+    const visible = isSphereInFrustum(planes, 20, 0, -50, 0.5);
+    expect(visible).toBe(false);
   });
 });

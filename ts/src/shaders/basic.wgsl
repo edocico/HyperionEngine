@@ -1,38 +1,56 @@
-// Phase 2: Instanced colored quads.
-// Each entity is a unit quad transformed by its model matrix.
-// Color is derived from instance index for visual distinction.
+// Instanced colored quad shader with GPU-driven visibility indirection.
 
 struct CameraUniform {
-  viewProjection: mat4x4f,
+    viewProjection: mat4x4f,
 };
 
-struct VertexOutput {
-  @builtin(position) clipPosition: vec4f,
-  @location(0) color: vec3f,
+struct EntityData {
+    model: mat4x4f,
+    boundingSphere: vec4f,  // xyz = position, w = radius (unused in render)
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
-@group(0) @binding(1) var<storage, read> models: array<mat4x4f>;
+@group(0) @binding(1) var<storage, read> entities: array<EntityData>;
+@group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
+@group(0) @binding(3) var texArray: texture_2d_array<f32>;
+@group(0) @binding(4) var texSampler: sampler;
+
+struct VertexOutput {
+    @builtin(position) clipPosition: vec4f,
+    @location(0) color: vec4f,
+    @location(1) uv: vec2f,
+    @location(2) @interpolate(flat) entityIdx: u32,
+};
 
 @vertex
 fn vs_main(
-  @location(0) position: vec3f,
-  @builtin(instance_index) idx: u32,
+    @location(0) position: vec3f,
+    @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
-  var out: VertexOutput;
-  let model = models[idx];
-  out.clipPosition = camera.viewProjection * model * vec4f(position, 1.0);
+    // Indirection: instance_index → visible slot → entity index
+    let entityIdx = visibleIndices[instanceIdx];
+    let model = entities[entityIdx].model;
 
-  // Deterministic color from instance index
-  let r = f32((idx * 7u + 3u) % 11u) / 10.0;
-  let g = f32((idx * 13u + 5u) % 11u) / 10.0;
-  let b = f32((idx * 17u + 7u) % 11u) / 10.0;
-  out.color = vec3f(r, g, b);
+    var out: VertexOutput;
+    out.clipPosition = camera.viewProjection * model * vec4f(position, 1.0);
 
-  return out;
+    // Deterministic color from entity index (not instance index)
+    let r = f32((entityIdx * 7u + 3u) % 11u) / 10.0;
+    let g = f32((entityIdx * 13u + 5u) % 11u) / 10.0;
+    let b = f32((entityIdx * 17u + 7u) % 11u) / 10.0;
+    out.color = vec4f(r, g, b, 1.0);
+
+    // UV for future texture sampling
+    out.uv = position.xy + 0.5;
+
+    out.entityIdx = entityIdx;
+
+    return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  return vec4f(in.color, 1.0);
+    let layer = in.entityIdx % 8u;
+    let texColor = textureSample(texArray, texSampler, in.uv, layer);
+    return mix(in.color, texColor, 0.6);
 }

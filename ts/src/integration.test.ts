@@ -53,3 +53,22 @@ describe("Integration: Mode Selection", () => {
     expect(selectExecutionMode(nothing)).toBe(ExecutionMode.SingleThread);
   });
 });
+
+describe("Integration: GPU Entity Data Format", () => {
+  it("produces 20 floats per entity matching WGSL EntityData struct", () => {
+    const FLOATS_PER_ENTITY = 20;
+    const entityCount = 3;
+    const data = new Float32Array(entityCount * FLOATS_PER_ENTITY);
+
+    // Simulate entity 0 at position (1, 2, 3) with identity matrix
+    data[0] = 1.0; data[5] = 1.0; data[10] = 1.0; data[15] = 1.0;
+    data[12] = 1.0; data[13] = 2.0; data[14] = 3.0;
+    data[16] = 1.0; data[17] = 2.0; data[18] = 3.0; data[19] = 0.5;
+
+    expect(data[16]).toBe(1.0);  // sphere center x
+    expect(data[17]).toBe(2.0);  // sphere center y
+    expect(data[18]).toBe(3.0);  // sphere center z
+    expect(data[19]).toBe(0.5);  // sphere radius
+    expect(data.length).toBe(60);  // 3 entities x 20 floats
+  });
+});

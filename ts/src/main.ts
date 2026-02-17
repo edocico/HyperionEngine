@@ -11,6 +11,7 @@ import {
   type EngineBridge,
 } from "./worker-bridge";
 import { createRenderer, type Renderer } from "./renderer";
+import { Camera } from "./camera";
 
 async function main() {
   const overlay = document.getElementById("overlay")!;
@@ -39,10 +40,17 @@ async function main() {
 
   await bridge.ready();
 
+  // Initialize camera.
+  const camera = new Camera();
+
   // Initialize the renderer (Mode B/C on Main Thread; Mode A in Render Worker).
   let renderer: Renderer | null = null;
   if (rendererOnMainThread && caps.webgpu) {
-    renderer = await createRenderer(canvas);
+    try {
+      renderer = await createRenderer(canvas);
+    } catch {
+      renderer = null;
+    }
   }
 
   if (!renderer && rendererOnMainThread) {
@@ -56,18 +64,31 @@ async function main() {
     const width = Math.floor(canvas.clientWidth * dpr);
     const height = Math.floor(canvas.clientHeight * dpr);
     if (canvas.width !== width || canvas.height !== height) {
-      renderer?.resize(width, height);
+      canvas.width = width;
+      canvas.height = height;
+      const aspect = width / height;
+      camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
     }
   }
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  // Spawn test entities in a grid.
-  for (let i = 0; i < 50; i++) {
+  // Spawn test entities: 50 inside frustum, 50 outside.
+  const ENTITY_COUNT = 100;
+  for (let i = 0; i < ENTITY_COUNT; i++) {
     bridge.commandBuffer.spawnEntity(i);
-    const col = i % 10;
-    const row = Math.floor(i / 10);
-    bridge.commandBuffer.setPosition(i, (col - 4.5) * 2, (row - 2.5) * 2, 0);
+
+    if (i < 50) {
+      // Inside frustum: grid within the camera's visible area
+      const col = i % 10;
+      const row = Math.floor(i / 10);
+      bridge.commandBuffer.setPosition(i, (col - 4.5) * 2, (row - 2.5) * 2, 0);
+    } else {
+      // Outside frustum: far to the right and left
+      const offset = i - 50;
+      const x = offset < 25 ? -20 - offset : 20 + (offset - 25);
+      bridge.commandBuffer.setPosition(i, x, 0, 0);
+    }
   }
 
   // Main loop.
@@ -96,11 +117,11 @@ async function main() {
 
     bridge.tick(dt);
 
-    if (renderer) {
-      renderer.render(bridge.latestRenderState);
+    if (renderer && bridge.latestRenderState && bridge.latestRenderState.entityCount > 0) {
+      renderer.render(bridge.latestRenderState.entityData, bridge.latestRenderState.entityCount, camera);
     }
 
-    const entityCount = bridge.latestRenderState?.count ?? 0;
+    const entityCount = bridge.latestRenderState?.entityCount ?? 0;
     const renderTarget = rendererOnMainThread ? "Main Thread" : "Render Worker";
     overlay.textContent =
       "Hyperion Engine\n" +

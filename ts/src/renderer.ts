@@ -1,210 +1,316 @@
-import { Camera } from "./camera";
-import type { RenderStateSnapshot } from "./worker-bridge";
-import shaderCode from "./shaders/basic.wgsl?raw";
+import shaderCode from './shaders/basic.wgsl?raw';
+import cullShaderCode from './shaders/cull.wgsl?raw';
 
-const MAX_ENTITIES = 10_000;
-
-/** Unit quad: 4 vertices, 6 indices (two triangles). */
-const QUAD_VERTICES = new Float32Array([
-  -0.5, -0.5, 0.0,
-   0.5, -0.5, 0.0,
-   0.5,  0.5, 0.0,
-  -0.5,  0.5, 0.0,
-]);
-const QUAD_INDICES = new Uint16Array([0, 1, 2, 0, 2, 3]);
+const MAX_ENTITIES = 100_000;
+const FLOATS_PER_GPU_ENTITY = 20;  // mat4x4 (16) + vec4 boundingSphere (4)
+const BYTES_PER_GPU_ENTITY = FLOATS_PER_GPU_ENTITY * 4;  // 80 bytes
+const INDIRECT_BUFFER_SIZE = 20;  // 5 × u32
 
 export interface Renderer {
-  /** Upload new model matrices and render a frame. */
-  render(state: RenderStateSnapshot | null): void;
-  /** Resize the render target. */
-  resize(width: number, height: number): void;
-  /** Release GPU resources. */
+  render(entityData: Float32Array, entityCount: number, camera: { viewProjection: Float32Array }): void;
   destroy(): void;
-  /** The camera (public for position/zoom adjustment). */
-  camera: Camera;
 }
 
-/**
- * Initialize the WebGPU renderer.
- * Returns null if WebGPU is unavailable.
- */
 export async function createRenderer(
-  canvas: HTMLCanvasElement
-): Promise<Renderer | null> {
-  if (!navigator.gpu) {
-    console.warn("WebGPU not available. Rendering disabled.");
-    return null;
-  }
-
+  canvas: HTMLCanvasElement | OffscreenCanvas,
+): Promise<Renderer> {
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) {
-    console.warn("No GPU adapter found. Rendering disabled.");
-    return null;
-  }
-
+  if (!adapter) throw new Error("No WebGPU adapter");
   const device = await adapter.requestDevice();
 
-  const context = canvas.getContext("webgpu");
-  if (!context) {
-    console.warn("Could not get WebGPU context. Rendering disabled.");
-    return null;
-  }
-
+  const context = canvas instanceof HTMLCanvasElement
+    ? canvas.getContext("webgpu")!
+    : (canvas as OffscreenCanvas).getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
 
-  const shaderModule = device.createShaderModule({ code: shaderCode });
-
+  // --- Vertex + Index Buffers ---
+  const vertices = new Float32Array([
+    -0.5, -0.5, 0.0,
+     0.5, -0.5, 0.0,
+     0.5,  0.5, 0.0,
+    -0.5,  0.5, 0.0,
+  ]);
   const vertexBuffer = device.createBuffer({
-    size: QUAD_VERTICES.byteLength,
+    size: vertices.byteLength,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(vertexBuffer, 0, QUAD_VERTICES);
+  device.queue.writeBuffer(vertexBuffer, 0, vertices);
 
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
   const indexBuffer = device.createBuffer({
-    size: QUAD_INDICES.byteLength,
+    size: indices.byteLength,
     usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(indexBuffer, 0, QUAD_INDICES);
+  device.queue.writeBuffer(indexBuffer, 0, indices);
 
+  // --- Camera Uniform ---
   const cameraBuffer = device.createBuffer({
     size: 64,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  const matricesBuffer = device.createBuffer({
-    size: MAX_ENTITIES * 64,
+  // --- Entity Data Storage Buffer (all active entities) ---
+  const entityBuffer = device.createBuffer({
+    size: MAX_ENTITIES * BYTES_PER_GPU_ENTITY,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
+  // --- Visible Indices Storage Buffer ---
+  const visibleIndicesBuffer = device.createBuffer({
+    size: MAX_ENTITIES * 4,  // u32 per entity
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  // --- Indirect Draw Args Buffer ---
+  const indirectBuffer = device.createBuffer({
+    size: INDIRECT_BUFFER_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+  });
+
+  // --- Cull Uniforms ---
+  // Layout: 6 × vec4f (frustum planes, 96 bytes) + u32 totalEntities + 3 × u32 padding = 112 bytes
+  const CULL_UNIFORM_SIZE = 6 * 16 + 16;  // 112 bytes
+  const cullUniformBuffer = device.createBuffer({
+    size: CULL_UNIFORM_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  // --- Texture2DArray: 8 layers of 4×4 solid colors ---
+  const TEX_LAYERS = 8;
+  const TEX_SIZE = 4;
+  const textureArray = device.createTexture({
+    size: { width: TEX_SIZE, height: TEX_SIZE, depthOrArrayLayers: TEX_LAYERS },
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+
+  const colors: [number, number, number, number][] = [
+    [230, 57, 70, 255],    // Red
+    [244, 162, 97, 255],   // Orange
+    [233, 196, 106, 255],  // Yellow
+    [42, 157, 143, 255],   // Teal
+    [38, 70, 83, 255],     // Dark Teal
+    [69, 123, 157, 255],   // Blue
+    [168, 218, 220, 255],  // Light Blue
+    [241, 250, 238, 255],  // Off-White
+  ];
+
+  for (let layer = 0; layer < TEX_LAYERS; layer++) {
+    const data = new Uint8Array(TEX_SIZE * TEX_SIZE * 4);
+    const [r, g, b, a] = colors[layer];
+    for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
+      data[i * 4 + 0] = r;
+      data[i * 4 + 1] = g;
+      data[i * 4 + 2] = b;
+      data[i * 4 + 3] = a;
+    }
+    device.queue.writeTexture(
+      { texture: textureArray, origin: { x: 0, y: 0, z: layer } },
+      data,
+      { bytesPerRow: TEX_SIZE * 4, rowsPerImage: TEX_SIZE },
+      { width: TEX_SIZE, height: TEX_SIZE, depthOrArrayLayers: 1 },
+    );
+  }
+
+  const texSampler = device.createSampler({
+    magFilter: "nearest",
+    minFilter: "nearest",
+  });
+
+  // --- Depth Texture ---
+  let depthTexture = createDepthTexture(device, canvas.width, canvas.height);
+
+  // --- Compute Pipeline (Culling) ---
+  const cullModule = device.createShaderModule({ code: cullShaderCode });
+  const cullBindGroupLayout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const cullPipeline = device.createComputePipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [cullBindGroupLayout] }),
+    compute: { module: cullModule, entryPoint: "cull_main" },
+  });
+  const cullBindGroup = device.createBindGroup({
+    layout: cullBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: cullUniformBuffer } },
+      { binding: 1, resource: { buffer: entityBuffer } },
+      { binding: 2, resource: { buffer: visibleIndicesBuffer } },
+      { binding: 3, resource: { buffer: indirectBuffer } },
+    ],
+  });
+
+  // --- Render Pipeline ---
+  const renderModule = device.createShaderModule({ code: shaderCode });
+  const renderBindGroupLayout = device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: "2d-array" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
     ],
   });
-
-  const pipelineLayout = device.createPipelineLayout({
-    bindGroupLayouts: [bindGroupLayout],
-  });
-
-  const bindGroup = device.createBindGroup({
-    layout: bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: cameraBuffer } },
-      { binding: 1, resource: { buffer: matricesBuffer } },
-    ],
-  });
-
-  const pipeline = device.createRenderPipeline({
-    layout: pipelineLayout,
+  const renderPipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [renderBindGroupLayout] }),
     vertex: {
-      module: shaderModule,
+      module: renderModule,
       entryPoint: "vs_main",
       buffers: [{
         arrayStride: 12,
-        attributes: [{ format: "float32x3" as GPUVertexFormat, offset: 0, shaderLocation: 0 }],
+        attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" as GPUVertexFormat }],
       }],
     },
     fragment: {
-      module: shaderModule,
+      module: renderModule,
       entryPoint: "fs_main",
       targets: [{ format }],
     },
-    primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: "depth24plus",
       depthWriteEnabled: true,
       depthCompare: "less",
     },
+    primitive: { topology: "triangle-list", cullMode: "back" },
+  });
+  const renderBindGroup = device.createBindGroup({
+    layout: renderBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: cameraBuffer } },
+      { binding: 1, resource: { buffer: entityBuffer } },
+      { binding: 2, resource: { buffer: visibleIndicesBuffer } },
+      { binding: 3, resource: textureArray.createView({ dimension: "2d-array" }) },
+      { binding: 4, resource: texSampler },
+    ],
   });
 
-  let depthTexture = createDepthTexture(device, canvas.width, canvas.height);
-
-  const camera = new Camera();
-  camera.setOrthographic(20, 15, 0.1, 1000);
-
-  let currentEntityCount = 0;
-
   return {
-    camera,
+    render(entityData: Float32Array, entityCount: number, camera) {
+      if (entityCount === 0) return;
 
-    render(state: RenderStateSnapshot | null) {
+      // 1. Upload entity data (all active entities)
       device.queue.writeBuffer(
-        cameraBuffer, 0,
-        camera.viewProjection as Float32Array<ArrayBuffer>
+        entityBuffer, 0,
+        entityData as Float32Array<ArrayBuffer>, 0,
+        entityCount * FLOATS_PER_GPU_ENTITY,
       );
 
-      if (state && state.count > 0) {
-        const byteLen = state.count * 64;
-        device.queue.writeBuffer(
-          matricesBuffer, 0,
-          state.matrices.buffer,
-          state.matrices.byteOffset,
-          byteLen
-        );
-        currentEntityCount = state.count;
-      }
+      // 2. Upload camera uniform
+      device.queue.writeBuffer(cameraBuffer, 0, camera.viewProjection as Float32Array<ArrayBuffer>);
 
-      const commandEncoder = device.createCommandEncoder();
-      const colorView = context.getCurrentTexture().createView();
-      const depthView = depthTexture.createView();
+      // 3. Upload cull uniforms (frustum planes + entity count)
+      const cullData = new ArrayBuffer(CULL_UNIFORM_SIZE);
+      const cullFloats = new Float32Array(cullData, 0, 24);  // 6 planes × 4 floats
+      const frustumPlanes = extractFrustumPlanesInternal(camera.viewProjection);
+      cullFloats.set(frustumPlanes);
+      const cullUints = new Uint32Array(cullData, 96, 4);  // offset 96 = after 24 floats
+      cullUints[0] = entityCount;
+      device.queue.writeBuffer(cullUniformBuffer, 0, cullData);
 
-      const renderPass = commandEncoder.beginRenderPass({
+      // 4. Reset indirect draw args: indexCount=6, instanceCount=0, rest=0
+      const resetArgs = new Uint32Array([6, 0, 0, 0, 0]);
+      device.queue.writeBuffer(indirectBuffer, 0, resetArgs);
+
+      // 5. Encode command buffer
+      const encoder = device.createCommandEncoder();
+
+      // 5a. Compute pass: frustum culling
+      const computePass = encoder.beginComputePass();
+      computePass.setPipeline(cullPipeline);
+      computePass.setBindGroup(0, cullBindGroup);
+      computePass.dispatchWorkgroups(Math.ceil(entityCount / 256));
+      computePass.end();
+
+      // 5b. Render pass: indirect draw
+      const textureView = context.getCurrentTexture().createView();
+      const renderPass = encoder.beginRenderPass({
         colorAttachments: [{
-          view: colorView,
-          clearValue: { r: 0.067, g: 0.067, b: 0.067, a: 1.0 },
-          loadOp: "clear",
-          storeOp: "store",
+          view: textureView,
+          loadOp: "clear" as GPULoadOp,
+          storeOp: "store" as GPUStoreOp,
+          clearValue: { r: 0.067, g: 0.067, b: 0.067, a: 1 },
         }],
         depthStencilAttachment: {
-          view: depthView,
+          view: depthTexture.createView(),
+          depthLoadOp: "clear" as GPULoadOp,
+          depthStoreOp: "store" as GPUStoreOp,
           depthClearValue: 1.0,
-          depthLoadOp: "clear",
-          depthStoreOp: "store",
         },
       });
-
-      if (currentEntityCount > 0) {
-        renderPass.setPipeline(pipeline);
-        renderPass.setBindGroup(0, bindGroup);
-        renderPass.setVertexBuffer(0, vertexBuffer);
-        renderPass.setIndexBuffer(indexBuffer, "uint16");
-        renderPass.drawIndexed(6, currentEntityCount);
-      }
-
+      renderPass.setPipeline(renderPipeline);
+      renderPass.setVertexBuffer(0, vertexBuffer);
+      renderPass.setIndexBuffer(indexBuffer, "uint16");
+      renderPass.setBindGroup(0, renderBindGroup);
+      renderPass.drawIndexedIndirect(indirectBuffer, 0);
       renderPass.end();
-      device.queue.submit([commandEncoder.finish()]);
-    },
 
-    resize(width: number, height: number) {
-      canvas.width = width;
-      canvas.height = height;
-      depthTexture.destroy();
-      depthTexture = createDepthTexture(device, width, height);
-      const aspect = width / height;
-      camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
+      device.queue.submit([encoder.finish()]);
     },
 
     destroy() {
       vertexBuffer.destroy();
       indexBuffer.destroy();
       cameraBuffer.destroy();
-      matricesBuffer.destroy();
+      entityBuffer.destroy();
+      visibleIndicesBuffer.destroy();
+      indirectBuffer.destroy();
+      cullUniformBuffer.destroy();
+      textureArray.destroy();
       depthTexture.destroy();
       device.destroy();
     },
   };
 }
 
-function createDepthTexture(
-  device: GPUDevice,
-  width: number,
-  height: number
-): GPUTexture {
+function createDepthTexture(device: GPUDevice, width: number, height: number): GPUTexture {
   return device.createTexture({
-    size: [width, height],
+    size: { width, height },
     format: "depth24plus",
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
+}
+
+/**
+ * Internal frustum extraction (same algorithm as camera.ts export,
+ * duplicated here to avoid circular dependency in render-worker).
+ */
+function extractFrustumPlanesInternal(vp: Float32Array): Float32Array {
+  const planes = new Float32Array(24);
+  const m = vp;
+
+  // Left
+  planes[0]  = m[3]  + m[0];  planes[1]  = m[7]  + m[4];
+  planes[2]  = m[11] + m[8];  planes[3]  = m[15] + m[12];
+  // Right
+  planes[4]  = m[3]  - m[0];  planes[5]  = m[7]  - m[4];
+  planes[6]  = m[11] - m[8];  planes[7]  = m[15] - m[12];
+  // Bottom
+  planes[8]  = m[3]  + m[1];  planes[9]  = m[7]  + m[5];
+  planes[10] = m[11] + m[9];  planes[11] = m[15] + m[13];
+  // Top
+  planes[12] = m[3]  - m[1];  planes[13] = m[7]  - m[5];
+  planes[14] = m[11] - m[9];  planes[15] = m[15] - m[13];
+  // Near (WebGPU depth [0,1])
+  planes[16] = m[2];  planes[17] = m[6];
+  planes[18] = m[10]; planes[19] = m[14];
+  // Far
+  planes[20] = m[3]  - m[2];  planes[21] = m[7]  - m[6];
+  planes[22] = m[11] - m[10]; planes[23] = m[15] - m[14];
+
+  // Normalize each plane
+  for (let i = 0; i < 6; i++) {
+    const o = i * 4;
+    const len = Math.sqrt(planes[o] ** 2 + planes[o + 1] ** 2 + planes[o + 2] ** 2);
+    if (len > 0) {
+      planes[o] /= len; planes[o + 1] /= len;
+      planes[o + 2] /= len; planes[o + 3] /= len;
+    }
+  }
+
+  return planes;
 }
