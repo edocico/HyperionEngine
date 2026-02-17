@@ -15,6 +15,10 @@ interface WasmEngine {
 }
 
 let wasm: WasmEngine | null = null;
+let commandBufferRef: SharedArrayBuffer | null = null;
+
+/** Ring buffer header size in bytes (write_head + read_head + capacity + padding). */
+const HEADER_SIZE = 16;
 
 interface InitMessage {
   type: "init";
@@ -28,8 +32,6 @@ interface TickMessage {
 
 type WorkerMessage = InitMessage | TickMessage;
 
-const HEADER_SIZE = 16;
-
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const msg = event.data;
 
@@ -42,11 +44,16 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
 
         wasm.engine_init();
 
+        // Store the command buffer for Phase 2 ring buffer attachment.
+        commandBufferRef = msg.commandBuffer;
+
         // Note: Ring buffer attachment requires passing the SAB pointer
         // into WASM memory. For Phase 0-1, the ring buffer consumer
         // reads directly from the SAB. Full integration with
         // engine_attach_ring_buffer requires wasm-bindgen SharedArrayBuffer
         // support, which will be completed in Phase 2.
+        void commandBufferRef;
+        void HEADER_SIZE;
 
         self.postMessage({ type: "ready" });
       } catch (e) {
