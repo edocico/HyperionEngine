@@ -23,6 +23,9 @@ interface WasmEngine {
   engine_gpu_entity_count(): number;
   engine_gpu_data_ptr(): number;
   engine_gpu_data_f32_len(): number;
+  // Texture layer indices (1 u32 per entity)
+  engine_gpu_tex_indices_ptr(): number;
+  engine_gpu_tex_indices_len(): number;
   memory: WebAssembly.Memory;
 }
 
@@ -77,16 +80,32 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       const count = wasm.engine_gpu_entity_count();
       const ptr = wasm.engine_gpu_data_ptr();
       const f32Len = wasm.engine_gpu_data_f32_len();
+      const texPtr = wasm.engine_gpu_tex_indices_ptr();
+      const texLen = wasm.engine_gpu_tex_indices_len();
       const tickCount = Number(wasm.engine_tick_count());
 
-      let renderState: { entityCount: number; entityData: ArrayBuffer } | null = null;
+      let renderState: { entityCount: number; entityData: ArrayBuffer; texIndices: ArrayBuffer } | null = null;
 
       if (count > 0 && ptr !== 0) {
         const wasmData = new Float32Array(wasm.memory.buffer, ptr, f32Len);
         // Copy to a transferable buffer (WASM memory can't be transferred).
         const transferBuf = new Float32Array(f32Len);
         transferBuf.set(wasmData);
-        renderState = { entityCount: count, entityData: transferBuf.buffer };
+
+        let texBuf: Uint32Array;
+        if (texPtr !== 0 && texLen > 0) {
+          const wasmTex = new Uint32Array(wasm.memory.buffer, texPtr, texLen);
+          texBuf = new Uint32Array(texLen);
+          texBuf.set(wasmTex);
+        } else {
+          texBuf = new Uint32Array(count);
+        }
+
+        renderState = {
+          entityCount: count,
+          entityData: transferBuf.buffer as ArrayBuffer,
+          texIndices: texBuf.buffer as ArrayBuffer,
+        };
       }
 
       if (renderState) {
@@ -97,7 +116,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
             tickCount,
             renderState,
           },
-          [renderState.entityData]  // Transfer ownership
+          [renderState.entityData, renderState.texIndices]
         );
       } else {
         self.postMessage({

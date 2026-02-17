@@ -11,6 +11,7 @@ const RING_BUFFER_CAPACITY = 64 * 1024; // 64KB command buffer
 export interface GPURenderState {
   entityCount: number;
   entityData: Float32Array;  // 20 floats per entity (mat4x4 + vec4 boundingSphere)
+  texIndices: Uint32Array;   // 1 u32 per entity (packed tier|layer)
 }
 
 /** @deprecated Use GPURenderState instead */
@@ -60,6 +61,7 @@ export function createWorkerBridge(
       latestRenderState = {
         entityCount: msg.renderState.entityCount,
         entityData: new Float32Array(msg.renderState.entityData),
+        texIndices: new Uint32Array(msg.renderState.texIndices),
       };
     }
   };
@@ -130,7 +132,7 @@ export function createFullIsolationBridge(
       // Forward render state to Render Worker.
       channel.port1.postMessage(
         { renderState: msg.renderState },
-        [msg.renderState.entityData]
+        [msg.renderState.entityData, msg.renderState.texIndices]
       );
     }
   };
@@ -201,6 +203,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_gpu_entity_count(): number;
     engine_gpu_data_ptr(): number;
     engine_gpu_data_f32_len(): number;
+    // Texture layer indices (1 u32 per entity)
+    engine_gpu_tex_indices_ptr(): number;
+    engine_gpu_tex_indices_len(): number;
     memory: WebAssembly.Memory;
   };
 
@@ -225,15 +230,21 @@ export async function createDirectBridge(): Promise<EngineBridge> {
       const count = engine.engine_gpu_entity_count();
       const ptr = engine.engine_gpu_data_ptr();
       const f32Len = engine.engine_gpu_data_f32_len();
+      const texPtr = engine.engine_gpu_tex_indices_ptr();
+      const texLen = engine.engine_gpu_tex_indices_len();
 
       if (count > 0 && ptr !== 0) {
         const wasmView = new Float32Array(engine.memory.buffer, ptr, f32Len);
+        const texView = texPtr !== 0
+          ? new Uint32Array(engine.memory.buffer, texPtr, texLen)
+          : new Uint32Array(count);
         latestRenderState = {
           entityCount: count,
           entityData: new Float32Array(wasmView),
+          texIndices: new Uint32Array(texView),
         };
       } else {
-        latestRenderState = { entityCount: 0, entityData: new Float32Array(0) };
+        latestRenderState = { entityCount: 0, entityData: new Float32Array(0), texIndices: new Uint32Array(0) };
       }
     },
     async ready() {
