@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (32 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (37 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -25,10 +25,10 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 # Run specific test groups
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (12 tests)
 cargo test -p hyperion-core engine           # Engine tests only (5 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (4 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (8 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (5 tests)
-cargo test -p hyperion-core systems          # Systems tests only (3 tests)
-cargo test -p hyperion-core components       # Component tests only (3 tests)
+cargo test -p hyperion-core systems          # Systems tests only (4 tests)
+cargo test -p hyperion-core components       # Component tests only (5 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (20 tests)
+cd ts && npm test                            # All vitest tests (33 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -57,9 +57,10 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 # Run specific test files
 cd ts && npx vitest run src/ring-buffer.test.ts        # Ring buffer producer (5 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts  # extractUnread helper (4 tests)
-cd ts && npx vitest run src/camera.test.ts             # Camera math (5 tests)
+cd ts && npx vitest run src/camera.test.ts             # Camera math + frustum (10 tests)
 cd ts && npx vitest run src/capabilities.test.ts       # Capability detection (4 tests)
-cd ts && npx vitest run src/integration.test.ts        # E2E integration (2 tests)
+cd ts && npx vitest run src/integration.test.ts        # E2E integration (3 tests)
+cd ts && npx vitest run src/frustum.test.ts            # Frustum culling accuracy (7 tests)
 ```
 
 ### Development Workflow
@@ -112,9 +113,9 @@ TS: RingBufferProducer.spawnEntity(id)  →  SharedArrayBuffer  →  Rust: RingB
                                                                        ↓
                                                                   transform_system()  →  ModelMatrix (GPU-ready)
                                                                        ↓
-                                                                  RenderState.collect()  →  model matrices buffer
+                                                                  RenderState.collect_gpu()  →  EntityGPUData buffer (20 f32/entity)
                                                                        ↓
-                                                                  TS: WebGPU renderer  →  GPU draw
+                                                                  TS: GPU compute cull  →  visibleIndices  →  drawIndexedIndirect
 ```
 
 Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The ring buffer binary protocol: `[cmd_type: u8][entity_id: u32 LE][payload: 0-16 bytes]`. Header is 16 bytes (write_head atomic, read_head atomic, capacity, padding), data region follows.
@@ -131,13 +132,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling) + `process_commands` |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum, `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `Active` — all `#[repr(C)]` Pod |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `Active` — all `#[repr(C)]` Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active` |
-| `render_state.rs` | Collects model matrices into contiguous GPU-uploadable buffer |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for EntityGPUData (mat4x4 + bounding sphere, 80B/entity) |
 
 ### TypeScript: ts/src/
 
@@ -148,15 +149,15 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C) |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame |
 | `main.ts` | Entry point: detect capabilities → create bridge → requestAnimationFrame loop |
-| `renderer.ts` | WebGPU renderer: pipeline, buffers, instanced quad drawing |
-| `camera.ts` | Orthographic camera with view-projection matrix |
-| `render-worker.ts` | Mode A render worker: OffscreenCanvas + WebGPU pipeline |
-| `shaders/basic.wgsl` | Instanced colored quad WGSL shader |
+| `renderer.ts` | GPU-driven renderer: compute culling pipeline + indirect draw + Texture2DArray |
+| `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
+| `render-worker.ts` | Mode A render worker: OffscreenCanvas + GPU-driven pipeline |
+| `shaders/basic.wgsl` | Render shader with visibility indirection + texture array sampling |
+| `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling, atomicAdd for indirect draw |
 | `vite-env.d.ts` | Type declarations for WGSL ?raw imports and Vite client |
 
 ## Gotchas
 
-- **Ring buffer SAB not yet attached to WASM memory** — `engine_worker.ts` stores the SAB ref but doesn't call `engine_attach_ring_buffer()`. Commands aren't flowing TS→Rust in the Worker yet. Phase 2 will complete this.
 - **hecs 0.11 `query_mut`** returns component tuples directly, NOT `(Entity, components)`. Use `for (pos, vel) in world.query_mut::<(&mut Position, &Velocity)>()`.
 - **Rust `u64` → JS `BigInt`** via wasm-bindgen. Wrap with `Number()` on TS side (safe for values < 2^53).
 - **`wasm-bindgen` can't export `unsafe fn`** — use `#[allow(clippy::not_unsafe_ptr_arg_deref)]` for functions taking raw pointers.
@@ -164,6 +165,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Public types with parameterless `new()`** must also impl `Default` (Clippy `new_without_default`).
 - **`wasm-pack --out-dir`** is relative to the crate directory, not the workspace root.
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
+- **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
+- **`extractFrustumPlanesInternal` duplicated** — both `renderer.ts` and `render-worker.ts` have local copies of frustum extraction to avoid import issues in worker context. Keep both in sync.
 
 ## Conventions
 
@@ -177,10 +180,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-2 are complete. The architecture design doc is at `docs/plans/2026-02-17-hyperion-engine-design.md`. Phase 3 (GPU-Driven Pipeline) is next.
+Phases 0-3 are complete. The architecture design doc is at `docs/plans/2026-02-17-hyperion-engine-design.md`. Phase 4 (Asset Pipeline & Textures) is next.
 
 ## Documentation
 
 - `PROJECT_ARCHITECTURE.md` — Deep technical architecture doc (algorithms, data structures, protocol details, design rationale). Reference for onboarding and implementation decisions.
 - `docs/plans/2026-02-17-hyperion-engine-design.md` — Full vision design doc (all 8 phases). Reference for future phase implementation.
 - `docs/plans/2026-02-17-hyperion-engine-phase0-phase1.md` — Phase 0-1 implementation plan (completed). Shows task-by-task build sequence.
+- `docs/plans/2026-02-17-hyperion-engine-phase3.md` — Phase 3 implementation plan (completed). GPU-driven pipeline with compute culling.
