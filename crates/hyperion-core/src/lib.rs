@@ -149,6 +149,30 @@ pub fn engine_gpu_entity_count() -> u32 {
     }
 }
 
+/// Pointer to the texture layer indices buffer (one u32 per entity).
+/// Indices are parallel to the GPU entity data buffer — index i here
+/// corresponds to entity i in engine_gpu_data_ptr().
+#[wasm_bindgen]
+pub fn engine_gpu_tex_indices_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded; only one caller at a time.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_tex_indices_ptr())
+    }
+}
+
+/// Number of u32 values in the texture indices buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_tex_indices_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_tex_indices_len())
+    }
+}
+
 /// Smoke test.
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
