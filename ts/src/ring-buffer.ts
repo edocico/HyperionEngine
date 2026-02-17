@@ -10,6 +10,7 @@ export const enum CommandType {
   SetRotation = 4,
   SetScale = 5,
   SetVelocity = 6,
+  SetTextureLayer = 7,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -21,6 +22,7 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetRotation]: 16,
   [CommandType.SetScale]: 12,
   [CommandType.SetVelocity]: 12,
+  [CommandType.SetTextureLayer]: 4,
 };
 
 export class RingBufferProducer {
@@ -105,6 +107,13 @@ export class RingBufferProducer {
 
   despawnEntity(entityId: number): boolean {
     return this.writeCommand(CommandType.DespawnEntity, entityId);
+  }
+
+  setTextureLayer(entityId: number, packedIndex: number): boolean {
+    const payload = new Float32Array(1);
+    // Write the u32 as raw bytes into a Float32Array (reinterpret, not convert)
+    new Uint32Array(payload.buffer)[0] = packedIndex;
+    return this.writeCommand(CommandType.SetTextureLayer, entityId, payload);
   }
 }
 

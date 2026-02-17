@@ -26,6 +26,19 @@ describe("Integration: Ring Buffer Protocol", () => {
   });
 });
 
+describe("Integration: SetTextureLayer Binary Format", () => {
+  it("SetTextureLayer command has correct binary format", () => {
+    const sab = new SharedArrayBuffer(16 + 128);
+    const rb = new RingBufferProducer(sab);
+
+    rb.spawnEntity(0);           // 5 bytes (offset 0)
+    rb.setTextureLayer(0, 42);   // 9 bytes (offset 5)
+
+    const data = new Uint8Array(sab, 16, 128);
+    expect(data[5]).toBe(7); // CommandType.SetTextureLayer at offset 5
+  });
+});
+
 describe("Integration: Mode Selection", () => {
   it("degrades gracefully across all combinations", () => {
     const full: Capabilities = {

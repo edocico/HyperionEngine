@@ -71,4 +71,30 @@ describe("RingBufferProducer", () => {
     rb.despawnEntity(3);
     expect(getWriteHead(sab)).toBe(15);
   });
+
+  it("writes SetTextureLayer command with u32 payload", () => {
+    const sab = new SharedArrayBuffer(16 + 128);
+    const rb = new RingBufferProducer(sab);
+
+    const packed = (2 << 16) | 10; // tier 2, layer 10
+    const ok = rb.setTextureLayer(5, packed);
+    expect(ok).toBe(true);
+
+    // Message: 1 (cmd) + 4 (entity_id) + 4 (u32 payload) = 9 bytes
+    const header = new Int32Array(sab, 0, 4);
+    const writeHead = Atomics.load(header, 0);
+    expect(writeHead).toBe(9);
+
+    // Verify command type
+    const data = new Uint8Array(sab, 16, 128);
+    expect(data[0]).toBe(7); // CommandType.SetTextureLayer
+
+    // Verify entity ID = 5
+    const entityId = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+    expect(entityId).toBe(5);
+
+    // Verify packed payload
+    const payload = data[5] | (data[6] << 8) | (data[7] << 16) | (data[8] << 24);
+    expect(payload).toBe(packed);
+  });
 });
