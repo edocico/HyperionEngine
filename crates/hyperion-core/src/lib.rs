@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 
+pub mod components;
 pub mod ring_buffer;
 
 /// Smoke-test export: returns a + b.
