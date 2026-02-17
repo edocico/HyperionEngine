@@ -75,7 +75,7 @@ export class TextureManager {
     this._sampler = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
-      mipmapFilter: "linear",
+      mipmapFilter: "nearest",
     });
 
     for (let tier = 0; tier < NUM_TIERS; tier++) {

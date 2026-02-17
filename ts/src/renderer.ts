@@ -79,6 +79,7 @@ export async function createRenderer(
   });
 
   // --- Cull Uniforms ---
+  // 6 frustum planes (96 bytes) + u32 entityCount + padding (16 bytes) = 112 bytes
   const CULL_UNIFORM_SIZE = 6 * 16 + 16;
   const cullUniformBuffer = device.createBuffer({
     size: CULL_UNIFORM_SIZE,

@@ -15,6 +15,7 @@ import { createRenderer, type Renderer } from "./renderer";
 
 const camera = new Camera();
 let renderer: Renderer | null = null;
+let offscreenCanvas: OffscreenCanvas | null = null;
 
 interface RenderState {
   entityCount: number;
@@ -29,14 +30,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   if (msg.type === "init") {
     try {
-      const canvas = msg.canvas as OffscreenCanvas;
+      offscreenCanvas = msg.canvas as OffscreenCanvas;
       const width = msg.width as number;
       const height = msg.height as number;
 
-      canvas.width = width;
-      canvas.height = height;
+      offscreenCanvas.width = width;
+      offscreenCanvas.height = height;
 
-      renderer = await createRenderer(canvas);
+      renderer = await createRenderer(offscreenCanvas);
 
       const aspect = width / height;
       camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
@@ -55,6 +56,10 @@ self.onmessage = async (event: MessageEvent) => {
   } else if (msg.type === "resize") {
     const width = msg.width as number;
     const height = msg.height as number;
+    if (offscreenCanvas) {
+      offscreenCanvas.width = width;
+      offscreenCanvas.height = height;
+    }
     const aspect = width / height;
     camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
   }
