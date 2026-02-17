@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 
+pub mod command_processor;
 pub mod components;
 pub mod ring_buffer;
 pub mod systems;
