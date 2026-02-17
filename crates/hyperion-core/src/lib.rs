@@ -115,6 +115,40 @@ pub fn engine_render_state_f32_len() -> u32 {
     }
 }
 
+/// Pointer to the GPU entity data buffer (20 f32s per entity).
+/// Layout: [model: 16xf32, boundingSphere: 4xf32] x N entities.
+#[wasm_bindgen]
+pub fn engine_gpu_data_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded; only one caller at a time.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_buffer_ptr())
+    }
+}
+
+/// Number of floats in the GPU entity data buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_data_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_buffer_f32_len())
+    }
+}
+
+/// Number of entities in the GPU data buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_entity_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_entity_count())
+    }
+}
+
 /// Smoke test.
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
