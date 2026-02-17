@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+pub mod ring_buffer;
+
 /// Smoke-test export: returns a + b.
 /// This validates the full WASM build pipeline.
 #[wasm_bindgen]
