@@ -4,3 +4,6 @@ ts/wasm/
 ts/dist/
 *.swp
 .DS_Store
+firebase-debug.log
+*.docx
+.playwright-mcp/

@@ -167,6 +167,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
 - **`extractFrustumPlanesInternal` duplicated** — both `renderer.ts` and `render-worker.ts` have local copies of frustum extraction to avoid import issues in worker context. Keep both in sync.
+- **WebGPU can't be tested in headless browsers** — Playwright/Puppeteer headless mode has no GPU adapter. `requestAdapter()` returns null. Visual WebGPU testing requires a real browser with GPU acceleration (e.g., `npm run dev` → open Chrome).
+- **Depth texture not recreated on resize** — `renderer.ts` creates the depth texture once at initialization. If the canvas resizes, the depth texture dimensions won't match the render target. This needs fixing in a future phase.
 
 ## Conventions
 
