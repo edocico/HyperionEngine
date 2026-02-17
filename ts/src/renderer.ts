@@ -76,6 +76,48 @@ export async function createRenderer(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // --- Texture2DArray: 8 layers of 4×4 solid colors ---
+  const TEX_LAYERS = 8;
+  const TEX_SIZE = 4;
+  const textureArray = device.createTexture({
+    size: { width: TEX_SIZE, height: TEX_SIZE, depthOrArrayLayers: TEX_LAYERS },
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+
+  const colors: [number, number, number, number][] = [
+    [230, 57, 70, 255],    // Red
+    [244, 162, 97, 255],   // Orange
+    [233, 196, 106, 255],  // Yellow
+    [42, 157, 143, 255],   // Teal
+    [38, 70, 83, 255],     // Dark Teal
+    [69, 123, 157, 255],   // Blue
+    [168, 218, 220, 255],  // Light Blue
+    [241, 250, 238, 255],  // Off-White
+  ];
+
+  for (let layer = 0; layer < TEX_LAYERS; layer++) {
+    const data = new Uint8Array(TEX_SIZE * TEX_SIZE * 4);
+    const [r, g, b, a] = colors[layer];
+    for (let i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
+      data[i * 4 + 0] = r;
+      data[i * 4 + 1] = g;
+      data[i * 4 + 2] = b;
+      data[i * 4 + 3] = a;
+    }
+    device.queue.writeTexture(
+      { texture: textureArray, origin: { x: 0, y: 0, z: layer } },
+      data,
+      { bytesPerRow: TEX_SIZE * 4, rowsPerImage: TEX_SIZE },
+      { width: TEX_SIZE, height: TEX_SIZE, depthOrArrayLayers: 1 },
+    );
+  }
+
+  const texSampler = device.createSampler({
+    magFilter: "nearest",
+    minFilter: "nearest",
+  });
+
   // --- Depth Texture ---
   let depthTexture = createDepthTexture(device, canvas.width, canvas.height);
 
@@ -110,6 +152,8 @@ export async function createRenderer(
       { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: "2d-array" } },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
     ],
   });
   const renderPipeline = device.createRenderPipeline({
@@ -140,6 +184,8 @@ export async function createRenderer(
       { binding: 0, resource: { buffer: cameraBuffer } },
       { binding: 1, resource: { buffer: entityBuffer } },
       { binding: 2, resource: { buffer: visibleIndicesBuffer } },
+      { binding: 3, resource: textureArray.createView({ dimension: "2d-array" }) },
+      { binding: 4, resource: texSampler },
     ],
   });
 
@@ -214,6 +260,7 @@ export async function createRenderer(
       visibleIndicesBuffer.destroy();
       indirectBuffer.destroy();
       cullUniformBuffer.destroy();
+      textureArray.destroy();
       depthTexture.destroy();
       device.destroy();
     },

@@ -12,11 +12,14 @@ struct EntityData {
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 @group(0) @binding(1) var<storage, read> entities: array<EntityData>;
 @group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
+@group(0) @binding(3) var texArray: texture_2d_array<f32>;
+@group(0) @binding(4) var texSampler: sampler;
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
     @location(0) color: vec4f,
     @location(1) uv: vec2f,
+    @location(2) @interpolate(flat) entityIdx: u32,
 };
 
 @vertex
@@ -40,10 +43,14 @@ fn vs_main(
     // UV for future texture sampling
     out.uv = position.xy + 0.5;
 
+    out.entityIdx = entityIdx;
+
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return in.color;
+    let layer = in.entityIdx % 8u;
+    let texColor = textureSample(texArray, texSampler, in.uv, layer);
+    return mix(in.color, texColor, 0.6);
 }
