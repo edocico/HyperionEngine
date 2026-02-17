@@ -26,16 +26,43 @@ describe("Integration: Ring Buffer Protocol", () => {
   });
 });
 
-describe("Integration: SetTextureLayer Binary Format", () => {
-  it("SetTextureLayer command has correct binary format", () => {
+describe("Integration: Texture Layer Index Pipeline", () => {
+  it("SetTextureLayer command binary matches Rust format", () => {
     const sab = new SharedArrayBuffer(16 + 128);
     const rb = new RingBufferProducer(sab);
 
-    rb.spawnEntity(0);           // 5 bytes (offset 0)
-    rb.setTextureLayer(0, 42);   // 9 bytes (offset 5)
+    rb.spawnEntity(0);                           // 5 bytes
+    rb.setTextureLayer(0, (2 << 16) | 42);      // 9 bytes
+
+    const header = new Int32Array(sab, 0, 4);
+    const writeHead = Atomics.load(header, 0);
+    expect(writeHead).toBe(14); // 5 + 9
 
     const data = new Uint8Array(sab, 16, 128);
-    expect(data[5]).toBe(7); // CommandType.SetTextureLayer at offset 5
+
+    // SpawnEntity at offset 0
+    expect(data[0]).toBe(1);
+
+    // SetTextureLayer at offset 5
+    expect(data[5]).toBe(7); // CommandType.SetTextureLayer
+
+    // Entity ID = 0 at offset 6-9
+    const entityId = data[6] | (data[7] << 8) | (data[8] << 16) | (data[9] << 24);
+    expect(entityId).toBe(0);
+
+    // Packed value at offset 10-13
+    const packed = data[10] | (data[11] << 8) | (data[12] << 16) | (data[13] << 24);
+    expect(packed).toBe((2 << 16) | 42);
+  });
+
+  it("GPURenderState includes texIndices field", () => {
+    const state: import("./worker-bridge").GPURenderState = {
+      entityCount: 1,
+      entityData: new Float32Array(20),
+      texIndices: new Uint32Array([0]),
+    };
+    expect(state.texIndices.length).toBe(1);
+    expect(state.entityCount).toBe(1);
   });
 });
 
