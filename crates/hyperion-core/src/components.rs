@@ -32,6 +32,14 @@ pub struct Velocity(pub Vec3);
 #[repr(C)]
 pub struct ModelMatrix(pub [f32; 16]);
 
+/// Packed texture layer index for per-entity texture lookup.
+/// Encoding: `(tier << 16) | layer` where tier selects which Texture2DArray
+/// and layer selects which slice within it.
+/// Default 0 = tier 0, layer 0 (white fallback).
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+#[repr(C)]
+pub struct TextureLayerIndex(pub u32);
+
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
@@ -118,5 +126,30 @@ mod tests {
         let b = BoundingRadius(1.0);
         let bytes = bytemuck::bytes_of(&b);
         assert_eq!(bytes.len(), 4);
+    }
+
+    #[test]
+    fn default_texture_layer_index_is_zero() {
+        let t = TextureLayerIndex::default();
+        assert_eq!(t.0, 0);
+    }
+
+    #[test]
+    fn texture_layer_index_is_pod() {
+        let t = TextureLayerIndex(0x0002_0005); // tier 2, layer 5
+        let bytes = bytemuck::bytes_of(&t);
+        assert_eq!(bytes.len(), 4);
+        let roundtrip = u32::from_le_bytes(bytes.try_into().unwrap());
+        assert_eq!(roundtrip, 0x0002_0005);
+    }
+
+    #[test]
+    fn texture_layer_index_pack_unpack() {
+        let tier: u32 = 3;
+        let layer: u32 = 42;
+        let packed = (tier << 16) | layer;
+        let t = TextureLayerIndex(packed);
+        assert_eq!(t.0 >> 16, 3);      // tier
+        assert_eq!(t.0 & 0xFFFF, 42);  // layer
     }
 }
