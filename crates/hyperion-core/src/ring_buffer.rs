@@ -77,6 +77,52 @@ pub struct Command {
 }
 
 // ---------------------------------------------------------------------------
+// parse_commands (flat byte-slice parser)
+// ---------------------------------------------------------------------------
+
+/// Parse commands from a flat byte slice.
+///
+/// This is the non-circular counterpart to `RingBufferConsumer::drain()`.
+/// Used when the Worker extracts bytes from the SharedArrayBuffer and passes
+/// them to WASM as a contiguous `&[u8]`.
+pub fn parse_commands(data: &[u8]) -> Vec<Command> {
+    let mut commands = Vec::new();
+    let mut pos = 0;
+
+    while pos < data.len() {
+        let cmd_byte = data[pos];
+        let Some(cmd_type) = CommandType::from_u8(cmd_byte) else {
+            break;
+        };
+
+        let msg_size = cmd_type.message_size();
+        if pos + msg_size > data.len() {
+            break;
+        }
+
+        let mut id_bytes = [0u8; 4];
+        id_bytes.copy_from_slice(&data[pos + 1..pos + 5]);
+        let entity_id = u32::from_le_bytes(id_bytes);
+
+        let mut payload = [0u8; 16];
+        let psize = cmd_type.payload_size();
+        if psize > 0 {
+            payload[..psize].copy_from_slice(&data[pos + 5..pos + 5 + psize]);
+        }
+
+        commands.push(Command {
+            cmd_type,
+            entity_id,
+            payload,
+        });
+
+        pos += msg_size;
+    }
+
+    commands
+}
+
+// ---------------------------------------------------------------------------
 // RingBufferConsumer
 // ---------------------------------------------------------------------------
 
@@ -372,6 +418,71 @@ mod tests {
         assert_eq!(commands[2].cmd_type, CommandType::SetScale);
         assert_eq!(commands[2].entity_id, 3);
     }
+
+    // -- parse_commands tests ------------------------------------------------
+
+    #[test]
+    fn parse_commands_reads_spawn() {
+        let mut data = Vec::new();
+        data.push(CommandType::SpawnEntity as u8);
+        data.extend_from_slice(&42u32.to_le_bytes());
+
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SpawnEntity);
+        assert_eq!(cmds[0].entity_id, 42);
+    }
+
+    #[test]
+    fn parse_commands_reads_position_payload() {
+        let mut data = Vec::new();
+        data.push(CommandType::SetPosition as u8);
+        data.extend_from_slice(&7u32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&2.0f32.to_le_bytes());
+        data.extend_from_slice(&3.0f32.to_le_bytes());
+
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].entity_id, 7);
+        let x = f32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        let y = f32::from_le_bytes(cmds[0].payload[4..8].try_into().unwrap());
+        let z = f32::from_le_bytes(cmds[0].payload[8..12].try_into().unwrap());
+        assert_eq!((x, y, z), (1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn parse_commands_reads_multiple() {
+        let mut data = Vec::new();
+        // Spawn entity 1
+        data.push(CommandType::SpawnEntity as u8);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        // Despawn entity 2
+        data.push(CommandType::DespawnEntity as u8);
+        data.extend_from_slice(&2u32.to_le_bytes());
+
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].entity_id, 1);
+        assert_eq!(cmds[1].cmd_type, CommandType::DespawnEntity);
+        assert_eq!(cmds[1].entity_id, 2);
+    }
+
+    #[test]
+    fn parse_commands_handles_incomplete() {
+        // Only 3 bytes — not enough for a full command (need 5 minimum)
+        let data = vec![CommandType::SpawnEntity as u8, 0, 0];
+        let cmds = parse_commands(&data);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn parse_commands_handles_empty() {
+        let cmds = parse_commands(&[]);
+        assert!(cmds.is_empty());
+    }
+
+    // -- drain tests (continued) ----------------------------------------------
 
     #[test]
     fn drain_advances_read_head() {
