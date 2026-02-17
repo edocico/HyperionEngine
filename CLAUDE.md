@@ -83,6 +83,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Gotchas
 
+- **Ring buffer SAB not yet attached to WASM memory** — `engine_worker.ts` stores the SAB ref but doesn't call `engine_attach_ring_buffer()`. Commands aren't flowing TS→Rust in the Worker yet. Phase 2 will complete this.
 - **hecs 0.11 `query_mut`** returns component tuples directly, NOT `(Entity, components)`. Use `for (pos, vel) in world.query_mut::<(&mut Position, &Velocity)>()`.
 - **Rust `u64` → JS `BigInt`** via wasm-bindgen. Wrap with `Number()` on TS side (safe for values < 2^53).
 - **`wasm-bindgen` can't export `unsafe fn`** — use `#[allow(clippy::not_unsafe_ptr_arg_deref)]` for functions taking raw pointers.
@@ -102,3 +103,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 ## Implementation Status
 
 Phases 0-1 are complete. The architecture design doc is at `docs/plans/2026-02-17-hyperion-engine-design.md`. Phase 2 (Render Core with wgpu + WebGPU) is next.
+
+## Documentation
+
+- `PROJECT_ARCHITECTURE.md` — Deep technical architecture doc (algorithms, data structures, protocol details, design rationale). Reference for onboarding and implementation decisions.
+- `docs/plans/2026-02-17-hyperion-engine-design.md` — Full vision design doc (all 8 phases). Reference for future phase implementation.
+- `docs/plans/2026-02-17-hyperion-engine-phase0-phase1.md` — Phase 0-1 implementation plan (completed). Shows task-by-task build sequence.
