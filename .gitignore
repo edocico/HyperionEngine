@@ -1,0 +1,6 @@
+target/
+ts/node_modules/
+ts/wasm/
+ts/dist/
+*.swp
+.DS_Store
