@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-17 | **Versione**: 0.1.0 (Phase 0-1 completate) | **22 test Rust across 5 moduli + 11 test TypeScript across 3 file**
+> **Ultimo aggiornamento**: 2026-02-17 | **Versione**: 0.2.0 (Phase 0-2 completate) | **32 test Rust across 6 moduli + 20 test TypeScript across 5 file**
 
 ---
 
@@ -8,18 +8,17 @@
 
 ### Scopo
 
-Hyperion e un **game engine web general-purpose** che punta a performance di livello nativo dentro il browser. La simulazione ECS gira in Rust compilato a WebAssembly, la comunicazione tra TypeScript e WASM avviene tramite un ring buffer lock-free su SharedArrayBuffer, e il rendering (Phase 2+) sara affidato a WebGPU con GPU-Driven Rendering via WGSL Compute Shaders.
+Hyperion e un **game engine web general-purpose** che punta a performance di livello nativo dentro il browser. La simulazione ECS gira in Rust compilato a WebAssembly, la comunicazione tra TypeScript e WASM avviene tramite un ring buffer lock-free su SharedArrayBuffer, e il rendering e gestito da TypeScript via WebGPU con instanced draw calls e WGSL shaders.
 
 L'obiettivo architetturale primario e la **separazione fisica** tra UI, logica di simulazione e rendering: tre thread indipendenti che comunicano senza lock, con degradazione automatica a single-thread quando il browser non supporta le API necessarie.
 
 ### Cosa NON fa (attualmente)
 
-- Non esegue rendering (Phase 2 non ancora implementata)
 - Non gestisce asset (texture, audio, mesh) — Phase 4+
 - Non espone una API utente ad alto livello (Phase 5)
 - Non supporta networking o multiplayer
 - Non compila con SIMD128 attivo (richiede flag target-feature specifici per wasm-pack)
-- Non implementa ancora il collegamento ring buffer SAB → WASM memory (richiede `wasm-bindgen` SharedArrayBuffer support — Phase 2)
+- Non implementa GPU-Driven Rendering (compute culling, indirect draw) — Phase 3
 
 ### Design Principle: "Command Buffer Architecture"
 
@@ -59,6 +58,7 @@ Questo elimina due problemi critici:
 | **TypeScript** (ES2022, strict) | Browser integration | Type safety per la API di coordinamento (Worker messages, ring buffer protocol), moduli ESM nativi |
 | **Vite** 6.x | Dev server + bundler | Hot reload, supporto Worker ESM nativo, header COOP/COEP configurabili per SharedArrayBuffer |
 | **`vitest`** 4.x | Test runner TypeScript | Compatibile con SharedArrayBuffer e Atomics in ambiente Node.js (critico per testare il ring buffer) |
+| **`@webgpu/types`** | Type definitions WebGPU | TypeScript type declarations per l'API WebGPU (`GPUDevice`, `GPURenderPipeline`, etc.). Richiede cast `Float32Array<ArrayBuffer>` per `writeBuffer` |
 | **`wasm-pack`** | Build pipeline Rust → WASM | Genera JS glue code + `.wasm` binary + `.d.ts` types in un singolo comando |
 
 ### Perche hecs e non bevy_ecs?
@@ -177,7 +177,8 @@ HyperionEngine/
 │           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum
 │           ├── components.rs           # Position, Rotation, Scale, Velocity, ModelMatrix, Active
 │           │                           #   — tutti #[repr(C)] Pod per GPU upload
-│           └── systems.rs              # velocity_system, transform_system, count_active
+│           ├── systems.rs              # velocity_system, transform_system, count_active
+│           └── render_state.rs         # RenderState: collects model matrices into contiguous buffer
 └── ts/
     ├── package.json                    # Scripts: dev, build, build:wasm, test
     ├── tsconfig.json                   # strict, ES2022, bundler moduleResolution
@@ -191,6 +192,14 @@ HyperionEngine/
         ├── ring-buffer.test.ts         # 5 test: write/read/overflow/sequential
         ├── worker-bridge.ts            # EngineBridge interface, createWorkerBridge(), createDirectBridge()
         ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch
+        ├── renderer.ts                 # WebGPU renderer: pipeline, buffers, instanced quad drawing
+        ├── camera.ts                   # Orthographic camera with view-projection matrix
+        ├── camera.test.ts              # 5 test: camera construction, projection, NDC mapping
+        ├── render-worker.ts            # Mode A render worker: OffscreenCanvas + WebGPU pipeline
+        ├── ring-buffer-utils.test.ts   # 4 test: ring buffer utility functions
+        ├── vite-env.d.ts               # Type declarations for WGSL ?raw imports and Vite client
+        ├── shaders/
+        │   └── basic.wgsl              # Instanced colored quad WGSL shader
         └── integration.test.ts         # 2 test: binary protocol validation + graceful degradation
 ```
 
@@ -271,6 +280,25 @@ HyperionEngine/
     │  │        scale.0, rot.0, pos.0)                │   │
     │  │    matrix.0 = m.to_cols_array()              │   │
     │  │  Output: ModelMatrix — GPU-ready [f32; 16]   │   │
+    │  └──────────────────────────────────────────────┘   │
+    │                      │                             │
+    │                      ▼                             │
+    │  ┌─── Phase 5: Render State Collection ──────-┐   │
+    │  │  RenderState::collect(&world)               │   │
+    │  │    for (matrix, _active) in query:          │   │
+    │  │      buffer.extend_from_slice(&matrix.0)    │   │
+    │  │  Output: contiguous [f32] buffer + count    │   │
+    │  └──────────────────────────────────────────────┘   │
+    └────────────────────────────────────────────────────┘
+                               │
+                               ▼
+              RENDER THREAD (o Main Thread in Mode B/C)
+    ┌────────────────────────────────────────────────────┐
+    │  ┌─── Phase 6: GPU Draw ─────────────────────-┐   │
+    │  │  renderer.render(modelMatrices, camera)     │   │
+    │  │    writeBuffer(instanceBuffer, matrices)    │   │
+    │  │    writeBuffer(uniformBuffer, viewProj)     │   │
+    │  │    renderPass.draw(6, instanceCount)        │   │
     │  └──────────────────────────────────────────────┘   │
     └────────────────────────────────────────────────────┘
 ```
@@ -560,7 +588,7 @@ L'Engine e il **Mediator** che coordina tutti i sottosistemi. Non e un singleton
 
 **File**: `crates/hyperion-core/src/lib.rs`
 
-Il layer WASM espone 4 funzioni esterne + 1 smoke test:
+Il layer WASM espone 6 funzioni esterne + 1 smoke test:
 
 ```rust
 static mut ENGINE: Option<Engine> = None;
@@ -568,8 +596,11 @@ static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 
 #[wasm_bindgen] pub fn engine_init()
 #[wasm_bindgen] pub fn engine_attach_ring_buffer(ptr: *mut u8, capacity: usize)
+#[wasm_bindgen] pub fn engine_push_commands(ptr: *const u8, len: usize)
 #[wasm_bindgen] pub fn engine_update(dt: f32)
 #[wasm_bindgen] pub fn engine_tick_count() -> u64
+#[wasm_bindgen] pub fn engine_get_render_state() -> *const f32  // puntatore al buffer model matrices
+#[wasm_bindgen] pub fn engine_get_render_count() -> u32         // numero di entita attive
 #[wasm_bindgen] pub fn add(a: i32, b: i32) -> i32  // smoke test
 ```
 
@@ -619,12 +650,15 @@ postMessage({type:"tick-done", dt, tickCount})
 | `tick` | Main → Worker | `{ dt: number }` | Richiede un frame update |
 | `tick-done` | Worker → Main | `{ dt, tickCount }` | Conferma completamento frame |
 
-### Stato Attuale del Ring Buffer nel Worker
+### Stato del Ring Buffer nel Worker
 
-Il collegamento ring buffer SAB → WASM non e ancora completato. Attualmente il Worker:
-1. Riceve il SAB e lo conserva in `commandBufferRef`
-2. Chiama `engine_update(dt)` che internamente crea un `Vec::new()` vuoto (nessun comando)
-3. L'attach di `engine_attach_ring_buffer` richiede il passaggio del puntatore SAB nella memoria lineare WASM, che necessita di supporto `wasm-bindgen` per SharedArrayBuffer (previsto Phase 2)
+Il collegamento ring buffer SAB → WASM e stato completato in Phase 2 tramite il pattern `engine_push_commands`:
+
+1. Il Worker riceve il SAB durante `init` e lo conserva in `commandBufferRef`
+2. Prima di ogni `engine_update(dt)`, il Worker legge i comandi dal SAB e li serializza nella memoria lineare WASM via `engine_push_commands(ptr, len)`
+3. `engine_update(dt)` consuma i comandi dal buffer interno e processa la simulazione
+
+Questo evita il problema di passare un puntatore SAB direttamente nella memoria lineare WASM (che `wasm-bindgen` non supporta nativamente per SharedArrayBuffer). Il Worker funge da intermediario: legge dal SAB con `DataView`, poi scrive nella memoria WASM con `Uint8Array`.
 
 ---
 
@@ -649,10 +683,17 @@ Il collegamento ring buffer SAB → WASM non e ancora completato. Attualmente il
 ║  ring_buffer.rs → RingBufferConsumer (AtomicU32, raw ptr)     ║
 ║  SharedArrayBuffer: [header 16B][data region]                 ║
 +═══════════════════════════════════════════════════════════════+
+║                    Render Layer (TS + WebGPU)                  ║
+║  renderer.ts     → GPUDevice, pipeline, instanced draw calls  ║
+║  camera.ts       → Orthographic projection, view-proj uniform  ║
+║  render-worker.ts → Mode A: OffscreenCanvas + WebGPU pipeline  ║
+║  shaders/basic.wgsl → Instanced colored quad WGSL shader      ║
++═══════════════════════════════════════════════════════════════+
 ║                   Simulation Layer (Rust/WASM)                ║
 ║  lib.rs       → WASM exports (engine_init, engine_update)     ║
 ║  engine.rs    → Fixed-timestep accumulator, tick loop         ║
 ║  command_processor.rs → EntityMap + process_commands()         ║
+║  render_state.rs → RenderState: model matrices collection     ║
 +═══════════════════════════════════════════════════════════════+
 ║                     ECS Layer (Rust)                          ║
 ║  components.rs → Position, Rotation, Scale, Velocity, etc.   ║
@@ -669,9 +710,216 @@ Ogni strato dipende solo dallo strato immediatamente inferiore. I componenti ECS
 
 ---
 
-## 10. Testing
+## 10. Pipeline di Rendering (Phase 2)
 
-### Struttura (22 test Rust across 5 moduli + 11 test TypeScript across 3 file)
+### Scelta Architetturale: WebGPU da TypeScript, non Rust wgpu
+
+La scelta di gestire il rendering interamente da TypeScript con l'API WebGPU nativa del browser, invece di compilare `wgpu` (la libreria Rust) a WASM, e motivata da tre fattori:
+
+1. **Binary bloat**: `wgpu` compilato a WASM aggiunge ~1MB al `.wasm` compresso. La API WebGPU del browser e gia disponibile nativamente — wrappare la stessa API con un layer Rust e puro overhead.
+2. **Accesso diretto**: TypeScript ha accesso diretto a `navigator.gpu`, `GPUDevice`, `GPUBuffer`, `GPURenderPipeline` senza FFI. Ogni chiamata Rust→JS per operazioni GPU attraverserebbe il boundary WASM inutilmente.
+3. **Ecosistema shader**: WGSL e il linguaggio shader nativo di WebGPU. Caricare shader `.wgsl` da TypeScript via Vite `?raw` e zero-overhead. Da Rust, servirebbe un meccanismo di embedding o di passaggio stringa attraverso FFI.
+
+La separazione e netta: Rust/WASM produce dati GPU-ready (model matrices come `[f32; 16]` contigui), TypeScript li uploada nella GPU e gestisce l'intera pipeline di rendering.
+
+### Architettura del Renderer
+
+**File**: `ts/src/renderer.ts`
+
+Il renderer segue un pattern **stateless per frame**: ogni frame riceve i dati da disegnare, li uploada nei buffer GPU e lancia le draw calls. Non mantiene stato inter-frame oltre le risorse GPU allocate all'init.
+
+```
+                        renderer.render(matrices, count, camera)
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+            writeBuffer()    writeBuffer()    beginRenderPass()
+            (instance buf)   (uniform buf)         │
+            model matrices   viewProj mat          ▼
+                                              draw(6, count)
+                                              (6 vertices × count instances)
+                                                   │
+                                                   ▼
+                                              endRenderPass()
+                                              queue.submit()
+```
+
+**Pipeline di rendering**:
+
+| Stadio | Descrizione |
+|---|---|
+| **Vertex shader** | Genera quad 2D da vertex index (triangle strip 2×3). Applica `modelMatrix` (per-instance) e `viewProjection` (uniforme globale) |
+| **Fragment shader** | Colora il quad con il colore dall'instance buffer (per-instance color) |
+| **Depth** | Depth test abilitato (formato `depth24plus`), clear a 1.0. WebGPU usa range depth 0.0–1.0 (non -1..1 come OpenGL) |
+| **Blend** | Alpha blending standard: `src × srcAlpha + dst × (1 - srcAlpha)` |
+
+**Buffer layout**:
+
+| Buffer | Tipo | Contenuto | Aggiornamento |
+|---|---|---|---|
+| Instance buffer | `GPUBuffer (vertex)` | `[mat4×4, vec4 color]` × N entita | Ogni frame via `writeBuffer` |
+| Uniform buffer | `GPUBuffer (uniform)` | `mat4×4 viewProjection` | Ogni frame via `writeBuffer` |
+| Depth texture | `GPUTexture` | `depth24plus` | Creata all'init, ricreata se canvas resize |
+
+### Architettura Shader (WGSL)
+
+**File**: `ts/src/shaders/basic.wgsl`
+
+Gli shader WGSL vivono in `ts/src/shaders/` e vengono caricati come stringhe al build time tramite Vite `?raw` imports:
+
+```typescript
+import shaderCode from './shaders/basic.wgsl?raw';
+// shaderCode e una stringa contenente il codice WGSL
+// Vite la inlinea nel bundle — zero richieste runtime
+```
+
+**Struttura dello shader**:
+
+```
+@group(0) @binding(0) var<uniform> viewProjection: mat4x4<f32>;
+
+struct InstanceInput {
+    @location(0) model_col0: vec4<f32>,    // colonna 0 della model matrix
+    @location(1) model_col1: vec4<f32>,    // colonna 1
+    @location(2) model_col2: vec4<f32>,    // colonna 2
+    @location(3) model_col3: vec4<f32>,    // colonna 3 (traslazione)
+    @location(4) color: vec4<f32>,          // colore RGBA per-instance
+}
+
+@vertex fn vs_main(@builtin(vertex_index) vi: u32, inst: InstanceInput) -> ... {
+    // Genera quad 2D da vertex_index (0-5 → 2 triangoli)
+    // Applica model matrix poi view-projection
+}
+
+@fragment fn fs_main(...) -> @location(0) vec4<f32> {
+    return color;  // Colore per-instance
+}
+```
+
+Il vertex shader genera un quad unitario (1×1) usando solo il `vertex_index` senza vertex buffer dedicato. I 6 vertici (2 triangoli) sono calcolati proceduralmente. La `modelMatrix` (per-instance, dal instance buffer) scala, ruota e posiziona il quad. La `viewProjection` (uniforme globale) proietta nello spazio NDC.
+
+### RenderState: Ponte Rust → TypeScript per i Dati GPU
+
+**File Rust**: `crates/hyperion-core/src/render_state.rs`
+
+`RenderState` e responsabile di collezionare le model matrices di tutte le entita attive in un buffer contiguo `Vec<f32>`, pronto per l'upload diretto in un `GPUBuffer` WebGPU.
+
+```rust
+pub struct RenderState {
+    pub buffer: Vec<f32>,     // [f32; 16] × N entita, contiguo
+    pub entity_count: u32,    // Numero di entita attive raccolte
+}
+
+impl RenderState {
+    pub fn collect(&mut self, world: &World) {
+        self.buffer.clear();
+        self.entity_count = 0;
+        for (matrix, _active) in world.query::<(&ModelMatrix, &Active)>()... {
+            self.buffer.extend_from_slice(&matrix.0);
+            self.entity_count += 1;
+        }
+    }
+}
+```
+
+**Trasferimento dati per Execution Mode**:
+
+| Mode | Meccanismo di Trasferimento | Latenza |
+|---|---|---|
+| **Mode C** (Single Thread) | Vista diretta sulla WASM linear memory via `engine_get_render_state()` + `Float32Array` view | Zero-copy |
+| **Mode B** (Partial Isolation) | `postMessage` con `ArrayBuffer` trasferibile dal Worker al Main Thread | Transfer (no copy) |
+| **Mode A** (Full Isolation) | `MessageChannel` tra ECS Worker e Render Worker, con `ArrayBuffer` trasferibile | Transfer (no copy) |
+
+In Mode C, il renderer accede direttamente alla memoria WASM tramite `engine_get_render_state()` che restituisce un puntatore raw `*const f32`. TypeScript costruisce un `Float32Array` view sulla WASM memory:
+
+```typescript
+const ptr = wasm.engine_get_render_state();
+const count = wasm.engine_get_render_count();
+const matrices = new Float32Array(wasm.memory.buffer, ptr, count * 16);
+// matrices e una vista diretta — nessuna copia
+renderer.render(matrices, count, camera);
+```
+
+In Mode B/A, il Worker copia il buffer dalla WASM memory in un `ArrayBuffer` trasferibile e lo invia via `postMessage({ type: "render-state", buffer, count }, [buffer])`. Il `Transferable` evita la copia — l'ownership del buffer viene trasferita al thread ricevente.
+
+### Sistema Camera: Proiezione Ortografica
+
+**File**: `ts/src/camera.ts`
+
+La camera usa una **proiezione ortografica** appropriata per un engine 2D/2.5D. A differenza della proiezione prospettica, l'ortografica non introduce distorsione — le dimensioni degli oggetti non cambiano con la distanza dalla camera.
+
+```
+Camera ortografica:
+  left, right, bottom, top, near, far
+         │
+         ▼
+  Mat4 viewProjection = projection × view
+         │
+         ▼
+  Uniform buffer → GPU
+```
+
+**Parametri**:
+
+| Parametro | Default | Descrizione |
+|---|---|---|
+| `width` | Canvas width | Larghezza del frustum in unita mondo |
+| `height` | Canvas height | Altezza del frustum |
+| `near` | 0.0 | Piano near (WebGPU depth range 0..1) |
+| `far` | 100.0 | Piano far |
+| `position` | `[0, 0, 0]` | Posizione della camera nello spazio mondo |
+
+**Depth range 0..1**: WebGPU usa un depth range normalizzato `[0.0, 1.0]` (a differenza di OpenGL che usa `[-1.0, 1.0]`). La matrice ortografica mappa `[near, far]` a `[0.0, 1.0]` usando la formula:
+
+```
+depth_ndc = (z - near) / (far - near)
+```
+
+La camera espone `getViewProjectionMatrix(): Float32Array` che restituisce la matrice 4x4 column-major pronta per l'upload nell'uniform buffer del renderer.
+
+### Pattern `engine_push_commands`: Bridge SAB → WASM
+
+Il collegamento tra il ring buffer su SharedArrayBuffer e la memoria lineare WASM e stato il problema architetturale piu significativo risolto in Phase 2. `wasm-bindgen` non supporta il passaggio diretto di puntatori a SharedArrayBuffer nella memoria lineare WASM.
+
+**Soluzione adottata**: Il Worker TypeScript funge da intermediario.
+
+```
+                TS (Producer)              Worker (Intermediario)              WASM (Consumer)
+                ─────────────              ──────────────────────              ────────────────
+                RingBufferProducer
+                .spawnEntity(id)
+                      │
+                      ▼
+                SharedArrayBuffer
+                [write_head][read_head]
+                [cmd|eid|payload|...]
+                                           1. Leggi write_head dal SAB
+                                           2. Leggi comandi dal SAB
+                                              (DataView, little-endian)
+                                           3. Crea Uint8Array con i comandi
+                                              │
+                                              ▼
+                                           4. wasm.engine_push_commands(ptr, len)
+                                              Copia i byte nella WASM
+                                              linear memory
+                                                                               5. Engine::push_commands()
+                                                                                  Parsa i comandi dal buffer
+                                                                               6. engine_update(dt)
+                                                                                  Consuma i comandi
+```
+
+`engine_push_commands(ptr, len)` riceve un puntatore alla WASM linear memory dove il Worker ha scritto i byte dei comandi. La funzione WASM decodifica i comandi dal buffer binario (stesso formato del ring buffer) e li aggiunge al `Vec<Command>` interno dell'Engine.
+
+Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memory), ma:
+- E una copia contigua in memoria (molto cache-friendly)
+- Avviene una volta per frame, non per comando
+- E l'unica soluzione che rispetta i vincoli di `wasm-bindgen`
+
+---
+
+## 11. Testing
+
+### Struttura (32 test Rust across 6 moduli + 20 test TypeScript across 5 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -679,20 +927,25 @@ Il test suite e organizzato in due livelli per linguaggio:
 
 ```
 crates/hyperion-core/src/
-  ring_buffer.rs          5 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance
-  components.rs           4 test: default values (position, rotation, scale), Pod transmute (ModelMatrix)
+  ring_buffer.rs          12 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance,
+                                   wrap-around, overflow, noop, all command types, capacity edge cases
+  components.rs           3 test: default values (position, rotation, scale), Pod transmute (ModelMatrix)
   command_processor.rs    5 test: spawn, set position, despawn, ID recycling, nonexistent entity safety
-  engine.rs               4 test: commands+ticks integration, accumulator, spiral-of-death, model matrix
-  systems.rs              4 test: velocity moves position, transform→matrix, scale in matrix, count_active
+  engine.rs               5 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
+                                  push_commands integration
+  systems.rs              3 test: velocity moves position, transform→matrix, count_active
+  render_state.rs         4 test: empty collect, single entity, multiple entities, no active filter
 ```
 
 **TypeScript** — File `.test.ts` colocati in `ts/src/`:
 
 ```
 ts/src/
-  capabilities.test.ts    4 test: Mode A/B/C selection across capability combinations
-  ring-buffer.test.ts     5 test: free space, spawn write, position+payload, overflow, sequential writes
-  integration.test.ts     2 test: binary protocol validation (offset assertions), graceful degradation
+  capabilities.test.ts       4 test: Mode A/B/C selection across capability combinations
+  ring-buffer.test.ts        5 test: free space, spawn write, position+payload, overflow, sequential writes
+  ring-buffer-utils.test.ts  4 test: ring buffer utility functions
+  camera.test.ts             5 test: camera construction, orthographic projection, NDC mapping, aspect ratio, depth range
+  integration.test.ts        2 test: binary protocol validation (offset assertions), graceful degradation
 ```
 
 ### Pattern di Test: Cross-Boundary Protocol Verification
@@ -720,21 +973,24 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 22 test
+# Rust — 32 test
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 11 test
+# TypeScript — 20 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
 cd ts && npx tsc --noEmit                             # Type-check solo
+
+# Visual testing — build WASM + dev server
+cd ts && npm run build:wasm && npm run dev
 ```
 
 ---
 
-## 11. Build Pipeline
+## 12. Build Pipeline
 
 ### WASM Build
 
@@ -782,7 +1038,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 ---
 
-## 12. Decisioni Architetturali Chiave
+## 13. Decisioni Architetturali Chiave
 
 | Decisione | Alternative Valutate | Motivazione |
 |---|---|---|
@@ -795,10 +1051,14 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **`const enum` in TypeScript** | `enum`, string union, numeric constants | `const enum` e inlinato dal compiler — zero overhead runtime, nessun reverse mapping (non serve) |
 | **Vite (non webpack/esbuild)** | webpack 5, esbuild standalone | Vite ha supporto nativo per Worker ESM, header custom, e HMR. Webpack richiederebbe plugin per Worker bundling |
 | **Sparse Vec + free-list per EntityMap** | `HashMap<u32, Entity>`, `SlotMap` | O(1) lookup con cache-friendliness perfetta. Free-list mantiene ID compatti senza frammentazione |
+| **WebGPU da TypeScript (non Rust wgpu)** | `wgpu` compilato a WASM, Emscripten WebGPU bindings | `wgpu` wrappa la stessa API browser con ~1MB overhead di binary bloat. WebGPU da TS ha accesso diretto e zero overhead |
+| **WGSL caricato via Vite `?raw`** | Embedding in stringhe Rust, file separati con fetch | `?raw` inlinea lo shader come stringa al build time, zero richieste runtime, hot-reload in dev mode |
+| **`engine_push_commands` pattern** | Passaggio diretto SAB pointer a WASM, `postMessage` serializzazione | SAB pointer non supportato da `wasm-bindgen`. Il Worker legge dal SAB e scrive nella WASM linear memory — zero copie aggiuntive rispetto al necessario |
+| **Camera ortografica (non prospettica)** | Proiezione prospettica, proiezione ibrida | Per un engine 2D/2.5D, l'ortografica elimina distorsione prospettica e semplifica il coordinate mapping |
 
 ---
 
-## 13. Gotchas e Insidie
+## 14. Gotchas e Insidie
 
 | Insidia | Causa | Soluzione Adottata |
 |---|---|---|
@@ -811,16 +1071,15 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `Atomics` non disponibili senza cross-origin isolation | Conseguenza di COOP/COEP mancanti | Fallback a `ArrayBuffer` + Mode C in `createRingBuffer()` |
 | `static mut` in Rust 2024 | Creating references to `static mut` is UB | `addr_of_mut!()` per scrivere senza creare `&mut` |
 | Tipi public con `new()` senza parametri | Clippy `new_without_default` | `impl Default` esplicito su `Engine` e `EntityMap` |
+| `@webgpu/types` `Float32Array` strictness | `writeBuffer` richiede `Float32Array<ArrayBuffer>`, non `Float32Array<ArrayBufferLike>` | Cast esplicito `as Float32Array<ArrayBuffer>` quando la sorgente potrebbe essere `ArrayBufferLike` |
 
 ---
 
-## 14. Limitazioni Note e Blind Spot
+## 15. Limitazioni Note e Blind Spot
 
 | Limitazione | Causa | Impatto | Stato |
 |---|---|---|---|
-| Ring buffer non collegato a WASM memory | `wasm-bindgen` non supporta passaggio puntatore SAB in memory lineare | Commands prodotti da TS non ancora consumati da Rust nel Worker | Phase 2 risolvera |
-| Mode C `tick()` e un noop | Implementazione placeholder | Single-thread mode non esegue simulazione | Phase 2 risolvera |
-| Nessun rendering | Phase 2 non implementata | L'engine calcola model matrices ma non le visualizza | Prossima fase |
+| Ring buffer SAB→WASM risolto via `engine_push_commands` | `wasm-bindgen` non supporta passaggio puntatore SAB direttamente | Il Worker funge da intermediario: legge dal SAB, scrive nella WASM linear memory | **Risolto in Phase 2** |
 | Nessun input handling | Phase 6 | L'engine non processa eventi tastiera/mouse | Futuro |
 | `webgpuInWorker` detection via UA string | Non esiste API per testare WebGPU in Worker dal Main Thread | Falsi negativi su browser non-Chromium con supporto futuro | Aggiornare euristica quando Firefox supporta |
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
@@ -829,7 +1088,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 ---
 
-## 15. Stato di Implementazione
+## 16. Stato di Implementazione
 
 ### Roadmap Fasi
 
@@ -837,8 +1096,8 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 |---|---|---|---|
 | **0** | Scaffold & Execution Harness | **Completata** | Workspace Rust, Vite dev server, capability detection, mode selection A/B/C, ring buffer SPSC, Worker bridge |
 | **1** | ECS Core | **Completata** | `hecs` integration, componenti SoA, transform system, tick loop deterministico, command processor |
-| **2** | Render Core | Prossima | wgpu init, OffscreenCanvas transfer (Mode A), draw pipeline base, debug overlay |
-| **3** | GPU-Driven Pipeline | Pianificata | WGSL compute culling, StorageBuffer layout, indirect draw, Texture2DArray |
+| **2** | Render Core | **Completata** | WebGPU renderer, instanced quad pipeline, WGSL shader, camera ortografica, RenderState, SAB→WASM bridge (`engine_push_commands`), Mode A/B/C render paths |
+| **3** | GPU-Driven Pipeline | Prossima | WGSL compute culling, StorageBuffer layout, indirect draw, Texture2DArray |
 | **4** | Asset Pipeline & Textures | Pianificata | `createImageBitmap` flow, texture array packing, KTX2/Basis Universal |
 | **5** | TypeScript API & Lifecycle | Pianificata | API consumer, `dispose()` + `using`, FinalizationRegistry, entity pooling |
 | **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
@@ -848,17 +1107,17 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 | Metrica | Valore |
 |---|---|
-| Test Rust | 22 (tutti passanti) |
-| Test TypeScript | 11 (tutti passanti) |
-| Moduli Rust | 5 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`) |
-| Moduli TypeScript | 5 (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`) |
+| Test Rust | 32 (tutti passanti) |
+| Test TypeScript | 20 (tutti passanti) |
+| Moduli Rust | 6 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
+| Moduli TypeScript | 10+ (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `camera`, `render-worker`, `shaders/basic.wgsl`, `vite-env.d.ts`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
-| Dipendenze TypeScript (dev) | 3 (`typescript`, `vite`, `vitest`) |
+| Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
 
 ---
 
-## 16. Guida all'Estendibilita
+## 17. Guida all'Estendibilita
 
 ### 16.1 Aggiungere un Nuovo Comando
 
@@ -920,7 +1179,7 @@ Il codice del main loop non cambia — opera solo sull'interfaccia `EngineBridge
 
 ---
 
-## 17. Glossario
+## 18. Glossario
 
 | Termine | Significato |
 |---|---|
@@ -942,3 +1201,9 @@ Il codice del main loop non cambia — opera solo sull'interfaccia `EngineBridge
 | **Marker component** | Componente senza dati (`Active`) usato come filtro per le query ECS |
 | **wasm-bindgen** | Macro e toolchain Rust che generano il JS glue code per le funzioni `#[wasm_bindgen]` |
 | **addr_of_mut!()** | Macro Rust per ottenere un raw pointer a un `static mut` senza creare un riferimento (richiesto da edition 2024) |
+| **WGSL** | WebGPU Shading Language — linguaggio shader nativo di WebGPU, successore di GLSL/HLSL per il web |
+| **Instanced drawing** | Tecnica GPU dove una singola draw call renderizza N copie di una mesh con dati per-instance diversi (model matrix, colore) |
+| **RenderState** | Struttura Rust che raccoglie le model matrices di tutte le entita attive in un buffer contiguo per upload GPU |
+| **NDC** | Normalized Device Coordinates — spazio di coordinate normalizzato dopo la proiezione. WebGPU: X/Y in [-1, 1], Z in [0, 1] |
+| **Orthographic projection** | Proiezione che preserva dimensioni degli oggetti indipendentemente dalla distanza — nessuna distorsione prospettica |
+| **`?raw` import** | Direttiva Vite che importa un file come stringa grezza al build time, usata per caricare shader WGSL senza richieste runtime |
