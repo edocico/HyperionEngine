@@ -1,16 +1,44 @@
+import {
+  detectCapabilities,
+  selectExecutionMode,
+  logCapabilities,
+  ExecutionMode,
+} from "./capabilities";
+import { createWorkerBridge, createDirectBridge, type EngineBridge } from "./worker-bridge";
+
 async function main() {
   const info = document.getElementById("info")!;
-  info.textContent = "Hyperion Engine — loading WASM...";
+  info.textContent = "Hyperion Engine — detecting capabilities...";
 
-  try {
-    const wasm = await import("../wasm/hyperion_core.js");
-    await wasm.default();
-    const result = wasm.add(2, 3);
-    info.textContent = `Hyperion Engine — WASM OK (2 + 3 = ${result})`;
-  } catch (e) {
-    info.textContent = `Hyperion Engine — WASM FAILED: ${e}`;
-    console.error(e);
+  const caps = detectCapabilities();
+  const mode = selectExecutionMode(caps);
+  logCapabilities(caps, mode);
+
+  info.textContent = `Hyperion Engine — Mode ${mode}, loading WASM...`;
+
+  let bridge: EngineBridge;
+
+  if (mode === ExecutionMode.FullIsolation || mode === ExecutionMode.PartialIsolation) {
+    bridge = createWorkerBridge(mode);
+  } else {
+    bridge = await createDirectBridge();
   }
+
+  await bridge.ready();
+  info.textContent = `Hyperion Engine — Mode ${mode}, ready`;
+
+  // Main loop
+  let lastTime = performance.now();
+
+  function frame(now: number) {
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+
+    bridge.tick(dt);
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
 }
 
 main();
