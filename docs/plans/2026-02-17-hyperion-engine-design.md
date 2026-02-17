@@ -51,9 +51,13 @@ When WebGPU is unavailable, Mode C still runs the full ECS/WASM simulation (comm
 
 The Rust WASM module is agnostic to which thread it runs on. It consumes a command buffer and produces a render state buffer, regardless of transport.
 
+### Worker Error Handling
+
+In Modes A and B, Workers can terminate from uncaught exceptions or OOM conditions. The bridge layer registers `worker.onerror` and `worker.onmessageerror` handlers that log diagnostics to the console. Dynamic degradation (e.g., Mode A → Mode B on Render Worker crash) is not viable because `transferControlToOffscreen()` is irrevocable — once a canvas is transferred, the Main Thread cannot reclaim it. The recommended recovery strategy is full engine restart via `destroy()` + re-initialization. Phase 5 (TypeScript API) will expose an `onError` callback to give consuming applications control over recovery behavior.
+
 ### Deployment Requirement
 
-Modes A and B require cross-origin isolation (COOP/COEP HTTP headers). The engine detects `crossOriginIsolated` at startup and falls back gracefully, logging a clear warning to the developer console.
+Modes A and B require cross-origin isolation (COOP/COEP HTTP headers). The engine detects `crossOriginIsolated` at startup and falls back gracefully, logging a clear warning with the exact headers needed to the developer console.
 
 ---
 
@@ -74,6 +78,10 @@ TypeScript serializes mutation commands into a lock-free MPSC Ring Buffer alloca
 | Multi-Thread Scalability | Impossible | Lock-free MPSC native |
 | Throughput | Degrades above 10k mutations/frame | Limited only by memory bandwidth |
 
+### Backpressure
+
+The Ring Buffer uses a drop-with-warning policy. The producer checks `freeSpace` before every write; if insufficient space remains, the command is dropped, a console warning is emitted, and `writeCommand()` returns `false` so the caller can react. The buffer is sized at 64 KB (~3,100 max-size commands), providing ample headroom over the typical ~100–200 commands per frame.
+
 ### Endianness Safety
 
 The Ring Buffer protocol uses `DataView` for all cross-boundary reads/writes, ensuring correct behavior regardless of host architecture endianness.
@@ -93,7 +101,7 @@ The Ring Buffer protocol uses `DataView` for all cross-boundary reads/writes, en
 
 ### Migration Path
 
-The ECS interface is wrapped behind an internal `trait World` abstraction (not exposed to users). Future migration to `bevy_ecs` or `flecs-rs` requires changing only the adapter implementation.
+The current implementation uses `hecs::World` directly throughout the codebase. The ECS surface area is small (spawn, despawn, query by component type, add/remove component) and concentrated in `engine.rs`, `command_processor.rs`, `render_state.rs`, and `systems.rs`. Future migration to `bevy_ecs` or `flecs-rs` would require updating these four files. A `trait World` abstraction is intentionally deferred — introducing it before a concrete migration need would create a leaky abstraction across fundamentally different storage models (archetype vs sparse set).
 
 ### Data-Oriented Enforcement
 
@@ -152,9 +160,20 @@ Sprite textures are packed into `Texture2DArray` resources (single GPU descripto
 
 Bindless textures are deferred until WebGPU standardization matures.
 
+### Storage Buffer Layout
+
+Each entity occupies 80 bytes (20 × f32) in the GPU storage buffer:
+
+```wgsl
+struct EntityData {        // WGSL struct, 16-byte aligned
+    model: mat4x4f,        // 64 bytes — column-major model matrix
+    boundingSphere: vec4f,  // 16 bytes — xyz = world position, w = radius
+};                         // Total: 80 bytes
+```
+
 ### Storage Buffer Budget
 
-At 64 bytes per entity, 100k entities = ~6.4MB (well within WebGPU's guaranteed 128MB `maxStorageBufferBindingSize`). For scenes exceeding ~500k entities, a spatial streaming system uploads only entities within the camera's extended frustum.
+At 80 bytes per entity, 100k entities = 7.6 MB (well within WebGPU's guaranteed 128MB `maxStorageBufferBindingSize`). For scenes exceeding ~500k entities, a spatial streaming system uploads only entities within the camera's extended frustum.
 
 ### Mode B/C Compatibility
 
@@ -186,7 +205,32 @@ fetch() -> Blob -> createImageBitmap() -> device.queue.copyExternalImageToTextur
 - `createImageBitmap()` decodes asynchronously on the browser's internal thread pool with hardware acceleration
 - Decoded bitmap transfers directly from browser memory to VRAM
 - Pixels never traverse WASM linear memory
-- Future: KTX2/Basis Universal support for GPU-compressed textures that remain compressed in VRAM
+
+### Texture2DArray Size-Tiering
+
+All layers in a `Texture2DArray` must share identical dimensions (GPU hardware constraint). To support sprites of varying resolutions, textures are grouped into size tiers:
+
+| Tier | Dimensions | Typical use                         |
+|------|------------|-------------------------------------|
+| 0    | 64x64      | Icons, particles, small UI elements |
+| 1    | 128x128    | Standard sprites, tiles             |
+| 2    | 256x256    | Large sprites, detailed characters  |
+| 3    | 512x512    | Backgrounds, large assets           |
+
+Each tier is a separate `Texture2DArray` with up to `maxTextureArrayLayers` layers (at least 256 per WebGPU spec). Sprites that don't match a tier exactly are resized to the nearest tier at load time. The entity's `textureLayerIndex` component encodes both tier and layer as a packed u32 (`tier << 16 | layer`).
+
+### Asset Loading Manager
+
+Loading at scale requires concurrency control and prioritization:
+
+- **Concurrency limiter:** Maximum 6–8 parallel `fetch()` calls to avoid saturating the network and causing jank
+- **Priority queue:** Visible assets (inside current frustum) load first, off-screen assets load at idle, prefetch uses `requestIdleCallback`
+- **Progress tracking:** `onProgress(loaded, total)` callback for loading screens
+- **Browser caching:** Assets are fetched with standard HTTP caching headers; the browser's disk cache handles persistence transparently
+
+### KTX2/Basis Universal (Optional Enhancement)
+
+GPU-compressed textures (BC7 on desktop, ASTC on mobile, ETC2 as fallback) remain compressed in VRAM, reducing memory usage 4–8×. This is an optimization for large-scale scenes, not a prerequisite — 200 unique 256×256 RGBA sprites uncompressed consume ~50 MB, which is workable. KTX2 transcoding can be performed via a dedicated WASM transcoder or the browser's native support as it matures.
 
 ---
 
@@ -254,7 +298,29 @@ debug = true
 
 ---
 
-## 11. Implementation Roadmap
+## 11. Error Recovery
+
+### GPU Device Loss
+
+WebGPU devices can be lost due to driver crashes, GPU hang recovery, or resource exhaustion. The `GPUDevice.lost` promise resolves with a `GPUDeviceLostInfo` indicating the reason. The engine must:
+
+1. Listen to `device.lost` on initialization
+2. Stop submitting command buffers immediately
+3. Attempt re-initialization: `requestAdapter()` → `requestDevice()` → recreate all pipelines, buffers, and textures
+4. If re-initialization fails, disable rendering and continue running ECS-only (same behavior as Mode C without WebGPU)
+5. Notify the consuming application via an `onDeviceLost` callback
+
+### Shader Compilation Errors
+
+WGSL shader compilation is validated at `createShaderModule()` time. Errors are surfaced via `GPUCompilationInfo`. Since shaders are bundled (not user-authored), compilation failures indicate a browser/driver incompatibility. The engine should log the full `GPUCompilationMessage` array and fall back to rendering disabled.
+
+### Ring Buffer Corruption
+
+If the consumer encounters an unknown command type byte, `drain()` stops processing and returns all commands decoded so far. This prevents a single corrupted byte from cascading into subsequent frames. The producer's `writeCommand()` validates `CommandType` at compile time (TypeScript `const enum`), making corruption a symptom of a deeper memory safety issue rather than a normal error path.
+
+---
+
+## 12. Implementation Roadmap
 
 | Phase | Name | Deliverables |
 |-------|------|-------------|
