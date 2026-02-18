@@ -1,5 +1,18 @@
-import { describe, it, expect } from "vitest";
-import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex } from "./texture-manager";
+import { describe, it, expect, beforeAll } from "vitest";
+import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex, TextureManager } from "./texture-manager";
+
+// Polyfill GPUTextureUsage for Node/vitest environment (browser global)
+beforeAll(() => {
+  if (typeof globalThis.GPUTextureUsage === "undefined") {
+    (globalThis as any).GPUTextureUsage = {
+      COPY_SRC: 0x01,
+      COPY_DST: 0x02,
+      TEXTURE_BINDING: 0x04,
+      STORAGE_BINDING: 0x08,
+      RENDER_ATTACHMENT: 0x10,
+    };
+  }
+});
 
 describe("Texture tier selection", () => {
   it("selects tier 0 for images <= 64px", () => {
@@ -61,5 +74,83 @@ describe("Texture index packing", () => {
 describe("TIER_SIZES", () => {
   it("has 4 tiers with correct dimensions", () => {
     expect(TIER_SIZES).toEqual([64, 128, 256, 512]);
+  });
+});
+
+describe("Lazy tier allocation", () => {
+  it("should not allocate tiers upfront", () => {
+    // Mock device that tracks createTexture calls
+    const textures: any[] = [];
+    const mockDevice = {
+      createSampler: () => ({}),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+      queue: {
+        writeTexture: () => {},
+        copyExternalImageToTexture: () => {},
+        submit: () => {},
+      },
+    } as unknown as GPUDevice;
+
+    const tm = new TextureManager(mockDevice);
+    expect(tm.getAllocatedLayers(0)).toBe(0);
+    expect(tm.getAllocatedLayers(1)).toBe(0);
+    expect(tm.getAllocatedLayers(2)).toBe(0);
+    expect(tm.getAllocatedLayers(3)).toBe(0);
+    expect(textures.length).toBe(0); // No textures created
+  });
+
+  it("should allocate 16 layers on first ensureTierCapacity", () => {
+    const textures: any[] = [];
+    const mockDevice = {
+      createSampler: () => ({}),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+      queue: {
+        writeTexture: () => {},
+        submit: () => {},
+      },
+    } as unknown as GPUDevice;
+
+    const tm = new TextureManager(mockDevice);
+    tm.ensureTierCapacity(0, 1);
+    expect(tm.getAllocatedLayers(0)).toBe(16);
+    expect(textures.length).toBe(1);
+    expect(textures[0].desc.size.depthOrArrayLayers).toBe(16);
+  });
+
+  it("should grow exponentially: 16 → 32 → 64 → 128 → 256", () => {
+    const mockDevice = {
+      createSampler: () => ({}),
+      createTexture: (desc: any) => ({
+        desc, createView: () => ({}), destroy: () => {},
+      }),
+      queue: {
+        writeTexture: () => {},
+        submit: () => {},
+      },
+      createCommandEncoder: () => ({
+        copyTextureToTexture: () => {},
+        finish: () => ({}),
+      }),
+    } as unknown as GPUDevice;
+
+    const tm = new TextureManager(mockDevice);
+    tm.ensureTierCapacity(0, 1);
+    expect(tm.getAllocatedLayers(0)).toBe(16);
+    tm.ensureTierCapacity(0, 17);
+    expect(tm.getAllocatedLayers(0)).toBe(32);
+    tm.ensureTierCapacity(0, 33);
+    expect(tm.getAllocatedLayers(0)).toBe(64);
+    tm.ensureTierCapacity(0, 65);
+    expect(tm.getAllocatedLayers(0)).toBe(128);
+    tm.ensureTierCapacity(0, 129);
+    expect(tm.getAllocatedLayers(0)).toBe(256);
   });
 });
