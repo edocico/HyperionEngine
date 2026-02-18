@@ -25,7 +25,7 @@ export interface EngineBridge {
   ready(): Promise<void>;
   /** Shut down the engine. */
   destroy(): void;
-  /** Get the latest render state (GPU entity data: 20 floats per entity). */
+  /** Get the latest render state (SoA: transforms, bounds, renderMeta, texIndices). */
   latestRenderState: GPURenderState | null;
 }
 
@@ -237,12 +237,13 @@ export async function createDirectBridge(): Promise<EngineBridge> {
         const texPtr = engine.engine_gpu_tex_indices_ptr();
         const texLen = engine.engine_gpu_tex_indices_len();
 
+        // Copy from WASM memory — live views become stale after next engine_update().
         latestRenderState = {
           entityCount: count,
-          transforms: tPtr ? new Float32Array(engine.memory.buffer, tPtr, tLen) : new Float32Array(0),
-          bounds: bPtr ? new Float32Array(engine.memory.buffer, bPtr, bLen) : new Float32Array(0),
-          renderMeta: mPtr ? new Uint32Array(engine.memory.buffer, mPtr, mLen) : new Uint32Array(0),
-          texIndices: texPtr ? new Uint32Array(engine.memory.buffer, texPtr, texLen) : new Uint32Array(0),
+          transforms: tPtr ? new Float32Array(new Float32Array(engine.memory.buffer, tPtr, tLen)) : new Float32Array(0),
+          bounds: bPtr ? new Float32Array(new Float32Array(engine.memory.buffer, bPtr, bLen)) : new Float32Array(0),
+          renderMeta: mPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, mPtr, mLen)) : new Uint32Array(0),
+          texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
         };
       } else {
         latestRenderState = {
