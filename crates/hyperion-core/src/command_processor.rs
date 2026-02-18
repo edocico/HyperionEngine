@@ -81,6 +81,8 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     ModelMatrix::default(),
                     BoundingRadius::default(),
                     TextureLayerIndex::default(),
+                    MeshHandle::default(),
+                    RenderPrimitive::default(),
                     Active,
                 ));
                 entity_map.insert(cmd.entity_id, entity);
@@ -145,6 +147,29 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                         tex.0 = packed;
                     }
                 }
+            }
+
+            CommandType::SetMeshHandle => {
+                if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    let handle = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if let Ok(mut mh) = world.get::<&mut MeshHandle>(entity) {
+                        mh.0 = handle;
+                    }
+                }
+            }
+
+            CommandType::SetRenderPrimitive => {
+                if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    let prim = cmd.payload[0];
+                    if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
+                        rp.0 = prim;
+                    }
+                }
+            }
+
+            CommandType::SetParent => {
+                // Design only in Phase 4.5 — no-op stub
+                // Full scene graph implementation in Phase 5
             }
 
             CommandType::Noop => {}
@@ -262,6 +287,40 @@ mod tests {
         let entity = map.get(0).unwrap();
         let tex = world.get::<&TextureLayerIndex>(entity).unwrap();
         assert_eq!(tex.0, packed);
+    }
+
+    #[test]
+    fn set_mesh_handle_updates_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&42u32.to_le_bytes());
+        let cmd = Command { cmd_type: CommandType::SetMeshHandle, entity_id: 0, payload };
+        process_commands(&[cmd], &mut world, &mut map);
+
+        let entity = map.get(0).unwrap();
+        let mh = world.get::<&MeshHandle>(entity).unwrap();
+        assert_eq!(mh.0, 42);
+    }
+
+    #[test]
+    fn set_render_primitive_updates_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+
+        let mut payload = [0u8; 16];
+        payload[0] = 2; // SDFGlyph
+        let cmd = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
+        process_commands(&[cmd], &mut world, &mut map);
+
+        let entity = map.get(0).unwrap();
+        let rp = world.get::<&RenderPrimitive>(entity).unwrap();
+        assert_eq!(rp.0, 2);
     }
 
     #[test]

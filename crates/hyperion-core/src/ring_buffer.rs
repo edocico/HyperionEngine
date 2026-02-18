@@ -31,6 +31,9 @@ pub enum CommandType {
     SetScale = 5,
     SetVelocity = 6,
     SetTextureLayer = 7,
+    SetMeshHandle = 8,
+    SetRenderPrimitive = 9,
+    SetParent = 10,
 }
 
 impl CommandType {
@@ -45,6 +48,9 @@ impl CommandType {
             5 => Some(Self::SetScale),
             6 => Some(Self::SetVelocity),
             7 => Some(Self::SetTextureLayer),
+            8 => Some(Self::SetMeshHandle),
+            9 => Some(Self::SetRenderPrimitive),
+            10 => Some(Self::SetParent),
             _ => None,
         }
     }
@@ -56,6 +62,9 @@ impl CommandType {
             Self::SetPosition | Self::SetScale | Self::SetVelocity => 12, // 3 x f32
             Self::SetRotation => 16, // 4 x f32
             Self::SetTextureLayer => 4, // 1 x u32
+            Self::SetMeshHandle => 4,       // u32 LE
+            Self::SetRenderPrimitive => 4,  // u8 padded to 4 for alignment
+            Self::SetParent => 4,           // parent entity id (u32 LE), 0xFFFFFFFF = unparent
         }
     }
 
@@ -499,6 +508,49 @@ mod tests {
         assert_eq!(cmds[0].entity_id, 5);
         let packed = u32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
         assert_eq!(packed, 0x0002_000A);
+    }
+
+    #[test]
+    fn parse_set_mesh_handle() {
+        // cmd=8, entity_id=1, payload=42u32 LE
+        let data = [
+            8, 1, 0, 0, 0, // cmd + entity_id
+            42, 0, 0, 0,    // mesh handle u32 LE
+        ];
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetMeshHandle);
+        assert_eq!(cmds[0].entity_id, 1);
+        let handle = u32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        assert_eq!(handle, 42);
+    }
+
+    #[test]
+    fn parse_set_render_primitive() {
+        // cmd=9, entity_id=2, payload=1u8 padded to 4 bytes
+        let data = [
+            9, 2, 0, 0, 0, // cmd + entity_id
+            1, 0, 0, 0,     // render primitive u8 padded to u32
+        ];
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetRenderPrimitive);
+        assert_eq!(cmds[0].entity_id, 2);
+        assert_eq!(cmds[0].payload[0], 1);
+    }
+
+    #[test]
+    fn parse_set_parent() {
+        // cmd=10, entity_id=5, payload=parent_id=3 (u32 LE)
+        let data = [
+            10, 5, 0, 0, 0, // cmd + entity_id
+            3, 0, 0, 0,      // parent entity id
+        ];
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetParent);
+        let parent = u32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        assert_eq!(parent, 3);
     }
 
     #[test]
