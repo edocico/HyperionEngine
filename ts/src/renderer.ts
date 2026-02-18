@@ -60,11 +60,25 @@ export async function createRenderer(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // --- Entity Data Storage Buffer ---
+  // --- Entity Data Storage Buffer (render pipeline: monolithic layout) ---
   const entityBuffer = device.createBuffer({
     size: MAX_ENTITIES * BYTES_PER_GPU_ENTITY,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
+
+  // --- SoA Buffers for Cull Shader ---
+  const cullTransformBuffer = device.createBuffer({
+    size: MAX_ENTITIES * 16 * 4, // mat4x4f per entity
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const cullBoundsBuffer = device.createBuffer({
+    size: MAX_ENTITIES * 4 * 4, // vec4f per entity
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // Scratch arrays for splitting entity data into SoA layout
+  const cullTransformScratch = new Float32Array(MAX_ENTITIES * 16);
+  const cullBoundsScratch = new Float32Array(MAX_ENTITIES * 4);
 
   // --- Visible Indices Storage Buffer ---
   const visibleIndicesBuffer = device.createBuffer({
@@ -95,14 +109,15 @@ export async function createRenderer(
   // --- Depth Texture ---
   let depthTexture = createDepthTexture(device, canvas.width, canvas.height);
 
-  // --- Compute Pipeline (Culling, unchanged) ---
+  // --- Compute Pipeline (Culling, SoA layout) ---
   const cullModule = device.createShaderModule({ code: cullShaderCode });
   const cullBindGroupLayout = device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
   const cullPipeline = device.createComputePipeline({
@@ -113,9 +128,10 @@ export async function createRenderer(
     layout: cullBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: cullUniformBuffer } },
-      { binding: 1, resource: { buffer: entityBuffer } },
-      { binding: 2, resource: { buffer: visibleIndicesBuffer } },
-      { binding: 3, resource: { buffer: indirectBuffer } },
+      { binding: 1, resource: { buffer: cullTransformBuffer } },
+      { binding: 2, resource: { buffer: cullBoundsBuffer } },
+      { binding: 3, resource: { buffer: visibleIndicesBuffer } },
+      { binding: 4, resource: { buffer: indirectBuffer } },
     ],
   });
 
@@ -198,11 +214,30 @@ export async function createRenderer(
     render(entityData, entityCount, camera, texIndices) {
       if (entityCount === 0) return;
 
-      // 1. Upload entity data
+      // 1. Upload entity data (monolithic buffer for render pipeline)
       device.queue.writeBuffer(
         entityBuffer, 0,
         entityData as Float32Array<ArrayBuffer>, 0,
         entityCount * FLOATS_PER_GPU_ENTITY,
+      );
+
+      // 1b. Split entity data into SoA buffers for cull shader
+      for (let i = 0; i < entityCount; i++) {
+        const src = i * FLOATS_PER_GPU_ENTITY;
+        // mat4x4 (16 floats) starts at offset 0
+        cullTransformScratch.set(entityData.subarray(src, src + 16), i * 16);
+        // bounding sphere (4 floats) starts at offset 16
+        cullBoundsScratch.set(entityData.subarray(src + 16, src + 20), i * 4);
+      }
+      device.queue.writeBuffer(
+        cullTransformBuffer, 0,
+        cullTransformScratch as Float32Array<ArrayBuffer>, 0,
+        entityCount * 16,
+      );
+      device.queue.writeBuffer(
+        cullBoundsBuffer, 0,
+        cullBoundsScratch as Float32Array<ArrayBuffer>, 0,
+        entityCount * 4,
       );
 
       // 2. Upload texture layer indices
@@ -271,6 +306,8 @@ export async function createRenderer(
       indexBuffer.destroy();
       cameraBuffer.destroy();
       entityBuffer.destroy();
+      cullTransformBuffer.destroy();
+      cullBoundsBuffer.destroy();
       visibleIndicesBuffer.destroy();
       indirectBuffer.destroy();
       cullUniformBuffer.destroy();

@@ -4,7 +4,7 @@ import { selectExecutionMode, ExecutionMode, type Capabilities } from "./capabil
 
 describe("Integration: Ring Buffer Protocol", () => {
   it("produces commands that match the Rust-expected binary format", () => {
-    const sab = new SharedArrayBuffer(16 + 256);
+    const sab = new SharedArrayBuffer(32 + 256);
     const rb = new RingBufferProducer(sab);
 
     rb.spawnEntity(0);
@@ -19,7 +19,7 @@ describe("Integration: Ring Buffer Protocol", () => {
     expect(writeHead).toBe(27);
 
     // Verify the data region has correct command bytes.
-    const data = new Uint8Array(sab, 16);
+    const data = new Uint8Array(sab, 32);
     expect(data[0]).toBe(CommandType.SpawnEntity);
     expect(data[5]).toBe(CommandType.SetPosition);
     expect(data[22]).toBe(CommandType.DespawnEntity);
@@ -28,7 +28,7 @@ describe("Integration: Ring Buffer Protocol", () => {
 
 describe("Integration: Texture Layer Index Pipeline", () => {
   it("SetTextureLayer command binary matches Rust format", () => {
-    const sab = new SharedArrayBuffer(16 + 128);
+    const sab = new SharedArrayBuffer(32 + 128);
     const rb = new RingBufferProducer(sab);
 
     rb.spawnEntity(0);                           // 5 bytes
@@ -38,7 +38,7 @@ describe("Integration: Texture Layer Index Pipeline", () => {
     const writeHead = Atomics.load(header, 0);
     expect(writeHead).toBe(14); // 5 + 9
 
-    const data = new Uint8Array(sab, 16, 128);
+    const data = new Uint8Array(sab, 32, 128);
 
     // SpawnEntity at offset 0
     expect(data[0]).toBe(1);
@@ -55,14 +55,18 @@ describe("Integration: Texture Layer Index Pipeline", () => {
     expect(packed).toBe((2 << 16) | 42);
   });
 
-  it("GPURenderState includes texIndices field", () => {
+  it("GPURenderState has SoA fields", () => {
     const state: import("./worker-bridge").GPURenderState = {
       entityCount: 1,
-      entityData: new Float32Array(20),
+      transforms: new Float32Array(16),
+      bounds: new Float32Array(4),
+      renderMeta: new Uint32Array(2),
       texIndices: new Uint32Array([0]),
     };
+    expect(state.transforms.length).toBe(16);
+    expect(state.bounds.length).toBe(4);
+    expect(state.renderMeta.length).toBe(2);
     expect(state.texIndices.length).toBe(1);
-    expect(state.entityCount).toBe(1);
   });
 });
 
@@ -94,21 +98,22 @@ describe("Integration: Mode Selection", () => {
   });
 });
 
-describe("Integration: GPU Entity Data Format", () => {
-  it("produces 20 floats per entity matching WGSL EntityData struct", () => {
-    const FLOATS_PER_ENTITY = 20;
+describe("Integration: GPU SoA Buffer Format", () => {
+  it("produces SoA buffers per entity matching new layout", () => {
     const entityCount = 3;
-    const data = new Float32Array(entityCount * FLOATS_PER_ENTITY);
+    const transforms = new Float32Array(entityCount * 16);
+    const bounds = new Float32Array(entityCount * 4);
+    const renderMeta = new Uint32Array(entityCount * 2);
+    const texIndices = new Uint32Array(entityCount);
 
-    // Simulate entity 0 at position (1, 2, 3) with identity matrix
-    data[0] = 1.0; data[5] = 1.0; data[10] = 1.0; data[15] = 1.0;
-    data[12] = 1.0; data[13] = 2.0; data[14] = 3.0;
-    data[16] = 1.0; data[17] = 2.0; data[18] = 3.0; data[19] = 0.5;
+    // Entity 0: identity matrix, position (1,2,3), radius 0.5
+    transforms[0] = 1.0; transforms[5] = 1.0; transforms[10] = 1.0; transforms[15] = 1.0;
+    transforms[12] = 1.0; transforms[13] = 2.0; transforms[14] = 3.0;
+    bounds[0] = 1.0; bounds[1] = 2.0; bounds[2] = 3.0; bounds[3] = 0.5;
 
-    expect(data[16]).toBe(1.0);  // sphere center x
-    expect(data[17]).toBe(2.0);  // sphere center y
-    expect(data[18]).toBe(3.0);  // sphere center z
-    expect(data[19]).toBe(0.5);  // sphere radius
-    expect(data.length).toBe(60);  // 3 entities x 20 floats
+    expect(transforms.length).toBe(48); // 3 entities * 16 f32
+    expect(bounds.length).toBe(12);     // 3 entities * 4 f32
+    expect(renderMeta.length).toBe(6);  // 3 entities * 2 u32
+    expect(texIndices.length).toBe(3);  // 3 entities * 1 u32
   });
 });

@@ -1,6 +1,16 @@
-const HEADER_SIZE = 16;
+const HEADER_SIZE = 32;
 const WRITE_HEAD_OFFSET = 0; // byte offset in i32 units = 0
 const READ_HEAD_OFFSET = 1;  // byte offset 4 in i32 units = 1
+
+/** True on little-endian platforms (~99.97% of devices). Enables TypedArray fast path. */
+export const IS_LITTLE_ENDIAN =
+  new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/** Header field offsets (i32 indices) for Worker Supervisor (Phase 4.5). */
+export const HEARTBEAT_W1_OFFSET = 4;   // i32 index: byte 16 / 4 = 4
+export const HEARTBEAT_W2_OFFSET = 5;   // i32 index: byte 20 / 4 = 5
+export const SUPERVISOR_FLAGS_OFFSET = 6; // i32 index: byte 24 / 4 = 6
+export const OVERFLOW_COUNTER_OFFSET = 7; // i32 index: byte 28 / 4 = 7
 
 export const enum CommandType {
   Noop = 0,
@@ -11,6 +21,9 @@ export const enum CommandType {
   SetScale = 5,
   SetVelocity = 6,
   SetTextureLayer = 7,
+  SetMeshHandle = 8,
+  SetRenderPrimitive = 9,
+  SetParent = 10,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -23,17 +36,33 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetScale]: 12,
   [CommandType.SetVelocity]: 12,
   [CommandType.SetTextureLayer]: 4,
+  [CommandType.SetMeshHandle]: 4,
+  [CommandType.SetRenderPrimitive]: 4,
+  [CommandType.SetParent]: 4,
 };
 
 export class RingBufferProducer {
   private readonly header: Int32Array;
   private readonly data: DataView;
   private readonly capacity: number;
+  // Fast path views (same underlying buffer, offset by header)
+  private readonly u8View: Uint8Array;
+  private readonly u32View: Uint32Array;
+  private readonly f32View: Float32Array;
+
+  /** Scratch DataView for byte-by-byte float extraction at wrap boundaries. */
+  private static readonly _scratch = new DataView(new ArrayBuffer(4));
 
   constructor(buffer: SharedArrayBuffer) {
-    this.header = new Int32Array(buffer, 0, 4);
+    this.header = new Int32Array(buffer, 0, 8);
     this.capacity = buffer.byteLength - HEADER_SIZE;
+    if (this.capacity % 4 !== 0) {
+      throw new Error(`RingBufferProducer: capacity must be a multiple of 4, got ${this.capacity}`);
+    }
     this.data = new DataView(buffer, HEADER_SIZE, this.capacity);
+    this.u8View = new Uint8Array(buffer, HEADER_SIZE, this.capacity);
+    this.u32View = new Uint32Array(buffer, HEADER_SIZE, this.capacity / 4);
+    this.f32View = new Float32Array(buffer, HEADER_SIZE, this.capacity / 4);
   }
 
   private get writeHead(): number {
@@ -69,31 +98,62 @@ export class RingBufferProducer {
     let pos = this.writeHead;
 
     // Write command type (1 byte)
-    this.data.setUint8(pos % this.capacity, cmd);
+    this.u8View[pos % this.capacity] = cmd;
     pos++;
 
     // Write entity ID (4 bytes, little-endian)
-    this.writeByte(pos, entityId & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 8) & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 16) & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 24) & 0xff); pos++;
+    const idPos = pos % this.capacity;
+    if (IS_LITTLE_ENDIAN && (idPos & 3) === 0) {
+      this.u32View[idPos >> 2] = entityId;
+    } else if (idPos + 4 <= this.capacity) {
+      this.data.setUint32(idPos, entityId, true);
+    } else {
+      // Field straddles wrap boundary — write byte-by-byte LE
+      this.u8View[idPos % this.capacity]       =  entityId         & 0xFF;
+      this.u8View[(idPos + 1) % this.capacity] = (entityId >>  8)  & 0xFF;
+      this.u8View[(idPos + 2) % this.capacity] = (entityId >> 16)  & 0xFF;
+      this.u8View[(idPos + 3) % this.capacity] = (entityId >> 24)  & 0xFF;
+    }
+    pos += 4;
 
-    // Write payload (f32 values, little-endian via DataView)
+    // Write payload (f32 values, little-endian)
     if (payload && payloadSize > 0) {
-      for (let i = 0; i < payloadSize; i++) {
-        const tempView = new DataView(payload.buffer, payload.byteOffset);
-        this.writeByte(pos, tempView.getUint8(i));
-        pos++;
+      const scratch = RingBufferProducer._scratch;
+      if (IS_LITTLE_ENDIAN) {
+        for (let i = 0; i < payload.length; i++) {
+          const p = (pos + i * 4) % this.capacity;
+          if ((p & 3) === 0) {
+            this.f32View[p >> 2] = payload[i];
+          } else if (p + 4 <= this.capacity) {
+            this.data.setFloat32(p, payload[i], true);
+          } else {
+            // Float straddles wrap boundary — write byte-by-byte LE
+            scratch.setFloat32(0, payload[i], true);
+            for (let b = 0; b < 4; b++) {
+              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+            }
+          }
+        }
+      } else {
+        for (let i = 0; i < payload.length; i++) {
+          const p = (pos + i * 4) % this.capacity;
+          if (p + 4 <= this.capacity) {
+            this.data.setFloat32(p, payload[i], true);
+          } else {
+            // Float straddles wrap boundary — write byte-by-byte LE
+            scratch.setFloat32(0, payload[i], true);
+            for (let b = 0; b < 4; b++) {
+              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+            }
+          }
+        }
       }
+      pos += payloadSize;
     }
 
     // Commit write head
     this.writeHead = pos % this.capacity;
     return true;
-  }
-
-  private writeByte(offset: number, value: number): void {
-    this.data.setUint8(offset % this.capacity, value);
   }
 
   setPosition(entityId: number, x: number, y: number, z: number): boolean {
@@ -114,6 +174,18 @@ export class RingBufferProducer {
     // Write the u32 as raw bytes into a Float32Array (reinterpret, not convert)
     new Uint32Array(payload.buffer)[0] = packedIndex;
     return this.writeCommand(CommandType.SetTextureLayer, entityId, payload);
+  }
+
+  setMeshHandle(entityId: number, handle: number): boolean {
+    const payload = new Float32Array(1);
+    new Uint32Array(payload.buffer)[0] = handle;
+    return this.writeCommand(CommandType.SetMeshHandle, entityId, payload);
+  }
+
+  setRenderPrimitive(entityId: number, primitive: number): boolean {
+    const payload = new Float32Array(1);
+    new Uint32Array(payload.buffer)[0] = primitive;
+    return this.writeCommand(CommandType.SetRenderPrimitive, entityId, payload);
   }
 }
 
@@ -137,7 +209,7 @@ export function extractUnread(sab: SharedArrayBuffer): {
   bytes: Uint8Array;
   capacity: number;
 } {
-  const header = new Int32Array(sab, 0, 4);
+  const header = new Int32Array(sab, 0, 8);
   const capacity = sab.byteLength - HEADER_SIZE;
   const writeHead = Atomics.load(header, WRITE_HEAD_OFFSET);
   const readHead = Atomics.load(header, READ_HEAD_OFFSET);

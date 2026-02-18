@@ -3,8 +3,8 @@
 /**
  * Engine Logic Worker.
  * Loads the WASM module, extracts commands from the shared ring buffer,
- * and runs the engine tick loop. After each tick, exports GPU entity data
- * (20 floats per entity: mat4x4 + vec4 boundingSphere) as a transferable ArrayBuffer.
+ * and runs the engine tick loop. After each tick, exports SoA GPU data
+ * (transforms, bounds, renderMeta, texIndices) as transferable ArrayBuffers.
  */
 
 import { extractUnread } from "./ring-buffer";
@@ -15,15 +15,17 @@ interface WasmEngine {
   engine_push_commands(data: Uint8Array): void;
   engine_update(dt: number): void;
   engine_tick_count(): bigint;
-  // Legacy render state exports (backward compat)
   engine_render_state_count(): number;
   engine_render_state_ptr(): number;
   engine_render_state_f32_len(): number;
-  // GPU entity data exports (20 floats per entity: mat4x4 + vec4 boundingSphere)
   engine_gpu_entity_count(): number;
-  engine_gpu_data_ptr(): number;
-  engine_gpu_data_f32_len(): number;
-  // Texture layer indices (1 u32 per entity)
+  // SoA exports
+  engine_gpu_transforms_ptr(): number;
+  engine_gpu_transforms_f32_len(): number;
+  engine_gpu_bounds_ptr(): number;
+  engine_gpu_bounds_f32_len(): number;
+  engine_gpu_render_meta_ptr(): number;
+  engine_gpu_render_meta_len(): number;
   engine_gpu_tex_indices_ptr(): number;
   engine_gpu_tex_indices_len(): number;
   memory: WebAssembly.Memory;
@@ -67,56 +69,59 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     case "tick": {
       if (!wasm || !commandBuffer) return;
 
-      // 1. Extract unread commands from the SAB ring buffer.
       const { bytes } = extractUnread(commandBuffer);
       if (bytes.length > 0) {
         wasm.engine_push_commands(bytes);
       }
-
-      // 2. Run physics + transform + collect render state.
       wasm.engine_update(msg.dt);
 
-      // 3. Read GPU entity data from WASM memory (20 floats per entity).
       const count = wasm.engine_gpu_entity_count();
-      const ptr = wasm.engine_gpu_data_ptr();
-      const f32Len = wasm.engine_gpu_data_f32_len();
-      const texPtr = wasm.engine_gpu_tex_indices_ptr();
-      const texLen = wasm.engine_gpu_tex_indices_len();
       const tickCount = Number(wasm.engine_tick_count());
 
-      let renderState: { entityCount: number; entityData: ArrayBuffer; texIndices: ArrayBuffer } | null = null;
+      let renderState: {
+        entityCount: number;
+        transforms: ArrayBuffer;
+        bounds: ArrayBuffer;
+        renderMeta: ArrayBuffer;
+        texIndices: ArrayBuffer;
+      } | null = null;
 
-      if (count > 0 && ptr !== 0) {
-        const wasmData = new Float32Array(wasm.memory.buffer, ptr, f32Len);
-        // Copy to a transferable buffer (WASM memory can't be transferred).
-        const transferBuf = new Float32Array(f32Len);
-        transferBuf.set(wasmData);
+      if (count > 0) {
+        const tPtr = wasm.engine_gpu_transforms_ptr();
+        const tLen = wasm.engine_gpu_transforms_f32_len();
+        const bPtr = wasm.engine_gpu_bounds_ptr();
+        const bLen = wasm.engine_gpu_bounds_f32_len();
+        const mPtr = wasm.engine_gpu_render_meta_ptr();
+        const mLen = wasm.engine_gpu_render_meta_len();
+        const texPtr = wasm.engine_gpu_tex_indices_ptr();
+        const texLen = wasm.engine_gpu_tex_indices_len();
 
-        let texBuf: Uint32Array;
-        if (texPtr !== 0 && texLen > 0) {
-          const wasmTex = new Uint32Array(wasm.memory.buffer, texPtr, texLen);
-          texBuf = new Uint32Array(texLen);
-          texBuf.set(wasmTex);
-        } else {
-          texBuf = new Uint32Array(count);
-        }
+        // Copy from WASM memory into transferable buffers
+        const transforms = new Float32Array(tLen);
+        if (tPtr) transforms.set(new Float32Array(wasm.memory.buffer, tPtr, tLen));
+
+        const bounds = new Float32Array(bLen);
+        if (bPtr) bounds.set(new Float32Array(wasm.memory.buffer, bPtr, bLen));
+
+        const renderMeta = new Uint32Array(mLen);
+        if (mPtr) renderMeta.set(new Uint32Array(wasm.memory.buffer, mPtr, mLen));
+
+        const texIndices = new Uint32Array(texLen);
+        if (texPtr) texIndices.set(new Uint32Array(wasm.memory.buffer, texPtr, texLen));
 
         renderState = {
           entityCount: count,
-          entityData: transferBuf.buffer as ArrayBuffer,
-          texIndices: texBuf.buffer as ArrayBuffer,
+          transforms: transforms.buffer as ArrayBuffer,
+          bounds: bounds.buffer as ArrayBuffer,
+          renderMeta: renderMeta.buffer as ArrayBuffer,
+          texIndices: texIndices.buffer as ArrayBuffer,
         };
       }
 
       if (renderState) {
         self.postMessage(
-          {
-            type: "tick-done",
-            dt: msg.dt,
-            tickCount,
-            renderState,
-          },
-          [renderState.entityData, renderState.texIndices]
+          { type: "tick-done", dt: msg.dt, tickCount, renderState },
+          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices]
         );
       } else {
         self.postMessage({

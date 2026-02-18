@@ -1,32 +1,197 @@
 //! Collects render-ready data from the ECS into contiguous GPU-uploadable buffers.
+//!
+//! GPU data is laid out as Structure-of-Arrays (SoA): four independent buffers
+//! (transforms, bounds, renderMeta, texIndices) instead of one interleaved buffer.
+//! This enables partial upload, better GPU cache performance, and extensibility.
 
 use hecs::World;
 
-use crate::components::{Active, BoundingRadius, ModelMatrix, Position, TextureLayerIndex};
+use crate::components::{
+    Active, BoundingRadius, MeshHandle, ModelMatrix, Position, RenderPrimitive, TextureLayerIndex,
+};
 
-/// Per-entity GPU data stride: 20 floats (80 bytes).
-/// Layout: mat4x4f (64 bytes) + vec4f boundingSphere (16 bytes).
-const FLOATS_PER_GPU_ENTITY: usize = 20;
+/// Compact bitset for tracking dirty flags per entity slot.
+///
+/// Uses one bit per entity, packed into `u64` words. At 100k entities this
+/// consumes only ~12.5 KB, making clear() a fast `memset` of 1563 words.
+pub struct BitSet {
+    bits: Vec<u64>,
+    count: usize,
+}
 
-/// Contiguous buffer of model matrices for all active entities.
+impl BitSet {
+    /// Create a new bitset with capacity for at least `capacity` bits, all unset.
+    pub fn new(capacity: usize) -> Self {
+        let words = capacity.div_ceil(64);
+        Self {
+            bits: vec![0u64; words],
+            count: 0,
+        }
+    }
+
+    /// Mark bit at `index` as set. Idempotent: only increments count on first set.
+    pub fn set(&mut self, index: usize) {
+        self.ensure_capacity(index + 1);
+        let word = index / 64;
+        let bit = index % 64;
+        let mask = 1u64 << bit;
+        if self.bits[word] & mask == 0 {
+            self.bits[word] |= mask;
+            self.count += 1;
+        }
+    }
+
+    /// Check if bit at `index` is set. Returns false for out-of-bounds indices.
+    pub fn get(&self, index: usize) -> bool {
+        let word = index / 64;
+        if word >= self.bits.len() {
+            return false;
+        }
+        let bit = index % 64;
+        self.bits[word] & (1u64 << bit) != 0
+    }
+
+    /// Clear all bits and reset count to zero.
+    pub fn clear(&mut self) {
+        for w in &mut self.bits {
+            *w = 0;
+        }
+        self.count = 0;
+    }
+
+    /// Number of set bits.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Grow the bitset if needed to hold at least `capacity` bits.
+    pub fn ensure_capacity(&mut self, capacity: usize) {
+        let words_needed = capacity.div_ceil(64);
+        if words_needed > self.bits.len() {
+            self.bits.resize(words_needed, 0);
+        }
+    }
+}
+
+/// Tracks which entity slots have been modified since the last frame.
+///
+/// Maintains three independent dirty bitsets corresponding to the SoA GPU buffers:
+/// - `transform_dirty`: entity model matrix changed
+/// - `bounds_dirty`: entity position or bounding radius changed
+/// - `meta_dirty`: entity mesh handle, render primitive, or texture index changed
+///
+/// Used to determine whether a full or partial GPU buffer upload is beneficial.
+/// Rule of thumb: if `transform_dirty_ratio(total) < 0.3`, a partial upload wins.
+pub struct DirtyTracker {
+    transform_dirty: BitSet,
+    bounds_dirty: BitSet,
+    meta_dirty: BitSet,
+}
+
+impl DirtyTracker {
+    /// Create a new tracker pre-sized for `capacity` entity slots.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            transform_dirty: BitSet::new(capacity),
+            bounds_dirty: BitSet::new(capacity),
+            meta_dirty: BitSet::new(capacity),
+        }
+    }
+
+    /// Mark entity at `idx` as having a dirty transform (model matrix changed).
+    pub fn mark_transform_dirty(&mut self, idx: usize) {
+        self.transform_dirty.set(idx);
+    }
+
+    /// Mark entity at `idx` as having dirty bounds (position or radius changed).
+    pub fn mark_bounds_dirty(&mut self, idx: usize) {
+        self.bounds_dirty.set(idx);
+    }
+
+    /// Mark entity at `idx` as having dirty metadata (mesh, primitive, or texture changed).
+    pub fn mark_meta_dirty(&mut self, idx: usize) {
+        self.meta_dirty.set(idx);
+    }
+
+    /// Check if entity at `idx` has a dirty transform.
+    pub fn is_transform_dirty(&self, idx: usize) -> bool {
+        self.transform_dirty.get(idx)
+    }
+
+    /// Check if entity at `idx` has dirty bounds.
+    pub fn is_bounds_dirty(&self, idx: usize) -> bool {
+        self.bounds_dirty.get(idx)
+    }
+
+    /// Check if entity at `idx` has dirty metadata (mesh, primitive, or texture).
+    pub fn is_meta_dirty(&self, idx: usize) -> bool {
+        self.meta_dirty.get(idx)
+    }
+
+    /// Fraction of entities with dirty transforms: `dirty_count / total`.
+    /// Returns 0.0 if `total` is 0.
+    pub fn transform_dirty_ratio(&self, total: usize) -> f32 {
+        if total == 0 {
+            return 0.0;
+        }
+        self.transform_dirty.count() as f32 / total as f32
+    }
+
+    /// Fraction of entities with dirty metadata: `dirty_count / total`.
+    /// Returns 0.0 if `total` is 0.
+    pub fn meta_dirty_ratio(&self, total: usize) -> f32 {
+        if total == 0 {
+            return 0.0;
+        }
+        self.meta_dirty.count() as f32 / total as f32
+    }
+
+    /// Pre-size all internal bitsets to hold at least `capacity` entity slots.
+    ///
+    /// Call this before the query loop each frame to avoid incremental
+    /// allocations when `mark_*_dirty()` is called during iteration.
+    pub fn ensure_capacity(&mut self, capacity: usize) {
+        self.transform_dirty.ensure_capacity(capacity);
+        self.bounds_dirty.ensure_capacity(capacity);
+        self.meta_dirty.ensure_capacity(capacity);
+    }
+
+    /// Clear all dirty flags for the next frame.
+    pub fn clear(&mut self) {
+        self.transform_dirty.clear();
+        self.bounds_dirty.clear();
+        self.meta_dirty.clear();
+    }
+}
+
+/// Contiguous buffers of render data for all active entities.
 /// Updated once per frame after all physics ticks and transform recomputation.
 pub struct RenderState {
     /// Flat buffer: each entry is 16 f32s (one 4x4 column-major matrix).
+    /// Used by the legacy collect() path.
     pub matrices: Vec<[f32; 16]>,
 
-    // GPU-driven pipeline data
-    gpu_data: Vec<f32>,
-    gpu_tex_indices: Vec<u32>,
+    // SoA GPU buffers
+    gpu_transforms: Vec<f32>,    // 16 f32/entity (mat4x4)
+    gpu_bounds: Vec<f32>,        // 4 f32/entity (xyz + radius)
+    gpu_render_meta: Vec<u32>,   // 2 u32/entity (mesh_handle + primitive)
+    gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_count: u32,
+
+    /// Per-buffer dirty tracking for partial upload optimization.
+    pub dirty_tracker: DirtyTracker,
 }
 
 impl RenderState {
     pub fn new() -> Self {
         Self {
             matrices: Vec::new(),
-            gpu_data: Vec::new(),
+            gpu_transforms: Vec::new(),
+            gpu_bounds: Vec::new(),
+            gpu_render_meta: Vec::new(),
             gpu_tex_indices: Vec::new(),
             gpu_count: 0,
+            dirty_tracker: DirtyTracker::new(0),
         }
     }
 
@@ -59,35 +224,62 @@ impl RenderState {
         (self.matrices.len() * 16) as u32
     }
 
-    /// Collect entity data for GPU-driven pipeline.
-    /// Each entity produces 20 floats: 16 (model matrix) + 4 (bounding sphere).
-    /// Also collects a parallel `Vec<u32>` of texture layer indices.
+    /// Collect entity data for GPU-driven pipeline using SoA layout.
+    ///
+    /// Populates four independent buffers:
+    /// - `gpu_transforms`: 16 f32/entity (model matrix)
+    /// - `gpu_bounds`: 4 f32/entity (position xyz + bounding radius)
+    /// - `gpu_render_meta`: 2 u32/entity (mesh handle + render primitive)
+    /// - `gpu_tex_indices`: 1 u32/entity (texture layer index)
     pub fn collect_gpu(&mut self, world: &World) {
-        self.gpu_data.clear();
+        self.dirty_tracker.clear();
+
+        self.gpu_transforms.clear();
+        self.gpu_bounds.clear();
+        self.gpu_render_meta.clear();
         self.gpu_tex_indices.clear();
-        // Vec::clear retains capacity, so subsequent frames avoid reallocation.
-        // Reserve on first frame or if entity count grew.
-        self.gpu_data.reserve(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY);
-        self.gpu_tex_indices.reserve(self.gpu_count as usize);
+
+        // Pre-allocate based on previous frame's entity count to avoid reallocation.
+        let hint = self.gpu_count as usize;
+        self.gpu_transforms.reserve(hint * 16);
+        self.gpu_bounds.reserve(hint * 4);
+        self.gpu_render_meta.reserve(hint * 2);
+        self.gpu_tex_indices.reserve(hint);
+        self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, tex_layer, _active) in
-            world.query::<(&Position, &ModelMatrix, &BoundingRadius, &TextureLayerIndex, &Active)>().iter()
+        for (pos, matrix, radius, tex, mesh, prim, _active) in world
+            .query::<(
+                &Position,
+                &ModelMatrix,
+                &BoundingRadius,
+                &TextureLayerIndex,
+                &MeshHandle,
+                &RenderPrimitive,
+                &Active,
+            )>()
+            .iter()
         {
-            // Model matrix: 16 floats
-            self.gpu_data.extend_from_slice(&matrix.0);
-            // Bounding sphere: xyz = position, w = radius
-            self.gpu_data.push(pos.0.x);
-            self.gpu_data.push(pos.0.y);
-            self.gpu_data.push(pos.0.z);
-            self.gpu_data.push(radius.0);
+            // Buffer A: Transform (16 f32)
+            self.gpu_transforms.extend_from_slice(&matrix.0);
 
-            self.gpu_tex_indices.push(tex_layer.0);
+            // Buffer B: Bounds (4 f32)
+            self.gpu_bounds
+                .extend_from_slice(&[pos.0.x, pos.0.y, pos.0.z, radius.0]);
+
+            // Buffer C: RenderMeta (2 u32)
+            self.gpu_render_meta.push(mesh.0);
+            self.gpu_render_meta.push(prim.0 as u32);
+
+            // Texture indices (1 u32)
+            self.gpu_tex_indices.push(tex.0);
 
             self.gpu_count += 1;
         }
 
-        debug_assert_eq!(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY, self.gpu_data.len());
+        debug_assert_eq!(self.gpu_count as usize * 16, self.gpu_transforms.len());
+        debug_assert_eq!(self.gpu_count as usize * 4, self.gpu_bounds.len());
+        debug_assert_eq!(self.gpu_count as usize * 2, self.gpu_render_meta.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
     }
 
@@ -96,26 +288,72 @@ impl RenderState {
         self.gpu_count
     }
 
-    /// Raw float buffer for GPU upload (20 floats per entity).
-    pub fn gpu_buffer(&self) -> &[f32] {
-        &self.gpu_data
+    // --- SoA buffer accessors: transforms ---
+
+    /// Slice of transform data (16 f32 per entity, column-major mat4x4).
+    pub fn gpu_transforms(&self) -> &[f32] {
+        &self.gpu_transforms
     }
 
-    /// Pointer to the GPU buffer for WASM export. Returns null if empty.
-    pub fn gpu_buffer_ptr(&self) -> *const f32 {
-        if self.gpu_data.is_empty() {
+    /// Pointer to the transforms buffer for WASM export. Returns null if empty.
+    pub fn gpu_transforms_ptr(&self) -> *const f32 {
+        if self.gpu_transforms.is_empty() {
             std::ptr::null()
         } else {
-            self.gpu_data.as_ptr()
+            self.gpu_transforms.as_ptr()
         }
     }
 
-    /// Total number of f32 values in the GPU buffer.
-    pub fn gpu_buffer_f32_len(&self) -> u32 {
-        self.gpu_data.len() as u32
+    /// Number of f32 values in the transforms buffer.
+    pub fn gpu_transforms_f32_len(&self) -> u32 {
+        self.gpu_transforms.len() as u32
     }
 
-    /// Texture layer indices, one per GPU entity (parallel to gpu_data).
+    // --- SoA buffer accessors: bounds ---
+
+    /// Slice of bounds data (4 f32 per entity: xyz position + radius).
+    pub fn gpu_bounds(&self) -> &[f32] {
+        &self.gpu_bounds
+    }
+
+    /// Pointer to the bounds buffer for WASM export. Returns null if empty.
+    pub fn gpu_bounds_ptr(&self) -> *const f32 {
+        if self.gpu_bounds.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_bounds.as_ptr()
+        }
+    }
+
+    /// Number of f32 values in the bounds buffer.
+    pub fn gpu_bounds_f32_len(&self) -> u32 {
+        self.gpu_bounds.len() as u32
+    }
+
+    // --- SoA buffer accessors: render meta ---
+
+    /// Slice of render metadata (2 u32 per entity: mesh handle + primitive).
+    pub fn gpu_render_meta(&self) -> &[u32] {
+        &self.gpu_render_meta
+    }
+
+    /// Pointer to the render meta buffer for WASM export. Returns null if empty.
+    pub fn gpu_render_meta_ptr(&self) -> *const u32 {
+        if self.gpu_render_meta.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_render_meta.as_ptr()
+        }
+    }
+
+    /// Number of u32 values in the render meta buffer.
+    pub fn gpu_render_meta_len(&self) -> u32 {
+        self.gpu_render_meta.len() as u32
+    }
+
+    // --- SoA buffer accessors: texture indices ---
+
+    /// Texture layer indices, one per GPU entity (parallel to other SoA buffers).
     pub fn gpu_tex_indices(&self) -> &[u32] {
         &self.gpu_tex_indices
     }
@@ -133,6 +371,7 @@ impl RenderState {
     pub fn gpu_tex_indices_len(&self) -> u32 {
         self.gpu_tex_indices.len() as u32
     }
+
 }
 
 impl Default for RenderState {
@@ -227,6 +466,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex::default(),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
 
@@ -238,20 +479,25 @@ mod tests {
 
         assert_eq!(state.gpu_entity_count(), 1);
 
-        let data = state.gpu_buffer();
-        // 20 floats per entity: 16 (matrix) + 4 (bounding sphere)
-        assert_eq!(data.len(), 20);
+        // SoA: transforms has 16 f32 for one entity
+        let transforms = state.gpu_transforms();
+        assert_eq!(transforms.len(), 16);
 
         // Model matrix translation (column-major: indices 12, 13, 14)
-        assert_eq!(data[12], 1.0); // pos.x
-        assert_eq!(data[13], 2.0); // pos.y
-        assert_eq!(data[14], 3.0); // pos.z
+        assert_eq!(transforms[12], 1.0); // pos.x
+        assert_eq!(transforms[13], 2.0); // pos.y
+        assert_eq!(transforms[14], 3.0); // pos.z
 
-        // Bounding sphere: position xyz + radius
-        assert_eq!(data[16], 1.0); // pos.x
-        assert_eq!(data[17], 2.0); // pos.y
-        assert_eq!(data[18], 3.0); // pos.z
-        assert_eq!(data[19], 0.5); // radius
+        // SoA: bounds has 4 f32 for one entity
+        let bounds = state.gpu_bounds();
+        assert_eq!(bounds.len(), 4);
+        assert_eq!(bounds[0], 1.0); // pos.x
+        assert_eq!(bounds[1], 2.0); // pos.y
+        assert_eq!(bounds[2], 3.0); // pos.z
+        assert_eq!(bounds[3], 0.5); // radius
+
+        // Texture indices
+        assert_eq!(state.gpu_tex_indices().len(), 1);
     }
 
     #[test]
@@ -266,6 +512,8 @@ mod tests {
                 ModelMatrix::default(),
                 BoundingRadius(1.0),
                 TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
                 Active,
             ));
         }
@@ -275,15 +523,37 @@ mod tests {
         state.collect_gpu(&world);
 
         assert_eq!(state.gpu_entity_count(), 3);
-        assert_eq!(state.gpu_buffer().len(), 60); // 3 * 20
+        assert_eq!(state.gpu_transforms().len(), 48); // 3 * 16
+        assert_eq!(state.gpu_bounds().len(), 12);      // 3 * 4
+        assert_eq!(state.gpu_render_meta().len(), 6);  // 3 * 2
+        assert_eq!(state.gpu_tex_indices().len(), 3);  // 3 * 1
     }
 
     #[test]
     fn collect_gpu_skips_entities_without_bounding_radius() {
         let mut world = World::new();
-        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), BoundingRadius(1.0), TextureLayerIndex::default(), Active));
-        // Entity missing BoundingRadius — visible to collect() but not collect_gpu()
-        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), Active));
+        // Full entity with all required components
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation::default(),
+            Scale::default(),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex::default(),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+        // Entity missing BoundingRadius, MeshHandle, RenderPrimitive — visible to collect() but not collect_gpu()
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation::default(),
+            Scale::default(),
+            Velocity::default(),
+            ModelMatrix::default(),
+            Active,
+        ));
 
         let mut state = RenderState::new();
         state.collect(&world);
@@ -304,6 +574,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex((2 << 16) | 10), // tier 2, layer 10
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
         world.spawn((
@@ -314,6 +586,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex(0), // default
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
         crate::systems::transform_system(&mut world);
@@ -336,5 +610,197 @@ mod tests {
         state.collect_gpu(&world);
         assert!(state.gpu_tex_indices().is_empty());
         assert!(state.gpu_tex_indices_ptr().is_null());
+    }
+
+    // --- New SoA-specific tests ---
+
+    #[test]
+    fn collect_gpu_soa_produces_separate_buffers() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::new(1.0, 2.0, 3.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)).to_cols_array()),
+            BoundingRadius(0.5),
+            TextureLayerIndex(0),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+
+        assert_eq!(rs.gpu_entity_count(), 1);
+        assert_eq!(rs.gpu_transforms().len(), 16);
+        assert_eq!(rs.gpu_bounds().len(), 4);
+        assert_eq!(rs.gpu_render_meta().len(), 2);
+        assert_eq!(rs.gpu_tex_indices().len(), 1);
+    }
+
+    #[test]
+    fn soa_bounds_contain_position_and_radius() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::new(10.0, 20.0, 30.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::IDENTITY.to_cols_array()),
+            BoundingRadius(2.5),
+            TextureLayerIndex(0),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+        let bounds = rs.gpu_bounds();
+        assert_eq!(bounds[0], 10.0);
+        assert_eq!(bounds[1], 20.0);
+        assert_eq!(bounds[2], 30.0);
+        assert_eq!(bounds[3], 2.5);
+    }
+
+    #[test]
+    fn soa_render_meta_packs_mesh_and_primitive() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::IDENTITY.to_cols_array()),
+            BoundingRadius(0.5),
+            TextureLayerIndex(0),
+            MeshHandle(7),
+            RenderPrimitive(2),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+        let meta = rs.gpu_render_meta();
+        assert_eq!(meta[0], 7);
+        assert_eq!(meta[1], 2);
+    }
+
+    // --- BitSet tests ---
+
+    #[test]
+    fn bitset_set_and_get() {
+        let mut bs = BitSet::new(128);
+        assert!(!bs.get(0));
+        assert!(!bs.get(63));
+        assert!(!bs.get(64));
+        bs.set(0);
+        bs.set(63);
+        bs.set(64);
+        assert!(bs.get(0));
+        assert!(bs.get(63));
+        assert!(bs.get(64));
+        assert_eq!(bs.count(), 3);
+    }
+
+    #[test]
+    fn bitset_set_idempotent() {
+        let mut bs = BitSet::new(64);
+        bs.set(10);
+        bs.set(10);
+        bs.set(10);
+        assert_eq!(bs.count(), 1);
+    }
+
+    #[test]
+    fn bitset_get_out_of_bounds() {
+        let bs = BitSet::new(64);
+        assert!(!bs.get(9999));
+    }
+
+    #[test]
+    fn bitset_clear() {
+        let mut bs = BitSet::new(128);
+        bs.set(0);
+        bs.set(64);
+        bs.set(127);
+        assert_eq!(bs.count(), 3);
+        bs.clear();
+        assert_eq!(bs.count(), 0);
+        assert!(!bs.get(0));
+        assert!(!bs.get(64));
+        assert!(!bs.get(127));
+    }
+
+    #[test]
+    fn bitset_ensure_capacity_grows() {
+        let mut bs = BitSet::new(64);
+        // Setting beyond initial capacity should auto-grow
+        bs.set(200);
+        assert!(bs.get(200));
+        assert_eq!(bs.count(), 1);
+    }
+
+    // --- DirtyTracker tests ---
+
+    #[test]
+    fn dirty_tracker_marks_transform_dirty() {
+        let mut tracker = DirtyTracker::new(100);
+        assert!(!tracker.is_transform_dirty(0));
+        tracker.mark_transform_dirty(0);
+        assert!(tracker.is_transform_dirty(0));
+    }
+
+    #[test]
+    fn dirty_tracker_clear_resets_all() {
+        let mut tracker = DirtyTracker::new(100);
+        tracker.mark_transform_dirty(0);
+        tracker.mark_transform_dirty(50);
+        tracker.mark_bounds_dirty(25);
+        tracker.clear();
+        assert!(!tracker.is_transform_dirty(0));
+        assert!(!tracker.is_transform_dirty(50));
+        assert!(!tracker.is_bounds_dirty(25));
+    }
+
+    #[test]
+    fn dirty_tracker_dirty_ratio() {
+        let mut tracker = DirtyTracker::new(100);
+        for i in 0..30 {
+            tracker.mark_transform_dirty(i);
+        }
+        assert!((tracker.transform_dirty_ratio(100) - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn dirty_tracker_ensure_capacity_pre_sizes_bitsets() {
+        let mut tracker = DirtyTracker::new(0);
+        // Start with zero capacity — marking should still work (BitSet auto-grows),
+        // but ensure_capacity avoids repeated small allocations.
+        tracker.ensure_capacity(256);
+        tracker.mark_transform_dirty(200);
+        tracker.mark_bounds_dirty(200);
+        tracker.mark_meta_dirty(200);
+        assert!(tracker.is_transform_dirty(200));
+        assert!(tracker.is_bounds_dirty(200));
+        assert!(tracker.is_meta_dirty(200));
+    }
+
+    #[test]
+    fn dirty_tracker_is_meta_dirty() {
+        let mut tracker = DirtyTracker::new(100);
+        assert!(!tracker.is_meta_dirty(5));
+        tracker.mark_meta_dirty(5);
+        assert!(tracker.is_meta_dirty(5));
+        assert!(!tracker.is_meta_dirty(6));
+    }
+
+    #[test]
+    fn dirty_tracker_meta_dirty_ratio() {
+        let mut tracker = DirtyTracker::new(100);
+        assert_eq!(tracker.meta_dirty_ratio(0), 0.0);
+        for i in 0..50 {
+            tracker.mark_meta_dirty(i);
+        }
+        assert!((tracker.meta_dirty_ratio(100) - 0.5).abs() < 0.01);
     }
 }

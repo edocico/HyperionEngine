@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-17 | **Versione**: 0.5.0 (Phase 0-4 completate) | **44 test Rust across 7 moduli + 46 test TypeScript across 7 file**
+> **Ultimo aggiornamento**: 2026-02-18 | **Versione**: 0.6.0 (Phase 0-4 + Phase 4.5 completate) | **68 test Rust across 7 moduli + 90 test TypeScript across 14 file**
 
 ---
 
@@ -180,12 +180,12 @@ HyperionEngine/
 │           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum,
 │           │                           #   parse_commands()
 │           ├── components.rs           # Position, Rotation, Scale, Velocity, ModelMatrix,
-│           │                           #   BoundingRadius, TextureLayerIndex, Active
-│           │                           #   — tutti #[repr(C)] Pod per GPU upload
+│           │                           #   BoundingRadius, TextureLayerIndex, MeshHandle,
+│           │                           #   RenderPrimitive, Active — tutti #[repr(C)] Pod
 │           ├── systems.rs              # velocity_system, transform_system, count_active
 │           └── render_state.rs         # RenderState: collect() per legacy matrices,
-│                                       #   collect_gpu() per EntityGPUData (20 f32/entity) +
-│                                       #   buffer parallelo texture indices
+│                                       #   collect_gpu() per SoA buffers (transforms/bounds/
+│                                       #   renderMeta/texIndices) + BitSet/DirtyTracker
 └── ts/
     ├── package.json                    # Scripts: dev, build, build:wasm, test
     ├── tsconfig.json                   # strict, ES2022, bundler moduleResolution
@@ -196,27 +196,45 @@ HyperionEngine/
         ├── capabilities.ts             # detectCapabilities(), selectExecutionMode(), logCapabilities()
         ├── capabilities.test.ts        # 4 test: mode selection across capability combinations
         ├── ring-buffer.ts              # RingBufferProducer: Atomics-based SPSC producer, CommandType enum
-        ├── ring-buffer.test.ts         # 6 test: write/read/overflow/sequential/texture layer
+        ├── ring-buffer.test.ts         # 14 test: write/read/overflow/sequential/texture layer/fast path
         ├── ring-buffer-utils.test.ts   # 4 test: ring buffer utility functions
+        ├── backpressure.ts             # PrioritizedCommandQueue: priority-based command queuing
+        ├── backpressure.test.ts        # 7 test: priority ordering, limits, critical bypass
+        ├── supervisor.ts               # WorkerSupervisor: heartbeat monitoring + timeout
+        ├── supervisor.test.ts          # 4 test: heartbeat, timeout detection
         ├── worker-bridge.ts            # EngineBridge + GPURenderState, createWorkerBridge(),
         │                               #   createFullIsolationBridge(), createDirectBridge()
         ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch
         ├── renderer.ts                 # GPU-driven renderer: compute culling pipeline,
         │                               #   indirect draw, TextureManager integration, multi-tier textures
-        ├── texture-manager.ts          # TextureManager: multi-tier Texture2DArray management,
-        │                               #   createImageBitmap loading, concurrency limiter
-        ├── texture-manager.test.ts     # 10 test: tier selection, index packing/unpacking
+        ├── texture-manager.ts          # TextureManager: multi-tier Texture2DArray with lazy
+        │                               #   allocation + exponential growth, concurrency limiter
+        ├── texture-manager.test.ts     # 13 test: tier selection, packing, lazy alloc, growth
         ├── camera.ts                   # Orthographic camera, extractFrustumPlanes(),
         │                               #   isSphereInFrustum(), isPointInFrustum()
         ├── camera.test.ts              # 10 test: camera math, frustum plane extraction, culling
         ├── frustum.test.ts             # 7 test: frustum culling accuracy (sphere-plane tests)
         ├── render-worker.ts            # Mode A render worker: OffscreenCanvas + createRenderer()
         ├── vite-env.d.ts               # Type declarations for WGSL ?raw imports and Vite client
+        ├── render/
+        │   ├── render-pass.ts          # RenderPass interface + FrameState type
+        │   ├── render-pass.test.ts     # 6 test: ResourcePool CRUD, pass contract
+        │   ├── resource-pool.ts        # ResourcePool: named GPU resource registry
+        │   ├── render-graph.ts         # RenderGraph: DAG pass scheduling (Kahn's sort)
+        │   ├── render-graph.test.ts    # 8 test: ordering, dead-pass culling, cycles
+        │   └── passes/
+        │       ├── cull-pass.ts        # CullPass: GPU frustum culling compute pass
+        │       ├── cull-pass.test.ts   # 1 test: CullPass construction
+        │       ├── forward-pass.ts     # ForwardPass: forward rendering pass skeleton
+        │       ├── forward-pass.test.ts # 1 test: ForwardPass construction
+        │       ├── prefix-sum-reference.ts # CPU Blelloch exclusive scan reference
+        │       └── prefix-sum.test.ts  # 6 test: Blelloch scan correctness
         ├── shaders/
         │   ├── basic.wgsl              # Render shader: visibility indirection +
         │   │                           #   multi-tier Texture2DArray sampling
-        │   └── cull.wgsl               # Compute shader: sphere-frustum culling +
-        │                               #   atomicAdd per indirect draw
+        │   ├── cull.wgsl               # Compute shader: sphere-frustum culling (SoA) +
+        │   │                           #   atomicAdd per indirect draw
+        │   └── prefix-sum.wgsl         # Compute shader: Blelloch exclusive scan
         └── integration.test.ts         # 5 test: binary protocol, texture pipeline, GPU data format
 ```
 
@@ -757,24 +775,29 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║               Communication Layer (TS ↔ Rust)                 ║
 ║  ring-buffer.ts → RingBufferProducer (Atomics, DataView)      ║
 ║  ring_buffer.rs → RingBufferConsumer (AtomicU32, raw ptr)     ║
-║  SharedArrayBuffer: [header 16B][data region]                 ║
+║  SharedArrayBuffer: [header 32B][data region]                 ║
 +═══════════════════════════════════════════════════════════════+
 ║               GPU-Driven Render Layer (TS + WebGPU)           ║
-║  renderer.ts        → Compute culling + indirect draw pipeline║
-║  texture-manager.ts → Multi-tier Texture2DArray management    ║
-║  camera.ts          → Orthographic projection + frustum planes║
-║  render-worker.ts   → Mode A: OffscreenCanvas + createRenderer║
-║  shaders/cull.wgsl  → Compute: sphere-frustum culling         ║
-║  shaders/basic.wgsl → Render: visibility indirection +        ║
-║                        multi-tier texture sampling             ║
+║  renderer.ts         → Compute culling + indirect draw pipeline║
+║  texture-manager.ts  → Multi-tier Texture2DArray (lazy alloc) ║
+║  render/render-graph  → DAG pass scheduling (Kahn's sort)     ║
+║  render/render-pass   → RenderPass interface + ResourcePool   ║
+║  render/passes/       → CullPass, ForwardPass, prefix-sum     ║
+║  camera.ts           → Orthographic projection + frustum      ║
+║  backpressure.ts     → PrioritizedCommandQueue                ║
+║  supervisor.ts       → Worker heartbeat monitoring            ║
+║  shaders/cull.wgsl   → Compute: sphere-frustum culling (SoA) ║
+║  shaders/basic.wgsl  → Render: visibility indirection +       ║
+║                         multi-tier texture sampling            ║
+║  shaders/prefix-sum  → Blelloch exclusive scan (workgroup)    ║
 +═══════════════════════════════════════════════════════════════+
 ║                   Simulation Layer (Rust/WASM)                ║
 ║  lib.rs       → WASM exports (engine_init, engine_update,     ║
 ║                  engine_gpu_data_ptr, engine_gpu_tex_indices)  ║
 ║  engine.rs    → Fixed-timestep accumulator, tick loop         ║
 ║  command_processor.rs → EntityMap + process_commands()         ║
-║  render_state.rs → collect_gpu(): EntityGPUData (20 f32/ent)  ║
-║                    + parallel texture indices buffer           ║
+║  render_state.rs → collect_gpu(): SoA buffers (transforms/    ║
+║                    bounds/meta/texIndices) + DirtyTracker      ║
 +═══════════════════════════════════════════════════════════════+
 ║                     ECS Layer (Rust)                          ║
 ║  components.rs → Position, Rotation, Scale, Velocity,         ║
@@ -1100,7 +1123,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (44 test Rust across 7 moduli + 46 test TypeScript across 7 file)
+### Struttura (68 test Rust across 7 moduli + 90 test TypeScript across 14 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1110,35 +1133,42 @@ Il test suite e organizzato in due livelli per linguaggio:
 crates/hyperion-core/src/
   ring_buffer.rs          13 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance,
                                    parse_commands (spawn, position, multiple, incomplete, empty, set_texture_layer)
-  components.rs            9 test: default values (position, rotation, scale), Pod transmute (ModelMatrix,
-                                   BoundingRadius, TextureLayerIndex), texture layer pack/unpack
+  components.rs           13 test: default values, Pod transmute, texture layer pack/unpack,
+                                   MeshHandle/RenderPrimitive defaults + custom values
   command_processor.rs     6 test: spawn, set position, despawn, ID recycling, set_texture_layer,
                                    nonexistent entity safety
   engine.rs                5 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
                                    render_state collected after update
   systems.rs               4 test: velocity moves position, transform→matrix, transform applies scale,
                                    count_active
-  render_state.rs         10 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
+  render_state.rs         24 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
                                    multiple, skip without bounding radius, texture layer indices,
-                                   empty tex indices
+                                   empty tex indices, SoA buffers, bounds, render meta,
+                                   BitSet (set/get, idempotent, OOB, clear, ensure_capacity),
+                                   DirtyTracker (mark/check, clear, ratio, ensure_capacity, meta)
 ```
 
 **TypeScript** — File `.test.ts` colocati in `ts/src/`:
 
 ```
 ts/src/
-  capabilities.test.ts        4 test: Mode A/B/C selection across capability combinations
-  ring-buffer.test.ts          6 test: free space, spawn write, position+payload, overflow, sequential,
-                                       SetTextureLayer u32 payload
-  ring-buffer-utils.test.ts    4 test: ring buffer utility functions (extractUnread)
-  camera.test.ts              10 test: orthographic NDC mapping (center, corners, depth), Camera class,
-                                       extractFrustumPlanes (6 planes, point/sphere in/out)
-  frustum.test.ts              7 test: frustum culling accuracy (left/right/top/bottom cull,
-                                       center/edge keep, large sphere edge)
-  texture-manager.test.ts     10 test: tier selection (64/128/256/512/clamp/non-square),
-                                       index packing/unpacking/round-trip, tier dimensions
-  integration.test.ts          5 test: binary protocol, SetTextureLayer format, GPURenderState texIndices,
-                                       mode degradation, GPU entity data format (20 f32/entity)
+  capabilities.test.ts              4 test: Mode A/B/C selection across capability combinations
+  ring-buffer.test.ts               14 test: free space, spawn write, position+payload, overflow, sequential,
+                                           SetTextureLayer, TypedArray fast path, wrap-around
+  ring-buffer-utils.test.ts          4 test: ring buffer utility functions (extractUnread)
+  camera.test.ts                    10 test: orthographic NDC mapping, Camera class, frustum planes
+  frustum.test.ts                    7 test: frustum culling accuracy (sphere-plane tests)
+  texture-manager.test.ts           13 test: tier selection, packing/unpacking, lazy alloc, exponential growth
+  backpressure.test.ts               7 test: priority ordering, soft/hard limits, critical bypass
+  supervisor.test.ts                 4 test: heartbeat monitoring, timeout detection
+  render/render-pass.test.ts         6 test: ResourcePool CRUD, pass contract validation
+  render/render-graph.test.ts        8 test: topological ordering, dead-pass culling, cycle detection,
+                                           lazy recompile, duplicate names, empty graph, multiple writers
+  render/passes/cull-pass.test.ts    1 test: CullPass construction
+  render/passes/forward-pass.test.ts 1 test: ForwardPass construction
+  render/passes/prefix-sum.test.ts   6 test: Blelloch scan correctness (simple, all-visible, all-invisible,
+                                           single element, non-power-of-2, compacted indices)
+  integration.test.ts                5 test: binary protocol, texture pipeline, GPU data format
 ```
 
 ### Pattern di Test: Cross-Boundary Protocol Verification
@@ -1166,20 +1196,21 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 44 test
+# Rust — 68 test
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
 cargo test -p hyperion-core ring_buffer               # Ring buffer (13 test)
-cargo test -p hyperion-core render_state              # Render state (10 test)
-cargo test -p hyperion-core components                # Components (9 test)
+cargo test -p hyperion-core render_state              # Render state (24 test)
+cargo test -p hyperion-core components                # Components (13 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 46 test
+# TypeScript — 90 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
 cd ts && npx vitest run src/frustum.test.ts           # Frustum culling
 cd ts && npx vitest run src/texture-manager.test.ts   # Texture manager
+cd ts && npx vitest run src/render/render-graph.test.ts # RenderGraph DAG
 cd ts && npx tsc --noEmit                             # Type-check solo
 
 # Visual testing — build WASM + dev server
@@ -1295,8 +1326,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
 | Entity IDs non compattati dopo molti spawn/despawn | Free-list LIFO puo lasciare buchi nel Vec | Spreco di memoria per mappe molto sparse | Accettabile per < 1M entita |
 | Nessuna validazione del quaternione in `SetRotation` | Il payload e accettato cosi com'e | Quaternioni non normalizzati producono scale anomale nella model matrix | Aggiungere normalizzazione in `process_commands` |
-| Full entity buffer re-upload ogni frame | `renderer.ts` uploada tutti gli entity data (80 bytes/entity) ogni frame via `writeBuffer` | A 100k entita: ~7.6 MB/frame. Nessuna ottimizzazione dirty-flag | Futuro: dirty-flag + partial upload, double-buffering con `mapAsync` |
-| `TextureManager` alloca ~340 MB GPU memory upfront | 256 layer per tier × 4 tier (64/128/256/512px) | Su mobile/integrated GPU puo esaurire VRAM | Futuro: lazy tier allocation, layer count dinamico |
+| Full SoA buffer re-upload ogni frame | `renderer.ts` uploada tutti i buffer SoA ogni frame via `writeBuffer` | Nessuna ottimizzazione partial upload | Futuro: usare `DirtyTracker` (gia in Rust) per partial upload quando `transform_dirty_ratio < 0.3` |
 | Texture indices buffer parallelo al entity buffer | I due buffer devono essere indicizzati nello stesso ordine | Entrambi popolati nello stesso loop `collect_gpu()` — allineamento garantito | **Risolto by design** |
 
 ---
@@ -1312,6 +1342,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **2** | Render Core | **Completata** | WebGPU renderer, instanced quad pipeline, WGSL shader, camera ortografica, RenderState, SAB→WASM bridge (`engine_push_commands`), Mode A/B/C render paths |
 | **3** | GPU-Driven Pipeline | **Completata** | WGSL compute culling (`cull.wgsl`), StorageBuffer layout (20 f32/entity), `drawIndexedIndirect`, visibility indirection (`basic.wgsl`), `BoundingRadius` component, `extractFrustumPlanes()`, frustum test suite |
 | **4** | Asset Pipeline & Textures | **Completata** | `TextureManager` (multi-tier Texture2DArray 64/128/256/512), `createImageBitmap` loading pipeline, `TextureLayerIndex` component, `SetTextureLayer` command, packed texture index encoding (tier<<16\|layer), multi-tier WGSL sampling, concurrency limiter, URL caching |
+| **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
 | **5** | TypeScript API & Lifecycle | Prossima | API consumer, `dispose()` + `using`, FinalizationRegistry, entity pooling |
 | **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
 | **7** | Polish & DX | Pianificata | Shader hot-reload, dev watch mode, performance profiler |
@@ -1320,16 +1351,16 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 | Metrica | Valore |
 | --- | --- |
-| Test Rust | 44 (tutti passanti) |
-| Test TypeScript | 46 (tutti passanti) |
+| Test Rust | 68 (tutti passanti) |
+| Test TypeScript | 90 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 12+ (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `shaders/basic.wgsl`, `shaders/cull.wgsl`, `vite-env.d.ts`) |
-| File test TypeScript | 7 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `integration`) |
+| Moduli TypeScript | 20+ (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl`, `vite-env.d.ts`) |
+| File test TypeScript | 14 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `prefix-sum`, `integration`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
 | WASM exports | 14 (13 engine functions + 1 smoke test) |
-| ECS Components | 8 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, Active) |
+| ECS Components | 10 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, Active) |
 | CommandType variants | 8 (Noop + 7 comandi) |
 
 ---
@@ -1429,9 +1460,17 @@ Se servisse un tier 4 (es. 1024×1024):
 | **Bounding sphere** | Sfera che racchiude un'entita, definita da centro (xyz) e raggio (w). Usata per il frustum culling approssimato |
 | **Frustum planes** | 6 piani (left, right, bottom, top, near, far) estratti dalla matrice view-projection. Ogni piano e vec4 normalizzato (nx, ny, nz, d) |
 | **Texture2DArray** | Tipo di texture GPU che contiene N layer (slice) della stessa dimensione. Accesso via `textureSample(tex, sampler, uv, layer)` |
-| **TextureManager** | Classe TypeScript che gestisce 4 tier di Texture2DArray (64/128/256/512px) con loading asincrono e deduplicazione URL |
+| **TextureManager** | Classe TypeScript che gestisce 4 tier di Texture2DArray (64/128/256/512px) con lazy allocation ed exponential growth, loading asincrono e deduplicazione URL |
 | **Packed texture index** | Singolo u32 che codifica tier e layer: `(tier << 16) \| layer`. I 16 bit alti sono il tier, i 16 bassi il layer |
-| **RenderState** | Struttura Rust che raccoglie entity data (20 f32/entity) + texture indices (1 u32/entity) in buffer contigui per upload GPU |
+| **RenderState** | Struttura Rust che raccoglie SoA GPU buffers (transforms/bounds/renderMeta/texIndices) + DirtyTracker per partial upload optimization |
+| **BitSet** | Struttura compatta per dirty flags per entity slot: un bit per entita, packed in u64 words (~12.5 KB per 100k entita) |
+| **DirtyTracker** | Tre BitSet indipendenti (transform, bounds, meta) per tracking granulare delle modifiche per-buffer |
+| **RenderPass** | Interfaccia TypeScript per pass modulari del rendering pipeline: dichiara reads/writes su risorse nominate |
+| **ResourcePool** | Registry nominato per risorse GPU (GPUBuffer, GPUTexture, GPUTextureView, GPUSampler) |
+| **RenderGraph** | DAG di RenderPass con ordinamento topologico (Kahn's algorithm) e dead-pass culling |
+| **Blelloch scan** | Algoritmo prefix sum esclusivo work-efficient (O(n) work, O(log n) span) per stream compaction GPU |
+| **PrioritizedCommandQueue** | Coda comandi con 4 livelli di priorita (critical > high > normal > low) e limiti soft/hard configurabili |
+| **WorkerSupervisor** | Monitor heartbeat per Worker con detection timeout configurabile |
 | **NDC** | Normalized Device Coordinates — spazio di coordinate normalizzato dopo la proiezione. WebGPU: X/Y in [-1, 1], Z in [0, 1] |
 | **Orthographic projection** | Proiezione che preserva dimensioni degli oggetti indipendentemente dalla distanza — nessuna distorsione prospettica |
 | **`?raw` import** | Direttiva Vite che importa un file come stringa grezza al build time, usata per caricare shader WGSL senza richieste runtime |
