@@ -40,6 +40,12 @@ pub struct ModelMatrix(pub [f32; 16]);
 #[repr(C)]
 pub struct TextureLayerIndex(pub u32);
 
+/// Bounding sphere radius for frustum culling.
+/// The sphere center is the entity's Position.
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct BoundingRadius(pub f32);
+
 /// Mesh geometry handle. 0 = unit quad (default).
 /// Range 0–31 core, 32–63 extended, 64–127 plugin.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
@@ -55,12 +61,6 @@ pub struct RenderPrimitive(pub u8);
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
-
-/// Bounding sphere radius for frustum culling.
-/// The sphere center is the entity's Position.
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-pub struct BoundingRadius(pub f32);
 
 impl Default for Position {
     fn default() -> Self {
