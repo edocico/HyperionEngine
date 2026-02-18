@@ -25,6 +25,12 @@ describe('Prefix sum reference implementation', () => {
     expect(exclusiveScanCPU([0])).toEqual([0]);
   });
 
+  it('should handle non-power-of-2 sizes', () => {
+    expect(exclusiveScanCPU([1, 1, 1])).toEqual([0, 1, 2]);
+    expect(exclusiveScanCPU([1, 0, 1, 0, 1])).toEqual([0, 1, 1, 2, 2]);
+    expect(exclusiveScanCPU([0, 1, 1, 0, 1, 0, 1])).toEqual([0, 0, 1, 2, 2, 3, 3]);
+  });
+
   it('should produce correct compacted indices', () => {
     const visibility = [0, 1, 1, 0, 1, 0, 1, 1];
     const scan = exclusiveScanCPU(visibility);
