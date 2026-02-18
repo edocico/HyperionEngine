@@ -2,6 +2,7 @@ export class ResourcePool {
   private buffers = new Map<string, GPUBuffer>();
   private textures = new Map<string, GPUTexture>();
   private textureViews = new Map<string, GPUTextureView>();
+  private samplers = new Map<string, GPUSampler>();
 
   setBuffer(name: string, buffer: GPUBuffer): void {
     this.buffers.set(name, buffer);
@@ -27,11 +28,20 @@ export class ResourcePool {
     return this.textureViews.get(name);
   }
 
+  setSampler(name: string, sampler: GPUSampler): void {
+    this.samplers.set(name, sampler);
+  }
+
+  getSampler(name: string): GPUSampler | undefined {
+    return this.samplers.get(name);
+  }
+
   destroy(): void {
     for (const buf of this.buffers.values()) buf.destroy();
     for (const tex of this.textures.values()) tex.destroy();
     this.buffers.clear();
     this.textures.clear();
     this.textureViews.clear();
+    this.samplers.clear();
   }
 }

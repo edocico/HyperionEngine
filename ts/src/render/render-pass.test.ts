@@ -41,4 +41,16 @@ describe('ResourcePool', () => {
     pool.setTexture('depth', mockTexture);
     expect(pool.getTexture('depth')).toBe(mockTexture);
   });
+
+  it('should register and retrieve named samplers', () => {
+    const pool = new ResourcePool();
+    const mockSampler = {} as GPUSampler;
+    pool.setSampler('texSampler', mockSampler);
+    expect(pool.getSampler('texSampler')).toBe(mockSampler);
+  });
+
+  it('should return undefined for unknown samplers', () => {
+    const pool = new ResourcePool();
+    expect(pool.getSampler('nonexistent')).toBeUndefined();
+  });
 });
