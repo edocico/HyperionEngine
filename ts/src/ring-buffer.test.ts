@@ -97,4 +97,23 @@ describe("RingBufferProducer", () => {
     const payload = data[5] | (data[6] << 8) | (data[7] << 16) | (data[8] << 24);
     expect(payload).toBe(packed);
   });
+
+  it('should write SetMeshHandle command', () => {
+    const sab = new SharedArrayBuffer(1024);
+    const rb = new RingBufferProducer(sab);
+    const payload = new Float32Array(1);
+    // Reinterpret u32 as f32 for the ring buffer encoding
+    new Uint32Array(payload.buffer)[0] = 42;
+    const ok = rb.writeCommand(CommandType.SetMeshHandle, 1, payload);
+    expect(ok).toBe(true);
+  });
+
+  it('should write SetRenderPrimitive command', () => {
+    const sab = new SharedArrayBuffer(1024);
+    const rb = new RingBufferProducer(sab);
+    const payload = new Float32Array(1);
+    new Uint32Array(payload.buffer)[0] = 2; // SDFGlyph
+    const ok = rb.writeCommand(CommandType.SetRenderPrimitive, 1, payload);
+    expect(ok).toBe(true);
+  });
 });

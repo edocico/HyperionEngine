@@ -11,6 +11,9 @@ export const enum CommandType {
   SetScale = 5,
   SetVelocity = 6,
   SetTextureLayer = 7,
+  SetMeshHandle = 8,
+  SetRenderPrimitive = 9,
+  SetParent = 10,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -23,6 +26,9 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetScale]: 12,
   [CommandType.SetVelocity]: 12,
   [CommandType.SetTextureLayer]: 4,
+  [CommandType.SetMeshHandle]: 4,
+  [CommandType.SetRenderPrimitive]: 4,
+  [CommandType.SetParent]: 4,
 };
 
 export class RingBufferProducer {
@@ -114,6 +120,18 @@ export class RingBufferProducer {
     // Write the u32 as raw bytes into a Float32Array (reinterpret, not convert)
     new Uint32Array(payload.buffer)[0] = packedIndex;
     return this.writeCommand(CommandType.SetTextureLayer, entityId, payload);
+  }
+
+  setMeshHandle(entityId: number, handle: number): boolean {
+    const payload = new Float32Array(1);
+    new Uint32Array(payload.buffer)[0] = handle;
+    return this.writeCommand(CommandType.SetMeshHandle, entityId, payload);
+  }
+
+  setRenderPrimitive(entityId: number, primitive: number): boolean {
+    const payload = new Float32Array(1);
+    new Uint32Array(payload.buffer)[0] = primitive;
+    return this.writeCommand(CommandType.SetRenderPrimitive, entityId, payload);
   }
 }
 
