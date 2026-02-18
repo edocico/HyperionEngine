@@ -32,6 +32,10 @@ export class CullPass implements RenderPass {
   static SHADER_SOURCE = '';
 
   setup(device: GPUDevice, resources: ResourcePool): void {
+    if (!CullPass.SHADER_SOURCE) {
+      throw new Error('CullPass.SHADER_SOURCE must be set before calling setup()');
+    }
+
     const shaderModule = device.createShaderModule({
       code: CullPass.SHADER_SOURCE,
     });
@@ -42,10 +46,14 @@ export class CullPass implements RenderPass {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    const transformBuffer = resources.getBuffer('entity-transforms')!;
-    const boundsBuffer = resources.getBuffer('entity-bounds')!;
-    const visibleIndicesBuffer = resources.getBuffer('visible-indices')!;
-    const indirectBuffer = resources.getBuffer('indirect-args')!;
+    const transformBuffer = resources.getBuffer('entity-transforms');
+    if (!transformBuffer) throw new Error("CullPass.setup: missing 'entity-transforms' in ResourcePool");
+    const boundsBuffer = resources.getBuffer('entity-bounds');
+    if (!boundsBuffer) throw new Error("CullPass.setup: missing 'entity-bounds' in ResourcePool");
+    const visibleIndicesBuffer = resources.getBuffer('visible-indices');
+    if (!visibleIndicesBuffer) throw new Error("CullPass.setup: missing 'visible-indices' in ResourcePool");
+    const indirectBuffer = resources.getBuffer('indirect-args');
+    if (!indirectBuffer) throw new Error("CullPass.setup: missing 'indirect-args' in ResourcePool");
 
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -94,5 +102,8 @@ export class CullPass implements RenderPass {
 
   destroy(): void {
     this.cullUniformBuffer?.destroy();
+    this.cullUniformBuffer = null;
+    this.pipeline = null;
+    this.bindGroup = null;
   }
 }
