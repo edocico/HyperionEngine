@@ -98,22 +98,27 @@ describe("RingBufferProducer", () => {
     expect(payload).toBe(packed);
   });
 
-  it('should write SetMeshHandle command', () => {
-    const sab = new SharedArrayBuffer(1024);
+  it("writes SetMeshHandle command with u32 payload", () => {
+    const sab = makeBuffer();
     const rb = new RingBufferProducer(sab);
-    const payload = new Float32Array(1);
-    // Reinterpret u32 as f32 for the ring buffer encoding
-    new Uint32Array(payload.buffer)[0] = 42;
-    const ok = rb.writeCommand(CommandType.SetMeshHandle, 1, payload);
+    const ok = rb.setMeshHandle(1, 42);
     expect(ok).toBe(true);
+
+    expect(getWriteHead(sab)).toBe(9); // 1 cmd + 4 entity_id + 4 payload
+    expect(readByte(sab, 0)).toBe(CommandType.SetMeshHandle);
+    expect(readU32LE(sab, 1)).toBe(1); // entity ID
+    expect(readU32LE(sab, 5)).toBe(42); // mesh handle
   });
 
-  it('should write SetRenderPrimitive command', () => {
-    const sab = new SharedArrayBuffer(1024);
+  it("writes SetRenderPrimitive command with u32 payload", () => {
+    const sab = makeBuffer();
     const rb = new RingBufferProducer(sab);
-    const payload = new Float32Array(1);
-    new Uint32Array(payload.buffer)[0] = 2; // SDFGlyph
-    const ok = rb.writeCommand(CommandType.SetRenderPrimitive, 1, payload);
+    const ok = rb.setRenderPrimitive(1, 2);
     expect(ok).toBe(true);
+
+    expect(getWriteHead(sab)).toBe(9);
+    expect(readByte(sab, 0)).toBe(CommandType.SetRenderPrimitive);
+    expect(readU32LE(sab, 1)).toBe(1); // entity ID
+    expect(readU32LE(sab, 5)).toBe(2); // render primitive
   });
 });
