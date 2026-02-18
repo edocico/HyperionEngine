@@ -3,7 +3,7 @@ import { CommandType } from './ring-buffer';
 
 export type BackpressureMode = 'retry-queue' | 'drop';
 
-interface QueuedCommand {
+export interface QueuedCommand {
   cmd: CommandType;
   entityId: number;
   payload?: Float32Array;
@@ -33,6 +33,9 @@ export class PrioritizedCommandQueue {
       if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
     }
     this.critical.splice(0, i);
+
+    // Do not attempt overwrites if any criticals remain unwritten.
+    if (this.critical.length > 0) return;
 
     // Overwrites
     const toDelete: number[] = [];

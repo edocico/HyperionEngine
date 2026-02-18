@@ -44,6 +44,37 @@ describe('PrioritizedCommandQueue', () => {
     expect(q.criticalCount).toBe(1); // one remains
   });
 
+  it('should retain the latest payload when the same entity+cmd is overwritten', () => {
+    const q = new PrioritizedCommandQueue();
+    q.enqueue(CommandType.SetPosition, 1, new Float32Array([1, 2, 3]));
+    q.enqueue(CommandType.SetPosition, 1, new Float32Array([4, 5, 6]));
+    const received: Float32Array[] = [];
+    q.drainTo({
+      writeCommand(_cmd: number, _id: number, payload?: Float32Array) {
+        if (payload) received.push(payload);
+        return true;
+      },
+    } as any);
+    expect(received).toHaveLength(1);
+    expect(Array.from(received[0])).toEqual([4, 5, 6]);
+  });
+
+  it('should not attempt overwrites when critical commands remain unwritten', () => {
+    const q = new PrioritizedCommandQueue();
+    q.enqueue(CommandType.SpawnEntity, 1);
+    q.enqueue(CommandType.SetPosition, 2, new Float32Array([1, 2, 3]));
+    const written: number[] = [];
+    q.drainTo({
+      writeCommand(cmd: number) {
+        written.push(cmd);
+        return false; // always reject
+      },
+    } as any);
+    expect(written).toHaveLength(1); // only the critical was attempted
+    expect(q.criticalCount).toBe(1);
+    expect(q.overwriteCount).toBe(1);
+  });
+
   it('should clear after successful drain', () => {
     const q = new PrioritizedCommandQueue();
     q.enqueue(CommandType.SpawnEntity, 1);
