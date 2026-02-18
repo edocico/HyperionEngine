@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WorkerSupervisor } from './supervisor';
+import { HEARTBEAT_W1_OFFSET, OVERFLOW_COUNTER_OFFSET } from './ring-buffer';
 
 function createMockSAB(): SharedArrayBuffer {
   return new SharedArrayBuffer(1024);
@@ -25,7 +26,7 @@ describe('WorkerSupervisor', () => {
     const supervisor = new WorkerSupervisor(sab, { onTimeout, checkIntervalMs: 10 });
 
     supervisor.check(); // miss 1
-    Atomics.add(header, 4, 1); // Worker increments heartbeat at i32 index 4 (byte 16)
+    Atomics.add(header, HEARTBEAT_W1_OFFSET, 1); // Worker increments heartbeat
     supervisor.check(); // heartbeat advanced → reset
     supervisor.check(); // miss 1 again
     supervisor.check(); // miss 2
@@ -35,8 +36,30 @@ describe('WorkerSupervisor', () => {
   it('should read overflow counter', () => {
     const sab = createMockSAB();
     const header = new Int32Array(sab);
-    Atomics.store(header, 7, 42); // overflow counter at i32 index 7 (byte 28)
+    Atomics.store(header, OVERFLOW_COUNTER_OFFSET, 42); // overflow counter
     const supervisor = new WorkerSupervisor(sab, {});
     expect(supervisor.overflowCount).toBe(42);
+  });
+
+  it('should stop checking after timeout until reset', () => {
+    const sab = createMockSAB();
+    const onTimeout = vi.fn();
+    const supervisor = new WorkerSupervisor(sab, { onTimeout });
+
+    supervisor.check(); // miss 1
+    supervisor.check(); // miss 2
+    supervisor.check(); // miss 3 → timeout fires
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+
+    supervisor.check(); // should be no-op (timedOut = true)
+    supervisor.check();
+    supervisor.check();
+    expect(onTimeout).toHaveBeenCalledTimes(1); // still 1, not 2
+
+    supervisor.reset();
+    supervisor.check(); // miss 1
+    supervisor.check(); // miss 2
+    supervisor.check(); // miss 3 → timeout fires again
+    expect(onTimeout).toHaveBeenCalledTimes(2);
   });
 });
