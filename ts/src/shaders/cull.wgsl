@@ -1,10 +1,6 @@
 // GPU frustum culling compute shader.
 // Dispatched with ceil(totalEntities / 256) workgroups.
-
-struct EntityData {
-    model: mat4x4f,
-    boundingSphere: vec4f,  // xyz = world position, w = radius
-};
+// SoA layout: separate transforms and bounds buffers.
 
 struct CullUniforms {
     frustumPlanes: array<vec4f, 6>,  // 6 normalized frustum planes
@@ -23,9 +19,10 @@ struct DrawIndirectArgs {
 };
 
 @group(0) @binding(0) var<uniform> cull: CullUniforms;
-@group(0) @binding(1) var<storage, read> entities: array<EntityData>;
-@group(0) @binding(2) var<storage, read_write> visibleIndices: array<u32>;
-@group(0) @binding(3) var<storage, read_write> drawArgs: DrawIndirectArgs;
+@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
+@group(0) @binding(2) var<storage, read> bounds: array<vec4f>;
+@group(0) @binding(3) var<storage, read_write> visibleIndices: array<u32>;
+@group(0) @binding(4) var<storage, read_write> drawArgs: DrawIndirectArgs;
 
 @compute @workgroup_size(256)
 fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
@@ -34,7 +31,7 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
 
-    let sphere = entities[idx].boundingSphere;
+    let sphere = bounds[idx];
     let center = sphere.xyz;
     let radius = sphere.w;
 
