@@ -123,6 +123,11 @@ impl DirtyTracker {
         self.bounds_dirty.get(idx)
     }
 
+    /// Check if entity at `idx` has dirty metadata (mesh, primitive, or texture).
+    pub fn is_meta_dirty(&self, idx: usize) -> bool {
+        self.meta_dirty.get(idx)
+    }
+
     /// Fraction of entities with dirty transforms: `dirty_count / total`.
     /// Returns 0.0 if `total` is 0.
     pub fn transform_dirty_ratio(&self, total: usize) -> f32 {
@@ -130,6 +135,25 @@ impl DirtyTracker {
             return 0.0;
         }
         self.transform_dirty.count() as f32 / total as f32
+    }
+
+    /// Fraction of entities with dirty metadata: `dirty_count / total`.
+    /// Returns 0.0 if `total` is 0.
+    pub fn meta_dirty_ratio(&self, total: usize) -> f32 {
+        if total == 0 {
+            return 0.0;
+        }
+        self.meta_dirty.count() as f32 / total as f32
+    }
+
+    /// Pre-size all internal bitsets to hold at least `capacity` entity slots.
+    ///
+    /// Call this before the query loop each frame to avoid incremental
+    /// allocations when `mark_*_dirty()` is called during iteration.
+    pub fn ensure_capacity(&mut self, capacity: usize) {
+        self.transform_dirty.ensure_capacity(capacity);
+        self.bounds_dirty.ensure_capacity(capacity);
+        self.meta_dirty.ensure_capacity(capacity);
     }
 
     /// Clear all dirty flags for the next frame.
@@ -221,6 +245,7 @@ impl RenderState {
         self.gpu_bounds.reserve(hint * 4);
         self.gpu_render_meta.reserve(hint * 2);
         self.gpu_tex_indices.reserve(hint);
+        self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
         for (pos, matrix, radius, tex, mesh, prim, _active) in world
@@ -744,5 +769,38 @@ mod tests {
             tracker.mark_transform_dirty(i);
         }
         assert!((tracker.transform_dirty_ratio(100) - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn dirty_tracker_ensure_capacity_pre_sizes_bitsets() {
+        let mut tracker = DirtyTracker::new(0);
+        // Start with zero capacity — marking should still work (BitSet auto-grows),
+        // but ensure_capacity avoids repeated small allocations.
+        tracker.ensure_capacity(256);
+        tracker.mark_transform_dirty(200);
+        tracker.mark_bounds_dirty(200);
+        tracker.mark_meta_dirty(200);
+        assert!(tracker.is_transform_dirty(200));
+        assert!(tracker.is_bounds_dirty(200));
+        assert!(tracker.is_meta_dirty(200));
+    }
+
+    #[test]
+    fn dirty_tracker_is_meta_dirty() {
+        let mut tracker = DirtyTracker::new(100);
+        assert!(!tracker.is_meta_dirty(5));
+        tracker.mark_meta_dirty(5);
+        assert!(tracker.is_meta_dirty(5));
+        assert!(!tracker.is_meta_dirty(6));
+    }
+
+    #[test]
+    fn dirty_tracker_meta_dirty_ratio() {
+        let mut tracker = DirtyTracker::new(100);
+        assert_eq!(tracker.meta_dirty_ratio(0), 0.0);
+        for i in 0..50 {
+            tracker.mark_meta_dirty(i);
+        }
+        assert!((tracker.meta_dirty_ratio(100) - 0.5).abs() < 0.01);
     }
 }
