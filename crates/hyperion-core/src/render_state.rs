@@ -1,22 +1,27 @@
 //! Collects render-ready data from the ECS into contiguous GPU-uploadable buffers.
+//!
+//! GPU data is laid out as Structure-of-Arrays (SoA): four independent buffers
+//! (transforms, bounds, renderMeta, texIndices) instead of one interleaved buffer.
+//! This enables partial upload, better GPU cache performance, and extensibility.
 
 use hecs::World;
 
-use crate::components::{Active, BoundingRadius, ModelMatrix, Position, TextureLayerIndex};
+use crate::components::{
+    Active, BoundingRadius, MeshHandle, ModelMatrix, Position, RenderPrimitive, TextureLayerIndex,
+};
 
-/// Per-entity GPU data stride: 20 floats (80 bytes).
-/// Layout: mat4x4f (64 bytes) + vec4f boundingSphere (16 bytes).
-const FLOATS_PER_GPU_ENTITY: usize = 20;
-
-/// Contiguous buffer of model matrices for all active entities.
+/// Contiguous buffers of render data for all active entities.
 /// Updated once per frame after all physics ticks and transform recomputation.
 pub struct RenderState {
     /// Flat buffer: each entry is 16 f32s (one 4x4 column-major matrix).
+    /// Used by the legacy collect() path.
     pub matrices: Vec<[f32; 16]>,
 
-    // GPU-driven pipeline data
-    gpu_data: Vec<f32>,
-    gpu_tex_indices: Vec<u32>,
+    // SoA GPU buffers
+    gpu_transforms: Vec<f32>,    // 16 f32/entity (mat4x4)
+    gpu_bounds: Vec<f32>,        // 4 f32/entity (xyz + radius)
+    gpu_render_meta: Vec<u32>,   // 2 u32/entity (mesh_handle + primitive)
+    gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_count: u32,
 }
 
@@ -24,7 +29,9 @@ impl RenderState {
     pub fn new() -> Self {
         Self {
             matrices: Vec::new(),
-            gpu_data: Vec::new(),
+            gpu_transforms: Vec::new(),
+            gpu_bounds: Vec::new(),
+            gpu_render_meta: Vec::new(),
             gpu_tex_indices: Vec::new(),
             gpu_count: 0,
         }
@@ -59,36 +66,48 @@ impl RenderState {
         (self.matrices.len() * 16) as u32
     }
 
-    /// Collect entity data for GPU-driven pipeline.
-    /// Each entity produces 20 floats: 16 (model matrix) + 4 (bounding sphere).
-    /// Also collects a parallel `Vec<u32>` of texture layer indices.
+    /// Collect entity data for GPU-driven pipeline using SoA layout.
+    ///
+    /// Populates four independent buffers:
+    /// - `gpu_transforms`: 16 f32/entity (model matrix)
+    /// - `gpu_bounds`: 4 f32/entity (position xyz + bounding radius)
+    /// - `gpu_render_meta`: 2 u32/entity (mesh handle + render primitive)
+    /// - `gpu_tex_indices`: 1 u32/entity (texture layer index)
     pub fn collect_gpu(&mut self, world: &World) {
-        self.gpu_data.clear();
+        self.gpu_transforms.clear();
+        self.gpu_bounds.clear();
+        self.gpu_render_meta.clear();
         self.gpu_tex_indices.clear();
-        // Vec::clear retains capacity, so subsequent frames avoid reallocation.
-        // Reserve on first frame or if entity count grew.
-        self.gpu_data.reserve(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY);
-        self.gpu_tex_indices.reserve(self.gpu_count as usize);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, tex_layer, _active) in
-            world.query::<(&Position, &ModelMatrix, &BoundingRadius, &TextureLayerIndex, &Active)>().iter()
+        for (pos, matrix, radius, tex, mesh, prim, _active) in world
+            .query::<(
+                &Position,
+                &ModelMatrix,
+                &BoundingRadius,
+                &TextureLayerIndex,
+                &MeshHandle,
+                &RenderPrimitive,
+                &Active,
+            )>()
+            .iter()
         {
-            // Model matrix: 16 floats
-            self.gpu_data.extend_from_slice(&matrix.0);
-            // Bounding sphere: xyz = position, w = radius
-            self.gpu_data.push(pos.0.x);
-            self.gpu_data.push(pos.0.y);
-            self.gpu_data.push(pos.0.z);
-            self.gpu_data.push(radius.0);
+            // Buffer A: Transform (16 f32)
+            self.gpu_transforms.extend_from_slice(&matrix.0);
 
-            self.gpu_tex_indices.push(tex_layer.0);
+            // Buffer B: Bounds (4 f32)
+            self.gpu_bounds
+                .extend_from_slice(&[pos.0.x, pos.0.y, pos.0.z, radius.0]);
+
+            // Buffer C: RenderMeta (2 u32)
+            self.gpu_render_meta.push(mesh.0);
+            self.gpu_render_meta.push(prim.0 as u32);
+
+            // Texture indices (1 u32)
+            self.gpu_tex_indices.push(tex.0);
 
             self.gpu_count += 1;
         }
-
-        debug_assert_eq!(self.gpu_count as usize * FLOATS_PER_GPU_ENTITY, self.gpu_data.len());
-        debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
     }
 
     /// Number of entities in the GPU buffer.
@@ -96,26 +115,72 @@ impl RenderState {
         self.gpu_count
     }
 
-    /// Raw float buffer for GPU upload (20 floats per entity).
-    pub fn gpu_buffer(&self) -> &[f32] {
-        &self.gpu_data
+    // --- SoA buffer accessors: transforms ---
+
+    /// Slice of transform data (16 f32 per entity, column-major mat4x4).
+    pub fn gpu_transforms(&self) -> &[f32] {
+        &self.gpu_transforms
     }
 
-    /// Pointer to the GPU buffer for WASM export. Returns null if empty.
-    pub fn gpu_buffer_ptr(&self) -> *const f32 {
-        if self.gpu_data.is_empty() {
+    /// Pointer to the transforms buffer for WASM export. Returns null if empty.
+    pub fn gpu_transforms_ptr(&self) -> *const f32 {
+        if self.gpu_transforms.is_empty() {
             std::ptr::null()
         } else {
-            self.gpu_data.as_ptr()
+            self.gpu_transforms.as_ptr()
         }
     }
 
-    /// Total number of f32 values in the GPU buffer.
-    pub fn gpu_buffer_f32_len(&self) -> u32 {
-        self.gpu_data.len() as u32
+    /// Number of f32 values in the transforms buffer.
+    pub fn gpu_transforms_f32_len(&self) -> u32 {
+        self.gpu_transforms.len() as u32
     }
 
-    /// Texture layer indices, one per GPU entity (parallel to gpu_data).
+    // --- SoA buffer accessors: bounds ---
+
+    /// Slice of bounds data (4 f32 per entity: xyz position + radius).
+    pub fn gpu_bounds(&self) -> &[f32] {
+        &self.gpu_bounds
+    }
+
+    /// Pointer to the bounds buffer for WASM export. Returns null if empty.
+    pub fn gpu_bounds_ptr(&self) -> *const f32 {
+        if self.gpu_bounds.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_bounds.as_ptr()
+        }
+    }
+
+    /// Number of f32 values in the bounds buffer.
+    pub fn gpu_bounds_f32_len(&self) -> u32 {
+        self.gpu_bounds.len() as u32
+    }
+
+    // --- SoA buffer accessors: render meta ---
+
+    /// Slice of render metadata (2 u32 per entity: mesh handle + primitive).
+    pub fn gpu_render_meta(&self) -> &[u32] {
+        &self.gpu_render_meta
+    }
+
+    /// Pointer to the render meta buffer for WASM export. Returns null if empty.
+    pub fn gpu_render_meta_ptr(&self) -> *const u32 {
+        if self.gpu_render_meta.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_render_meta.as_ptr()
+        }
+    }
+
+    /// Number of u32 values in the render meta buffer.
+    pub fn gpu_render_meta_len(&self) -> u32 {
+        self.gpu_render_meta.len() as u32
+    }
+
+    // --- SoA buffer accessors: texture indices ---
+
+    /// Texture layer indices, one per GPU entity (parallel to other SoA buffers).
     pub fn gpu_tex_indices(&self) -> &[u32] {
         &self.gpu_tex_indices
     }
@@ -132,6 +197,20 @@ impl RenderState {
     /// Number of texture layer indices (same as gpu_entity_count).
     pub fn gpu_tex_indices_len(&self) -> u32 {
         self.gpu_tex_indices.len() as u32
+    }
+
+    // --- Backward-compat shims (removed in Task 5 when lib.rs is updated) ---
+
+    /// Deprecated: use `gpu_transforms_ptr()` instead.
+    /// Kept temporarily so lib.rs compiles before Task 5 updates WASM exports.
+    pub fn gpu_buffer_ptr(&self) -> *const f32 {
+        self.gpu_transforms_ptr()
+    }
+
+    /// Deprecated: use `gpu_transforms_f32_len()` instead.
+    /// Kept temporarily so lib.rs compiles before Task 5 updates WASM exports.
+    pub fn gpu_buffer_f32_len(&self) -> u32 {
+        self.gpu_transforms_f32_len()
     }
 }
 
@@ -227,6 +306,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex::default(),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
 
@@ -238,20 +319,25 @@ mod tests {
 
         assert_eq!(state.gpu_entity_count(), 1);
 
-        let data = state.gpu_buffer();
-        // 20 floats per entity: 16 (matrix) + 4 (bounding sphere)
-        assert_eq!(data.len(), 20);
+        // SoA: transforms has 16 f32 for one entity
+        let transforms = state.gpu_transforms();
+        assert_eq!(transforms.len(), 16);
 
         // Model matrix translation (column-major: indices 12, 13, 14)
-        assert_eq!(data[12], 1.0); // pos.x
-        assert_eq!(data[13], 2.0); // pos.y
-        assert_eq!(data[14], 3.0); // pos.z
+        assert_eq!(transforms[12], 1.0); // pos.x
+        assert_eq!(transforms[13], 2.0); // pos.y
+        assert_eq!(transforms[14], 3.0); // pos.z
 
-        // Bounding sphere: position xyz + radius
-        assert_eq!(data[16], 1.0); // pos.x
-        assert_eq!(data[17], 2.0); // pos.y
-        assert_eq!(data[18], 3.0); // pos.z
-        assert_eq!(data[19], 0.5); // radius
+        // SoA: bounds has 4 f32 for one entity
+        let bounds = state.gpu_bounds();
+        assert_eq!(bounds.len(), 4);
+        assert_eq!(bounds[0], 1.0); // pos.x
+        assert_eq!(bounds[1], 2.0); // pos.y
+        assert_eq!(bounds[2], 3.0); // pos.z
+        assert_eq!(bounds[3], 0.5); // radius
+
+        // Texture indices
+        assert_eq!(state.gpu_tex_indices().len(), 1);
     }
 
     #[test]
@@ -266,6 +352,8 @@ mod tests {
                 ModelMatrix::default(),
                 BoundingRadius(1.0),
                 TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
                 Active,
             ));
         }
@@ -275,15 +363,37 @@ mod tests {
         state.collect_gpu(&world);
 
         assert_eq!(state.gpu_entity_count(), 3);
-        assert_eq!(state.gpu_buffer().len(), 60); // 3 * 20
+        assert_eq!(state.gpu_transforms().len(), 48); // 3 * 16
+        assert_eq!(state.gpu_bounds().len(), 12);      // 3 * 4
+        assert_eq!(state.gpu_render_meta().len(), 6);  // 3 * 2
+        assert_eq!(state.gpu_tex_indices().len(), 3);  // 3 * 1
     }
 
     #[test]
     fn collect_gpu_skips_entities_without_bounding_radius() {
         let mut world = World::new();
-        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), BoundingRadius(1.0), TextureLayerIndex::default(), Active));
-        // Entity missing BoundingRadius — visible to collect() but not collect_gpu()
-        world.spawn((Position(Vec3::ZERO), Rotation::default(), Scale::default(), Velocity::default(), ModelMatrix::default(), Active));
+        // Full entity with all required components
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation::default(),
+            Scale::default(),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex::default(),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+        // Entity missing BoundingRadius, MeshHandle, RenderPrimitive — visible to collect() but not collect_gpu()
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation::default(),
+            Scale::default(),
+            Velocity::default(),
+            ModelMatrix::default(),
+            Active,
+        ));
 
         let mut state = RenderState::new();
         state.collect(&world);
@@ -304,6 +414,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex((2 << 16) | 10), // tier 2, layer 10
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
         world.spawn((
@@ -314,6 +426,8 @@ mod tests {
             ModelMatrix::default(),
             BoundingRadius(0.5),
             TextureLayerIndex(0), // default
+            MeshHandle::default(),
+            RenderPrimitive::default(),
             Active,
         ));
         crate::systems::transform_system(&mut world);
@@ -336,5 +450,78 @@ mod tests {
         state.collect_gpu(&world);
         assert!(state.gpu_tex_indices().is_empty());
         assert!(state.gpu_tex_indices_ptr().is_null());
+    }
+
+    // --- New SoA-specific tests ---
+
+    #[test]
+    fn collect_gpu_soa_produces_separate_buffers() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::new(1.0, 2.0, 3.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)).to_cols_array()),
+            BoundingRadius(0.5),
+            TextureLayerIndex(0),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+
+        assert_eq!(rs.gpu_entity_count(), 1);
+        assert_eq!(rs.gpu_transforms().len(), 16);
+        assert_eq!(rs.gpu_bounds().len(), 4);
+        assert_eq!(rs.gpu_render_meta().len(), 2);
+        assert_eq!(rs.gpu_tex_indices().len(), 1);
+    }
+
+    #[test]
+    fn soa_bounds_contain_position_and_radius() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::new(10.0, 20.0, 30.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::IDENTITY.to_cols_array()),
+            BoundingRadius(2.5),
+            TextureLayerIndex(0),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+        let bounds = rs.gpu_bounds();
+        assert_eq!(bounds[0], 10.0);
+        assert_eq!(bounds[1], 20.0);
+        assert_eq!(bounds[2], 30.0);
+        assert_eq!(bounds[3], 2.5);
+    }
+
+    #[test]
+    fn soa_render_meta_packs_mesh_and_primitive() {
+        let mut world = World::new();
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix(glam::Mat4::IDENTITY.to_cols_array()),
+            BoundingRadius(0.5),
+            TextureLayerIndex(0),
+            MeshHandle(7),
+            RenderPrimitive(2),
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+        let meta = rs.gpu_render_meta();
+        assert_eq!(meta[0], 7);
+        assert_eq!(meta[1], 2);
     }
 }
