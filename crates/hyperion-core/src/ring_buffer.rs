@@ -2,18 +2,27 @@
 //!
 //! Memory layout (lives in a SharedArrayBuffer):
 //!
-//! | Offset | Size | Description                              |
-//! |--------|------|------------------------------------------|
-//! | 0      | 4    | `write_head` (u32, atomic) -- written by JS |
-//! | 4      | 4    | `read_head`  (u32, atomic) -- written by Rust |
-//! | 8      | 4    | `capacity`   (u32, const)                |
-//! | 12     | 4    | padding (16-byte alignment)              |
-//! | 16     | cap  | `data[0..capacity]` -- command bytes     |
+//! | Offset | Size | Description                                   |
+//! |--------|------|-----------------------------------------------|
+//! | 0      | 4    | `write_head` (u32, atomic) -- written by JS   |
+//! | 4      | 4    | `read_head`  (u32, atomic) -- written by Rust  |
+//! | 8      | 4    | `capacity`   (u32, const)                     |
+//! | 12     | 4    | padding                                       |
+//! | 16     | 4    | `heartbeat_w1` (u32, atomic) -- worker 1       |
+//! | 20     | 4    | `heartbeat_w2` (u32, atomic) -- worker 2       |
+//! | 24     | 4    | `supervisor_flags` (u32, atomic)               |
+//! | 28     | 4    | `overflow_counter` (u32, atomic)               |
+//! | 32     | cap  | `data[0..capacity]` -- command bytes           |
 //!
 //! Each command in the data region is encoded as:
 //!   `[cmd_type: u8][entity_id: u32 LE][payload: variable]`
 
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Header size in bytes. Fields:
+/// [0..4] write_head, [4..8] read_head, [8..12] capacity, [12..16] padding,
+/// [16..20] heartbeat_w1, [20..24] heartbeat_w2, [24..28] supervisor_flags, [28..32] overflow_counter
+const HEADER_SIZE: usize = 32;
 
 // ---------------------------------------------------------------------------
 // CommandType
@@ -144,7 +153,7 @@ pub fn parse_commands(data: &[u8]) -> Vec<Command> {
 /// # Safety
 ///
 /// The caller must ensure:
-/// - `ptr` points to a valid region of at least `16 + capacity` bytes.
+/// - `ptr` points to a valid region of at least `HEADER_SIZE + capacity` bytes.
 /// - The memory is backed by a SharedArrayBuffer and remains valid for the
 ///   lifetime of this struct.
 /// - There is exactly one producer (JS) and one consumer (this struct).
@@ -199,8 +208,8 @@ impl RingBufferConsumer {
     }
 
     fn data_ptr(&self) -> *const u8 {
-        // Data region starts at offset 16.
-        unsafe { self.base.add(16) }
+        // Data region starts at offset HEADER_SIZE.
+        unsafe { self.base.add(HEADER_SIZE) }
     }
 
     // -- data helpers -------------------------------------------------------
@@ -307,7 +316,7 @@ mod tests {
     /// Helper: allocate a properly laid-out buffer on the heap and return the
     /// raw pointer together with the owning `Vec` (so it won't be dropped).
     fn make_buffer(capacity: usize) -> (Vec<u8>, *mut u8) {
-        let total = 16 + capacity; // header + data
+        let total = HEADER_SIZE + capacity; // header + data
         let mut buf = vec![0u8; total];
         // Write capacity at offset 8 (little-endian).
         let cap_bytes = (capacity as u32).to_le_bytes();
@@ -324,7 +333,7 @@ mod tests {
 
     /// Write raw bytes into the data region starting at `offset`.
     fn write_data(buf: &mut [u8], offset: usize, data: &[u8]) {
-        let start = 16 + offset;
+        let start = HEADER_SIZE + offset;
         buf[start..start + data.len()].copy_from_slice(data);
     }
 
@@ -551,6 +560,11 @@ mod tests {
         assert_eq!(cmds[0].cmd_type, CommandType::SetParent);
         let parent = u32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
         assert_eq!(parent, 3);
+    }
+
+    #[test]
+    fn header_size_is_32_bytes() {
+        assert_eq!(HEADER_SIZE, 32);
     }
 
     #[test]

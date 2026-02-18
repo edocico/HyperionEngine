@@ -4,7 +4,7 @@ import { selectExecutionMode, ExecutionMode, type Capabilities } from "./capabil
 
 describe("Integration: Ring Buffer Protocol", () => {
   it("produces commands that match the Rust-expected binary format", () => {
-    const sab = new SharedArrayBuffer(16 + 256);
+    const sab = new SharedArrayBuffer(32 + 256);
     const rb = new RingBufferProducer(sab);
 
     rb.spawnEntity(0);
@@ -19,7 +19,7 @@ describe("Integration: Ring Buffer Protocol", () => {
     expect(writeHead).toBe(27);
 
     // Verify the data region has correct command bytes.
-    const data = new Uint8Array(sab, 16);
+    const data = new Uint8Array(sab, 32);
     expect(data[0]).toBe(CommandType.SpawnEntity);
     expect(data[5]).toBe(CommandType.SetPosition);
     expect(data[22]).toBe(CommandType.DespawnEntity);
@@ -28,7 +28,7 @@ describe("Integration: Ring Buffer Protocol", () => {
 
 describe("Integration: Texture Layer Index Pipeline", () => {
   it("SetTextureLayer command binary matches Rust format", () => {
-    const sab = new SharedArrayBuffer(16 + 128);
+    const sab = new SharedArrayBuffer(32 + 128);
     const rb = new RingBufferProducer(sab);
 
     rb.spawnEntity(0);                           // 5 bytes
@@ -38,7 +38,7 @@ describe("Integration: Texture Layer Index Pipeline", () => {
     const writeHead = Atomics.load(header, 0);
     expect(writeHead).toBe(14); // 5 + 9
 
-    const data = new Uint8Array(sab, 16, 128);
+    const data = new Uint8Array(sab, 32, 128);
 
     // SpawnEntity at offset 0
     expect(data[0]).toBe(1);

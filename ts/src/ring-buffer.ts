@@ -1,6 +1,11 @@
-const HEADER_SIZE = 16;
+const HEADER_SIZE = 32;
 const WRITE_HEAD_OFFSET = 0; // byte offset in i32 units = 0
 const READ_HEAD_OFFSET = 1;  // byte offset 4 in i32 units = 1
+/** Header field offsets (i32 indices) for Worker Supervisor (Phase 4.5). */
+export const HEARTBEAT_W1_OFFSET = 4;   // i32 index: byte 16 / 4 = 4
+export const HEARTBEAT_W2_OFFSET = 5;   // i32 index: byte 20 / 4 = 5
+export const SUPERVISOR_FLAGS_OFFSET = 6; // i32 index: byte 24 / 4 = 6
+export const OVERFLOW_COUNTER_OFFSET = 7; // i32 index: byte 28 / 4 = 7
 
 export const enum CommandType {
   Noop = 0,
@@ -37,7 +42,7 @@ export class RingBufferProducer {
   private readonly capacity: number;
 
   constructor(buffer: SharedArrayBuffer) {
-    this.header = new Int32Array(buffer, 0, 4);
+    this.header = new Int32Array(buffer, 0, 8);
     this.capacity = buffer.byteLength - HEADER_SIZE;
     this.data = new DataView(buffer, HEADER_SIZE, this.capacity);
   }
@@ -155,7 +160,7 @@ export function extractUnread(sab: SharedArrayBuffer): {
   bytes: Uint8Array;
   capacity: number;
 } {
-  const header = new Int32Array(sab, 0, 4);
+  const header = new Int32Array(sab, 0, 8);
   const capacity = sab.byteLength - HEADER_SIZE;
   const writeHead = Atomics.load(header, WRITE_HEAD_OFFSET);
   const readHead = Atomics.load(header, READ_HEAD_OFFSET);

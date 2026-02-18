@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { extractUnread } from "./ring-buffer";
 
-const HEADER_SIZE = 16;
+const HEADER_SIZE = 32;
 
 function makeSab(capacity: number): SharedArrayBuffer {
   return new SharedArrayBuffer(HEADER_SIZE + capacity);

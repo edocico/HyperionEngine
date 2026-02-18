@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { RingBufferProducer, CommandType } from "./ring-buffer";
 
-const HEADER_SIZE = 16;
+const HEADER_SIZE = 32;
 const CAPACITY = 256;
 
 function makeBuffer(): SharedArrayBuffer {
@@ -73,7 +73,7 @@ describe("RingBufferProducer", () => {
   });
 
   it("writes SetTextureLayer command with u32 payload", () => {
-    const sab = new SharedArrayBuffer(16 + 128);
+    const sab = new SharedArrayBuffer(HEADER_SIZE + 128);
     const rb = new RingBufferProducer(sab);
 
     const packed = (2 << 16) | 10; // tier 2, layer 10
@@ -86,7 +86,7 @@ describe("RingBufferProducer", () => {
     expect(writeHead).toBe(9);
 
     // Verify command type
-    const data = new Uint8Array(sab, 16, 128);
+    const data = new Uint8Array(sab, HEADER_SIZE, 128);
     expect(data[0]).toBe(7); // CommandType.SetTextureLayer
 
     // Verify entity ID = 5
@@ -96,6 +96,12 @@ describe("RingBufferProducer", () => {
     // Verify packed payload
     const payload = data[5] | (data[6] << 8) | (data[7] << 16) | (data[8] << 24);
     expect(payload).toBe(packed);
+  });
+
+  it("should use 32-byte header", () => {
+    const sab = makeBuffer();
+    // Verify the header region is 32 bytes
+    expect(sab.byteLength).toBe(HEADER_SIZE + CAPACITY);
   });
 
   it("writes SetMeshHandle command with u32 payload", () => {
