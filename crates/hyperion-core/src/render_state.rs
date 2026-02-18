@@ -211,19 +211,6 @@ impl RenderState {
         self.gpu_tex_indices.len() as u32
     }
 
-    // --- Backward-compat shims (removed in Task 5 when lib.rs is updated) ---
-
-    /// Deprecated: use `gpu_transforms_ptr()` instead.
-    /// Kept temporarily so lib.rs compiles before Task 5 updates WASM exports.
-    pub fn gpu_buffer_ptr(&self) -> *const f32 {
-        self.gpu_transforms_ptr()
-    }
-
-    /// Deprecated: use `gpu_transforms_f32_len()` instead.
-    /// Kept temporarily so lib.rs compiles before Task 5 updates WASM exports.
-    pub fn gpu_buffer_f32_len(&self) -> u32 {
-        self.gpu_transforms_f32_len()
-    }
 }
 
 impl Default for RenderState {

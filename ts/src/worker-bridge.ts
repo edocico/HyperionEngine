@@ -7,15 +7,14 @@ import {
 
 const RING_BUFFER_CAPACITY = 64 * 1024; // 64KB command buffer
 
-/** Render state transferred from the engine each frame. */
+/** Render state transferred from the engine each frame (SoA layout). */
 export interface GPURenderState {
   entityCount: number;
-  entityData: Float32Array;  // 20 floats per entity (mat4x4 + vec4 boundingSphere)
-  texIndices: Uint32Array;   // 1 u32 per entity (packed tier|layer)
+  transforms: Float32Array;    // 16 f32/entity (mat4x4)
+  bounds: Float32Array;        // 4 f32/entity (xyz + radius)
+  renderMeta: Uint32Array;     // 2 u32/entity (meshHandle + renderPrimitive)
+  texIndices: Uint32Array;     // 1 u32/entity
 }
-
-/** @deprecated Use GPURenderState instead */
-export type RenderStateSnapshot = GPURenderState;
 
 export interface EngineBridge {
   mode: ExecutionMode;
@@ -60,7 +59,9 @@ export function createWorkerBridge(
     } else if (msg.type === "tick-done" && msg.renderState) {
       latestRenderState = {
         entityCount: msg.renderState.entityCount,
-        entityData: new Float32Array(msg.renderState.entityData),
+        transforms: new Float32Array(msg.renderState.transforms),
+        bounds: new Float32Array(msg.renderState.bounds),
+        renderMeta: new Uint32Array(msg.renderState.renderMeta),
         texIndices: new Uint32Array(msg.renderState.texIndices),
       };
     }
@@ -132,7 +133,7 @@ export function createFullIsolationBridge(
       // Forward render state to Render Worker.
       channel.port1.postMessage(
         { renderState: msg.renderState },
-        [msg.renderState.entityData, msg.renderState.texIndices]
+        [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices]
       );
     }
   };
@@ -195,15 +196,17 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_init(): void;
     engine_push_commands(data: Uint8Array): void;
     engine_update(dt: number): void;
-    // Legacy render state exports (backward compat)
     engine_render_state_count(): number;
     engine_render_state_ptr(): number;
     engine_render_state_f32_len(): number;
-    // GPU entity data exports (20 floats per entity)
     engine_gpu_entity_count(): number;
-    engine_gpu_data_ptr(): number;
-    engine_gpu_data_f32_len(): number;
-    // Texture layer indices (1 u32 per entity)
+    // SoA exports
+    engine_gpu_transforms_ptr(): number;
+    engine_gpu_transforms_f32_len(): number;
+    engine_gpu_bounds_ptr(): number;
+    engine_gpu_bounds_f32_len(): number;
+    engine_gpu_render_meta_ptr(): number;
+    engine_gpu_render_meta_len(): number;
     engine_gpu_tex_indices_ptr(): number;
     engine_gpu_tex_indices_len(): number;
     memory: WebAssembly.Memory;
@@ -217,34 +220,38 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     mode: ExecutionMode.SingleThread,
     commandBuffer: producer,
     tick(dt: number) {
-      // 1. Extract commands from ring buffer.
       const { bytes } = extractUnread(buffer as SharedArrayBuffer);
       if (bytes.length > 0) {
         engine.engine_push_commands(bytes);
       }
-
-      // 2. Run physics + transforms + collect render state.
       engine.engine_update(dt);
 
-      // 3. Read GPU entity data directly from WASM memory (20 floats per entity).
       const count = engine.engine_gpu_entity_count();
-      const ptr = engine.engine_gpu_data_ptr();
-      const f32Len = engine.engine_gpu_data_f32_len();
-      const texPtr = engine.engine_gpu_tex_indices_ptr();
-      const texLen = engine.engine_gpu_tex_indices_len();
+      if (count > 0) {
+        const tPtr = engine.engine_gpu_transforms_ptr();
+        const tLen = engine.engine_gpu_transforms_f32_len();
+        const bPtr = engine.engine_gpu_bounds_ptr();
+        const bLen = engine.engine_gpu_bounds_f32_len();
+        const mPtr = engine.engine_gpu_render_meta_ptr();
+        const mLen = engine.engine_gpu_render_meta_len();
+        const texPtr = engine.engine_gpu_tex_indices_ptr();
+        const texLen = engine.engine_gpu_tex_indices_len();
 
-      if (count > 0 && ptr !== 0) {
-        const wasmView = new Float32Array(engine.memory.buffer, ptr, f32Len);
-        const texView = texPtr !== 0
-          ? new Uint32Array(engine.memory.buffer, texPtr, texLen)
-          : new Uint32Array(count);
         latestRenderState = {
           entityCount: count,
-          entityData: new Float32Array(wasmView),
-          texIndices: new Uint32Array(texView),
+          transforms: tPtr ? new Float32Array(engine.memory.buffer, tPtr, tLen) : new Float32Array(0),
+          bounds: bPtr ? new Float32Array(engine.memory.buffer, bPtr, bLen) : new Float32Array(0),
+          renderMeta: mPtr ? new Uint32Array(engine.memory.buffer, mPtr, mLen) : new Uint32Array(0),
+          texIndices: texPtr ? new Uint32Array(engine.memory.buffer, texPtr, texLen) : new Uint32Array(0),
         };
       } else {
-        latestRenderState = { entityCount: 0, entityData: new Float32Array(0), texIndices: new Uint32Array(0) };
+        latestRenderState = {
+          entityCount: 0,
+          transforms: new Float32Array(0),
+          bounds: new Float32Array(0),
+          renderMeta: new Uint32Array(0),
+          texIndices: new Uint32Array(0),
+        };
       }
     },
     async ready() {

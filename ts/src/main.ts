@@ -118,8 +118,11 @@ async function main() {
     bridge.tick(dt);
 
     if (renderer && bridge.latestRenderState && bridge.latestRenderState.entityCount > 0) {
+      // TODO(Phase 4.5 Task 10-12): renderer.render() still expects monolithic entityData.
+      // Pass transforms as entityData for now; renderer will be updated to consume
+      // separate SoA buffers in later tasks.
       renderer.render(
-        bridge.latestRenderState.entityData,
+        bridge.latestRenderState.transforms,
         bridge.latestRenderState.entityCount,
         camera,
         bridge.latestRenderState.texIndices,

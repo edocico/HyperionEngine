@@ -115,26 +115,69 @@ pub fn engine_render_state_f32_len() -> u32 {
     }
 }
 
-/// Pointer to the GPU entity data buffer (20 f32s per entity).
-/// Layout: [model: 16xf32, boundingSphere: 4xf32] x N entities.
+/// Pointer to the transforms buffer (16 f32 per entity, mat4x4).
 #[wasm_bindgen]
-pub fn engine_gpu_data_ptr() -> *const f32 {
-    // SAFETY: wasm32 is single-threaded; only one caller at a time.
-    unsafe {
-        (*addr_of_mut!(ENGINE))
-            .as_ref()
-            .map_or(std::ptr::null(), |e| e.render_state.gpu_buffer_ptr())
-    }
-}
-
-/// Number of floats in the GPU entity data buffer.
-#[wasm_bindgen]
-pub fn engine_gpu_data_f32_len() -> u32 {
+pub fn engine_gpu_transforms_ptr() -> *const f32 {
     // SAFETY: wasm32 is single-threaded.
     unsafe {
         (*addr_of_mut!(ENGINE))
             .as_ref()
-            .map_or(0, |e| e.render_state.gpu_buffer_f32_len())
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_transforms_ptr())
+    }
+}
+
+/// Number of f32 values in the transforms buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_transforms_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_transforms_f32_len())
+    }
+}
+
+/// Pointer to the bounds buffer (4 f32 per entity: xyz + radius).
+#[wasm_bindgen]
+pub fn engine_gpu_bounds_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_bounds_ptr())
+    }
+}
+
+/// Number of f32 values in the bounds buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_bounds_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_bounds_f32_len())
+    }
+}
+
+/// Pointer to the render meta buffer (2 u32 per entity: meshHandle + renderPrimitive).
+#[wasm_bindgen]
+pub fn engine_gpu_render_meta_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_render_meta_ptr())
+    }
+}
+
+/// Number of u32 values in the render meta buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_render_meta_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_render_meta_len())
     }
 }
 
@@ -150,8 +193,8 @@ pub fn engine_gpu_entity_count() -> u32 {
 }
 
 /// Pointer to the texture layer indices buffer (one u32 per entity).
-/// Indices are parallel to the GPU entity data buffer — index i here
-/// corresponds to entity i in engine_gpu_data_ptr().
+/// Indices are parallel to the other SoA GPU buffers — index i here
+/// corresponds to entity i in the transforms/bounds/renderMeta buffers.
 #[wasm_bindgen]
 pub fn engine_gpu_tex_indices_ptr() -> *const u32 {
     // SAFETY: wasm32 is single-threaded; only one caller at a time.
