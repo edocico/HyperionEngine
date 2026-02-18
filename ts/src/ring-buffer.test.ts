@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN } from "./ring-buffer";
+import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN, extractUnread } from "./ring-buffer";
 
 const HEADER_SIZE = 32;
 const CAPACITY = 256;
@@ -152,5 +152,77 @@ describe("RingBufferProducer", () => {
     expect(view.getFloat32(5, true)).toBeCloseTo(1.5);
     expect(view.getFloat32(9, true)).toBeCloseTo(2.5);
     expect(view.getFloat32(13, true)).toBeCloseTo(3.5);
+  });
+
+  it("writes correctly when entity_id straddles the wrap boundary", () => {
+    const cap = 32; // small capacity
+    const sab = new SharedArrayBuffer(HEADER_SIZE + cap);
+    const header = new Int32Array(sab, 0, 8);
+    // Place writeHead at cap-4 so: cmd at 28, entity_id at 29,30,31,0
+    // readHead = writeHead initially so extractUnread returns only newly written bytes
+    // freeSpace when w >= r: capacity - w + r - 1. But w == r means we'd get cap - 1 free.
+    // Actually when w == r freeSpace = cap - w + r - 1 = cap - 1. Perfect.
+    // But wait: we need readHead < writeHead or readHead to wrap properly.
+    // Actually readHead = 0 works: freeSpace = cap - 28 + 0 - 1 = 3, too small for 5 bytes.
+    // readHead = 1: freeSpace = cap - 28 + 1 - 1 = 4, still too small.
+    // readHead = 10: freeSpace = cap - 28 + 10 - 1 = 13, enough.
+    // Set readHead = cap - 4 = 28 (same as writeHead): freeSpace = cap - 28 + 28 - 1 = 31.
+    Atomics.store(header, 0, cap - 4); // writeHead = 28
+    Atomics.store(header, 1, cap - 4); // readHead = 28 (same: all space is "free")
+
+    const rb = new RingBufferProducer(sab);
+    const ok = rb.spawnEntity(0xDEADBEEF);
+    expect(ok).toBe(true);
+
+    // Use extractUnread to get the contiguous byte stream
+    // After write, writeHead = (28 + 5) % 32 = 1. readHead = 28.
+    // extractUnread: writeHead(1) < readHead(28) → wrap: data[28..32] + data[0..1] = 5 bytes
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(5);
+    expect(bytes[0]).toBe(CommandType.SpawnEntity);
+    const id = (bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24)) >>> 0;
+    expect(id).toBe(0xDEADBEEF);
+  });
+
+  it("writes correctly when f32 payload straddles the wrap boundary", () => {
+    // Use a larger buffer so there's enough free space for a 17-byte command
+    const cap = 64;
+    const sab = new SharedArrayBuffer(HEADER_SIZE + cap);
+    const header = new Int32Array(sab, 0, 8);
+    // setPosition: 1 cmd + 4 entity_id + 12 payload = 17 bytes
+    // writeHead = cap - 7 = 57: cmd@57, id@58-61, payload starts @62 (straddles at 62,63,0,1...)
+    // Set readHead = writeHead so extractUnread returns only the newly written bytes
+    Atomics.store(header, 0, cap - 7); // writeHead = 57
+    Atomics.store(header, 1, cap - 7); // readHead = 57
+
+    const rb = new RingBufferProducer(sab);
+    const ok = rb.setPosition(1, 1.5, 2.5, 3.5);
+    expect(ok).toBe(true);
+
+    // After write, writeHead = (57 + 17) % 64 = 10. readHead = 57.
+    // extractUnread: writeHead(10) < readHead(57) → wrap: data[57..64] + data[0..10] = 17 bytes
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.SetPosition);
+
+    // entity_id
+    const id = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24);
+    expect(id).toBe(1);
+
+    // f32 payload
+    const payloadBuf = new ArrayBuffer(12);
+    new Uint8Array(payloadBuf).set(bytes.slice(5, 17));
+    const view = new DataView(payloadBuf);
+    expect(view.getFloat32(0, true)).toBeCloseTo(1.5);
+    expect(view.getFloat32(4, true)).toBeCloseTo(2.5);
+    expect(view.getFloat32(8, true)).toBeCloseTo(3.5);
+  });
+
+  it("throws when capacity is not a multiple of 4", () => {
+    // capacity = 33 (not a multiple of 4)
+    const sab = new SharedArrayBuffer(HEADER_SIZE + 33);
+    expect(() => new RingBufferProducer(sab)).toThrow(
+      "RingBufferProducer: capacity must be a multiple of 4, got 33"
+    );
   });
 });

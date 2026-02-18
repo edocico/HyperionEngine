@@ -50,13 +50,19 @@ export class RingBufferProducer {
   private readonly u32View: Uint32Array;
   private readonly f32View: Float32Array;
 
+  /** Scratch DataView for byte-by-byte float extraction at wrap boundaries. */
+  private static readonly _scratch = new DataView(new ArrayBuffer(4));
+
   constructor(buffer: SharedArrayBuffer) {
     this.header = new Int32Array(buffer, 0, 8);
     this.capacity = buffer.byteLength - HEADER_SIZE;
+    if (this.capacity % 4 !== 0) {
+      throw new Error(`RingBufferProducer: capacity must be a multiple of 4, got ${this.capacity}`);
+    }
     this.data = new DataView(buffer, HEADER_SIZE, this.capacity);
     this.u8View = new Uint8Array(buffer, HEADER_SIZE, this.capacity);
-    this.u32View = new Uint32Array(buffer, HEADER_SIZE, Math.floor(this.capacity / 4));
-    this.f32View = new Float32Array(buffer, HEADER_SIZE, Math.floor(this.capacity / 4));
+    this.u32View = new Uint32Array(buffer, HEADER_SIZE, this.capacity / 4);
+    this.f32View = new Float32Array(buffer, HEADER_SIZE, this.capacity / 4);
   }
 
   private get writeHead(): number {
@@ -99,25 +105,47 @@ export class RingBufferProducer {
     const idPos = pos % this.capacity;
     if (IS_LITTLE_ENDIAN && (idPos & 3) === 0) {
       this.u32View[idPos >> 2] = entityId;
-    } else {
+    } else if (idPos + 4 <= this.capacity) {
       this.data.setUint32(idPos, entityId, true);
+    } else {
+      // Field straddles wrap boundary — write byte-by-byte LE
+      this.u8View[idPos % this.capacity]       =  entityId         & 0xFF;
+      this.u8View[(idPos + 1) % this.capacity] = (entityId >>  8)  & 0xFF;
+      this.u8View[(idPos + 2) % this.capacity] = (entityId >> 16)  & 0xFF;
+      this.u8View[(idPos + 3) % this.capacity] = (entityId >> 24)  & 0xFF;
     }
     pos += 4;
 
     // Write payload (f32 values, little-endian)
     if (payload && payloadSize > 0) {
+      const scratch = RingBufferProducer._scratch;
       if (IS_LITTLE_ENDIAN) {
         for (let i = 0; i < payload.length; i++) {
           const p = (pos + i * 4) % this.capacity;
           if ((p & 3) === 0) {
             this.f32View[p >> 2] = payload[i];
-          } else {
+          } else if (p + 4 <= this.capacity) {
             this.data.setFloat32(p, payload[i], true);
+          } else {
+            // Float straddles wrap boundary — write byte-by-byte LE
+            scratch.setFloat32(0, payload[i], true);
+            for (let b = 0; b < 4; b++) {
+              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+            }
           }
         }
       } else {
         for (let i = 0; i < payload.length; i++) {
-          this.data.setFloat32((pos + i * 4) % this.capacity, payload[i], true);
+          const p = (pos + i * 4) % this.capacity;
+          if (p + 4 <= this.capacity) {
+            this.data.setFloat32(p, payload[i], true);
+          } else {
+            // Float straddles wrap boundary — write byte-by-byte LE
+            scratch.setFloat32(0, payload[i], true);
+            for (let b = 0; b < 4; b++) {
+              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+            }
+          }
         }
       }
       pos += payloadSize;
