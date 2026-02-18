@@ -40,6 +40,18 @@ pub struct ModelMatrix(pub [f32; 16]);
 #[repr(C)]
 pub struct TextureLayerIndex(pub u32);
 
+/// Mesh geometry handle. 0 = unit quad (default).
+/// Range 0–31 core, 32–63 extended, 64–127 plugin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[repr(C)]
+pub struct MeshHandle(pub u32);
+
+/// Render primitive type. Determines which GPU pipeline processes this entity.
+/// 0 = Quad (default). Range 0–31 core, 32–63 extended, 64–127 plugin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+#[repr(C)]
+pub struct RenderPrimitive(pub u8);
+
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
@@ -151,5 +163,33 @@ mod tests {
         let t = TextureLayerIndex(packed);
         assert_eq!(t.0 >> 16, 3);      // tier
         assert_eq!(t.0 & 0xFFFF, 42);  // layer
+    }
+
+    #[test]
+    fn mesh_handle_default_is_unit_quad() {
+        let mh = MeshHandle::default();
+        assert_eq!(mh.0, 0, "MeshHandle 0 = unit quad");
+    }
+
+    #[test]
+    fn mesh_handle_is_pod() {
+        let mh = MeshHandle(42);
+        let bytes = bytemuck::bytes_of(&mh);
+        assert_eq!(bytes.len(), 4);
+        assert_eq!(u32::from_le_bytes(bytes.try_into().unwrap()), 42);
+    }
+
+    #[test]
+    fn render_primitive_default_is_quad() {
+        let rp = RenderPrimitive::default();
+        assert_eq!(rp.0, 0, "RenderPrimitive 0 = Quad");
+    }
+
+    #[test]
+    fn render_primitive_is_pod() {
+        let rp = RenderPrimitive(2);
+        let bytes = bytemuck::bytes_of(&rp);
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(bytes[0], 2);
     }
 }
