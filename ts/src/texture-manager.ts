@@ -255,6 +255,10 @@ export class TextureManager {
     if (cached !== undefined) return cached;
     this.total++;
     return new Promise<number>((resolve, reject) => {
+      if (tierOverride !== undefined && (tierOverride < 0 || tierOverride >= NUM_TIERS)) {
+        reject(new Error(`Invalid tier override: ${tierOverride}, must be 0-${NUM_TIERS - 1}`));
+        return;
+      }
       const tier = tierOverride !== undefined ? tierOverride : -1;
       this.fetchQueue.push({ url, tier, resolve, reject });
       this.drainFetchQueue();
