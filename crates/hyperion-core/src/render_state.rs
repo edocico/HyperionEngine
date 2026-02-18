@@ -78,6 +78,13 @@ impl RenderState {
         self.gpu_bounds.clear();
         self.gpu_render_meta.clear();
         self.gpu_tex_indices.clear();
+
+        // Pre-allocate based on previous frame's entity count to avoid reallocation.
+        let hint = self.gpu_count as usize;
+        self.gpu_transforms.reserve(hint * 16);
+        self.gpu_bounds.reserve(hint * 4);
+        self.gpu_render_meta.reserve(hint * 2);
+        self.gpu_tex_indices.reserve(hint);
         self.gpu_count = 0;
 
         for (pos, matrix, radius, tex, mesh, prim, _active) in world
@@ -108,6 +115,11 @@ impl RenderState {
 
             self.gpu_count += 1;
         }
+
+        debug_assert_eq!(self.gpu_count as usize * 16, self.gpu_transforms.len());
+        debug_assert_eq!(self.gpu_count as usize * 4, self.gpu_bounds.len());
+        debug_assert_eq!(self.gpu_count as usize * 2, self.gpu_render_meta.len());
+        debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
     }
 
     /// Number of entities in the GPU buffer.
