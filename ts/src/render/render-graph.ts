@@ -51,6 +51,12 @@ export class RenderGraph {
       adj.set(name, []);
       inDegree.set(name, 0);
       for (const w of pass.writes) {
+        const existing = resourceWriters.get(w);
+        if (existing) {
+          throw new Error(
+            `Resource '${w}' has multiple writers: '${existing}' and '${name}'`,
+          );
+        }
         resourceWriters.set(w, name);
       }
     }
@@ -72,8 +78,9 @@ export class RenderGraph {
     }
 
     const sorted: string[] = [];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
+    let qi = 0;
+    while (qi < queue.length) {
+      const current = queue[qi++];
       sorted.push(current);
       for (const neighbor of adj.get(current) ?? []) {
         const newDeg = (inDegree.get(neighbor) ?? 0) - 1;
@@ -96,17 +103,15 @@ export class RenderGraph {
     }
 
     // Walk backwards: if an alive pass reads a resource, mark its writer alive
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const name of alive) {
-        const pass = this.passes.get(name)!;
-        for (const r of pass.reads) {
-          const writer = resourceWriters.get(r);
-          if (writer && !alive.has(writer)) {
-            alive.add(writer);
-            changed = true;
-          }
+    const worklist = [...alive];
+    while (worklist.length > 0) {
+      const name = worklist.pop()!;
+      const pass = this.passes.get(name)!;
+      for (const r of pass.reads) {
+        const writer = resourceWriters.get(r);
+        if (writer && !alive.has(writer)) {
+          alive.add(writer);
+          worklist.push(writer);
         }
       }
     }

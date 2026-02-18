@@ -8,6 +8,7 @@ describe('ForwardPass', () => {
     expect(pass.reads).toContain('visible-indices');
     expect(pass.reads).toContain('entity-data');
     expect(pass.reads).toContain('tex-indices');
+    expect(pass.reads).toContain('indirect-args');
     expect(pass.writes).toContain('swapchain');
     expect(pass.optional).toBe(false);
   });

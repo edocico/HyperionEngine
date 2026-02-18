@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { RenderGraph } from './render-graph';
 import type { RenderPass } from './render-pass';
 
@@ -55,5 +55,28 @@ describe('RenderGraph', () => {
     const graph = new RenderGraph();
     graph.addPass(mockPass('cull', [], ['out']));
     expect(() => graph.addPass(mockPass('cull', [], ['out2']))).toThrow(/already registered/);
+  });
+
+  it('should compile empty graph', () => {
+    const graph = new RenderGraph();
+    const order = graph.compile();
+    expect(order).toEqual([]);
+  });
+
+  it('should call destroy on all passes when graph is destroyed', () => {
+    const destroyFns = [vi.fn(), vi.fn()];
+    const graph = new RenderGraph();
+    graph.addPass({ ...mockPass('a', [], ['out']), destroy: destroyFns[0] });
+    graph.addPass({ ...mockPass('b', ['out'], ['swapchain']), destroy: destroyFns[1] });
+    graph.destroy();
+    expect(destroyFns[0]).toHaveBeenCalledTimes(1);
+    expect(destroyFns[1]).toHaveBeenCalledTimes(1);
+  });
+
+  it('should throw when two passes write the same resource', () => {
+    const graph = new RenderGraph();
+    graph.addPass(mockPass('a', [], ['shared-resource']));
+    graph.addPass(mockPass('b', [], ['shared-resource']));
+    expect(() => graph.compile()).toThrow(/multiple writers/i);
   });
 });

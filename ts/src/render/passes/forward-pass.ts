@@ -13,7 +13,7 @@ import type { ResourcePool } from '../resource-pool';
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
-  readonly reads = ['visible-indices', 'entity-data', 'tex-indices'];
+  readonly reads = ['visible-indices', 'entity-data', 'tex-indices', 'indirect-args'];
   readonly writes = ['swapchain'];
   readonly optional = false;
 
