@@ -10,6 +10,136 @@ use crate::components::{
     Active, BoundingRadius, MeshHandle, ModelMatrix, Position, RenderPrimitive, TextureLayerIndex,
 };
 
+/// Compact bitset for tracking dirty flags per entity slot.
+///
+/// Uses one bit per entity, packed into `u64` words. At 100k entities this
+/// consumes only ~12.5 KB, making clear() a fast `memset` of 1563 words.
+pub struct BitSet {
+    bits: Vec<u64>,
+    count: usize,
+}
+
+impl BitSet {
+    /// Create a new bitset with capacity for at least `capacity` bits, all unset.
+    pub fn new(capacity: usize) -> Self {
+        let words = capacity.div_ceil(64);
+        Self {
+            bits: vec![0u64; words],
+            count: 0,
+        }
+    }
+
+    /// Mark bit at `index` as set. Idempotent: only increments count on first set.
+    pub fn set(&mut self, index: usize) {
+        self.ensure_capacity(index + 1);
+        let word = index / 64;
+        let bit = index % 64;
+        let mask = 1u64 << bit;
+        if self.bits[word] & mask == 0 {
+            self.bits[word] |= mask;
+            self.count += 1;
+        }
+    }
+
+    /// Check if bit at `index` is set. Returns false for out-of-bounds indices.
+    pub fn get(&self, index: usize) -> bool {
+        let word = index / 64;
+        if word >= self.bits.len() {
+            return false;
+        }
+        let bit = index % 64;
+        self.bits[word] & (1u64 << bit) != 0
+    }
+
+    /// Clear all bits and reset count to zero.
+    pub fn clear(&mut self) {
+        for w in &mut self.bits {
+            *w = 0;
+        }
+        self.count = 0;
+    }
+
+    /// Number of set bits.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Grow the bitset if needed to hold at least `capacity` bits.
+    pub fn ensure_capacity(&mut self, capacity: usize) {
+        let words_needed = capacity.div_ceil(64);
+        if words_needed > self.bits.len() {
+            self.bits.resize(words_needed, 0);
+        }
+    }
+}
+
+/// Tracks which entity slots have been modified since the last frame.
+///
+/// Maintains three independent dirty bitsets corresponding to the SoA GPU buffers:
+/// - `transform_dirty`: entity model matrix changed
+/// - `bounds_dirty`: entity position or bounding radius changed
+/// - `meta_dirty`: entity mesh handle, render primitive, or texture index changed
+///
+/// Used to determine whether a full or partial GPU buffer upload is beneficial.
+/// Rule of thumb: if `transform_dirty_ratio(total) < 0.3`, a partial upload wins.
+pub struct DirtyTracker {
+    transform_dirty: BitSet,
+    bounds_dirty: BitSet,
+    meta_dirty: BitSet,
+}
+
+impl DirtyTracker {
+    /// Create a new tracker pre-sized for `capacity` entity slots.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            transform_dirty: BitSet::new(capacity),
+            bounds_dirty: BitSet::new(capacity),
+            meta_dirty: BitSet::new(capacity),
+        }
+    }
+
+    /// Mark entity at `idx` as having a dirty transform (model matrix changed).
+    pub fn mark_transform_dirty(&mut self, idx: usize) {
+        self.transform_dirty.set(idx);
+    }
+
+    /// Mark entity at `idx` as having dirty bounds (position or radius changed).
+    pub fn mark_bounds_dirty(&mut self, idx: usize) {
+        self.bounds_dirty.set(idx);
+    }
+
+    /// Mark entity at `idx` as having dirty metadata (mesh, primitive, or texture changed).
+    pub fn mark_meta_dirty(&mut self, idx: usize) {
+        self.meta_dirty.set(idx);
+    }
+
+    /// Check if entity at `idx` has a dirty transform.
+    pub fn is_transform_dirty(&self, idx: usize) -> bool {
+        self.transform_dirty.get(idx)
+    }
+
+    /// Check if entity at `idx` has dirty bounds.
+    pub fn is_bounds_dirty(&self, idx: usize) -> bool {
+        self.bounds_dirty.get(idx)
+    }
+
+    /// Fraction of entities with dirty transforms: `dirty_count / total`.
+    /// Returns 0.0 if `total` is 0.
+    pub fn transform_dirty_ratio(&self, total: usize) -> f32 {
+        if total == 0 {
+            return 0.0;
+        }
+        self.transform_dirty.count() as f32 / total as f32
+    }
+
+    /// Clear all dirty flags for the next frame.
+    pub fn clear(&mut self) {
+        self.transform_dirty.clear();
+        self.bounds_dirty.clear();
+        self.meta_dirty.clear();
+    }
+}
+
 /// Contiguous buffers of render data for all active entities.
 /// Updated once per frame after all physics ticks and transform recomputation.
 pub struct RenderState {
@@ -23,6 +153,9 @@ pub struct RenderState {
     gpu_render_meta: Vec<u32>,   // 2 u32/entity (mesh_handle + primitive)
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_count: u32,
+
+    /// Per-buffer dirty tracking for partial upload optimization.
+    pub dirty_tracker: DirtyTracker,
 }
 
 impl RenderState {
@@ -34,6 +167,7 @@ impl RenderState {
             gpu_render_meta: Vec::new(),
             gpu_tex_indices: Vec::new(),
             gpu_count: 0,
+            dirty_tracker: DirtyTracker::new(0),
         }
     }
 
@@ -74,6 +208,8 @@ impl RenderState {
     /// - `gpu_render_meta`: 2 u32/entity (mesh handle + render primitive)
     /// - `gpu_tex_indices`: 1 u32/entity (texture layer index)
     pub fn collect_gpu(&mut self, world: &World) {
+        self.dirty_tracker.clear();
+
         self.gpu_transforms.clear();
         self.gpu_bounds.clear();
         self.gpu_render_meta.clear();
@@ -522,5 +658,91 @@ mod tests {
         let meta = rs.gpu_render_meta();
         assert_eq!(meta[0], 7);
         assert_eq!(meta[1], 2);
+    }
+
+    // --- BitSet tests ---
+
+    #[test]
+    fn bitset_set_and_get() {
+        let mut bs = BitSet::new(128);
+        assert!(!bs.get(0));
+        assert!(!bs.get(63));
+        assert!(!bs.get(64));
+        bs.set(0);
+        bs.set(63);
+        bs.set(64);
+        assert!(bs.get(0));
+        assert!(bs.get(63));
+        assert!(bs.get(64));
+        assert_eq!(bs.count(), 3);
+    }
+
+    #[test]
+    fn bitset_set_idempotent() {
+        let mut bs = BitSet::new(64);
+        bs.set(10);
+        bs.set(10);
+        bs.set(10);
+        assert_eq!(bs.count(), 1);
+    }
+
+    #[test]
+    fn bitset_get_out_of_bounds() {
+        let bs = BitSet::new(64);
+        assert!(!bs.get(9999));
+    }
+
+    #[test]
+    fn bitset_clear() {
+        let mut bs = BitSet::new(128);
+        bs.set(0);
+        bs.set(64);
+        bs.set(127);
+        assert_eq!(bs.count(), 3);
+        bs.clear();
+        assert_eq!(bs.count(), 0);
+        assert!(!bs.get(0));
+        assert!(!bs.get(64));
+        assert!(!bs.get(127));
+    }
+
+    #[test]
+    fn bitset_ensure_capacity_grows() {
+        let mut bs = BitSet::new(64);
+        // Setting beyond initial capacity should auto-grow
+        bs.set(200);
+        assert!(bs.get(200));
+        assert_eq!(bs.count(), 1);
+    }
+
+    // --- DirtyTracker tests ---
+
+    #[test]
+    fn dirty_tracker_marks_transform_dirty() {
+        let mut tracker = DirtyTracker::new(100);
+        assert!(!tracker.is_transform_dirty(0));
+        tracker.mark_transform_dirty(0);
+        assert!(tracker.is_transform_dirty(0));
+    }
+
+    #[test]
+    fn dirty_tracker_clear_resets_all() {
+        let mut tracker = DirtyTracker::new(100);
+        tracker.mark_transform_dirty(0);
+        tracker.mark_transform_dirty(50);
+        tracker.mark_bounds_dirty(25);
+        tracker.clear();
+        assert!(!tracker.is_transform_dirty(0));
+        assert!(!tracker.is_transform_dirty(50));
+        assert!(!tracker.is_bounds_dirty(25));
+    }
+
+    #[test]
+    fn dirty_tracker_dirty_ratio() {
+        let mut tracker = DirtyTracker::new(100);
+        for i in 0..30 {
+            tracker.mark_transform_dirty(i);
+        }
+        assert!((tracker.transform_dirty_ratio(100) - 0.3).abs() < 0.01);
     }
 }
