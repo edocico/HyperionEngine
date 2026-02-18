@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RingBufferProducer, CommandType } from "./ring-buffer";
+import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN } from "./ring-buffer";
 
 const HEADER_SIZE = 32;
 const CAPACITY = 256;
@@ -126,5 +126,31 @@ describe("RingBufferProducer", () => {
     expect(readByte(sab, 0)).toBe(CommandType.SetRenderPrimitive);
     expect(readU32LE(sab, 1)).toBe(1); // entity ID
     expect(readU32LE(sab, 5)).toBe(2); // render primitive
+  });
+
+  it("should detect little-endian platform", () => {
+    expect(IS_LITTLE_ENDIAN).toBe(true); // Node.js is always LE
+  });
+
+  it("should produce identical bytes with TypedArray fast path", () => {
+    const sab = makeBuffer();
+    const rb = new RingBufferProducer(sab);
+
+    // Write position command (uses f32 payload fast path)
+    rb.setPosition(42, 1.5, 2.5, 3.5);
+
+    // Verify bytes are correct little-endian encoding
+    const data = new Uint8Array(sab, HEADER_SIZE);
+    expect(data[0]).toBe(CommandType.SetPosition); // cmd
+
+    // entity_id = 42 in LE
+    const entityId = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+    expect(entityId).toBe(42);
+
+    // f32 payload
+    const view = new DataView(sab, HEADER_SIZE);
+    expect(view.getFloat32(5, true)).toBeCloseTo(1.5);
+    expect(view.getFloat32(9, true)).toBeCloseTo(2.5);
+    expect(view.getFloat32(13, true)).toBeCloseTo(3.5);
   });
 });

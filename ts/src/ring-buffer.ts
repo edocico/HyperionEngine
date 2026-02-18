@@ -1,6 +1,11 @@
 const HEADER_SIZE = 32;
 const WRITE_HEAD_OFFSET = 0; // byte offset in i32 units = 0
 const READ_HEAD_OFFSET = 1;  // byte offset 4 in i32 units = 1
+
+/** True on little-endian platforms (~99.97% of devices). Enables TypedArray fast path. */
+export const IS_LITTLE_ENDIAN =
+  new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
 /** Header field offsets (i32 indices) for Worker Supervisor (Phase 4.5). */
 export const HEARTBEAT_W1_OFFSET = 4;   // i32 index: byte 16 / 4 = 4
 export const HEARTBEAT_W2_OFFSET = 5;   // i32 index: byte 20 / 4 = 5
@@ -40,11 +45,18 @@ export class RingBufferProducer {
   private readonly header: Int32Array;
   private readonly data: DataView;
   private readonly capacity: number;
+  // Fast path views (same underlying buffer, offset by header)
+  private readonly u8View: Uint8Array;
+  private readonly u32View: Uint32Array;
+  private readonly f32View: Float32Array;
 
   constructor(buffer: SharedArrayBuffer) {
     this.header = new Int32Array(buffer, 0, 8);
     this.capacity = buffer.byteLength - HEADER_SIZE;
     this.data = new DataView(buffer, HEADER_SIZE, this.capacity);
+    this.u8View = new Uint8Array(buffer, HEADER_SIZE, this.capacity);
+    this.u32View = new Uint32Array(buffer, HEADER_SIZE, Math.floor(this.capacity / 4));
+    this.f32View = new Float32Array(buffer, HEADER_SIZE, Math.floor(this.capacity / 4));
   }
 
   private get writeHead(): number {
@@ -80,31 +92,40 @@ export class RingBufferProducer {
     let pos = this.writeHead;
 
     // Write command type (1 byte)
-    this.data.setUint8(pos % this.capacity, cmd);
+    this.u8View[pos % this.capacity] = cmd;
     pos++;
 
     // Write entity ID (4 bytes, little-endian)
-    this.writeByte(pos, entityId & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 8) & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 16) & 0xff); pos++;
-    this.writeByte(pos, (entityId >> 24) & 0xff); pos++;
+    const idPos = pos % this.capacity;
+    if (IS_LITTLE_ENDIAN && (idPos & 3) === 0) {
+      this.u32View[idPos >> 2] = entityId;
+    } else {
+      this.data.setUint32(idPos, entityId, true);
+    }
+    pos += 4;
 
-    // Write payload (f32 values, little-endian via DataView)
+    // Write payload (f32 values, little-endian)
     if (payload && payloadSize > 0) {
-      for (let i = 0; i < payloadSize; i++) {
-        const tempView = new DataView(payload.buffer, payload.byteOffset);
-        this.writeByte(pos, tempView.getUint8(i));
-        pos++;
+      if (IS_LITTLE_ENDIAN) {
+        for (let i = 0; i < payload.length; i++) {
+          const p = (pos + i * 4) % this.capacity;
+          if ((p & 3) === 0) {
+            this.f32View[p >> 2] = payload[i];
+          } else {
+            this.data.setFloat32(p, payload[i], true);
+          }
+        }
+      } else {
+        for (let i = 0; i < payload.length; i++) {
+          this.data.setFloat32((pos + i * 4) % this.capacity, payload[i], true);
+        }
       }
+      pos += payloadSize;
     }
 
     // Commit write head
     this.writeHead = pos % this.capacity;
     return true;
-  }
-
-  private writeByte(offset: number, value: number): void {
-    this.data.setUint8(offset % this.capacity, value);
   }
 
   setPosition(entityId: number, x: number, y: number, z: number): boolean {
