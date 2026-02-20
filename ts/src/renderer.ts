@@ -91,7 +91,7 @@ export async function createRenderer(
 
   // --- 5. Set shader sources and setup passes ---
   CullPass.SHADER_SOURCE = cullShaderCode;
-  ForwardPass.SHADER_SOURCE = shaderCode;
+  ForwardPass.SHADER_SOURCES = { 0: shaderCode }; // Quad = type 0
 
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
