@@ -195,6 +195,16 @@ describe('Hyperion', () => {
     engine.resize(1920, 1080);
     expect(engine.cam.zoomLevel).toBe(1.0);
   });
+
+  it('compact() is callable', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(() => engine.compact()).not.toThrow();
+  });
+
+  it('compact() accepts options', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(() => engine.compact({ entityMap: true, textures: true })).not.toThrow();
+  });
 });
 
 describe('Hyperion.create', () => {

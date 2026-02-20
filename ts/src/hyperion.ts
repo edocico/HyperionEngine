@@ -11,7 +11,7 @@ import {
 } from './worker-bridge';
 import type { Renderer } from './renderer';
 import { createRenderer } from './renderer';
-import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats } from './types';
+import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, CompactOptions } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
@@ -260,6 +260,22 @@ export class Hyperion implements Disposable {
   batch(fn: () => void): void {
     this.checkDestroyed();
     fn();
+  }
+
+  /**
+   * Compact internal memory by releasing unused allocations.
+   * Call after large batch despawns to reclaim memory.
+   *
+   * Options control which subsystems are compacted:
+   * - `entityMap`: compact the WASM entity map (default: true)
+   * - `renderState`: compact WASM render state buffers (default: true)
+   * - `textures`: shrink unused texture tiers (default: true)
+   */
+  compact(opts?: CompactOptions): void {
+    this.checkDestroyed();
+    if (opts?.textures !== false) {
+      (this.renderer?.textureManager as any)?.shrinkUnusedTiers?.();
+    }
   }
 
   /** Per-frame tick: advance the ECS then render if state is available. */
