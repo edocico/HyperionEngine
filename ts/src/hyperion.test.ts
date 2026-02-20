@@ -4,6 +4,7 @@ import type { EngineBridge } from './worker-bridge';
 import type { Renderer } from './renderer';
 import type { ResolvedConfig } from './types';
 import { ExecutionMode } from './capabilities';
+import { SelectionManager } from './selection';
 
 function mockBridge(): EngineBridge {
   return {
@@ -40,6 +41,10 @@ function mockRenderer(): Renderer {
       getSampler: vi.fn(),
       destroy: vi.fn(),
     } as any,
+    selectionManager: new SelectionManager(100_000),
+    enableOutlines: vi.fn(),
+    disableOutlines: vi.fn(),
+    outlinesEnabled: false,
     destroy: vi.fn(),
   };
 }
@@ -244,6 +249,35 @@ describe('Hyperion', () => {
     engine.addHook('preTick', hook);
     // Verify it's wired (testing indirectly via the loop is sufficient)
     engine.removeHook('preTick', hook);
+  });
+
+  it('selection getter returns SelectionManager from renderer', () => {
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    expect(engine.selection).toBe(renderer.selectionManager);
+  });
+
+  it('selection returns null when no renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(engine.selection).toBeNull();
+  });
+
+  it('enableOutlines delegates to renderer', () => {
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const opts = { color: [1, 0, 0, 1] as [number, number, number, number], width: 3 };
+    engine.enableOutlines(opts);
+    expect(renderer.enableOutlines).toHaveBeenCalledWith(opts);
+  });
+
+  it('enableOutlines throws when no renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(() => engine.enableOutlines({ color: [1, 0, 0, 1], width: 3 })).toThrow('no renderer');
+  });
+
+  it('disableOutlines is callable without renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(() => engine.disableOutlines()).not.toThrow();
   });
 });
 

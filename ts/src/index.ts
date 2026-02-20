@@ -5,3 +5,5 @@ export type { HookPhase, HookFn } from './game-loop';
 export { EntityHandle } from './entity-handle';
 export { RawAPI } from './raw-api';
 export { CameraAPI } from './camera-api';
+export { SelectionManager } from './selection';
+export type { OutlineOptions } from './renderer';

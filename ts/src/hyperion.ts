@@ -9,8 +9,9 @@ import {
   createDirectBridge,
   createFullIsolationBridge,
 } from './worker-bridge';
-import type { Renderer } from './renderer';
+import type { Renderer, OutlineOptions } from './renderer';
 import { createRenderer } from './renderer';
+import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, CompactOptions } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
@@ -322,6 +323,36 @@ export class Hyperion implements Disposable {
     this.checkDestroyed();
     // For now, this is a stub that can be wired to the renderer later.
     // The FXAATonemapPass already runs in the pipeline by default with tonemapMode=0 (passthrough).
+  }
+
+  /**
+   * Access the selection manager for selecting/deselecting entities.
+   * Returns null if no renderer is available (e.g. headless mode).
+   */
+  get selection(): SelectionManager | null {
+    return this.renderer?.selectionManager ?? null;
+  }
+
+  /**
+   * Enable selection outlines around selected entities.
+   * Uses the JFA (Jump Flood Algorithm) for GPU-based outline rendering.
+   *
+   * @param options.color - RGBA outline color, each component 0-1
+   * @param options.width - Outline width in pixels
+   */
+  enableOutlines(options: OutlineOptions): void {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot enable outlines: no renderer available');
+    this.renderer.enableOutlines(options);
+  }
+
+  /**
+   * Disable selection outlines. The outline pipeline passes are
+   * removed and dead-pass culled from the render graph.
+   */
+  disableOutlines(): void {
+    this.checkDestroyed();
+    this.renderer?.disableOutlines();
   }
 
   /** Per-frame tick: advance the ECS then render if state is available. */
