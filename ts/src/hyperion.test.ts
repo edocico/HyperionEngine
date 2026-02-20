@@ -212,6 +212,32 @@ describe('Hyperion', () => {
     // Verify the type system accepts it and the callback is preserved.
     expect(config.onDeviceLost).toBe(onLost);
   });
+
+  it('use() installs a plugin', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const plugin = { name: 'test', install: vi.fn() };
+    engine.use(plugin);
+    expect(engine.plugins.has('test')).toBe(true);
+    expect(plugin.install).toHaveBeenCalledWith(engine);
+  });
+
+  it('unuse() removes a plugin', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const plugin = { name: 'test', install: vi.fn(), cleanup: vi.fn() };
+    engine.use(plugin);
+    engine.unuse('test');
+    expect(engine.plugins.has('test')).toBe(false);
+    expect(plugin.cleanup).toHaveBeenCalled();
+  });
+
+  it('destroy() cleans up all plugins', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const plugin = { name: 'test', install: vi.fn(), cleanup: vi.fn() };
+    engine.use(plugin);
+    engine.destroy();
+    expect(plugin.cleanup).toHaveBeenCalled();
+  });
+
 });
 
 describe('Hyperion.create', () => {

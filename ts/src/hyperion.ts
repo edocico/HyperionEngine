@@ -20,6 +20,8 @@ import { Camera } from './camera';
 import { CameraAPI } from './camera-api';
 import { LeakDetector } from './leak-detector';
 import { RawAPI } from './raw-api';
+import { PluginRegistry } from './plugin';
+import type { HyperionPlugin } from './plugin';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -41,6 +43,7 @@ export class Hyperion implements Disposable {
   private readonly pool: EntityHandlePool;
   private readonly leakDetector: LeakDetector;
   private readonly rawApi: RawAPI;
+  private readonly pluginRegistry: PluginRegistry;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -59,6 +62,7 @@ export class Hyperion implements Disposable {
     this.pool = new EntityHandlePool();
     this.leakDetector = new LeakDetector();
     this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
+    this.pluginRegistry = new PluginRegistry();
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -130,6 +134,29 @@ export class Hyperion implements Disposable {
   /** Low-level numeric ID interface for bulk or performance-critical operations. */
   get raw(): RawAPI {
     return this.rawApi;
+  }
+
+  /** Installed plugin registry. */
+  get plugins(): PluginRegistry {
+    return this.pluginRegistry;
+  }
+
+  /**
+   * Install a plugin. The plugin's `install()` callback is invoked
+   * immediately with `this` engine instance.
+   */
+  use(plugin: HyperionPlugin): void {
+    this.checkDestroyed();
+    this.pluginRegistry.install(plugin, this);
+  }
+
+  /**
+   * Uninstall a plugin by name. If the plugin defines a `cleanup()`
+   * callback, it is invoked.
+   */
+  unuse(name: string): void {
+    this.checkDestroyed();
+    this.pluginRegistry.uninstall(name);
   }
 
   /** Live engine statistics snapshot. */
@@ -242,6 +269,7 @@ export class Hyperion implements Disposable {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.pluginRegistry.destroyAll();
     this.loop.stop();
     this.bridge.destroy();
     this.renderer?.destroy();
