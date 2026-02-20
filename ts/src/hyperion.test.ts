@@ -189,6 +189,12 @@ describe('Hyperion', () => {
     engine.returnHandle(e);
     expect(engine.stats.entityCount).toBe(0);
   });
+
+  it('resize() updates camera orthographic projection', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.resize(1920, 1080);
+    expect(engine.cam.zoomLevel).toBe(1.0);
+  });
 });
 
 describe('Hyperion.create', () => {

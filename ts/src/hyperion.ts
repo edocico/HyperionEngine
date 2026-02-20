@@ -225,6 +225,17 @@ export class Hyperion implements Disposable {
   }
 
   /**
+   * Update the camera projection for a new viewport size.
+   * Uses a fixed vertical extent of 20 world units, scaling
+   * the horizontal extent by aspect ratio.
+   */
+  resize(width: number, height: number): void {
+    this.checkDestroyed();
+    const aspect = width / height;
+    this.cameraApi.setOrthographic(20 * aspect, 20);
+  }
+
+  /**
    * Tear down all resources: stop the loop, destroy the bridge and renderer.
    * Idempotent -- calling more than once is safe.
    */
