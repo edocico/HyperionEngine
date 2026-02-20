@@ -11,7 +11,7 @@ import {
 } from './worker-bridge';
 import type { Renderer } from './renderer';
 import { createRenderer } from './renderer';
-import type { ResolvedConfig, HyperionConfig, TextureHandle } from './types';
+import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
@@ -130,6 +130,17 @@ export class Hyperion implements Disposable {
   /** Low-level numeric ID interface for bulk or performance-critical operations. */
   get raw(): RawAPI {
     return this.rawApi;
+  }
+
+  /** Live engine statistics snapshot. */
+  get stats(): HyperionStats {
+    return {
+      fps: this.loop.fps,
+      entityCount: this.entityCount,
+      mode: this.mode,
+      tickCount: 0, // TODO: wire to WASM engine_tick_count when available
+      overflowCount: this.bridge.commandBuffer.pendingCount,
+    };
   }
 
   /**

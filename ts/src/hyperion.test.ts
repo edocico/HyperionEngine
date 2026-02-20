@@ -170,6 +170,25 @@ describe('Hyperion', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     await expect(engine.loadTexture('/test.png')).rejects.toThrow('no renderer');
   });
+
+  it('stats returns current engine statistics', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const s = engine.stats;
+    expect(s.fps).toBe(0);
+    expect(s.entityCount).toBe(0);
+    expect(s.mode).toBe('C');
+    expect(typeof s.tickCount).toBe('number');
+    expect(typeof s.overflowCount).toBe('number');
+  });
+
+  it('stats.entityCount updates after spawn/destroy', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const e = engine.spawn();
+    expect(engine.stats.entityCount).toBe(1);
+    e.destroy();
+    engine.returnHandle(e);
+    expect(engine.stats.entityCount).toBe(0);
+  });
 });
 
 describe('Hyperion.create', () => {
