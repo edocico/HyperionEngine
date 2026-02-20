@@ -76,7 +76,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       wasm.engine_update(msg.dt);
 
       // Increment heartbeat for supervisor monitoring
-      const header = new Int32Array(commandBuffer!, 0, 8);
+      const header = new Int32Array(commandBuffer, 0, 8);
       Atomics.add(header, HEARTBEAT_W1_OFFSET, 1);
 
       const count = wasm.engine_gpu_entity_count();

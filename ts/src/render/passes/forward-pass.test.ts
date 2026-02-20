@@ -6,7 +6,7 @@ describe('ForwardPass', () => {
     const pass = new ForwardPass();
     expect(pass.name).toBe('forward');
     expect(pass.reads).toContain('visible-indices');
-    expect(pass.reads).toContain('entity-data');
+    expect(pass.reads).toContain('entity-transforms');
     expect(pass.reads).toContain('tex-indices');
     expect(pass.reads).toContain('indirect-args');
     expect(pass.writes).toContain('swapchain');

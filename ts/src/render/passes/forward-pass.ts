@@ -4,16 +4,15 @@ import type { ResourcePool } from '../resource-pool';
 /**
  * Forward rendering pass.
  *
- * Reads entity data, visible indices (from CullPass), and texture layer
+ * Reads entity transforms, visible indices (from CullPass), and texture layer
  * indices, then performs an indirect indexed draw to the swapchain.
  *
- * This is a skeleton extraction from the monolithic `renderer.ts`.
- * Full integration (camera upload, depth texture lifecycle, swapchain
- * acquisition) is deferred to Phase 5.
+ * Camera uniform upload, lazy depth texture lifecycle, and swapchain
+ * acquisition via ResourcePool are fully wired.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
-  readonly reads = ['visible-indices', 'entity-data', 'tex-indices', 'indirect-args'];
+  readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args'];
   readonly writes = ['swapchain'];
   readonly optional = false;
 
@@ -24,6 +23,10 @@ export class ForwardPass implements RenderPass {
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null;
   private depthTexture: GPUTexture | null = null;
+  private indirectBuffer: GPUBuffer | null = null;
+  private device: GPUDevice | null = null;
+  private depthWidth = 0;
+  private depthHeight = 0;
 
   /**
    * WGSL shader source for the forward render pipeline.
@@ -38,6 +41,8 @@ export class ForwardPass implements RenderPass {
   static SHADER_SOURCE = '';
 
   setup(device: GPUDevice, resources: ResourcePool): void {
+    this.device = device;
+
     if (!ForwardPass.SHADER_SOURCE) {
       throw new Error('ForwardPass.SHADER_SOURCE must be set before calling setup()');
     }
@@ -69,12 +74,13 @@ export class ForwardPass implements RenderPass {
     });
 
     // --- Fetch shared resources from pool ---
-    const entityBuffer = resources.getBuffer('entity-data');
-    if (!entityBuffer) throw new Error("ForwardPass.setup: missing 'entity-data' in ResourcePool");
+    const transformBuffer = resources.getBuffer('entity-transforms');
+    if (!transformBuffer) throw new Error("ForwardPass.setup: missing 'entity-transforms' in ResourcePool");
     const visibleIndicesBuffer = resources.getBuffer('visible-indices');
     if (!visibleIndicesBuffer) throw new Error("ForwardPass.setup: missing 'visible-indices' in ResourcePool");
     const texIndexBuffer = resources.getBuffer('tex-indices');
     if (!texIndexBuffer) throw new Error("ForwardPass.setup: missing 'tex-indices' in ResourcePool");
+    this.indirectBuffer = resources.getBuffer('indirect-args') ?? null;
 
     const shaderModule = device.createShaderModule({ code: ForwardPass.SHADER_SOURCE });
 
@@ -129,7 +135,7 @@ export class ForwardPass implements RenderPass {
       layout: bindGroupLayout0,
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
-        { binding: 1, resource: { buffer: entityBuffer } },
+        { binding: 1, resource: { buffer: transformBuffer } },
         { binding: 2, resource: { buffer: visibleIndicesBuffer } },
         { binding: 3, resource: { buffer: texIndexBuffer } },
       ],
@@ -156,26 +162,65 @@ export class ForwardPass implements RenderPass {
     }
   }
 
-  prepare(_device: GPUDevice, _frame: FrameState): void {
-    // Upload camera uniform to this.cameraBuffer.
-    // Full implementation deferred to renderer integration (Phase 5).
+  prepare(device: GPUDevice, frame: FrameState): void {
+    if (!this.cameraBuffer) return;
+    device.queue.writeBuffer(this.cameraBuffer, 0, frame.cameraViewProjection as Float32Array<ArrayBuffer>);
   }
 
-  execute(_encoder: GPUCommandEncoder, _frame: FrameState, resources: ResourcePool): void {
-    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0) return;
-    // bindGroup1 may be null if texture tiers are not yet populated
-    if (!this.bindGroup1) return;
+  execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
+    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
-    const indirectBuffer = resources.getBuffer('indirect-args');
-    if (!indirectBuffer) return;
+    // Get swapchain view (set each frame by the coordinator)
+    const swapchainView = resources.getTextureView('swapchain');
+    if (!swapchainView) return;
 
-    // Depth texture and swapchain acquisition require canvas context,
-    // which is wired up during full renderer integration (Phase 5).
-    // This skeleton validates the pass structure and resource wiring.
+    // Ensure depth texture exists and matches canvas size
+    this.ensureDepthTexture(frame.canvasWidth, frame.canvasHeight);
+    if (!this.depthTexture) return;
+
+    const renderPass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: swapchainView,
+        loadOp: 'clear' as GPULoadOp,
+        storeOp: 'store' as GPUStoreOp,
+        clearValue: { r: 0.067, g: 0.067, b: 0.067, a: 1 },
+      }],
+      depthStencilAttachment: {
+        view: this.depthTexture.createView(),
+        depthLoadOp: 'clear' as GPULoadOp,
+        depthStoreOp: 'store' as GPUStoreOp,
+        depthClearValue: 1.0,
+      },
+    });
+    renderPass.setPipeline(this.pipeline);
+    renderPass.setVertexBuffer(0, this.vertexBuffer);
+    renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
+    renderPass.setBindGroup(0, this.bindGroup0);
+    renderPass.setBindGroup(1, this.bindGroup1);
+    renderPass.drawIndexedIndirect(this.indirectBuffer, 0);
+    renderPass.end();
   }
 
-  resize(_width: number, _height: number): void {
-    // Depth texture recreation handled during full renderer integration.
+  resize(width: number, height: number): void {
+    // Depth texture will be lazily recreated in ensureDepthTexture()
+    // when dimensions change, so just invalidate tracking.
+    if (this.depthWidth !== width || this.depthHeight !== height) {
+      this.depthWidth = 0;
+      this.depthHeight = 0;
+    }
+  }
+
+  private ensureDepthTexture(width: number, height: number): void {
+    if (this.depthTexture && this.depthWidth === width && this.depthHeight === height) return;
+    this.depthTexture?.destroy();
+    if (!this.device) return;
+    this.depthTexture = this.device.createTexture({
+      size: { width, height },
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.depthWidth = width;
+    this.depthHeight = height;
   }
 
   destroy(): void {
@@ -190,5 +235,7 @@ export class ForwardPass implements RenderPass {
     this.pipeline = null;
     this.bindGroup0 = null;
     this.bindGroup1 = null;
+    this.indirectBuffer = null;
+    this.device = null;
   }
 }

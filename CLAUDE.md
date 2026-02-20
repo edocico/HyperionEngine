@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (90 tests)
+cd ts && npm test                            # All vitest tests (95 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -62,7 +62,7 @@ cd ts && npx vitest run src/capabilities.test.ts              # Capability detec
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
 cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager (13 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue (7 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (12 tests)
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (4 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
@@ -154,22 +154,22 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 |---|---|
 | `capabilities.ts` | Detects browser features, selects ExecutionMode A/B/C |
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
-| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C) |
-| `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame |
-| `main.ts` | Entry point: detect capabilities → create bridge → requestAnimationFrame loop |
-| `renderer.ts` | GPU-driven renderer: compute culling pipeline + indirect draw + TextureManager + multi-tier Texture2DArrays |
+| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B) |
+| `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
+| `main.ts` | Entry point: detect capabilities → create bridge → requestAnimationFrame loop. Passes `GPURenderState` to renderer |
+| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState` (transforms, bounds, renderMeta, texIndices) |
 | `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
-| `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()` (reuses renderer.ts pipeline) |
-| `backpressure.ts` | `PrioritizedCommandQueue` — priority-based command queuing (critical > high > normal > low) with configurable soft/hard limits |
+| `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
+| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, etc.) |
 | `supervisor.ts` | `WorkerSupervisor` — Worker heartbeat monitoring + timeout detection with configurable intervals |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type — modular rendering pipeline abstraction with reads/writes resource declarations |
 | `render/resource-pool.ts` | `ResourcePool` — named registry for GPU resources (GPUBuffer, GPUTexture, GPUTextureView, GPUSampler) |
 | `render/render-graph.ts` | `RenderGraph` — DAG-based pass scheduling with Kahn's topological sort + dead-pass culling |
-| `render/passes/cull-pass.ts` | `CullPass` — GPU frustum culling compute pass reading SoA buffers |
-| `render/passes/forward-pass.ts` | `ForwardPass` — Forward rendering pass skeleton (setup deferred to Phase 5 integration) |
+| `render/passes/cull-pass.ts` | `CullPass` — GPU frustum culling compute pass. `prepare()` uploads frustum planes + resets indirect args. `execute()` dispatches compute workgroups |
+| `render/passes/forward-pass.ts` | `ForwardPass` — Forward rendering pass with SoA transforms, lazy depth texture, camera uniform upload, and full render pass encoding via `drawIndexedIndirect` |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference implementation of Blelloch exclusive scan |
-| `shaders/basic.wgsl` | Render shader with visibility indirection + multi-tier Texture2DArray sampling via per-entity texture index |
+| `shaders/basic.wgsl` | Render shader with SoA `transforms: array<mat4x4f>`, visibility indirection, multi-tier Texture2DArray sampling |
 | `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling with SoA bindings, atomicAdd for indirect draw |
 | `shaders/prefix-sum.wgsl` | WGSL Blelloch prefix sum compute shader (workgroup-level, 512 elements per workgroup) |
 | `vite-env.d.ts` | Type declarations for WGSL ?raw imports and Vite client |
@@ -184,16 +184,19 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`wasm-pack --out-dir`** is relative to the crate directory, not the workspace root.
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
-- **`extractFrustumPlanesInternal` lives only in `renderer.ts`** — `render-worker.ts` now uses `createRenderer()` from `renderer.ts`, so the frustum extraction is no longer duplicated.
+- **Frustum extraction lives in `camera.ts`** — `CullPass` imports `extractFrustumPlanes` from `camera.ts`. The old `extractFrustumPlanesInternal` in `renderer.ts` has been removed.
 - **WebGPU can't be tested in headless browsers** — Playwright/Puppeteer headless mode has no GPU adapter. `requestAdapter()` returns null. Visual WebGPU testing requires a real browser with GPU acceleration (e.g., `npm run dev` → open Chrome).
-- **Depth texture not recreated on resize** — `renderer.ts` creates the depth texture once at initialization. If the canvas resizes, the depth texture dimensions won't match the render target. This needs fixing in a future phase.
+- **Depth texture lazy recreation** — `ForwardPass.ensureDepthTexture()` creates/recreates the depth texture when canvas dimensions change. `resize()` invalidates the dimension tracking, triggering recreation on the next `execute()`. This fixes the old bug where `renderer.ts` created the depth texture only once at initialization.
 - **No rendering fallback without WebGPU** — When WebGPU is unavailable, the engine runs the ECS/WASM simulation but rendering is completely disabled (`renderer` stays `null`). A future phase should add a WebGL 2 fallback renderer (CPU-side culling, GLSL shaders) implementing the same `Renderer` interface. Canvas 2D is an option for debug/wireframe only.
 - **Full entity buffer re-upload every frame** — `renderer.ts` uploads all SoA buffers via `writeBuffer` each frame, even if most entities haven't moved. Future optimizations: (1) use `DirtyTracker` (now in Rust) for partial upload when `transform_dirty_ratio < 0.3`, (2) stable entity slots in GPU buffer via `EntityMap` free-list, (3) double-buffering with `mapAsync` to eliminate `writeBuffer` internal copies, (4) CPU-side frustum pre-culling to skip off-screen entities before upload.
 - **`createImageBitmap` not available in Workers on all browsers** — Firefox and Chrome support it. Safari has partial support. The `TextureManager` should only be instantiated where `createImageBitmap` is available.
 - **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. The `TextureManager` allocates 256 layers per tier. On devices with fewer layers, loading will fail. Future: query `device.limits.maxTextureArrayLayers`.
 - **TextureManager lazy allocation** — Tiers are now lazily allocated (no GPU textures created until first use). Growth follows exponential steps: 0→16→32→64→128→256 layers per tier. `getTierView()` creates a minimal 1-layer placeholder for bind group validity. Resize copies existing layers via `copyTextureToTexture`.
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. The fragment shader uses a `switch` on the tier value. Adding new tiers requires updating the shader.
-- **Texture indices buffer parallel to entity buffer** — The `texLayerIndices` storage buffer must be indexed by the same entity index as the `entities` buffer. Both are populated in the same `collect_gpu()` loop in Rust, ensuring alignment.
+- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices) must be indexed by the same entity index. All are populated in the same `collect_gpu()` loop in Rust, ensuring alignment. The `ResourcePool` stores them under `entity-transforms`, `entity-bounds`, `tex-indices`.
+- **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args`, writes `swapchain`. Texture views: `tier0`-`tier3`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
+- **BackpressuredProducer wraps RingBufferProducer** — All three bridge factories (`createWorkerBridge`, `createFullIsolationBridge`, `createDirectBridge`) use `BackpressuredProducer` instead of raw `RingBufferProducer`. `flush()` is called at the start of every `tick()`.
+- **Worker heartbeat via ring buffer header** — Engine-worker increments `Atomics.add(header, HEARTBEAT_W1_OFFSET, 1)` after each tick. `WorkerSupervisor` checks heartbeat counters every 1s via `setInterval`. Currently logs warnings only; escalation is TODO(Phase 5).
 
 ## Conventions
 
@@ -207,7 +210,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-4 and Phase 4.5 (Stabilization & Architecture Foundations) are complete. Phase 4.5 added: SoA GPU buffer layout, MeshHandle/RenderPrimitive components, extended ring buffer protocol (32-byte header), RenderPass/ResourcePool abstractions, RenderGraph DAG, CullPass/ForwardPass extraction, Blelloch prefix sum shader, TextureManager lazy allocation, BitSet dirty tracking, backpressure queue, and worker supervisor. **Next: Post-Plan integration wiring (connect new abstractions to live renderer), then Phase 5 (TypeScript API & Lifecycle).**
+Phases 0-4, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Post-Plan Integration wired the Phase 4.5 abstractions into the live renderer: `renderer.ts` is now a RenderGraph-based coordinator (145 lines, down from 357), `basic.wgsl` uses SoA transforms, `CullPass`/`ForwardPass` have full `prepare()`/`execute()` implementations, `BackpressuredProducer` wraps all bridge command buffers, `WorkerSupervisor` monitors heartbeats in Mode A/B, depth texture resize bug is fixed via lazy recreation. **Next: Phase 5 (TypeScript API & Lifecycle).**
 
 ## Documentation
 

@@ -1,5 +1,6 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import { extractFrustumPlanes } from '../../camera';
 
 const WORKGROUP_SIZE = 256;
 
@@ -18,6 +19,7 @@ export class CullPass implements RenderPass {
   private pipeline: GPUComputePipeline | null = null;
   private bindGroup: GPUBindGroup | null = null;
   private cullUniformBuffer: GPUBuffer | null = null;
+  private indirectBuffer: GPUBuffer | null = null;
 
   /**
    * WGSL shader source for the SoA culling compute shader.
@@ -52,8 +54,8 @@ export class CullPass implements RenderPass {
     if (!boundsBuffer) throw new Error("CullPass.setup: missing 'entity-bounds' in ResourcePool");
     const visibleIndicesBuffer = resources.getBuffer('visible-indices');
     if (!visibleIndicesBuffer) throw new Error("CullPass.setup: missing 'visible-indices' in ResourcePool");
-    const indirectBuffer = resources.getBuffer('indirect-args');
-    if (!indirectBuffer) throw new Error("CullPass.setup: missing 'indirect-args' in ResourcePool");
+    this.indirectBuffer = resources.getBuffer('indirect-args') ?? null;
+    if (!this.indirectBuffer) throw new Error("CullPass.setup: missing 'indirect-args' in ResourcePool");
 
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -77,14 +79,28 @@ export class CullPass implements RenderPass {
         { binding: 1, resource: { buffer: transformBuffer } },
         { binding: 2, resource: { buffer: boundsBuffer } },
         { binding: 3, resource: { buffer: visibleIndicesBuffer } },
-        { binding: 4, resource: { buffer: indirectBuffer } },
+        { binding: 4, resource: { buffer: this.indirectBuffer } },
       ],
     });
   }
 
-  prepare(_device: GPUDevice, _frame: FrameState): void {
-    // Upload frustum planes + entity count to cullUniformBuffer.
-    // Full implementation deferred to renderer integration task.
+  prepare(device: GPUDevice, frame: FrameState): void {
+    if (!this.cullUniformBuffer || !this.indirectBuffer) return;
+
+    // Upload frustum planes (6 * vec4f = 24 floats = 96 bytes) + totalEntities (u32) + padding
+    const CULL_UNIFORM_SIZE = 112;
+    const cullData = new ArrayBuffer(CULL_UNIFORM_SIZE);
+    const cullFloats = new Float32Array(cullData, 0, 24);
+    const frustumPlanes = extractFrustumPlanes(frame.cameraViewProjection);
+    cullFloats.set(frustumPlanes);
+    const cullUints = new Uint32Array(cullData, 96, 4);
+    cullUints[0] = frame.entityCount;
+    // cullUints[1..3] = 0 (padding, already zeroed)
+    device.queue.writeBuffer(this.cullUniformBuffer, 0, cullData);
+
+    // Reset indirect draw arguments: indexCount=6 (quad), instanceCount=0
+    const resetArgs = new Uint32Array([6, 0, 0, 0, 0]);
+    device.queue.writeBuffer(this.indirectBuffer, 0, resetArgs);
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, _resources: ResourcePool): void {
@@ -105,5 +121,6 @@ export class CullPass implements RenderPass {
     this.cullUniformBuffer = null;
     this.pipeline = null;
     this.bindGroup = null;
+    this.indirectBuffer = null; // owned by ResourcePool, don't destroy
   }
 }
