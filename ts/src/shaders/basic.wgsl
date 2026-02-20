@@ -9,6 +9,8 @@ struct CameraUniform {
 @group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
 @group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
 @group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;
+@group(0) @binding(4) var<storage, read> renderMeta: array<u32>;
+@group(0) @binding(5) var<storage, read> primParams: array<f32>;
 
 // Tier 0-3 texture arrays (64, 128, 256, 512 px)
 @group(1) @binding(0) var tier0Tex: texture_2d_array<f32>;
