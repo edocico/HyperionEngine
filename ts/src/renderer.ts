@@ -22,11 +22,17 @@ export interface Renderer {
 
 export async function createRenderer(
   canvas: HTMLCanvasElement | OffscreenCanvas,
+  onDeviceLost?: (reason: string) => void,
 ): Promise<Renderer> {
   // --- 1. Initialize WebGPU ---
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
   const device = await adapter.requestDevice();
+
+  device.lost.then((info) => {
+    console.error(`[Hyperion] GPU device lost: ${info.message}`);
+    onDeviceLost?.(info.message);
+  });
 
   const context = canvas instanceof HTMLCanvasElement
     ? canvas.getContext("webgpu")!

@@ -13,6 +13,7 @@ export interface HyperionConfig {
   preferredMode?: 'auto' | 'A' | 'B' | 'C';
   onModeChange?: (from: string, to: string, reason: string) => void;
   onOverflow?: (dropped: number) => void;
+  onDeviceLost?: (reason: string) => void;
 }
 
 /** Resolved config with all defaults applied. */
@@ -25,6 +26,7 @@ export interface ResolvedConfig {
   preferredMode: 'auto' | 'A' | 'B' | 'C';
   onModeChange?: (from: string, to: string, reason: string) => void;
   onOverflow?: (dropped: number) => void;
+  onDeviceLost?: (reason: string) => void;
 }
 
 /** Live engine statistics. */
@@ -69,5 +71,6 @@ export function validateConfig(config: HyperionConfig): ResolvedConfig {
     preferredMode: config.preferredMode ?? 'auto',
     onModeChange: config.onModeChange,
     onOverflow: config.onOverflow,
+    onDeviceLost: config.onDeviceLost,
   };
 }

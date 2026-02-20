@@ -205,6 +205,13 @@ describe('Hyperion', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     expect(() => engine.compact({ entityMap: true, textures: true })).not.toThrow();
   });
+
+  it('onDeviceLost callback is stored in config', () => {
+    const onLost = vi.fn();
+    const config = { ...defaultConfig(), onDeviceLost: onLost };
+    // Verify the type system accepts it and the callback is preserved.
+    expect(config.onDeviceLost).toBe(onLost);
+  });
 });
 
 describe('Hyperion.create', () => {

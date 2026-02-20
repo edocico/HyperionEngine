@@ -108,7 +108,7 @@ export class Hyperion implements Disposable {
     let renderer: Renderer | null = null;
     if (rendererOnMain && caps.webgpu) {
       try {
-        renderer = await createRenderer(config.canvas);
+        renderer = await createRenderer(config.canvas, config.onDeviceLost);
       } catch {
         renderer = null;
       }
