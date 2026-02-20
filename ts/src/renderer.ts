@@ -1,4 +1,5 @@
 import shaderCode from './shaders/basic.wgsl?raw';
+import lineShaderCode from './shaders/line.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
@@ -91,7 +92,10 @@ export async function createRenderer(
 
   // --- 5. Set shader sources and setup passes ---
   CullPass.SHADER_SOURCE = cullShaderCode;
-  ForwardPass.SHADER_SOURCES = { 0: shaderCode }; // Quad = type 0
+  ForwardPass.SHADER_SOURCES = {
+    0: shaderCode,      // Quad
+    1: lineShaderCode,  // Line
+  };
 
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
