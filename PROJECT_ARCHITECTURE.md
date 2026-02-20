@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.7.0 (Phase 0-4 + Phase 4.5 + Post-Plan Integration completate) | **68 test Rust across 7 moduli + 95 test TypeScript across 14 file**
+> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.8.0 (Phase 0-5 + Phase 4.5 + Post-Plan Integration completate) | **81 test Rust across 7 moduli + 175 test TypeScript across 23 file**
 
 ---
 
@@ -14,7 +14,6 @@ L'obiettivo architetturale primario e la **separazione fisica** tra UI, logica d
 
 ### Cosa NON fa (attualmente)
 
-- Non espone una API utente ad alto livello (Phase 5)
 - Non supporta networking o multiplayer
 - Non compila con SIMD128 attivo (richiede flag target-feature specifici per wasm-pack)
 - Non gestisce audio o input (Phase 6)
@@ -173,26 +172,60 @@ HyperionEngine/
 │       ├── Cargo.toml                  # Crate config: wasm-bindgen, hecs, glam, bytemuck
 │       └── src/
 │           ├── lib.rs                  # WASM exports: engine_init, engine_update, engine_gpu_data_ptr,
-│           │                           #   engine_gpu_tex_indices_ptr, engine_tick_count, + altri
+│           │                           #   engine_gpu_tex_indices_ptr, engine_tick_count,
+│           │                           #   engine_compact_entity_map, engine_compact_render_state,
+│           │                           #   engine_entity_map_capacity + altri
 │           ├── engine.rs               # Engine struct: fixed-timestep accumulator, tick loop,
-│           │                           #   spiral-of-death cap, interpolation alpha
-│           ├── command_processor.rs     # EntityMap (sparse Vec + free-list) + process_commands()
-│           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum,
-│           │                           #   parse_commands()
+│           │                           #   spiral-of-death cap, interpolation alpha,
+│           │                           #   propagate_transforms wired into update()
+│           ├── command_processor.rs     # EntityMap (sparse Vec + free-list + shrink_to_fit +
+│           │                           #   iter_mapped) + process_commands() incl. SetParent
+│           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum
+│           │                           #   (11 variants incl. SetParent), parse_commands()
 │           ├── components.rs           # Position, Rotation, Scale, Velocity, ModelMatrix,
 │           │                           #   BoundingRadius, TextureLayerIndex, MeshHandle,
-│           │                           #   RenderPrimitive, Active — tutti #[repr(C)] Pod
-│           ├── systems.rs              # velocity_system, transform_system, count_active
+│           │                           #   RenderPrimitive, Active, Parent, Children,
+│           │                           #   LocalMatrix — tutti #[repr(C)] Pod
+│           ├── systems.rs              # velocity_system, transform_system, count_active,
+│           │                           #   propagate_transforms (scene graph hierarchy)
 │           └── render_state.rs         # RenderState: collect() per legacy matrices,
 │                                       #   collect_gpu() per SoA buffers (transforms/bounds/
-│                                       #   renderMeta/texIndices) + BitSet/DirtyTracker
+│                                       #   renderMeta/texIndices) + BitSet/DirtyTracker +
+│                                       #   shrink_to_fit() per memory compaction
 └── ts/
     ├── package.json                    # Scripts: dev, build, build:wasm, test
     ├── tsconfig.json                   # strict, ES2022, bundler moduleResolution
     ├── vite.config.ts                  # COOP/COEP headers, esnext target
     ├── index.html                      # Canvas + info overlay + module script entry
     └── src/
-        ├── main.ts                     # Entry point: detect → bridge → RAF loop
+        ├── index.ts                    # Barrel export for public API surface
+        ├── hyperion.ts                 # Hyperion class: public API facade with create(), spawn(),
+        │                               #   batch(), start/pause/resume/destroy, use()/unuse(),
+        │                               #   addHook/removeHook, loadTexture, compact(), resize()
+        ├── hyperion.test.ts            # 26 test: Hyperion facade lifecycle, spawn, batch, hooks,
+        │                               #   plugins, destroy, stats, compact, resize
+        ├── entity-handle.ts            # EntityHandle: fluent builder over BackpressuredProducer
+        │                               #   with .position/.velocity/.rotation/.scale/.texture/
+        │                               #   .mesh/.primitive/.parent/.unparent/.data. Disposable
+        ├── entity-handle.test.ts       # 17 test: fluent API, dispose, data, pool recycling
+        ├── entity-pool.ts              # EntityHandlePool: object pool (cap 1024) for recycling
+        ├── entity-pool.test.ts         # 5 test: acquire/release, capacity, init reset
+        ├── game-loop.ts                # GameLoop: RAF lifecycle with preTick/postTick/frameEnd
+        │                               #   hook phases, FPS tracking, lastTime=-1 sentinel
+        ├── game-loop.test.ts           # 6 test: RAF lifecycle, hooks, FPS tracking
+        ├── camera-api.ts               # CameraAPI: wrapper around Camera with zoom (min 0.01)
+        ├── camera-api.test.ts          # 3 test: zoom clamping, viewProjection delegation
+        ├── raw-api.ts                  # RawAPI: low-level numeric ID entity management
+        ├── raw-api.test.ts             # 4 test: spawn/despawn/setPosition/setVelocity
+        ├── plugin.ts                   # HyperionPlugin interface + PluginRegistry: install/cleanup
+        ├── plugin.test.ts              # 5 test: install, cleanup, destroyAll ordering
+        ├── types.ts                    # Core types: HyperionConfig, ResolvedConfig, HyperionStats,
+        │                               #   MemoryStats, CompactOptions, TextureHandle
+        ├── types.test.ts               # 7 test: config defaults, type validation
+        ├── leak-detector.ts            # LeakDetector: FinalizationRegistry backstop for undisposed
+        │                               #   EntityHandles
+        ├── leak-detector.test.ts       # 2 test: registration, cleanup callback
+        ├── main.ts                     # Entry point: uses Hyperion public API (~50 lines)
         ├── capabilities.ts             # detectCapabilities(), selectExecutionMode(), logCapabilities()
         ├── capabilities.test.ts        # 4 test: mode selection across capability combinations
         ├── ring-buffer.ts              # RingBufferProducer: Atomics-based SPSC producer, CommandType enum
@@ -210,10 +243,12 @@ HyperionEngine/
         ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch.
         │                               #   Increments heartbeat counter after each tick
         ├── renderer.ts                 # RenderGraph-based coordinator: ResourcePool + CullPass +
-        │                               #   ForwardPass + TextureManager. Accepts SoA GPURenderState
+        │                               #   ForwardPass + TextureManager. Accepts SoA GPURenderState.
+        │                               #   Added onDeviceLost callback + device.lost listener
         ├── texture-manager.ts          # TextureManager: multi-tier Texture2DArray with lazy
-        │                               #   allocation + exponential growth, concurrency limiter
-        ├── texture-manager.test.ts     # 13 test: tier selection, packing, lazy alloc, growth
+        │                               #   allocation + exponential growth, concurrency limiter.
+        │                               #   Added retainBitmaps option for device-lost recovery
+        ├── texture-manager.test.ts     # 16 test: tier selection, packing, lazy alloc, growth
         ├── camera.ts                   # Orthographic camera, extractFrustumPlanes(),
         │                               #   isSphereInFrustum(), isPointInFrustum()
         ├── camera.test.ts              # 10 test: camera math, frustum plane extraction, culling
@@ -392,6 +427,9 @@ Itera il `Vec<Command>` e muta il mondo ECS via pattern matching sul `CommandTyp
 | `SetScale` (5) | `scale.0 = Vec3::new(x, y, z)` | 12 bytes: 3 × f32 LE |
 | `SetVelocity` (6) | `vel.0 = Vec3::new(x, y, z)` | 12 bytes: 3 × f32 LE |
 | `SetTextureLayer` (7) | `tex.0 = u32` (packed: `tier << 16 \| layer`) | 4 bytes: 1 × u32 LE |
+| `SetMeshHandle` (8) | `mesh.0 = u32` | 4 bytes: 1 × u32 LE |
+| `SetRenderPrimitive` (9) | `prim.0 = u32` | 4 bytes: 1 × u32 LE |
+| `SetParent` (10) | Set parent + update Children; `0xFFFFFFFF` = unparent | 4 bytes: 1 × u32 LE |
 | `Noop` (0) | Nulla | Nessuno |
 
 I comandi su entita inesistenti vengono silenziosamente ignorati (nessun panic). Questo e intenzionale: tra la scrittura del comando su JS e il suo processamento su Rust, l'entita potrebbe essere stata gia despawnata.
@@ -570,6 +608,9 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 #[repr(C)] struct ModelMatrix(pub [f32; 16]);    // 64 bytes (4×4 matrix)
 #[repr(C)] struct BoundingRadius(pub f32);       // 4 bytes — per frustum culling
 #[repr(C)] struct TextureLayerIndex(pub u32);    // 4 bytes — packed (tier << 16) | layer
+#[repr(C)] struct Parent(pub u32);               // 4 bytes — external parent entity ID
+#[repr(C)] struct Children { count: u32, ids: [u32; 32] } // 132 bytes — fixed inline array
+#[repr(C)] struct LocalMatrix(pub [f32; 16]);    // 64 bytes — local-space model matrix
             struct Active;                        // 0 bytes (tag component)
 ```
 
@@ -582,6 +623,9 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 | `ModelMatrix` | `Mat4::IDENTITY` | Matrice 4×4 per la GPU, ricalcolata ogni frame |
 | `BoundingRadius` | `0.5` | Raggio della bounding sphere per GPU frustum culling |
 | `TextureLayerIndex` | `0` | Indice texture packed: `(tier << 16) \| layer`. Tier seleziona il Texture2DArray, layer la slice |
+| `Parent` | — (not spawned by default) | External parent entity ID. Added via `SetParent` command |
+| `Children` | `count: 0, ids: [0; 32]` | Fixed 32-slot inline array of child external IDs. No heap allocation |
+| `LocalMatrix` | `Mat4::IDENTITY` | Local-space model matrix before parent transform. Used by `propagate_transforms` |
 | `Active` | — | Marker component: entita attiva e simulabile |
 
 **Perche `Active` e un marker component e non un bool?** In un ECS, i marker component permettono di filtrare le query senza overhead. `world.query::<&Active>()` itera solo le entita con il tag, usando l'archetype index di `hecs`. Un `bool` richiederebbe un branch per entita.
@@ -600,7 +644,10 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
           SetRotation = 4,                   SetScale = 5,
           SetScale = 5,                      SetVelocity = 6,
           SetVelocity = 6,                   SetTextureLayer = 7,
-          SetTextureLayer = 7,             }
+          SetTextureLayer = 7,               SetMeshHandle = 8,
+          SetMeshHandle = 8,                 SetRenderPrimitive = 9,
+          SetRenderPrimitive = 9,            SetParent = 10,
+          SetParent = 10,                  }
       }
 ```
 
@@ -618,6 +665,9 @@ I discriminanti `u8` **devono restare sincronizzati manualmente**. Non esiste co
 | SetScale (5) | 12 (3 × f32) | 17 |
 | SetVelocity (6) | 12 (3 × f32) | 17 |
 | SetTextureLayer (7) | 4 (1 × u32) | 9 |
+| SetMeshHandle (8) | 4 (1 × u32) | 9 |
+| SetRenderPrimitive (9) | 4 (1 × u32) | 9 |
+| SetParent (10) | 4 (1 × u32, 0xFFFFFFFF = unparent) | 9 |
 
 ### Command
 
@@ -674,7 +724,7 @@ L'Engine e il **Mediator** che coordina tutti i sottosistemi. Non e un singleton
 
 **File**: `crates/hyperion-core/src/lib.rs`
 
-Il layer WASM espone 13 funzioni esterne + 1 smoke test:
+Il layer WASM espone 16 funzioni esterne + 1 smoke test:
 
 ```rust
 static mut ENGINE: Option<Engine> = None;
@@ -701,10 +751,15 @@ static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 #[wasm_bindgen] pub fn engine_gpu_tex_indices_ptr() -> *const u32
 #[wasm_bindgen] pub fn engine_gpu_tex_indices_len() -> u32
 
+// Memory compaction (Phase 5)
+#[wasm_bindgen] pub fn engine_compact_entity_map()
+#[wasm_bindgen] pub fn engine_compact_render_state()
+#[wasm_bindgen] pub fn engine_entity_map_capacity() -> u32
+
 #[wasm_bindgen] pub fn add(a: i32, b: i32) -> i32  // smoke test
 ```
 
-Le funzioni GPU-driven (`engine_gpu_*`) sono state aggiunte in Phase 3-4 per supportare il compute culling. Ogni entita produce 20 float (16 per la model matrix + 4 per la bounding sphere: x, y, z della posizione + w del raggio). Il buffer `tex_indices` e parallelo — indicizzato con lo stesso ordine delle entita nel buffer GPU data.
+Le funzioni GPU-driven (`engine_gpu_*`) sono state aggiunte in Phase 3-4. Le funzioni `engine_compact_*` e `engine_entity_map_capacity` sono state aggiunte in Phase 5 per supportare la memory compaction dall'API TypeScript per supportare il compute culling. Ogni entita produce 20 float (16 per la model matrix + 4 per la bounding sphere: x, y, z della posizione + w del raggio). Il buffer `tex_indices` e parallelo — indicizzato con lo stesso ordine delle entita nel buffer GPU data.
 
 **Perche `static mut` e safe qui?** `wasm32-unknown-unknown` e single-threaded per specifica. Non esiste parallelismo reale — anche con `SharedArrayBuffer`, il modulo WASM gira su un singolo thread. Ogni `unsafe` block ha un commento `// SAFETY` che documenta questa invariante.
 
@@ -771,9 +826,20 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                    Browser Entry (HTML + Vite)                ║
 ║  index.html → <script type="module" src="main.ts">           ║
 +═══════════════════════════════════════════════════════════════+
+║                   Public API Layer (TS — Phase 5)             ║
+║  hyperion.ts   → Hyperion facade (create, spawn, batch,      ║
+║                   start/pause/resume/destroy, plugins, hooks) ║
+║  entity-handle → EntityHandle fluent builder + EntityPool     ║
+║  game-loop.ts  → GameLoop (RAF + preTick/postTick/frameEnd)  ║
+║  camera-api.ts → CameraAPI (zoom, viewProjection)            ║
+║  raw-api.ts    → RawAPI (low-level numeric entity mgmt)      ║
+║  plugin.ts     → PluginRegistry (install/cleanup lifecycle)  ║
+║  types.ts      → HyperionConfig, HyperionStats, TextureHandle║
+║  leak-detector → LeakDetector (FinalizationRegistry backstop)║
+║  index.ts      → Barrel export                               ║
++═══════════════════════════════════════════════════════════════+
 ║                   Orchestration Layer (TS)                    ║
-║  main.ts → detectCapabilities → selectMode → createBridge    ║
-║            → requestAnimationFrame loop → bridge.tick(dt)     ║
+║  main.ts → Hyperion.create() → engine.start()                ║
 +═══════════════════════════════════════════════════════════════+
 ║                   Bridge Layer (TS)                           ║
 ║  worker-bridge.ts → EngineBridge + GPURenderState interface   ║
@@ -811,8 +877,11 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                     ECS Layer (Rust)                          ║
 ║  components.rs → Position, Rotation, Scale, Velocity,         ║
 ║                   ModelMatrix, BoundingRadius,                 ║
-║                   TextureLayerIndex, Active                    ║
-║  systems.rs    → velocity_system, transform_system            ║
+║                   TextureLayerIndex, MeshHandle,               ║
+║                   RenderPrimitive, Active, Parent,             ║
+║                   Children, LocalMatrix                        ║
+║  systems.rs    → velocity_system, transform_system,           ║
+║                   propagate_transforms, count_active           ║
 ║  hecs::World   → Archetype storage, component queries         ║
 +═══════════════════════════════════════════════════════════════+
 ║                    Math Foundation (Rust)                     ║
@@ -1147,7 +1216,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (68 test Rust across 7 moduli + 95 test TypeScript across 14 file)
+### Struttura (81 test Rust across 7 moduli + 175 test TypeScript across 23 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1155,21 +1224,26 @@ Il test suite e organizzato in due livelli per linguaggio:
 
 ```
 crates/hyperion-core/src/
-  ring_buffer.rs          13 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance,
-                                   parse_commands (spawn, position, multiple, incomplete, empty, set_texture_layer)
-  components.rs           13 test: default values, Pod transmute, texture layer pack/unpack,
-                                   MeshHandle/RenderPrimitive defaults + custom values
-  command_processor.rs     6 test: spawn, set position, despawn, ID recycling, set_texture_layer,
-                                   nonexistent entity safety
-  engine.rs                5 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
-                                   render_state collected after update
-  systems.rs               4 test: velocity moves position, transform→matrix, transform applies scale,
-                                   count_active
+  ring_buffer.rs          15 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance,
+                                   parse_commands (spawn, position, multiple, incomplete, empty, set_texture_layer,
+                                   set_parent, set_mesh_handle, set_render_primitive)
+  components.rs           19 test: default values, Pod transmute, texture layer pack/unpack,
+                                   MeshHandle/RenderPrimitive defaults + custom values,
+                                   Parent/Children/LocalMatrix defaults + Pod + child add/remove
+  command_processor.rs    11 test: spawn, set position, despawn, ID recycling, set_texture_layer,
+                                   nonexistent entity safety, set_parent with child bookkeeping,
+                                   shrink_to_fit
+  engine.rs                6 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
+                                   render_state collected after update, propagate parent transforms
+  systems.rs               6 test: velocity moves position, transform→matrix, transform applies scale,
+                                   count_active, propagate_transforms applies parent matrix,
+                                   propagate_transforms skips unparented
   render_state.rs         24 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
                                    multiple, skip without bounding radius, texture layer indices,
                                    empty tex indices, SoA buffers, bounds, render meta,
                                    BitSet (set/get, idempotent, OOB, clear, ensure_capacity),
-                                   DirtyTracker (mark/check, clear, ratio, ensure_capacity, meta)
+                                   DirtyTracker (mark/check, clear, ratio, ensure_capacity, meta),
+                                   shrink_to_fit
 ```
 
 **TypeScript** — File `.test.ts` colocati in `ts/src/`:
@@ -1182,10 +1256,12 @@ ts/src/
   ring-buffer-utils.test.ts          4 test: ring buffer utility functions (extractUnread)
   camera.test.ts                    10 test: orthographic NDC mapping, Camera class, frustum planes
   frustum.test.ts                    7 test: frustum culling accuracy (sphere-plane tests)
-  texture-manager.test.ts           13 test: tier selection, packing/unpacking, lazy alloc, exponential growth
-  backpressure.test.ts              12 test: priority ordering, soft/hard limits, critical bypass,
-                                           BackpressuredProducer pass-through/overflow/flush
-  supervisor.test.ts                 4 test: heartbeat monitoring, timeout detection
+  texture-manager.test.ts           16 test: tier selection, packing/unpacking, lazy alloc, exponential growth,
+                                           retainBitmaps option
+  backpressure.test.ts              16 test: priority ordering, soft/hard limits, critical bypass,
+                                           BackpressuredProducer pass-through/overflow/flush,
+                                           setParent/setMeshHandle/setRenderPrimitive convenience
+  supervisor.test.ts                 5 test: heartbeat monitoring, timeout detection, configurable threshold
   render/render-pass.test.ts         6 test: ResourcePool CRUD, pass contract validation
   render/render-graph.test.ts        8 test: topological ordering, dead-pass culling, cycle detection,
                                            lazy recompile, duplicate names, empty graph, multiple writers
@@ -1194,6 +1270,16 @@ ts/src/
   render/passes/prefix-sum.test.ts   6 test: Blelloch scan correctness (simple, all-visible, all-invisible,
                                            single element, non-power-of-2, compacted indices)
   integration.test.ts                5 test: binary protocol, texture pipeline, GPU data format
+  hyperion.test.ts                  26 test: Hyperion facade lifecycle, spawn, batch, hooks,
+                                           plugins, destroy, stats, compact, resize
+  entity-handle.test.ts             17 test: fluent API, dispose, data map, pool recycling
+  entity-pool.test.ts                5 test: acquire/release, capacity limit, init reset
+  game-loop.test.ts                  6 test: RAF lifecycle, hook phases, FPS tracking
+  raw-api.test.ts                    4 test: spawn/despawn/setPosition/setVelocity
+  camera-api.test.ts                 3 test: zoom clamping, viewProjection delegation
+  plugin.test.ts                     5 test: install, cleanup, destroyAll ordering
+  types.test.ts                      4 test: config defaults, type validation
+  leak-detector.test.ts              2 test: registration, cleanup callback
 ```
 
 ### Pattern di Test: Cross-Boundary Protocol Verification
@@ -1221,21 +1307,27 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 68 test (invariato)
+# Rust — 81 test
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
 cargo test -p hyperion-core ring_buffer               # Ring buffer (13 test)
-cargo test -p hyperion-core render_state              # Render state (24 test)
-cargo test -p hyperion-core components                # Components (13 test)
+cargo test -p hyperion-core render_state              # Render state (25 test)
+cargo test -p hyperion-core components                # Components (19 test)
+cargo test -p hyperion-core command_proc              # Command processor (8 test)
+cargo test -p hyperion-core systems                   # Systems (6 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 95 test
+# TypeScript — 175 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
 cd ts && npx vitest run src/frustum.test.ts           # Frustum culling
 cd ts && npx vitest run src/texture-manager.test.ts   # Texture manager
 cd ts && npx vitest run src/render/render-graph.test.ts # RenderGraph DAG
+cd ts && npx vitest run src/hyperion.test.ts          # Hyperion facade (26 test)
+cd ts && npx vitest run src/entity-handle.test.ts     # EntityHandle (17 test)
+cd ts && npx vitest run src/game-loop.test.ts         # GameLoop (6 test)
+cd ts && npx vitest run src/plugin.test.ts            # PluginRegistry (5 test)
 cd ts && npx tsc --noEmit                             # Type-check solo
 
 # Visual testing — build WASM + dev server
@@ -1314,6 +1406,11 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **Multi-tier Texture2DArray** | Singola texture atlas, array di texture individuali | Atlas ha problemi di bleeding ai bordi e spreca spazio. Texture individuali richiedono bind group switch per-texture. Texture2DArray permette un singolo bind group con fino a 256 texture per tier |
 | **4 tier fissi (64/128/256/512)** | Tier dinamici, singola risoluzione | 4 tier coprono la maggior parte dei casi d'uso 2D. Il costo e lo switch nel fragment shader, ma WGSL non supporta dynamic indexing sulle texture bindings |
 | **Packed texture index (tier<<16\|layer)** | Due u32 separati, struct | Un singolo u32 per entita riduce la bandwidth GPU e semplifica il buffer layout. 16 bit per tier (max 65k tier, ne usiamo 4) e 16 bit per layer (max 65k layer, ne usiamo 256) |
+| **Facade pattern per API pubblica** | Export diretto dei moduli interni, factory functions | La Facade `Hyperion` nasconde la complessita interna (bridge, renderer, camera, loop, pool, plugins) dietro un'interfaccia singola. L'utente non deve sapere di `BackpressuredProducer` o `EngineBridge` |
+| **EntityHandle pool con cap 1024** | Nessun pool (GC), pool illimitato, WeakRef pool | 1024 e sufficiente per scene tipiche. Cap evita memory leak da pool mai svuotato. GC-only causerebbe pressione GC inaccettabile con spawn/despawn frequenti |
+| **`Children` inline [u32; 32] (no heap)** | `Vec<u32>`, `SmallVec`, heap-allocated list | Array inline e `#[repr(C)]` Pod (GPU-uploadable), zero allocazioni, cache-friendly. 32 slot coprono la maggior parte dei casi. Trade-off: limite rigido di 32 figli |
+| **`fromParts()` factory per test** | Mock objects, dependency injection framework | Factory esplicita che accetta componenti pre-costruiti. Semplice, nessuna dipendenza aggiuntiva. I test possono fornire stub minimali senza WASM/WebGPU |
+| **Plugin cleanup in ordine LIFO** | FIFO, ordine arbitrario, nessun ordine garantito | LIFO e il pattern standard per middleware/plugin stack: le dipendenze installate prima vengono pulite per ultime, evitando use-after-free di risorse condivise |
 
 ---
 
@@ -1338,6 +1435,12 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `createImageBitmap` non disponibile ovunque nei Worker | Firefox e Chrome supportano, Safari ha supporto parziale | `TextureManager` va istanziato solo dove `createImageBitmap` e disponibile |
 | WGSL non supporta dynamic indexing su texture bindings | Limitazione del linguaggio | `switch(tier)` nel fragment shader — aggiungere nuovi tier richiede aggiornare lo shader |
 | `Texture2DArray maxTextureArrayLayers` varia per device | WebGPU spec garantisce minimo 256 | `TextureManager` alloca 256 layer per tier. Su device con meno layer, il caricamento fallira |
+| `EntityHandle.data()` cleared on pool reuse | `EntityHandlePool.init()` resets the data map | Plugins that store data via `.data(key, value)` must handle disappearing data after pool recycling |
+| `Hyperion.fromParts()` vs `Hyperion.create()` | Two factory methods serve different purposes | `fromParts()` is the test factory (pre-built components, no WASM/WebGPU). `create()` is production (capability detection, bridge, renderer) |
+| Plugin teardown order matters | Plugins may reference engine resources during cleanup | `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()` |
+| `GameLoop` first-frame dt spike | `performance.now()` would be the entire page lifetime | Uses `lastTime = -1` sentinel to detect first RAF callback and set dt=0 |
+| `SetParent` uses `0xFFFFFFFF` for unparent | Same command type for both parenting and unparenting | Payload is parent entity ID; special value `0xFFFFFFFF` means "remove parent" |
+| `Children` fixed 32-slot inline array | Cache performance trade-off over heap allocation | Entities with more than 32 children silently drop additional children |
 
 ---
 
@@ -1349,7 +1452,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Nessun rendering fallback senza WebGPU | Solo WebGPU supportato | Senza WebGPU il renderer e `null`, solo la simulazione ECS gira | Futuro: WebGL 2 fallback |
 | `webgpuInWorker` detection via UA string | Non esiste API per testare WebGPU in Worker dal Main Thread | Falsi negativi su browser non-Chromium con supporto futuro | Aggiornare euristica quando Firefox supporta |
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
-| Entity IDs non compattati dopo molti spawn/despawn | Free-list LIFO puo lasciare buchi nel Vec | Spreco di memoria per mappe molto sparse | Accettabile per < 1M entita |
+| Entity IDs non compattati dopo molti spawn/despawn | Free-list LIFO puo lasciare buchi nel Vec | Spreco di memoria per mappe molto sparse | **Mitigato**: `EntityMap.shrink_to_fit()` + `Hyperion.compact()` in Phase 5 |
 | Nessuna validazione del quaternione in `SetRotation` | Il payload e accettato cosi com'e | Quaternioni non normalizzati producono scale anomale nella model matrix | Aggiungere normalizzazione in `process_commands` |
 | Full SoA buffer re-upload ogni frame | Il coordinator in `renderer.ts` uploada tutti e 4 i buffer SoA (transforms, bounds, renderMeta, texIndices) ogni frame via `writeBuffer` | Nessuna ottimizzazione partial upload | Futuro: usare `DirtyTracker` (gia in Rust) per partial upload quando `transform_dirty_ratio < 0.3` |
 | Texture indices buffer parallelo al entity buffer | I due buffer devono essere indicizzati nello stesso ordine | Entrambi popolati nello stesso loop `collect_gpu()` — allineamento garantito | **Risolto by design** |
@@ -1369,7 +1472,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **4** | Asset Pipeline & Textures | **Completata** | `TextureManager` (multi-tier Texture2DArray 64/128/256/512), `createImageBitmap` loading pipeline, `TextureLayerIndex` component, `SetTextureLayer` command, packed texture index encoding (tier<<16\|layer), multi-tier WGSL sampling, concurrency limiter, URL caching |
 | **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
 | **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
-| **5** | TypeScript API & Lifecycle | Prossima | API consumer, `dispose()` + `using`, FinalizationRegistry, entity pooling |
+| **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder + pool, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
 | **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
 | **7** | Polish & DX | Pianificata | Shader hot-reload, dev watch mode, performance profiler |
 
@@ -1377,17 +1480,17 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 | Metrica | Valore |
 | --- | --- |
-| Test Rust | 68 (tutti passanti) |
-| Test TypeScript | 95 (tutti passanti) |
+| Test Rust | 81 (tutti passanti) |
+| Test TypeScript | 175 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 20+ (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl`, `vite-env.d.ts`) |
-| File test TypeScript | 14 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `prefix-sum`, `integration`) |
+| Moduli TypeScript | 30+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl`, `vite-env.d.ts`) |
+| File test TypeScript | 23 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
-| WASM exports | 14 (13 engine functions + 1 smoke test) |
-| ECS Components | 10 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, Active) |
-| CommandType variants | 8 (Noop + 7 comandi) |
+| WASM exports | 17 (16 engine functions + 1 smoke test) |
+| ECS Components | 13 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, Active, Parent, Children, LocalMatrix) |
+| CommandType variants | 11 (Noop + 10 comandi) |
 
 ---
 
@@ -1405,7 +1508,7 @@ Per aggiungere un comando (es. `SetColor(r, g, b, a)`):
 
 **Test**: Test Rust in `ring_buffer.rs::tests` per il parsing. Test Rust in `command_processor.rs::tests` per la mutazione ECS. Test TypeScript in `ring-buffer.test.ts` per la serializzazione. Test in `integration.test.ts` per la verifica cross-boundary degli offset.
 
-**Nota**: Il prossimo discriminante libero e `8` — `SetTextureLayer` (7) e l'ultimo assegnato.
+**Nota**: Il prossimo discriminante libero e `11` — `SetParent` (10) e l'ultimo assegnato.
 
 ### 17.2 Aggiungere un Nuovo Componente ECS
 
@@ -1456,7 +1559,188 @@ Se servisse un tier 4 (es. 1024×1024):
 
 ---
 
-## 18. Glossario
+## 18. Phase 5: TypeScript API & Lifecycle
+
+### Panoramica
+
+Phase 5 aggiunge un **Public API Layer** completo sopra i componenti interni dell'engine. Prima di Phase 5, l'utente doveva interagire direttamente con `BackpressuredProducer`, `EngineBridge`, `Camera`, e `createRenderer()` — API interne progettate per la comunicazione tra moduli, non per l'ergonomia utente. Phase 5 wrappa tutto in una singola classe `Hyperion` con un'API fluente e opinionata.
+
+### 18.1 Hyperion Facade
+
+**File**: `ts/src/hyperion.ts`
+
+`Hyperion` e il punto di ingresso unico per gli utenti dell'engine. Espone due factory method:
+
+- **`Hyperion.create(canvas, config?)`** — Factory di produzione. Rileva le capabilities del browser, crea bridge e renderer, inizializza il game loop. Asincrona (ritorna `Promise<Hyperion>`).
+- **`Hyperion.fromParts(parts)`** — Factory di test. Accetta componenti pre-costruiti (bridge, renderer, camera, etc.) per unit testing senza WASM/WebGPU reale.
+
+**Metodi principali**:
+
+| Metodo | Scopo |
+|---|---|
+| `spawn()` | Crea un `EntityHandle` (da pool se disponibile) |
+| `batch(fn)` | Esegue operazioni in batch, flush alla fine |
+| `start()` | Avvia il game loop (RAF) |
+| `pause()` | Sospende il game loop |
+| `resume()` | Riprende il game loop |
+| `destroy()` | Teardown completo: plugins → loop → bridge → renderer |
+| `use(plugin)` | Installa un plugin |
+| `unuse(plugin)` | Rimuove un plugin |
+| `addHook(phase, fn)` | Registra un hook (preTick/postTick/frameEnd) |
+| `removeHook(phase, fn)` | Rimuove un hook |
+| `loadTexture(url)` | Carica una texture, ritorna `TextureHandle` |
+| `loadTextures(urls)` | Carica texture in batch |
+| `compact(options?)` | Compatta EntityMap + RenderState (chiama WASM exports) |
+| `resize(w, h)` | Ridimensiona canvas + camera + renderer |
+| `stats` | Getter per `HyperionStats` (fps, entityCount, mode, etc.) |
+
+**Ordine di teardown in `destroy()`**:
+1. `pluginRegistry.destroyAll()` — plugin cleanup (possono ancora accedere all'engine)
+2. `gameLoop.stop()` — ferma RAF
+3. `bridge.destroy()` — termina Worker
+4. `renderer.destroy()` — rilascia risorse GPU
+
+### 18.2 EntityHandle: Fluent Builder
+
+**File**: `ts/src/entity-handle.ts`
+
+`EntityHandle` wrappa un entity ID numerico e un riferimento al `BackpressuredProducer`, esponendo un'API fluent per configurare le proprieta:
+
+```typescript
+const entity = engine.spawn()
+    .position(10, 20, 0)
+    .velocity(1, 0, 0)
+    .scale(2, 2, 1)
+    .texture(textureHandle)
+    .parent(otherEntity);
+```
+
+Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `.dispose()` invia `DespawnEntity` e rilascia l'handle al pool.
+
+**Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). La data map viene resettata quando l'handle viene riciclato dal pool via `init()`.
+
+### 18.3 EntityHandlePool: Object Pooling
+
+**File**: `ts/src/entity-pool.ts`
+
+Per evitare pressione GC in scene con frequenti spawn/despawn, `EntityHandlePool` implementa un object pool LIFO con capacita massima di 1024 handle.
+
+- `acquire()` → pop dal pool (se disponibile) oppure crea nuovo
+- `release(handle)` → push nel pool (se sotto capacita) oppure scarta
+
+`init(id, producer)` resetta un handle riciclato: nuovo entity ID, stesso producer, data map pulita.
+
+### 18.4 GameLoop: RAF Lifecycle con Hook
+
+**File**: `ts/src/game-loop.ts`
+
+`GameLoop` gestisce il ciclo `requestAnimationFrame` con tre fasi di hook:
+
+1. **preTick** — prima di `bridge.tick(dt)` (input processing, AI updates)
+2. **postTick** — dopo `bridge.tick(dt)`, prima del rendering (state sync)
+3. **frameEnd** — dopo il rendering (debug overlay, stats collection)
+
+**FPS tracking**: Calcola FPS con smoothing esponenziale. Espone `fps` getter.
+
+**Sentinel `lastTime = -1`**: Il primo callback RAF riceve `performance.now()` che e il tempo dall'inizio della pagina. Senza il sentinel, il primo dt sarebbe enorme (centinaia di ms), causando uno spike di simulazione. Il sentinel forza dt=0 al primo frame.
+
+### 18.5 Plugin System
+
+**File**: `ts/src/plugin.ts`
+
+```typescript
+interface HyperionPlugin {
+    name: string;
+    install(engine: Hyperion): void;
+    cleanup?(): void;
+}
+```
+
+`PluginRegistry` gestisce il lifecycle dei plugin:
+- `install(plugin, engine)` → chiama `plugin.install(engine)`, registra per cleanup
+- `uninstall(plugin)` → chiama `plugin.cleanup()` se presente, deregistra
+- `destroyAll()` → cleanup di tutti i plugin in ordine inverso di installazione
+
+**Ordine inverso**: I plugin installati per ultimi vengono distrutti per primi (LIFO), come in uno stack di middleware.
+
+### 18.6 Scene Graph (Rust)
+
+Phase 5 aggiunge un scene graph minimale basato su tre nuovi componenti ECS:
+
+| Componente | Layout | Scopo |
+|---|---|---|
+| `Parent(u32)` | 4 bytes | External entity ID del parent |
+| `Children { count, ids: [u32; 32] }` | 132 bytes | Lista figli inline (no heap) |
+| `LocalMatrix([f32; 16])` | 64 bytes | Model matrix nello spazio locale |
+
+**`SetParent` command (discriminante 10)**:
+
+Il payload e un `u32`:
+- Valore valido → set parent: aggiunge `Parent(parent_id)` al figlio, aggiunge il figlio ai `Children` del parent
+- `0xFFFFFFFF` → unparent: rimuove `Parent`, rimuove il figlio dai `Children` del vecchio parent
+
+**`propagate_transforms` system**:
+
+Eseguito in `Engine::update()` dopo `transform_system()`. Per ogni entita con `Parent`:
+1. Legge la `ModelMatrix` del parent (lookup via `ext_to_entity` HashMap)
+2. Moltiplica: `model_matrix = parent_matrix * local_matrix`
+3. Scrive il risultato nella `ModelMatrix` del figlio
+
+Questo produce model matrix world-space corrette per la GPU, anche con gerarchie annidate (propagazione ricorsiva indiretta: i parent vengono processati prima dei figli grazie all'ordinamento naturale degli archetype di hecs).
+
+**Limitazione**: `Children` usa un array inline di 32 slot. Nessuna allocazione heap, ma entita con piu di 32 figli perderanno i figli in eccesso silenziosamente.
+
+### 18.7 Memory Compaction
+
+Phase 5 aggiunge la capacita di compattare le strutture dati interne dopo molti spawn/despawn:
+
+**Rust**:
+- `EntityMap::shrink_to_fit()` — rilascia capacita in eccesso nel Vec e nella free-list
+- `RenderState::shrink_to_fit()` — rilascia capacita in eccesso in tutti i buffer SoA
+
+**WASM exports**:
+- `engine_compact_entity_map()` — chiama `EntityMap::shrink_to_fit()`
+- `engine_compact_render_state()` — chiama `RenderState::shrink_to_fit()`
+- `engine_entity_map_capacity()` → `u32` — ritorna la capacita attuale dell'EntityMap
+
+**TypeScript**: `Hyperion.compact(options?)` chiama i WASM exports appropriati. Puo essere invocato manualmente dall'utente quando sa di aver rilasciato molte entita.
+
+### 18.8 Device-Lost Recovery (Plumbing)
+
+Phase 5 aggiunge il plumbing per il recovery da device-lost GPU (non il recovery completo):
+
+- **`renderer.ts`**: `createRenderer()` accetta un parametro `onDeviceLost` callback. Registra un listener su `device.lost` che invoca il callback.
+- **`texture-manager.ts`**: Nuova opzione `retainBitmaps` nel costruttore. Quando attiva, `TextureManager` conserva le `ImageBitmap` originali dopo l'upload, permettendo il re-upload dopo un recovery di device.
+
+Il recovery completo (ricreazione di device, re-upload di tutti i buffer, ricreazione di pipeline) e pianificato per una fase futura.
+
+### 18.9 RawAPI: Low-Level Numeric Interface
+
+**File**: `ts/src/raw-api.ts`
+
+Per scenari ad alte prestazioni dove l'overhead di `EntityHandle` e il GC pressure del pool non sono accettabili (es. sistemi particellari con 100k+ entita), `RawAPI` espone un'interfaccia numerica diretta:
+
+```typescript
+const raw = engine.raw;
+const id = raw.spawn();
+raw.setPosition(id, 10, 20, 0);
+raw.setVelocity(id, 1, 0, 0);
+raw.despawn(id);
+```
+
+Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette al `BackpressuredProducer`.
+
+### 18.10 LeakDetector
+
+**File**: `ts/src/leak-detector.ts`
+
+`LeakDetector` usa `FinalizationRegistry` come backstop per rilevare `EntityHandle` non disposed correttamente. Quando un handle viene garbage-collected senza essere stato disposed, il detector logga un warning con l'entity ID.
+
+**Nota**: `FinalizationRegistry` non e un meccanismo di cleanup affidabile per spec — il GC non garantisce che il callback venga mai invocato. Per questo il detector e un **backstop diagnostico**, non il meccanismo primario di cleanup. Il cleanup primario e `.dispose()` esplicito.
+
+---
+
+## 19. Glossario
 
 | Termine | Significato |
 |---|---|
@@ -1503,3 +1787,12 @@ Se servisse un tier 4 (es. 1024×1024):
 | **Orthographic projection** | Proiezione che preserva dimensioni degli oggetti indipendentemente dalla distanza — nessuna distorsione prospettica |
 | **`?raw` import** | Direttiva Vite che importa un file come stringa grezza al build time, usata per caricare shader WGSL senza richieste runtime |
 | **GPU-driven rendering** | Pattern dove la GPU decide cosa renderizzare (compute culling) e quante istanze (indirect draw), riducendo il coinvolgimento della CPU |
+| **Facade pattern** | Pattern dove una singola classe (`Hyperion`) espone un'interfaccia semplificata sopra un sottosistema complesso (bridge, renderer, camera, loop, plugins) |
+| **EntityHandle** | Wrapper fluent sopra un entity ID numerico. Metodi chainable (`.position().velocity().scale()`). Implementa `Disposable` per cleanup automatico |
+| **EntityHandlePool** | Object pool LIFO (cap 1024) per riciclare `EntityHandle` senza pressione GC. `acquire()` riusa, `release()` rimette nel pool |
+| **GameLoop** | Gestore del ciclo `requestAnimationFrame` con hook system (preTick/postTick/frameEnd) e FPS tracking |
+| **HyperionPlugin** | Interfaccia per plugin dell'engine: `install(engine)` per setup, `cleanup()` opzionale per teardown. Gestiti da `PluginRegistry` |
+| **Scene graph** | Gerarchia parent-child tra entita. `Parent` + `Children` components + `propagate_transforms` system. Le model matrix dei figli sono moltiplicate per la matrix del parent |
+| **LeakDetector** | Backstop diagnostico via `FinalizationRegistry` per rilevare EntityHandle non disposed. Non garantito dalla spec — solo warning |
+| **RawAPI** | Interfaccia numerica diretta per entity management senza overhead di oggetti. Per scenari ad alte prestazioni (100k+ entita) |
+| **Memory compaction** | Processo di rilascio della capacita in eccesso nelle strutture dati interne (`EntityMap.shrink_to_fit`, `RenderState.shrink_to_fit`) dopo molti spawn/despawn |

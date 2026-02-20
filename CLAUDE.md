@@ -17,18 +17,18 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (68 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (81 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
-cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (13 tests)
-cargo test -p hyperion-core engine           # Engine tests only (5 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (24 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (6 tests)
-cargo test -p hyperion-core systems          # Systems tests only (4 tests)
-cargo test -p hyperion-core components       # Component tests only (13 tests)
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (15 tests)
+cargo test -p hyperion-core engine           # Engine tests only (6 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (25 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (11 tests)
+cargo test -p hyperion-core systems          # Systems tests only (6 tests)
+cargo test -p hyperion-core components       # Component tests only (19 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (95 tests)
+cd ts && npm test                            # All vitest tests (175 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -61,14 +61,23 @@ cd ts && npx vitest run src/camera.test.ts                    # Camera math + fr
 cd ts && npx vitest run src/capabilities.test.ts              # Capability detection (4 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
-cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager (13 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (12 tests)
-cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (4 tests)
+cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager (16 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (16 tests)
+cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
 cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction (1 test)
 cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass skeleton (1 test)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (26 tests)
+cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (17 tests)
+cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
+cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (6 tests)
+cd ts && npx vitest run src/raw-api.test.ts                   # RawAPI numeric interface (4 tests)
+cd ts && npx vitest run src/camera-api.test.ts                # CameraAPI zoom (3 tests)
+cd ts && npx vitest run src/plugin.test.ts                    # PluginRegistry (5 tests)
+cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector backstop (2 tests)
+cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
 ```
 
 ### Development Workflow
@@ -140,25 +149,35 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len` |
-| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems |
-| `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling) + `process_commands` |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum, `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `Active` — all `#[repr(C)]` Pod |
-| `systems.rs` | `velocity_system`, `transform_system`, `count_active` |
-| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices) + `BitSet`/`DirtyTracker` for partial upload optimization |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity` |
+| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy |
+| `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (11 variants incl. `SetParent`), `Command` struct |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
+| `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
 
 | Module | Role |
 |---|---|
+| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`. `fromParts()` test factory |
+| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.data`. Implements `Disposable` |
+| `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
+| `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking |
+| `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01) |
+| `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
+| `plugin.ts` | `HyperionPlugin` interface + `PluginRegistry` — plugin lifecycle with install/cleanup |
+| `types.ts` | Core types: `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
+| `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
+| `index.ts` | Barrel export for public API surface |
 | `capabilities.ts` | Detects browser features, selects ExecutionMode A/B/C |
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
 | `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B) |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
-| `main.ts` | Entry point: detect capabilities → create bridge → requestAnimationFrame loop. Passes `GPURenderState` to renderer |
-| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState` (transforms, bounds, renderMeta, texIndices) |
-| `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter |
+| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). ~50 lines, down from 140 |
+| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Added `onDeviceLost` callback + `device.lost` listener |
+| `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
 | `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
 | `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, etc.) |
@@ -197,6 +216,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args`, writes `swapchain`. Texture views: `tier0`-`tier3`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
 - **BackpressuredProducer wraps RingBufferProducer** — All three bridge factories (`createWorkerBridge`, `createFullIsolationBridge`, `createDirectBridge`) use `BackpressuredProducer` instead of raw `RingBufferProducer`. `flush()` is called at the start of every `tick()`.
 - **Worker heartbeat via ring buffer header** — Engine-worker increments `Atomics.add(header, HEARTBEAT_W1_OFFSET, 1)` after each tick. `WorkerSupervisor` checks heartbeat counters every 1s via `setInterval`. Currently logs warnings only; escalation is TODO(Phase 5).
+- **`EntityHandle.data()` cleared on `init()`** — When EntityHandles are recycled from the pool, `init()` resets the data map. Plugins that store data via `.data(key, value)` must handle the case where data disappears after pool reuse.
+- **`Hyperion.fromParts()` vs `Hyperion.create()`** — `fromParts()` is the test factory that accepts pre-built components (bridge, renderer, etc.) for unit testing without real WASM/WebGPU. `create()` is the production factory that performs capability detection, bridge creation, and renderer initialization.
+- **Plugin teardown order** — `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()`. This ensures plugins can still access engine resources during their cleanup phase.
+- **`GameLoop` first-frame sentinel** — `GameLoop` uses `lastTime = -1` sentinel to detect the first RAF callback and set dt=0, avoiding a massive first-frame dt spike (which would be `performance.now()` milliseconds).
+- **Scene graph `SetParent` uses `0xFFFFFFFF` for unparent** — The `SetParent` command payload is a `u32` parent entity ID. The special value `0xFFFFFFFF` means "remove parent" (unparent). This allows the same command type for both parenting and unparenting.
+- **`Children` component uses fixed 32-slot inline array** — No heap allocation for child lists. Entities with more than 32 children will silently drop additional children. This is a design trade-off for cache performance.
 
 ## Conventions
 
@@ -210,7 +235,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-4, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Post-Plan Integration wired the Phase 4.5 abstractions into the live renderer: `renderer.ts` is now a RenderGraph-based coordinator (145 lines, down from 357), `basic.wgsl` uses SoA transforms, `CullPass`/`ForwardPass` have full `prepare()`/`execute()` implementations, `BackpressuredProducer` wraps all bridge command buffers, `WorkerSupervisor` monitors heartbeats in Mode A/B, depth texture resize bug is fixed via lazy recreation. **Next: Phase 5 (TypeScript API & Lifecycle).**
+Phases 0-5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Phase 5 (TypeScript API & Lifecycle) added a complete public API facade over the engine internals: `Hyperion` class with `create()/spawn()/batch()/start/pause/resume/destroy`, `EntityHandle` fluent builder with object pooling (`EntityHandlePool`), `GameLoop` with preTick/postTick/frameEnd hooks, `CameraAPI` with zoom, `RawAPI` for low-level numeric entity management, `PluginRegistry` for plugin lifecycle, `LeakDetector` via `FinalizationRegistry`, and a barrel export via `index.ts`. On the Rust side: scene graph support (`Parent`/`Children`/`LocalMatrix` components, `propagate_transforms` system, `SetParent` command), memory compaction (`EntityMap.shrink_to_fit`, `RenderState.shrink_to_fit`, new WASM exports), and device-lost recovery plumbing (`onDeviceLost` callback, `retainBitmaps`). `main.ts` rewritten to use the Hyperion public API (~50 lines, down from 140). **Next: Phase 6 (Audio & Input).**
 
 ## Documentation
 
