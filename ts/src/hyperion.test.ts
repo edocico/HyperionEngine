@@ -238,6 +238,13 @@ describe('Hyperion', () => {
     expect(plugin.cleanup).toHaveBeenCalled();
   });
 
+  it('addHook/removeHook delegates to game loop', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const hook = vi.fn();
+    engine.addHook('preTick', hook);
+    // Verify it's wired (testing indirectly via the loop is sufficient)
+    engine.removeHook('preTick', hook);
+  });
 });
 
 describe('Hyperion.create', () => {

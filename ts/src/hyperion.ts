@@ -22,6 +22,7 @@ import { LeakDetector } from './leak-detector';
 import { RawAPI } from './raw-api';
 import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
+import type { HookPhase, HookFn } from './game-loop';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -157,6 +158,16 @@ export class Hyperion implements Disposable {
   unuse(name: string): void {
     this.checkDestroyed();
     this.pluginRegistry.uninstall(name);
+  }
+
+  /** Register a hook to run during a specific game loop phase. */
+  addHook(phase: HookPhase, fn: HookFn): void {
+    this.loop.addHook(phase, fn);
+  }
+
+  /** Remove a previously registered game loop hook. */
+  removeHook(phase: HookPhase, fn: HookFn): void {
+    this.loop.removeHook(phase, fn);
   }
 
   /** Live engine statistics snapshot. */
