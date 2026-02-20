@@ -135,3 +135,9 @@ describe('Hyperion', () => {
     expect(bridge.destroy).toHaveBeenCalled();
   });
 });
+
+describe('Hyperion.create', () => {
+  it('is an async static factory', () => {
+    expect(typeof Hyperion.create).toBe('function');
+  });
+});

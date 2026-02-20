@@ -1,6 +1,18 @@
+import {
+  detectCapabilities,
+  selectExecutionMode,
+  ExecutionMode,
+} from './capabilities';
 import type { EngineBridge } from './worker-bridge';
+import {
+  createWorkerBridge,
+  createDirectBridge,
+  createFullIsolationBridge,
+} from './worker-bridge';
 import type { Renderer } from './renderer';
-import type { ResolvedConfig } from './types';
+import { createRenderer } from './renderer';
+import type { ResolvedConfig, HyperionConfig } from './types';
+import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
 import { GameLoop } from './game-loop';
@@ -12,8 +24,8 @@ import { LeakDetector } from './leak-detector';
  * entity handle pool, and leak detector. Provides the public API surface
  * for spawning entities, controlling the loop, and tearing down resources.
  *
- * Construct via the static `fromParts()` factory (used by `Hyperion.create()`
- * once capability detection and bridge/renderer creation are wired up).
+ * Construct via `Hyperion.create(config)` for production use, or
+ * `Hyperion.fromParts(config, bridge, renderer)` for testing.
  *
  * Implements `Disposable` for use with `using` declarations.
  */
@@ -46,13 +58,56 @@ export class Hyperion implements Disposable {
 
   /**
    * Build a Hyperion instance from pre-constructed dependencies.
-   * Used for testing and by the future `Hyperion.create()` async factory.
+   * Used for testing and by `Hyperion.create()` internally.
    */
   static fromParts(
     config: ResolvedConfig,
     bridge: EngineBridge,
     renderer: Renderer | null,
   ): Hyperion {
+    return new Hyperion(config, bridge, renderer);
+  }
+
+  /**
+   * Async factory: detect capabilities, select execution mode,
+   * create bridge + renderer, and return a ready-to-use Hyperion instance.
+   */
+  static async create(userConfig: HyperionConfig): Promise<Hyperion> {
+    const config = validateConfig(userConfig);
+
+    const caps = detectCapabilities();
+    const modeMap: Record<string, ExecutionMode> = {
+      A: ExecutionMode.FullIsolation,
+      B: ExecutionMode.PartialIsolation,
+      C: ExecutionMode.SingleThread,
+    };
+    const mode = config.preferredMode === 'auto'
+      ? selectExecutionMode(caps)
+      : modeMap[config.preferredMode] ?? selectExecutionMode(caps);
+
+    let bridge: EngineBridge;
+    let rendererOnMain = true;
+
+    if (mode === ExecutionMode.FullIsolation) {
+      bridge = createFullIsolationBridge(config.canvas);
+      rendererOnMain = false;
+    } else if (mode === ExecutionMode.PartialIsolation) {
+      bridge = createWorkerBridge(mode);
+    } else {
+      bridge = await createDirectBridge();
+    }
+
+    await bridge.ready();
+
+    let renderer: Renderer | null = null;
+    if (rendererOnMain && caps.webgpu) {
+      try {
+        renderer = await createRenderer(config.canvas);
+      } catch {
+        renderer = null;
+      }
+    }
+
     return new Hyperion(config, bridge, renderer);
   }
 
