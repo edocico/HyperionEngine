@@ -225,4 +225,39 @@ describe("RingBufferProducer", () => {
       "RingBufferProducer: capacity must be a multiple of 4, got 33"
     );
   });
+
+  it('should write and read SetPrimParams0 command', () => {
+    const sab = makeBuffer();
+    const prod = new RingBufferProducer(sab);
+
+    const ok = prod.setPrimParams0(42, 1.0, 2.0, 3.0, 4.0);
+    expect(ok).toBe(true);
+
+    const data = extractUnread(sab);
+    expect(data.bytes.byteLength).toBe(1 + 4 + 16); // cmd + entityId + 4xf32
+    const view = new DataView(data.bytes.buffer, data.bytes.byteOffset);
+    expect(view.getUint8(0)).toBe(11); // SetPrimParams0
+    expect(view.getUint32(1, true)).toBe(42);
+    expect(view.getFloat32(5, true)).toBeCloseTo(1.0);
+    expect(view.getFloat32(9, true)).toBeCloseTo(2.0);
+    expect(view.getFloat32(13, true)).toBeCloseTo(3.0);
+    expect(view.getFloat32(17, true)).toBeCloseTo(4.0);
+  });
+
+  it('should write and read SetPrimParams1 command', () => {
+    const sab = makeBuffer();
+    const prod = new RingBufferProducer(sab);
+
+    const ok = prod.setPrimParams1(42, 5.0, 6.0, 7.0, 8.0);
+    expect(ok).toBe(true);
+
+    const data = extractUnread(sab);
+    const view = new DataView(data.bytes.buffer, data.bytes.byteOffset);
+    expect(view.getUint8(0)).toBe(12); // SetPrimParams1
+    expect(view.getUint32(1, true)).toBe(42);
+    expect(view.getFloat32(5, true)).toBeCloseTo(5.0);
+    expect(view.getFloat32(9, true)).toBeCloseTo(6.0);
+    expect(view.getFloat32(13, true)).toBeCloseTo(7.0);
+    expect(view.getFloat32(17, true)).toBeCloseTo(8.0);
+  });
 });
