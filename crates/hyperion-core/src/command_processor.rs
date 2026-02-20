@@ -227,6 +227,10 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                 }
             }
 
+            CommandType::SetPrimParams0 | CommandType::SetPrimParams1 => {
+                // TODO(Task 3): process PrimitiveParams commands
+            }
+
             CommandType::Noop => {}
         }
     }

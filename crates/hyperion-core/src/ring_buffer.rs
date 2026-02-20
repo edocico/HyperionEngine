@@ -43,6 +43,8 @@ pub enum CommandType {
     SetMeshHandle = 8,
     SetRenderPrimitive = 9,
     SetParent = 10,
+    SetPrimParams0 = 11,   // params[0..3], 4 × f32 = 16 bytes
+    SetPrimParams1 = 12,   // params[4..7], 4 × f32 = 16 bytes
 }
 
 impl CommandType {
@@ -60,6 +62,8 @@ impl CommandType {
             8 => Some(Self::SetMeshHandle),
             9 => Some(Self::SetRenderPrimitive),
             10 => Some(Self::SetParent),
+            11 => Some(Self::SetPrimParams0),
+            12 => Some(Self::SetPrimParams1),
             _ => None,
         }
     }
@@ -74,6 +78,7 @@ impl CommandType {
             Self::SetMeshHandle => 4,       // u32 LE
             Self::SetRenderPrimitive => 4,  // u8 padded to 4 for alignment
             Self::SetParent => 4,           // parent entity id (u32 LE), 0xFFFFFFFF = unparent
+            Self::SetPrimParams0 | Self::SetPrimParams1 => 16, // 4 × f32
         }
     }
 
@@ -565,6 +570,20 @@ mod tests {
     #[test]
     fn header_size_is_32_bytes() {
         assert_eq!(HEADER_SIZE, 32);
+    }
+
+    #[test]
+    fn set_prim_params_0_round_trip() {
+        let cmd_type = CommandType::from_u8(11).unwrap();
+        assert_eq!(cmd_type, CommandType::SetPrimParams0);
+        assert_eq!(cmd_type.payload_size(), 16);
+    }
+
+    #[test]
+    fn set_prim_params_1_round_trip() {
+        let cmd_type = CommandType::from_u8(12).unwrap();
+        assert_eq!(cmd_type, CommandType::SetPrimParams1);
+        assert_eq!(cmd_type.payload_size(), 16);
     }
 
     #[test]
