@@ -58,6 +58,26 @@ pub struct MeshHandle(pub u32);
 #[repr(C)]
 pub struct RenderPrimitive(pub u8);
 
+/// Per-entity parameters interpreted by the active RenderPrimitive shader.
+/// 8 f32 (32 bytes) — meaning depends on primitive type:
+///   Line: [startX, startY, endX, endY, width, dashLen, gapLen, _pad]
+///   SDFGlyph: [atlasU0, atlasV0, atlasU1, atlasV1, screenPxRange, _pad, _pad, _pad]
+///   Gradient: [type, angle, stop0pos, stop0r, stop0g, stop0b, stop1pos, stop1r]
+///   BoxShadow: [rectW, rectH, cornerRadius, blur, colorR, colorG, colorB, colorA]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct PrimitiveParams(pub [f32; 8]);
+
+// SAFETY: PrimitiveParams is #[repr(C)] with only f32 fields — trivially Pod.
+unsafe impl bytemuck::Pod for PrimitiveParams {}
+unsafe impl bytemuck::Zeroable for PrimitiveParams {}
+
+impl Default for PrimitiveParams {
+    fn default() -> Self {
+        Self([0.0; 8])
+    }
+}
+
 /// Parent entity (external ID). u32::MAX = no parent.
 #[derive(Debug, Clone, Copy)]
 pub struct Parent(pub u32);
@@ -315,5 +335,14 @@ mod tests {
         assert_eq!(m.0[5], 1.0);
         assert_eq!(m.0[10], 1.0);
         assert_eq!(m.0[15], 1.0);
+    }
+
+    #[test]
+    fn primitive_params_is_pod_and_default_zero() {
+        let pp = PrimitiveParams::default();
+        assert_eq!(pp.0, [0.0f32; 8]);
+        let bytes: &[u8] = bytemuck::bytes_of(&pp);
+        assert_eq!(bytes.len(), 32);
+        assert!(bytes.iter().all(|&b| b == 0));
     }
 }
