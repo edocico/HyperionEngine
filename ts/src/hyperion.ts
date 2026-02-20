@@ -317,6 +317,13 @@ export class Hyperion implements Disposable {
     }
   }
 
+  /** Enable or configure post-processing. */
+  enablePostProcessing(_options: { fxaa?: boolean; tonemapping?: 'none' | 'pbr-neutral' | 'aces' }): void {
+    this.checkDestroyed();
+    // For now, this is a stub that can be wired to the renderer later.
+    // The FXAATonemapPass already runs in the pipeline by default with tonemapMode=0 (passthrough).
+  }
+
   /** Per-frame tick: advance the ECS then render if state is available. */
   private tick(dt: number): void {
     this.bridge.tick(dt);
