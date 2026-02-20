@@ -570,6 +570,7 @@ mod tests {
         assert_eq!(state.gpu_bounds().len(), 12);      // 3 * 4
         assert_eq!(state.gpu_render_meta().len(), 6);  // 3 * 2
         assert_eq!(state.gpu_tex_indices().len(), 3);  // 3 * 1
+        assert_eq!(state.gpu_prim_params().len(), 24);   // 3 * 8
     }
 
     #[test]
@@ -861,10 +862,11 @@ mod tests {
         state.gpu_tex_indices.clear();
         state.gpu_prim_params.clear();
 
-        let old_cap = state.gpu_transforms.capacity();
+        let old_transform_cap = state.gpu_transforms.capacity();
+        let old_prim_cap = state.gpu_prim_params.capacity();
         state.shrink_to_fit();
-        assert!(state.gpu_transforms.capacity() < old_cap);
-        assert!(state.gpu_prim_params.capacity() < 8000);
+        assert!(state.gpu_transforms.capacity() < old_transform_cap);
+        assert!(state.gpu_prim_params.capacity() < old_prim_cap);
     }
 
     #[test]
