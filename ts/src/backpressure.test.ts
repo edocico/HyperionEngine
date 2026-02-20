@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { PrioritizedCommandQueue } from './backpressure';
-import { CommandType } from './ring-buffer';
+import { PrioritizedCommandQueue, BackpressuredProducer } from './backpressure';
+import { RingBufferProducer, CommandType, extractUnread } from './ring-buffer';
 
 describe('PrioritizedCommandQueue', () => {
   it('should enqueue critical commands and never drop them', () => {
@@ -83,5 +83,61 @@ describe('PrioritizedCommandQueue', () => {
     } as any);
     expect(q.criticalCount).toBe(0);
     expect(q.overwriteCount).toBe(0);
+  });
+});
+
+describe('BackpressuredProducer', () => {
+  const HEADER_SIZE = 32;
+
+  function createSmallProducer(): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    // Tiny ring buffer: 32-byte header + 64 bytes data (fits ~3 commands)
+    const sab = new SharedArrayBuffer(HEADER_SIZE + 64);
+    const inner = new RingBufferProducer(sab);
+    const bp = new BackpressuredProducer(inner);
+    return { bp, sab };
+  }
+
+  it('should pass commands through when ring buffer has space', () => {
+    const { bp } = createSmallProducer();
+    expect(bp.spawnEntity(1)).toBe(true);
+    expect(bp.pendingCount).toBe(0);
+  });
+
+  it('should queue commands when ring buffer is full', () => {
+    const { bp } = createSmallProducer();
+    // Fill the buffer — 17 bytes each (1 cmd + 4 id + 12 payload)
+    for (let i = 0; i < 20; i++) {
+      bp.setPosition(i, 1, 2, 3);
+    }
+    expect(bp.pendingCount).toBeGreaterThan(0);
+  });
+
+  it('should drain queued commands on flush', () => {
+    const { bp, sab } = createSmallProducer();
+    // Fill buffer until overflow
+    for (let i = 0; i < 20; i++) {
+      bp.setPosition(i, 1, 2, 3);
+    }
+    const pending = bp.pendingCount;
+    expect(pending).toBeGreaterThan(0);
+
+    // Free the ring buffer by extracting all unread bytes
+    extractUnread(sab);
+    bp.flush();
+    expect(bp.pendingCount).toBeLessThan(pending);
+  });
+
+  it('should be a no-op to flush an empty queue', () => {
+    const { bp } = createSmallProducer();
+    bp.spawnEntity(1);
+    bp.flush(); // nothing queued
+    expect(bp.pendingCount).toBe(0);
+  });
+
+  it('should expose freeSpace from inner producer', () => {
+    const { bp } = createSmallProducer();
+    expect(bp.freeSpace).toBeGreaterThan(0);
+    bp.spawnEntity(1);
+    expect(bp.freeSpace).toBeLessThan(64);
   });
 });

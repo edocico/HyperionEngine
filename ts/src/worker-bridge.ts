@@ -4,6 +4,8 @@ import {
   RingBufferProducer,
   extractUnread,
 } from "./ring-buffer";
+import { BackpressuredProducer } from "./backpressure";
+import { WorkerSupervisor } from "./supervisor";
 
 const RING_BUFFER_CAPACITY = 64 * 1024; // 64KB command buffer
 
@@ -18,7 +20,7 @@ export interface GPURenderState {
 
 export interface EngineBridge {
   mode: ExecutionMode;
-  commandBuffer: RingBufferProducer;
+  commandBuffer: BackpressuredProducer;
   /** Send a tick signal. In Mode C, this runs synchronously. */
   tick(dt: number): void;
   /** Wait for the engine to be ready. */
@@ -37,6 +39,14 @@ export function createWorkerBridge(
 ): EngineBridge {
   const sab = createRingBuffer(RING_BUFFER_CAPACITY) as SharedArrayBuffer;
   const producer = new RingBufferProducer(sab);
+  const commandBuffer = new BackpressuredProducer(producer);
+
+  const supervisor = new WorkerSupervisor(sab, {
+    onTimeout: (workerId) => {
+      console.warn(`[Hyperion] Worker ${workerId} heartbeat timeout`);
+    },
+  });
+  const supervisorInterval = setInterval(() => supervisor.check(), 1000);
 
   const worker = new Worker(
     new URL("./engine-worker.ts", import.meta.url),
@@ -71,14 +81,16 @@ export function createWorkerBridge(
 
   return {
     mode,
-    commandBuffer: producer,
+    commandBuffer,
     tick(dt: number) {
+      commandBuffer.flush();
       worker.postMessage({ type: "tick", dt });
     },
     async ready() {
       await readyPromise;
     },
     destroy() {
+      clearInterval(supervisorInterval);
       worker.terminate();
     },
     get latestRenderState() {
@@ -96,6 +108,14 @@ export function createFullIsolationBridge(
 ): EngineBridge {
   const sab = createRingBuffer(RING_BUFFER_CAPACITY) as SharedArrayBuffer;
   const producer = new RingBufferProducer(sab);
+  const commandBuffer = new BackpressuredProducer(producer);
+
+  const supervisor = new WorkerSupervisor(sab, {
+    onTimeout: (workerId) => {
+      console.warn(`[Hyperion] Worker ${workerId} heartbeat timeout`);
+    },
+  });
+  const supervisorInterval = setInterval(() => supervisor.check(), 1000);
 
   const offscreen = canvas.transferControlToOffscreen();
 
@@ -164,14 +184,16 @@ export function createFullIsolationBridge(
 
   return {
     mode: ExecutionMode.FullIsolation,
-    commandBuffer: producer,
+    commandBuffer,
     tick(dt: number) {
+      commandBuffer.flush();
       ecsWorker.postMessage({ type: "tick", dt });
     },
     async ready() {
       await readyPromise;
     },
     destroy() {
+      clearInterval(supervisorInterval);
       ecsWorker.terminate();
       renderWorker.terminate();
     },
@@ -188,6 +210,7 @@ export function createFullIsolationBridge(
 export async function createDirectBridge(): Promise<EngineBridge> {
   const buffer = createRingBuffer(RING_BUFFER_CAPACITY);
   const producer = new RingBufferProducer(buffer as SharedArrayBuffer);
+  const commandBuffer = new BackpressuredProducer(producer);
 
   const wasm = await import("../wasm/hyperion_core.js");
   await wasm.default();
@@ -218,8 +241,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
 
   return {
     mode: ExecutionMode.SingleThread,
-    commandBuffer: producer,
+    commandBuffer,
     tick(dt: number) {
+      commandBuffer.flush();
       const { bytes } = extractUnread(buffer as SharedArrayBuffer);
       if (bytes.length > 0) {
         engine.engine_push_commands(bytes);

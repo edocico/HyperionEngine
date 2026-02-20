@@ -1,5 +1,4 @@
-import type { RingBufferProducer } from './ring-buffer';
-import { CommandType } from './ring-buffer';
+import { RingBufferProducer, CommandType } from './ring-buffer';
 
 export type BackpressureMode = 'retry-queue' | 'drop';
 
@@ -51,5 +50,71 @@ export class PrioritizedCommandQueue {
   clear(): void {
     this.critical.length = 0;
     this.overwrites.clear();
+  }
+}
+
+/**
+ * Wraps a RingBufferProducer with automatic overflow queuing.
+ *
+ * When writeCommand() fails (ring buffer full), the command is enqueued
+ * into a PrioritizedCommandQueue. Call flush() at the start of each tick
+ * to drain queued commands back into the ring buffer.
+ */
+export class BackpressuredProducer {
+  private readonly inner: RingBufferProducer;
+  private readonly queue = new PrioritizedCommandQueue();
+
+  constructor(inner: RingBufferProducer) {
+    this.inner = inner;
+  }
+
+  get pendingCount(): number {
+    return this.queue.criticalCount + this.queue.overwriteCount;
+  }
+
+  get freeSpace(): number {
+    return this.inner.freeSpace;
+  }
+
+  flush(): void {
+    this.queue.drainTo(this.inner);
+  }
+
+  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array): boolean {
+    const ok = this.inner.writeCommand(cmd, entityId, payload);
+    if (!ok) {
+      this.queue.enqueue(cmd, entityId, payload);
+    }
+    return ok;
+  }
+
+  spawnEntity(entityId: number): boolean {
+    return this.writeCommand(CommandType.SpawnEntity, entityId);
+  }
+
+  despawnEntity(entityId: number): boolean {
+    return this.writeCommand(CommandType.DespawnEntity, entityId);
+  }
+
+  setPosition(entityId: number, x: number, y: number, z: number): boolean {
+    return this.writeCommand(CommandType.SetPosition, entityId, new Float32Array([x, y, z]));
+  }
+
+  setTextureLayer(entityId: number, packedIndex: number): boolean {
+    const p = new Float32Array(1);
+    new Uint32Array(p.buffer)[0] = packedIndex;
+    return this.writeCommand(CommandType.SetTextureLayer, entityId, p);
+  }
+
+  setMeshHandle(entityId: number, handle: number): boolean {
+    const p = new Float32Array(1);
+    new Uint32Array(p.buffer)[0] = handle;
+    return this.writeCommand(CommandType.SetMeshHandle, entityId, p);
+  }
+
+  setRenderPrimitive(entityId: number, primitive: number): boolean {
+    const p = new Float32Array(1);
+    new Uint32Array(p.buffer)[0] = primitive;
+    return this.writeCommand(CommandType.SetRenderPrimitive, entityId, p);
   }
 }

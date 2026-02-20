@@ -7,7 +7,7 @@
  * (transforms, bounds, renderMeta, texIndices) as transferable ArrayBuffers.
  */
 
-import { extractUnread } from "./ring-buffer";
+import { extractUnread, HEARTBEAT_W1_OFFSET } from "./ring-buffer";
 
 interface WasmEngine {
   default(): Promise<void>;
@@ -74,6 +74,10 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         wasm.engine_push_commands(bytes);
       }
       wasm.engine_update(msg.dt);
+
+      // Increment heartbeat for supervisor monitoring
+      const header = new Int32Array(commandBuffer!, 0, 8);
+      Atomics.add(header, HEARTBEAT_W1_OFFSET, 1);
 
       const count = wasm.engine_gpu_entity_count();
       const tickCount = Number(wasm.engine_tick_count());
