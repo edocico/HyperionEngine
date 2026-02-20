@@ -11,4 +11,9 @@ describe('CullPass', () => {
     expect(pass.writes).toContain('indirect-args');
     expect(pass.optional).toBe(false);
   });
+
+  it('should declare render-meta as a read dependency', () => {
+    const pass = new CullPass();
+    expect(pass.reads).toContain('render-meta');
+  });
 });

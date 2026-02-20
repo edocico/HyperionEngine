@@ -3,16 +3,18 @@ import type { ResourcePool } from '../resource-pool';
 import { extractFrustumPlanes } from '../../camera';
 
 const WORKGROUP_SIZE = 256;
+const NUM_PRIM_TYPES = 6;
 
 /**
  * GPU frustum-culling compute pass.
  *
- * Reads SoA entity buffers (transforms + bounds) and writes a compacted
- * visible-indices list plus indirect draw arguments.
+ * Reads SoA entity buffers (transforms + bounds + renderMeta) and writes
+ * per-primitive-type compacted visible-indices lists plus 6 sets of
+ * indirect draw arguments (one per primitive type).
  */
 export class CullPass implements RenderPass {
   readonly name = 'cull';
-  readonly reads = ['entity-transforms', 'entity-bounds'];
+  readonly reads = ['entity-transforms', 'entity-bounds', 'render-meta'];
   readonly writes = ['visible-indices', 'indirect-args'];
   readonly optional = false;
 
@@ -42,7 +44,7 @@ export class CullPass implements RenderPass {
       code: CullPass.SHADER_SOURCE,
     });
 
-    // 6 frustum planes (6 * vec4f = 96 bytes) + totalEntities (u32) + 3 padding u32 = 112 bytes
+    // 6 frustum planes (6 * vec4f = 96 bytes) + totalEntities (u32) + maxEntitiesPerType (u32) + 2 padding u32 = 112 bytes
     this.cullUniformBuffer = device.createBuffer({
       size: 112,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -56,6 +58,8 @@ export class CullPass implements RenderPass {
     if (!visibleIndicesBuffer) throw new Error("CullPass.setup: missing 'visible-indices' in ResourcePool");
     this.indirectBuffer = resources.getBuffer('indirect-args') ?? null;
     if (!this.indirectBuffer) throw new Error("CullPass.setup: missing 'indirect-args' in ResourcePool");
+    const renderMetaBuffer = resources.getBuffer('render-meta');
+    if (!renderMetaBuffer) throw new Error("CullPass.setup: missing 'render-meta' in ResourcePool");
 
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -64,6 +68,7 @@ export class CullPass implements RenderPass {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -80,6 +85,7 @@ export class CullPass implements RenderPass {
         { binding: 2, resource: { buffer: boundsBuffer } },
         { binding: 3, resource: { buffer: visibleIndicesBuffer } },
         { binding: 4, resource: { buffer: this.indirectBuffer } },
+        { binding: 5, resource: { buffer: renderMetaBuffer } },
       ],
     });
   }
@@ -87,20 +93,28 @@ export class CullPass implements RenderPass {
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.cullUniformBuffer || !this.indirectBuffer) return;
 
-    // Upload frustum planes (6 * vec4f = 24 floats = 96 bytes) + totalEntities (u32) + padding
+    // Upload frustum planes (6 * vec4f = 24 floats = 96 bytes) + totalEntities + maxEntitiesPerType + padding
     const CULL_UNIFORM_SIZE = 112;
     const cullData = new ArrayBuffer(CULL_UNIFORM_SIZE);
     const cullFloats = new Float32Array(cullData, 0, 24);
     const frustumPlanes = extractFrustumPlanes(frame.cameraViewProjection);
     cullFloats.set(frustumPlanes);
     const cullUints = new Uint32Array(cullData, 96, 4);
-    cullUints[0] = frame.entityCount;
-    // cullUints[1..3] = 0 (padding, already zeroed)
+    cullUints[0] = frame.entityCount;    // totalEntities
+    cullUints[1] = 100_000;             // maxEntitiesPerType (MAX_ENTITIES)
+    // cullUints[2..3] = 0 (padding, already zeroed)
     device.queue.writeBuffer(this.cullUniformBuffer, 0, cullData);
 
-    // Reset indirect draw arguments: indexCount=6 (quad), instanceCount=0
-    const resetArgs = new Uint32Array([6, 0, 0, 0, 0]);
-    device.queue.writeBuffer(this.indirectBuffer, 0, resetArgs);
+    // Reset indirect draw arguments: 6 primitive types × 5 u32 each
+    const resetData = new Uint32Array(NUM_PRIM_TYPES * 5);
+    for (let i = 0; i < NUM_PRIM_TYPES; i++) {
+      resetData[i * 5 + 0] = 6;  // indexCount (quad = 6 indices)
+      resetData[i * 5 + 1] = 0;  // instanceCount (reset)
+      resetData[i * 5 + 2] = 0;  // firstIndex
+      resetData[i * 5 + 3] = 0;  // baseVertex
+      resetData[i * 5 + 4] = 0;  // firstInstance
+    }
+    device.queue.writeBuffer(this.indirectBuffer, 0, resetData);
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, _resources: ResourcePool): void {
