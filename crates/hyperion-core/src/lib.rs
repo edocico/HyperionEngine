@@ -216,6 +216,39 @@ pub fn engine_gpu_tex_indices_len() -> u32 {
     }
 }
 
+/// Compact the entity map by truncating trailing empty slots.
+#[wasm_bindgen]
+pub fn engine_compact_entity_map() {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut e) = *addr_of_mut!(ENGINE) {
+            e.entity_map.shrink_to_fit();
+        }
+    }
+}
+
+/// Compact the render state by releasing excess buffer memory.
+#[wasm_bindgen]
+pub fn engine_compact_render_state() {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut e) = *addr_of_mut!(ENGINE) {
+            e.render_state.shrink_to_fit();
+        }
+    }
+}
+
+/// Returns the current allocated capacity of the entity map.
+#[wasm_bindgen]
+pub fn engine_entity_map_capacity() -> u32 {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.entity_map.capacity() as u32)
+    }
+}
+
 /// Smoke test.
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
