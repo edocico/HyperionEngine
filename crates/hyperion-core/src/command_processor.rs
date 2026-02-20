@@ -56,6 +56,14 @@ impl EntityMap {
         self.map.get(external_id as usize).copied().flatten()
     }
 
+    /// Iterate over all mapped (external ID, hecs Entity) pairs.
+    pub fn iter_mapped(&self) -> impl Iterator<Item = (u32, hecs::Entity)> + '_ {
+        self.map
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, opt)| opt.map(|entity| (idx as u32, entity)))
+    }
+
     /// Remove a mapping and add the ID to the free list.
     pub fn remove(&mut self, external_id: u32) {
         let idx = external_id as usize;
@@ -177,14 +185,12 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     // Remove from old parent's Children if currently parented
                     if let Ok(old_parent) = world.get::<&Parent>(child_entity) {
                         let old_id = old_parent.0;
-                        if old_id != u32::MAX {
-                            if let Some(old_parent_entity) = entity_map.get(old_id) {
-                                if let Ok(mut children) =
-                                    world.get::<&mut Children>(old_parent_entity)
-                                {
-                                    children.remove(cmd.entity_id);
-                                }
-                            }
+                        if old_id != u32::MAX
+                            && let Some(old_parent_entity) = entity_map.get(old_id)
+                            && let Ok(mut children) =
+                                world.get::<&mut Children>(old_parent_entity)
+                        {
+                            children.remove(cmd.entity_id);
                         }
                     }
 
@@ -194,14 +200,11 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     }
 
                     // Add to new parent's Children (if not u32::MAX = unparent)
-                    if new_parent_id != u32::MAX {
-                        if let Some(parent_entity) = entity_map.get(new_parent_id) {
-                            if let Ok(mut children) =
-                                world.get::<&mut Children>(parent_entity)
-                            {
-                                children.add(cmd.entity_id);
-                            }
-                        }
+                    if new_parent_id != u32::MAX
+                        && let Some(parent_entity) = entity_map.get(new_parent_id)
+                        && let Ok(mut children) = world.get::<&mut Children>(parent_entity)
+                    {
+                        children.add(cmd.entity_id);
                     }
                 }
             }

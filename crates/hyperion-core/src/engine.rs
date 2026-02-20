@@ -6,7 +6,7 @@ use hecs::World;
 use crate::command_processor::{process_commands, EntityMap};
 use crate::render_state::RenderState;
 use crate::ring_buffer::Command;
-use crate::systems::{transform_system, velocity_system};
+use crate::systems::{propagate_transforms, transform_system, velocity_system};
 
 /// Fixed timestep: 60 ticks per second.
 pub const FIXED_DT: f32 = 1.0 / 60.0;
@@ -63,6 +63,13 @@ impl Engine {
 
         // 2. Recompute model matrices after all ticks.
         transform_system(&mut self.world);
+
+        // 2b. Propagate parent transforms for scene graph.
+        {
+            let ext_to_entity: std::collections::HashMap<u32, hecs::Entity> =
+                self.entity_map.iter_mapped().collect();
+            propagate_transforms(&mut self.world, &ext_to_entity);
+        }
 
         // 3. Collect render state for GPU upload.
         self.render_state.collect(&self.world);
@@ -180,5 +187,45 @@ mod tests {
 
         assert_eq!(engine.render_state.count(), 2);
         assert!(!engine.render_state.as_ptr().is_null());
+    }
+
+    #[test]
+    fn engine_propagates_parent_transforms() {
+        let mut engine = Engine::new();
+
+        engine.process_commands(&[spawn_cmd(0), spawn_cmd(1)]);
+
+        let mut pos_payload = [0u8; 16];
+        pos_payload[0..4].copy_from_slice(&10.0f32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetPosition,
+            entity_id: 0,
+            payload: pos_payload,
+        }]);
+
+        let mut child_pos = [0u8; 16];
+        child_pos[0..4].copy_from_slice(&5.0f32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetPosition,
+            entity_id: 1,
+            payload: child_pos,
+        }]);
+
+        let mut parent_payload = [0u8; 16];
+        parent_payload[0..4].copy_from_slice(&0u32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetParent,
+            entity_id: 1,
+            payload: parent_payload,
+        }]);
+
+        engine.update(FIXED_DT);
+
+        let child_entity = engine.entity_map.get(1).unwrap();
+        let matrix = engine
+            .world
+            .get::<&crate::components::ModelMatrix>(child_entity)
+            .unwrap();
+        assert!((matrix.0[12] - 15.0).abs() < 0.001);
     }
 }

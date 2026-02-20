@@ -43,13 +43,13 @@ pub fn propagate_transforms(world: &mut World, ext_to_entity: &HashMap<u32, hecs
         if parent_comp.0 == u32::MAX {
             continue;
         }
-        if let Some(&parent_entity) = ext_to_entity.get(&parent_comp.0) {
-            if let Ok(parent_matrix) = world.get::<&ModelMatrix>(parent_entity) {
-                let parent_mat4 = glam::Mat4::from_cols_array(&parent_matrix.0);
-                let child_mat4 = glam::Mat4::from_cols_array(&matrix.0);
-                let result = parent_mat4 * child_mat4;
-                updates.push((entity, result.to_cols_array()));
-            }
+        if let Some(&parent_entity) = ext_to_entity.get(&parent_comp.0)
+            && let Ok(parent_matrix) = world.get::<&ModelMatrix>(parent_entity)
+        {
+            let parent_mat4 = glam::Mat4::from_cols_array(&parent_matrix.0);
+            let child_mat4 = glam::Mat4::from_cols_array(&matrix.0);
+            let result = parent_mat4 * child_mat4;
+            updates.push((entity, result.to_cols_array()));
         }
     }
 
