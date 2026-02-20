@@ -2,21 +2,24 @@ import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 
 /**
- * Forward rendering pass.
+ * Forward rendering pass with multi-pipeline per-type dispatch.
  *
- * Reads entity transforms, visible indices (from CullPass), and texture layer
- * indices, then performs an indirect indexed draw to the swapchain.
+ * Reads entity transforms, visible indices (from CullPass), texture layer
+ * indices, render metadata, and primitive parameters, then issues per-type
+ * indirect indexed draws to the swapchain.
  *
- * Camera uniform upload, lazy depth texture lifecycle, and swapchain
- * acquisition via ResourcePool are fully wired.
+ * Each registered primitive type (via SHADER_SOURCES) gets its own
+ * GPURenderPipeline. All pipelines share the same bind group layouts.
+ * CullPass produces per-type DrawIndirectArgs at sequential 20-byte offsets
+ * (type N at byte N*20), and this pass issues drawIndexedIndirect for each.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
-  readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args'];
+  readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params'];
   readonly writes = ['swapchain'];
   readonly optional = false;
 
-  private pipeline: GPURenderPipeline | null = null;
+  private pipelines = new Map<number, GPURenderPipeline>();
   private bindGroup0: GPUBindGroup | null = null;
   private bindGroup1: GPUBindGroup | null = null;
   private vertexBuffer: GPUBuffer | null = null;
@@ -29,22 +32,34 @@ export class ForwardPass implements RenderPass {
   private depthHeight = 0;
 
   /**
-   * WGSL shader source for the forward render pipeline.
-   * Set this before calling `setup()` when using the `?raw` import:
+   * Per-primitive-type WGSL shader sources.
+   * Keys are numeric primitive type IDs (e.g. 0 = quad).
+   * Set this before calling `setup()`:
    *
    *   import shaderSrc from '../../shaders/basic.wgsl?raw';
-   *   ForwardPass.SHADER_SOURCE = shaderSrc;
+   *   ForwardPass.SHADER_SOURCES = { 0: shaderSrc };
    *
-   * A minimal default is provided so the class can be instantiated
-   * without importing the shader (e.g. in unit tests).
+   * For backward compatibility, SHADER_SOURCE is also supported
+   * (registers as type 0).
+   */
+  static SHADER_SOURCES: Record<number, string> = {};
+
+  /**
+   * Legacy single-shader source (registers as type 0).
+   * Prefer SHADER_SOURCES for multi-type pipelines.
    */
   static SHADER_SOURCE = '';
 
   setup(device: GPUDevice, resources: ResourcePool): void {
     this.device = device;
 
-    if (!ForwardPass.SHADER_SOURCE) {
-      throw new Error('ForwardPass.SHADER_SOURCE must be set before calling setup()');
+    // Resolve shader sources: prefer SHADER_SOURCES, fall back to legacy SHADER_SOURCE
+    const sources = Object.keys(ForwardPass.SHADER_SOURCES).length > 0
+      ? ForwardPass.SHADER_SOURCES
+      : (ForwardPass.SHADER_SOURCE ? { 0: ForwardPass.SHADER_SOURCE } : {});
+
+    if (Object.keys(sources).length === 0) {
+      throw new Error('ForwardPass: no shader sources set. Set SHADER_SOURCES or SHADER_SOURCE before calling setup()');
     }
 
     // --- Vertex + Index buffers (unit quad) ---
@@ -81,16 +96,20 @@ export class ForwardPass implements RenderPass {
     const texIndexBuffer = resources.getBuffer('tex-indices');
     if (!texIndexBuffer) throw new Error("ForwardPass.setup: missing 'tex-indices' in ResourcePool");
     this.indirectBuffer = resources.getBuffer('indirect-args') ?? null;
+    const renderMetaBuffer = resources.getBuffer('render-meta');
+    if (!renderMetaBuffer) throw new Error("ForwardPass.setup: missing 'render-meta' in ResourcePool");
+    const primParamsBuffer = resources.getBuffer('prim-params');
+    if (!primParamsBuffer) throw new Error("ForwardPass.setup: missing 'prim-params' in ResourcePool");
 
-    const shaderModule = device.createShaderModule({ code: ForwardPass.SHADER_SOURCE });
-
-    // --- Group 0: vertex-stage data ---
+    // --- Group 0: vertex-stage data + storage buffers ---
     const bindGroupLayout0 = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // renderMeta
+        { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // primParams
       ],
     });
 
@@ -106,30 +125,27 @@ export class ForwardPass implements RenderPass {
     });
 
     const format = navigator.gpu.getPreferredCanvasFormat();
-    this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({
-        bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],
-      }),
-      vertex: {
-        module: shaderModule,
-        entryPoint: 'vs_main',
-        buffers: [{
-          arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }],
-        }],
-      },
-      fragment: {
-        module: shaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format }],
-      },
-      depthStencil: {
-        format: 'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'back' },
+    const pipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],
     });
+    const vertexBufferLayout: GPUVertexBufferLayout = {
+      arrayStride: 12,
+      attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }],
+    };
+
+    // --- Create one pipeline per primitive type ---
+    for (const [typeStr, source] of Object.entries(sources)) {
+      const type = Number(typeStr);
+      const module = device.createShaderModule({ code: source });
+      const pipeline = device.createRenderPipeline({
+        layout: pipelineLayout,
+        vertex: { module, entryPoint: 'vs_main', buffers: [vertexBufferLayout] },
+        fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
+        depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+      });
+      this.pipelines.set(type, pipeline);
+    }
 
     this.bindGroup0 = device.createBindGroup({
       layout: bindGroupLayout0,
@@ -138,6 +154,8 @@ export class ForwardPass implements RenderPass {
         { binding: 1, resource: { buffer: transformBuffer } },
         { binding: 2, resource: { buffer: visibleIndicesBuffer } },
         { binding: 3, resource: { buffer: texIndexBuffer } },
+        { binding: 4, resource: { buffer: renderMetaBuffer } },
+        { binding: 5, resource: { buffer: primParamsBuffer } },
       ],
     });
 
@@ -168,7 +186,7 @@ export class ForwardPass implements RenderPass {
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
-    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
+    if (this.pipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
     // Get swapchain view (set each frame by the coordinator)
     const swapchainView = resources.getTextureView('swapchain');
@@ -192,12 +210,18 @@ export class ForwardPass implements RenderPass {
         depthClearValue: 1.0,
       },
     });
-    renderPass.setPipeline(this.pipeline);
-    renderPass.setVertexBuffer(0, this.vertexBuffer);
-    renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
-    renderPass.setBindGroup(0, this.bindGroup0);
-    renderPass.setBindGroup(1, this.bindGroup1);
-    renderPass.drawIndexedIndirect(this.indirectBuffer, 0);
+
+    // Issue per-type draw calls using each pipeline's indirect args
+    for (const [primType, pipeline] of this.pipelines) {
+      renderPass.setPipeline(pipeline);
+      renderPass.setVertexBuffer(0, this.vertexBuffer);
+      renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
+      renderPass.setBindGroup(0, this.bindGroup0);
+      renderPass.setBindGroup(1, this.bindGroup1);
+      // Each type's indirect args at offset primType * 20 bytes (5 u32 x 4 bytes)
+      renderPass.drawIndexedIndirect(this.indirectBuffer, primType * 20);
+    }
+
     renderPass.end();
   }
 
@@ -232,7 +256,7 @@ export class ForwardPass implements RenderPass {
     this.indexBuffer = null;
     this.cameraBuffer = null;
     this.depthTexture = null;
-    this.pipeline = null;
+    this.pipelines.clear();
     this.bindGroup0 = null;
     this.bindGroup1 = null;
     this.indirectBuffer = null;

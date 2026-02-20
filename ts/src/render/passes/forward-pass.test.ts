@@ -12,4 +12,10 @@ describe('ForwardPass', () => {
     expect(pass.writes).toContain('swapchain');
     expect(pass.optional).toBe(false);
   });
+
+  it('should declare render-meta and prim-params as read dependencies', () => {
+    const pass = new ForwardPass();
+    expect(pass.reads).toContain('render-meta');
+    expect(pass.reads).toContain('prim-params');
+  });
 });
