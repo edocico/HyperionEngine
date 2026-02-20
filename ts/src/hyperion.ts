@@ -180,6 +180,16 @@ export class Hyperion implements Disposable {
     this.destroy();
   }
 
+  /**
+   * Execute a batch of commands synchronously.
+   * Currently a passthrough -- future versions may defer flushing
+   * or group commands for optimized ring buffer writes.
+   */
+  batch(fn: () => void): void {
+    this.checkDestroyed();
+    fn();
+  }
+
   /** Per-frame tick: advance the ECS then render if state is available. */
   private tick(dt: number): void {
     this.bridge.tick(dt);

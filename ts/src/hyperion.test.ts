@@ -134,6 +134,19 @@ describe('Hyperion', () => {
     engine.destroy();
     expect(bridge.destroy).toHaveBeenCalled();
   });
+
+  it('batch() executes callback synchronously', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    const spawned: number[] = [];
+    engine.batch(() => {
+      for (let i = 0; i < 5; i++) {
+        spawned.push(engine.spawn().id);
+      }
+    });
+    expect(spawned.length).toBe(5);
+    expect(bridge.commandBuffer.spawnEntity).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe('Hyperion.create', () => {
