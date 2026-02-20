@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (81 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (86 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (175 tests)
+cd ts && npm test                            # All vitest tests (224 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -66,10 +66,14 @@ cd ts && npx vitest run src/backpressure.test.ts              # Backpressure que
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction (1 test)
-cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass skeleton (1 test)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction (2 tests)
+cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass multi-pipeline (2 tests)
+cd ts && npx vitest run src/render/passes/fxaa-tonemap-pass.test.ts  # FXAATonemapPass (3 tests)
+cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # SelectionSeedPass (3 tests)
+cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
+cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (26 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (31 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (17 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (6 tests)
@@ -78,6 +82,8 @@ cd ts && npx vitest run src/camera-api.test.ts                # CameraAPI zoom (
 cd ts && npx vitest run src/plugin.test.ts                    # PluginRegistry (5 tests)
 cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector backstop (2 tests)
 cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
+cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
+cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
 ```
 
 ### Development Workflow
@@ -152,17 +158,17 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (11 variants incl. `SetParent`), `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (13 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`), `Command` struct |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
-| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`. `fromParts()` test factory |
-| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.data`. Implements `Disposable` |
+| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`. `fromParts()` test factory |
+| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.data`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking |
 | `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01) |
@@ -176,7 +182,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B) |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
 | `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). ~50 lines, down from 140 |
-| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Added `onDeviceLost` callback + `device.lost` listener |
+| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass` + `FXAATonemapPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Multi-primitive pipeline with per-type shaders. Optional JFA selection outline pipeline (`SelectionSeedPass` → `JFAPass×N` → `OutlineCompositePass`). `SelectionManager` integration + `enableOutlines`/`disableOutlines` API. `onDeviceLost` callback + `device.lost` listener |
 | `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
 | `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
@@ -185,11 +191,27 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type — modular rendering pipeline abstraction with reads/writes resource declarations |
 | `render/resource-pool.ts` | `ResourcePool` — named registry for GPU resources (GPUBuffer, GPUTexture, GPUTextureView, GPUSampler) |
 | `render/render-graph.ts` | `RenderGraph` — DAG-based pass scheduling with Kahn's topological sort + dead-pass culling |
-| `render/passes/cull-pass.ts` | `CullPass` — GPU frustum culling compute pass. `prepare()` uploads frustum planes + resets indirect args. `execute()` dispatches compute workgroups |
-| `render/passes/forward-pass.ts` | `ForwardPass` — Forward rendering pass with SoA transforms, lazy depth texture, camera uniform upload, and full render pass encoding via `drawIndexedIndirect` |
+| `render/passes/cull-pass.ts` | `CullPass` — GPU frustum culling compute pass with per-primitive-type grouping (6 types). `prepare()` uploads frustum planes + resets 6 × DrawIndirectArgs. `execute()` dispatches compute workgroups |
+| `render/passes/forward-pass.ts` | `ForwardPass` — Multi-pipeline forward pass. `SHADER_SOURCES: Record<number, string>` maps primitive type → WGSL source. Per-type `drawIndexedIndirect` at offset `primType * 20`. Shared bind group layout (camera, transforms, visibleIndices, texIndices, renderMeta, primParams). Renders to `scene-hdr` |
+| `render/passes/fxaa-tonemap-pass.ts` | `FXAATonemapPass` — Full-screen triangle post-process. Reads `scene-hdr`, writes `swapchain`. Configurable tonemap mode (none/PBR-neutral/ACES). Optional pass |
+| `render/passes/selection-seed-pass.ts` | `SelectionSeedPass` — Renders selected entities as JFA seeds. Reads `selection-mask` buffer, writes `selection-seed` texture. Optional pass |
+| `render/passes/jfa-pass.ts` | `JFAPass` — Single JFA iteration. Ping-pong between textures. Constructor takes iteration index, `iterationsForDimension()` helper. Each iteration has unique resource name (`jfa-iter-N`). Optional pass |
+| `render/passes/outline-composite-pass.ts` | `OutlineCompositePass` — Reads `scene-hdr` + JFA result, writes `swapchain`. SDF distance outline with configurable color/width. Includes built-in FXAA. Dead-pass culls `FXAATonemapPass` when active |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference implementation of Blelloch exclusive scan |
-| `shaders/basic.wgsl` | Render shader with SoA `transforms: array<mat4x4f>`, visibility indirection, multi-tier Texture2DArray sampling |
-| `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling with SoA bindings, atomicAdd for indirect draw |
+| `selection.ts` | `SelectionManager` — CPU-side `Set<number>` with dirty tracking + GPU mask upload. `select()/deselect()/toggle()/clear()`, `uploadMask()` |
+| `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics` types, `parseFontAtlas()`, `loadFontAtlas()` for MSDF atlas JSON loading |
+| `text/text-layout.ts` | `layoutText()` — Positions glyphs using atlas metrics, returns `LayoutGlyph[]` |
+| `text/text-manager.ts` | `TextManager` — Loads and caches font atlases for MSDF text rendering |
+| `shaders/basic.wgsl` | Quad render shader with SoA `transforms: array<mat4x4f>`, visibility indirection, renderMeta + primParams bindings, multi-tier Texture2DArray sampling |
+| `shaders/line.wgsl` | Line render shader with screen-space quad expansion from primParams, SDF dash pattern, anti-aliased edges |
+| `shaders/gradient.wgsl` | 2-stop gradient shader (linear, radial, conic). PrimParams: type, angle, stop positions + colors |
+| `shaders/box-shadow.wgsl` | SDF box shadow shader (Evan Wallace erf approximation). PrimParams: rect size, corner radius, blur, color |
+| `shaders/msdf-text.wgsl` | MSDF text shader with median(r,g,b) signed distance + screen-pixel-range anti-aliasing |
+| `shaders/fxaa-tonemap.wgsl` | Combined FXAA (Lottes) + PBR Neutral/ACES tonemapping post-process |
+| `shaders/selection-seed.wgsl` | Selection seed pass: renders selected entity pixels with UV-encoded seed positions for JFA |
+| `shaders/jfa.wgsl` | Jump Flood Algorithm iteration: samples 9 neighbors at ±step, propagates nearest seed |
+| `shaders/outline-composite.wgsl` | Outline composite: SDF distance outline from JFA result + scene, built-in FXAA |
+| `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling with per-primitive-type grouping, 6 DrawIndirectArgs, SoA bindings |
 | `shaders/prefix-sum.wgsl` | WGSL Blelloch prefix sum compute shader (workgroup-level, 512 elements per workgroup) |
 | `vite-env.d.ts` | Type declarations for WGSL ?raw imports and Vite client |
 
@@ -213,7 +235,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **TextureManager lazy allocation** — Tiers are now lazily allocated (no GPU textures created until first use). Growth follows exponential steps: 0→16→32→64→128→256 layers per tier. `getTierView()` creates a minimal 1-layer placeholder for bind group validity. Resize copies existing layers via `copyTextureToTexture`.
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. The fragment shader uses a `switch` on the tier value. Adding new tiers requires updating the shader.
 - **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices) must be indexed by the same entity index. All are populated in the same `collect_gpu()` loop in Rust, ensuring alignment. The `ResourcePool` stores them under `entity-transforms`, `entity-bounds`, `tex-indices`.
-- **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args`, writes `swapchain`. Texture views: `tier0`-`tier3`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
+- **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds` + `render-meta`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args` + `render-meta` + `prim-params`, writes `scene-hdr`. FXAATonemapPass reads `scene-hdr`, writes `swapchain`. Texture views: `tier0`-`tier3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
 - **BackpressuredProducer wraps RingBufferProducer** — All three bridge factories (`createWorkerBridge`, `createFullIsolationBridge`, `createDirectBridge`) use `BackpressuredProducer` instead of raw `RingBufferProducer`. `flush()` is called at the start of every `tick()`.
 - **Worker heartbeat via ring buffer header** — Engine-worker increments `Atomics.add(header, HEARTBEAT_W1_OFFSET, 1)` after each tick. `WorkerSupervisor` checks heartbeat counters every 1s via `setInterval`. Currently logs warnings only; escalation is TODO(Phase 5).
 - **`EntityHandle.data()` cleared on `init()`** — When EntityHandles are recycled from the pool, `init()` resets the data map. Plugins that store data via `.data(key, value)` must handle the case where data disappears after pool reuse.
@@ -222,6 +244,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`GameLoop` first-frame sentinel** — `GameLoop` uses `lastTime = -1` sentinel to detect the first RAF callback and set dt=0, avoiding a massive first-frame dt spike (which would be `performance.now()` milliseconds).
 - **Scene graph `SetParent` uses `0xFFFFFFFF` for unparent** — The `SetParent` command payload is a `u32` parent entity ID. The special value `0xFFFFFFFF` means "remove parent" (unparent). This allows the same command type for both parenting and unparenting.
 - **`Children` component uses fixed 32-slot inline array** — No heap allocation for child lists. Entities with more than 32 children will silently drop additional children. This is a design trade-off for cache performance.
+- **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders (quad, line, MSDF, gradient, box shadow) MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler). Unused bindings must still be declared for bind group compatibility when switching pipelines within the same render pass.
+- **ForwardPass.SHADER_SOURCES keyed by RenderPrimitiveType** — `Record<number, string>` where keys are `RenderPrimitiveType` values (0=Quad, 1=Line, 2=SDFGlyph, 4=Gradient, 5=BoxShadow). Type 3 (BezierPath) is reserved but not yet implemented. Adding a new primitive type requires: (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES`, (3) optionally extend `EntityHandle` with a convenience method.
+- **Per-type indirect draw at offset `primType * 20`** — CullPass writes 6 consecutive `DrawIndirectArgs` (5 u32 each = 20 bytes). ForwardPass issues `drawIndexedIndirect(buffer, primType * 20)` for each registered type.
+- **JFA iteration count = ceil(log₂(max(width, height)))** — For 1080p, ~11 iterations. Each iteration is a separate `JFAPass` node in the RenderGraph with a unique resource name (`jfa-iter-N`). The renderer maps these logical resources to two physical ping-pong textures in the ResourcePool.
+- **RenderGraph dead-pass culling enables pipeline switching** — When outlines are enabled, `OutlineCompositePass` writes to `swapchain`, which dead-pass culls `FXAATonemapPass`. When outlines are disabled, the outline passes are removed from the graph and `FXAATonemapPass` is restored automatically.
+- **PrimitiveParams is 8 floats per entity** — Split across two ring buffer commands (`SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8]) due to the 16-byte payload limit of the ring buffer protocol.
+- **MSDF text requires external atlas** — `loadFontAtlas(jsonUrl, textureUrl)` loads msdf-atlas-gen JSON metadata + texture. The atlas must be generated externally using msdf-atlas-gen. Glyph UV rectangles are passed via PrimitiveParams.
 
 ## Conventions
 
@@ -235,7 +264,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Phase 5 (TypeScript API & Lifecycle) added a complete public API facade over the engine internals: `Hyperion` class with `create()/spawn()/batch()/start/pause/resume/destroy`, `EntityHandle` fluent builder with object pooling (`EntityHandlePool`), `GameLoop` with preTick/postTick/frameEnd hooks, `CameraAPI` with zoom, `RawAPI` for low-level numeric entity management, `PluginRegistry` for plugin lifecycle, `LeakDetector` via `FinalizationRegistry`, and a barrel export via `index.ts`. On the Rust side: scene graph support (`Parent`/`Children`/`LocalMatrix` components, `propagate_transforms` system, `SetParent` command), memory compaction (`EntityMap.shrink_to_fit`, `RenderState.shrink_to_fit`, new WASM exports), and device-lost recovery plumbing (`onDeviceLost` callback, `retainBitmaps`). `main.ts` rewritten to use the Hyperion public API (~50 lines, down from 140). **Next: Phase 6 (Audio & Input).**
+Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). EntityHandle extended with `.line()/.gradient()/.boxShadow()` convenience methods. Public API: `Hyperion.selection`, `enableOutlines()`, `disableOutlines()`, `enablePostProcessing()`. **Next: Phase 6 (Audio & Input).**
 
 ## Documentation
 
@@ -245,3 +274,4 @@ Phases 0-5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan 
 - `docs/plans/2026-02-17-hyperion-engine-phase0-phase1.md` — Phase 0-1 implementation plan (completed). Shows task-by-task build sequence.
 - `docs/plans/2026-02-17-hyperion-engine-phase3.md` — Phase 3 implementation plan (completed). GPU-driven pipeline with compute culling.
 - `docs/plans/2026-02-18-phase-4.5-stabilization-arch-foundations.md` — Phase 4.5 implementation plan (completed). 15 tasks for stabilization and architecture foundations.
+- `docs/plans/2026-02-20-phase-5.5-rendering-primitives.md` — Phase 5.5 implementation plan (completed). 45 tasks for multi-primitive rendering, post-processing, and selection outlines.
