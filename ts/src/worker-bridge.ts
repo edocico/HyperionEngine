@@ -42,6 +42,7 @@ export function createWorkerBridge(
   const commandBuffer = new BackpressuredProducer(producer);
 
   const supervisor = new WorkerSupervisor(sab, {
+    // TODO(Phase 5): escalate to worker restart or user-visible error state
     onTimeout: (workerId) => {
       console.warn(`[Hyperion] Worker ${workerId} heartbeat timeout`);
     },
@@ -111,6 +112,7 @@ export function createFullIsolationBridge(
   const commandBuffer = new BackpressuredProducer(producer);
 
   const supervisor = new WorkerSupervisor(sab, {
+    // TODO(Phase 5): escalate to worker restart or user-visible error state
     onTimeout: (workerId) => {
       console.warn(`[Hyperion] Worker ${workerId} heartbeat timeout`);
     },
