@@ -17,6 +17,7 @@ import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
 import { GameLoop } from './game-loop';
 import { Camera } from './camera';
+import { CameraAPI } from './camera-api';
 import { LeakDetector } from './leak-detector';
 import { RawAPI } from './raw-api';
 
@@ -35,6 +36,7 @@ export class Hyperion implements Disposable {
   private readonly bridge: EngineBridge;
   private readonly renderer: Renderer | null;
   private readonly camera: Camera;
+  private readonly cameraApi: CameraAPI;
   private readonly loop: GameLoop;
   private readonly pool: EntityHandlePool;
   private readonly leakDetector: LeakDetector;
@@ -53,6 +55,7 @@ export class Hyperion implements Disposable {
     this.bridge = bridge;
     this.renderer = renderer;
     this.camera = new Camera();
+    this.cameraApi = new CameraAPI(this.camera);
     this.pool = new EntityHandlePool();
     this.leakDetector = new LeakDetector();
     this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
@@ -117,6 +120,11 @@ export class Hyperion implements Disposable {
   /** The execution mode label (e.g., "A", "B", "C"). */
   get mode(): string {
     return this.bridge.mode;
+  }
+
+  /** High-level camera API with zoom support. */
+  get cam(): CameraAPI {
+    return this.cameraApi;
   }
 
   /** Low-level numeric ID interface for bulk or performance-critical operations. */
