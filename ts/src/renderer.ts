@@ -9,7 +9,8 @@ import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
 
 const MAX_ENTITIES = 100_000;
-const INDIRECT_BUFFER_SIZE = 20;
+const NUM_PRIM_TYPES = 6;
+const INDIRECT_BUFFER_SIZE = NUM_PRIM_TYPES * 5 * 4;  // 6 × 5 u32 × 4 bytes = 120 bytes
 
 export interface Renderer {
   render(
@@ -57,7 +58,7 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: MAX_ENTITIES * 4,
+    size: NUM_PRIM_TYPES * MAX_ENTITIES * 4,  // 6 regions × 100k × u32
     usage: GPUBufferUsage.STORAGE,
   }));
 
