@@ -109,6 +109,7 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     TextureLayerIndex::default(),
                     MeshHandle::default(),
                     RenderPrimitive::default(),
+                    PrimitiveParams::default(),
                     Parent::default(),
                     Children::default(),
                     Active,
@@ -227,8 +228,34 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                 }
             }
 
-            CommandType::SetPrimParams0 | CommandType::SetPrimParams1 => {
-                // TODO(Task 3): process PrimitiveParams commands
+            CommandType::SetPrimParams0 => {
+                if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    let p0 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    let p1 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                    let p2 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                    let p3 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                    if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
+                        pp.0[0] = p0;
+                        pp.0[1] = p1;
+                        pp.0[2] = p2;
+                        pp.0[3] = p3;
+                    }
+                }
+            }
+
+            CommandType::SetPrimParams1 => {
+                if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    let p4 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    let p5 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                    let p6 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                    let p7 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                    if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
+                        pp.0[4] = p4;
+                        pp.0[5] = p5;
+                        pp.0[6] = p6;
+                        pp.0[7] = p7;
+                    }
+                }
             }
 
             CommandType::Noop => {}
@@ -446,6 +473,53 @@ mod tests {
         for i in 0..50 {
             assert!(map.get(i).is_some());
         }
+    }
+
+    #[test]
+    fn process_set_prim_params() {
+        let mut world = World::new();
+        let mut entity_map = EntityMap::new();
+
+        // Spawn an entity first
+        let spawn_cmd = Command { cmd_type: CommandType::SpawnEntity, entity_id: 0, payload: [0; 16] };
+        process_commands(&[spawn_cmd], &mut world, &mut entity_map);
+
+        // Set params 0-3
+        let mut payload0 = [0u8; 16];
+        payload0[0..4].copy_from_slice(&1.0f32.to_le_bytes());
+        payload0[4..8].copy_from_slice(&2.0f32.to_le_bytes());
+        payload0[8..12].copy_from_slice(&3.0f32.to_le_bytes());
+        payload0[12..16].copy_from_slice(&4.0f32.to_le_bytes());
+
+        let cmd0 = Command { cmd_type: CommandType::SetPrimParams0, entity_id: 0, payload: payload0 };
+        process_commands(&[cmd0], &mut world, &mut entity_map);
+
+        let entity = entity_map.get(0).unwrap();
+        {
+            let pp = world.get::<&PrimitiveParams>(entity).unwrap();
+            assert_eq!(pp.0[0], 1.0);
+            assert_eq!(pp.0[1], 2.0);
+            assert_eq!(pp.0[2], 3.0);
+            assert_eq!(pp.0[3], 4.0);
+        }
+
+        // Set params 4-7
+        let mut payload1 = [0u8; 16];
+        payload1[0..4].copy_from_slice(&5.0f32.to_le_bytes());
+        payload1[4..8].copy_from_slice(&6.0f32.to_le_bytes());
+        payload1[8..12].copy_from_slice(&7.0f32.to_le_bytes());
+        payload1[12..16].copy_from_slice(&8.0f32.to_le_bytes());
+
+        let cmd1 = Command { cmd_type: CommandType::SetPrimParams1, entity_id: 0, payload: payload1 };
+        process_commands(&[cmd1], &mut world, &mut entity_map);
+
+        let pp = world.get::<&PrimitiveParams>(entity).unwrap();
+        assert_eq!(pp.0[4], 5.0);
+        assert_eq!(pp.0[5], 6.0);
+        assert_eq!(pp.0[6], 7.0);
+        assert_eq!(pp.0[7], 8.0);
+        // Params 0-3 should still be intact
+        assert_eq!(pp.0[0], 1.0);
     }
 
     #[test]
