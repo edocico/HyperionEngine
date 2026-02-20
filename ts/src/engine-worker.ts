@@ -28,6 +28,8 @@ interface WasmEngine {
   engine_gpu_render_meta_len(): number;
   engine_gpu_tex_indices_ptr(): number;
   engine_gpu_tex_indices_len(): number;
+  engine_gpu_prim_params_ptr(): number;
+  engine_gpu_prim_params_f32_len(): number;
   memory: WebAssembly.Memory;
 }
 
@@ -88,6 +90,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         bounds: ArrayBuffer;
         renderMeta: ArrayBuffer;
         texIndices: ArrayBuffer;
+        primParams: ArrayBuffer;
       } | null = null;
 
       if (count > 0) {
@@ -113,19 +116,25 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         const texIndices = new Uint32Array(texLen);
         if (texPtr) texIndices.set(new Uint32Array(wasm.memory.buffer, texPtr, texLen));
 
+        const ppPtr = wasm.engine_gpu_prim_params_ptr();
+        const ppLen = wasm.engine_gpu_prim_params_f32_len();
+        const primParams = new Float32Array(ppLen);
+        if (ppPtr) primParams.set(new Float32Array(wasm.memory.buffer, ppPtr, ppLen));
+
         renderState = {
           entityCount: count,
           transforms: transforms.buffer as ArrayBuffer,
           bounds: bounds.buffer as ArrayBuffer,
           renderMeta: renderMeta.buffer as ArrayBuffer,
           texIndices: texIndices.buffer as ArrayBuffer,
+          primParams: primParams.buffer as ArrayBuffer,
         };
       }
 
       if (renderState) {
         self.postMessage(
           { type: "tick-done", dt: msg.dt, tickCount, renderState },
-          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices]
+          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams]
         );
       } else {
         self.postMessage({

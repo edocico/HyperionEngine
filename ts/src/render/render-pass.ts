@@ -4,6 +4,7 @@ export interface FrameState {
   bounds: Float32Array;        // 4 f32/entity
   renderMeta: Uint32Array;     // 2 u32/entity
   texIndices: Uint32Array;     // 1 u32/entity
+  primParams: Float32Array;    // 8 f32/entity
   cameraViewProjection: Float32Array; // mat4x4
   canvasWidth: number;
   canvasHeight: number;

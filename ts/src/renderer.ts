@@ -71,6 +71,16 @@ export async function createRenderer(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
+  resources.setBuffer('render-meta', device.createBuffer({
+    size: MAX_ENTITIES * 2 * 4,  // 2 u32/entity
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  }));
+
+  resources.setBuffer('prim-params', device.createBuffer({
+    size: MAX_ENTITIES * 8 * 4,  // 8 f32/entity
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  }));
+
   // --- 4. Populate texture views + sampler in ResourcePool ---
   resources.setTextureView('tier0', textureManager.getTierView(0));
   resources.setTextureView('tier1', textureManager.getTierView(1));
@@ -122,6 +132,24 @@ export async function createRenderer(
         state.entityCount,
       );
 
+      // Upload render meta
+      const renderMetaBuf = resources.getBuffer('render-meta')!;
+      device.queue.writeBuffer(
+        renderMetaBuf, 0,
+        state.renderMeta as Uint32Array<ArrayBuffer>, 0,
+        state.entityCount * 2,
+      );
+
+      // Upload prim params
+      if (state.primParams && state.primParams.length > 0) {
+        const primParamsBuf = resources.getBuffer('prim-params')!;
+        device.queue.writeBuffer(
+          primParamsBuf, 0,
+          state.primParams as Float32Array<ArrayBuffer>, 0,
+          state.entityCount * 8,
+        );
+      }
+
       // Set swapchain view for this frame
       resources.setTextureView('swapchain', context.getCurrentTexture().createView());
 
@@ -132,6 +160,7 @@ export async function createRenderer(
         bounds: state.bounds,
         renderMeta: state.renderMeta,
         texIndices: state.texIndices,
+        primParams: state.primParams ?? new Float32Array(0),
         cameraViewProjection: camera.viewProjection,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,

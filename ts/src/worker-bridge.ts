@@ -16,6 +16,7 @@ export interface GPURenderState {
   bounds: Float32Array;        // 4 f32/entity (xyz + radius)
   renderMeta: Uint32Array;     // 2 u32/entity (meshHandle + renderPrimitive)
   texIndices: Uint32Array;     // 1 u32/entity
+  primParams: Float32Array;    // 8 f32/entity (primitive parameters)
 }
 
 export interface EngineBridge {
@@ -74,6 +75,7 @@ export function createWorkerBridge(
         bounds: new Float32Array(msg.renderState.bounds),
         renderMeta: new Uint32Array(msg.renderState.renderMeta),
         texIndices: new Uint32Array(msg.renderState.texIndices),
+        primParams: new Float32Array(msg.renderState.primParams ?? []),
       };
     }
   };
@@ -153,9 +155,11 @@ export function createFullIsolationBridge(
       console.error("ECS Worker error:", msg.error);
     } else if (msg.type === "tick-done" && msg.renderState) {
       // Forward render state to Render Worker.
+      const transferables = [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices];
+      if (msg.renderState.primParams) transferables.push(msg.renderState.primParams);
       channel.port1.postMessage(
         { renderState: msg.renderState },
-        [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices]
+        transferables,
       );
     }
   };
@@ -234,6 +238,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_gpu_render_meta_len(): number;
     engine_gpu_tex_indices_ptr(): number;
     engine_gpu_tex_indices_len(): number;
+    engine_gpu_prim_params_ptr(): number;
+    engine_gpu_prim_params_f32_len(): number;
     memory: WebAssembly.Memory;
   };
 
@@ -262,6 +268,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
         const mLen = engine.engine_gpu_render_meta_len();
         const texPtr = engine.engine_gpu_tex_indices_ptr();
         const texLen = engine.engine_gpu_tex_indices_len();
+        const ppPtr = engine.engine_gpu_prim_params_ptr();
+        const ppLen = engine.engine_gpu_prim_params_f32_len();
 
         // Copy from WASM memory — live views become stale after next engine_update().
         latestRenderState = {
@@ -270,6 +278,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           bounds: bPtr ? new Float32Array(new Float32Array(engine.memory.buffer, bPtr, bLen)) : new Float32Array(0),
           renderMeta: mPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, mPtr, mLen)) : new Uint32Array(0),
           texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
+          primParams: ppPtr ? new Float32Array(new Float32Array(engine.memory.buffer, ppPtr, ppLen)) : new Float32Array(0),
         };
       } else {
         latestRenderState = {
@@ -278,6 +287,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           bounds: new Float32Array(0),
           renderMeta: new Uint32Array(0),
           texIndices: new Uint32Array(0),
+          primParams: new Float32Array(0),
         };
       }
     },
