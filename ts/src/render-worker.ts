@@ -70,13 +70,13 @@ self.onmessage = async (event: MessageEvent) => {
 function renderLoop(): void {
   function renderFrame() {
     if (renderer && latestRenderState && latestRenderState.entityCount > 0) {
-      // TODO(Phase 4.5 Task 10-12): renderer.render() still expects monolithic entityData.
-      // For now, pass transforms as entityData. The renderer will be updated to consume
-      // separate SoA buffers (transforms, bounds, renderMeta) in later tasks.
-      const entityData = new Float32Array(latestRenderState.transforms);
-      const texIndices = new Uint32Array(latestRenderState.texIndices);
-
-      renderer.render(entityData, latestRenderState.entityCount, camera, texIndices);
+      renderer.render({
+        entityCount: latestRenderState.entityCount,
+        transforms: new Float32Array(latestRenderState.transforms),
+        bounds: new Float32Array(latestRenderState.bounds),
+        renderMeta: new Uint32Array(latestRenderState.renderMeta),
+        texIndices: new Uint32Array(latestRenderState.texIndices),
+      }, camera);
     }
 
     requestAnimationFrame(renderFrame);
