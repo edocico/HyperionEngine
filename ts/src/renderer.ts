@@ -1,5 +1,6 @@
 import shaderCode from './shaders/basic.wgsl?raw';
 import lineShaderCode from './shaders/line.wgsl?raw';
+import gradientShaderCode from './shaders/gradient.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
 import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import { TextureManager } from './texture-manager';
@@ -105,8 +106,9 @@ export async function createRenderer(
   // --- 6. Set shader sources and setup passes ---
   CullPass.SHADER_SOURCE = cullShaderCode;
   ForwardPass.SHADER_SOURCES = {
-    0: shaderCode,      // Quad
-    1: lineShaderCode,  // Line
+    0: shaderCode,            // Quad
+    1: lineShaderCode,        // Line
+    4: gradientShaderCode,    // Gradient
   };
   FXAATonemapPass.SHADER_SOURCE = fxaaShaderCode;
 
