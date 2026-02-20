@@ -14,6 +14,27 @@ beforeAll(() => {
   }
 });
 
+/** Reusable mock GPUDevice for TextureManager tests. */
+function createMockDevice(): GPUDevice {
+  return {
+    createSampler: () => ({}),
+    createTexture: (desc: any) => ({
+      desc,
+      createView: () => ({}),
+      destroy: () => {},
+    }),
+    queue: {
+      writeTexture: () => {},
+      copyExternalImageToTexture: () => {},
+      submit: () => {},
+    },
+    createCommandEncoder: () => ({
+      copyTextureToTexture: () => {},
+      finish: () => ({}),
+    }),
+  } as unknown as GPUDevice;
+}
+
 describe("Texture tier selection", () => {
   it("selects tier 0 for images <= 64px", () => {
     expect(selectTier(32, 32)).toBe(0);
@@ -152,5 +173,25 @@ describe("Lazy tier allocation", () => {
     expect(tm.getAllocatedLayers(0)).toBe(128);
     tm.ensureTierCapacity(0, 129);
     expect(tm.getAllocatedLayers(0)).toBe(256);
+  });
+});
+
+describe("retainBitmaps option", () => {
+  it("retainBitmaps option keeps ImageBitmaps for re-upload", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { retainBitmaps: true });
+    expect(tm.retainBitmaps).toBe(true);
+  });
+
+  it("retainBitmaps defaults to false", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device);
+    expect(tm.retainBitmaps).toBe(false);
+  });
+
+  it("retainBitmaps false when explicitly set", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { retainBitmaps: false });
+    expect(tm.retainBitmaps).toBe(false);
   });
 });

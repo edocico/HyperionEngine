@@ -77,12 +77,17 @@ export class TextureManager {
   private activeFetches = 0;
   private readonly fetchQueue: FetchJob[] = [];
   private readonly cache = new Map<string, number>();
+  private readonly bitmapCache = new Map<string, ImageBitmap>();
   private loaded = 0;
   private total = 0;
   onProgress: ((loaded: number, total: number) => void) | null = null;
 
-  constructor(device: GPUDevice) {
+  /** When true, ImageBitmaps are kept in memory after upload for device-lost re-upload. */
+  readonly retainBitmaps: boolean;
+
+  constructor(device: GPUDevice, opts?: { retainBitmaps?: boolean }) {
     this.device = device;
+    this.retainBitmaps = opts?.retainBitmaps ?? false;
     this._sampler = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
@@ -334,7 +339,11 @@ export class TextureManager {
         },
         { width: bitmap.width, height: bitmap.height },
       );
-      bitmap.close();
+      if (this.retainBitmaps) {
+        this.bitmapCache.set(url, bitmap);
+      } else {
+        bitmap.close();
+      }
 
       const packed = packTextureIndex(actualTier, layer);
       this.cache.set(url, packed);
@@ -349,7 +358,7 @@ export class TextureManager {
     }
   }
 
-  /** Destroy all GPU textures. */
+  /** Destroy all GPU textures and release retained bitmaps. */
   destroy(): void {
     for (const state of this.tiers) {
       if (state.texture !== null) {
@@ -358,5 +367,7 @@ export class TextureManager {
         state.view = null;
       }
     }
+    for (const bm of this.bitmapCache.values()) bm.close();
+    this.bitmapCache.clear();
   }
 }
