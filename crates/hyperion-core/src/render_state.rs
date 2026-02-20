@@ -372,6 +372,15 @@ impl RenderState {
         self.gpu_tex_indices.len() as u32
     }
 
+    /// Release excess heap memory from all internal buffers.
+    /// Call after a large batch of entity despawns to reclaim memory.
+    pub fn shrink_to_fit(&mut self) {
+        self.matrices.shrink_to_fit();
+        self.gpu_transforms.shrink_to_fit();
+        self.gpu_bounds.shrink_to_fit();
+        self.gpu_render_meta.shrink_to_fit();
+        self.gpu_tex_indices.shrink_to_fit();
+    }
 }
 
 impl Default for RenderState {
@@ -792,6 +801,27 @@ mod tests {
         tracker.mark_meta_dirty(5);
         assert!(tracker.is_meta_dirty(5));
         assert!(!tracker.is_meta_dirty(6));
+    }
+
+    #[test]
+    fn render_state_shrink_to_fit() {
+        let mut state = RenderState::new();
+
+        for _ in 0..1000 {
+            state.gpu_transforms.extend_from_slice(&[0.0; 16]);
+            state.gpu_bounds.extend_from_slice(&[0.0; 4]);
+            state.gpu_render_meta.extend_from_slice(&[0u32; 2]);
+            state.gpu_tex_indices.push(0);
+        }
+
+        state.gpu_transforms.clear();
+        state.gpu_bounds.clear();
+        state.gpu_render_meta.clear();
+        state.gpu_tex_indices.clear();
+
+        let old_cap = state.gpu_transforms.capacity();
+        state.shrink_to_fit();
+        assert!(state.gpu_transforms.capacity() < old_cap);
     }
 
     #[test]
