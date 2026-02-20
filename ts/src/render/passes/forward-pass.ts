@@ -6,7 +6,7 @@ import type { ResourcePool } from '../resource-pool';
  *
  * Reads entity transforms, visible indices (from CullPass), texture layer
  * indices, render metadata, and primitive parameters, then issues per-type
- * indirect indexed draws to the swapchain.
+ * indirect indexed draws to the scene-hdr intermediate texture.
  *
  * Each registered primitive type (via SHADER_SOURCES) gets its own
  * GPURenderPipeline. All pipelines share the same bind group layouts.
@@ -16,7 +16,7 @@ import type { ResourcePool } from '../resource-pool';
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
   readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params'];
-  readonly writes = ['swapchain'];
+  readonly writes = ['scene-hdr'];
   readonly optional = false;
 
   private pipelines = new Map<number, GPURenderPipeline>();
@@ -188,9 +188,9 @@ export class ForwardPass implements RenderPass {
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
     if (this.pipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
-    // Get swapchain view (set each frame by the coordinator)
-    const swapchainView = resources.getTextureView('swapchain');
-    if (!swapchainView) return;
+    // Get render target view (scene-hdr intermediate for post-processing)
+    const targetView = resources.getTextureView('scene-hdr');
+    if (!targetView) return;
 
     // Ensure depth texture exists and matches canvas size
     this.ensureDepthTexture(frame.canvasWidth, frame.canvasHeight);
@@ -198,7 +198,7 @@ export class ForwardPass implements RenderPass {
 
     const renderPass = encoder.beginRenderPass({
       colorAttachments: [{
-        view: swapchainView,
+        view: targetView,
         loadOp: 'clear' as GPULoadOp,
         storeOp: 'store' as GPUStoreOp,
         clearValue: { r: 0.067, g: 0.067, b: 0.067, a: 1 },

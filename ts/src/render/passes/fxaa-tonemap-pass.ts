@@ -25,7 +25,7 @@ export class FXAATonemapPass implements RenderPass {
     this.tonemapMode = mode;
   }
 
-  setup(device: GPUDevice, resources: ResourcePool): void {
+  setup(device: GPUDevice, _resources: ResourcePool): void {
     this.device = device;
 
     if (!FXAATonemapPass.SHADER_SOURCE) {
@@ -80,7 +80,7 @@ export class FXAATonemapPass implements RenderPass {
     device.queue.writeBuffer(this.paramBuffer, 0, data);
   }
 
-  execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
+  execute(encoder: GPUCommandEncoder, _frame: FrameState, resources: ResourcePool): void {
     if (!this.pipeline || !this.paramBuffer || !this.sampler || !this.device) return;
 
     const sceneHdr = resources.getTextureView('scene-hdr');

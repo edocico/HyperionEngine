@@ -1,11 +1,13 @@
 import shaderCode from './shaders/basic.wgsl?raw';
 import lineShaderCode from './shaders/line.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
+import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
 import { CullPass } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
+import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
 
@@ -90,25 +92,39 @@ export async function createRenderer(
   resources.setTextureView('tier3', textureManager.getTierView(3));
   resources.setSampler('texSampler', textureManager.getSampler());
 
-  // --- 5. Set shader sources and setup passes ---
+  // --- 5. Create intermediate scene-hdr texture for post-processing ---
+  let sceneHdrTexture = device.createTexture({
+    size: { width: canvas.width, height: canvas.height },
+    format: format,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  resources.setTextureView('scene-hdr', sceneHdrTexture.createView());
+  let sceneHdrWidth = canvas.width;
+  let sceneHdrHeight = canvas.height;
+
+  // --- 6. Set shader sources and setup passes ---
   CullPass.SHADER_SOURCE = cullShaderCode;
   ForwardPass.SHADER_SOURCES = {
     0: shaderCode,      // Quad
     1: lineShaderCode,  // Line
   };
+  FXAATonemapPass.SHADER_SOURCE = fxaaShaderCode;
 
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
+  const fxaaPass = new FXAATonemapPass();
   cullPass.setup(device, resources);
   forwardPass.setup(device, resources);
+  fxaaPass.setup(device, resources);
 
-  // --- 6. Build the RenderGraph ---
+  // --- 7. Build the RenderGraph ---
   const graph = new RenderGraph();
   graph.addPass(cullPass);
   graph.addPass(forwardPass);
+  graph.addPass(fxaaPass);
   graph.compile();
 
-  // --- 7. Return the Renderer object ---
+  // --- 8. Return the Renderer object ---
   return {
     textureManager,
 
@@ -155,6 +171,19 @@ export async function createRenderer(
         );
       }
 
+      // Recreate scene-hdr texture if canvas dimensions changed
+      if (canvas.width !== sceneHdrWidth || canvas.height !== sceneHdrHeight) {
+        sceneHdrTexture.destroy();
+        sceneHdrTexture = device.createTexture({
+          size: { width: canvas.width, height: canvas.height },
+          format: format,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        resources.setTextureView('scene-hdr', sceneHdrTexture.createView());
+        sceneHdrWidth = canvas.width;
+        sceneHdrHeight = canvas.height;
+      }
+
       // Set swapchain view for this frame
       resources.setTextureView('swapchain', context.getCurrentTexture().createView());
 
@@ -176,6 +205,7 @@ export async function createRenderer(
     },
 
     destroy() {
+      sceneHdrTexture.destroy();
       graph.destroy();
       resources.destroy();
       textureManager.destroy();

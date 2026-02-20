@@ -9,7 +9,7 @@ describe('ForwardPass', () => {
     expect(pass.reads).toContain('entity-transforms');
     expect(pass.reads).toContain('tex-indices');
     expect(pass.reads).toContain('indirect-args');
-    expect(pass.writes).toContain('swapchain');
+    expect(pass.writes).toContain('scene-hdr');
     expect(pass.optional).toBe(false);
   });
 
