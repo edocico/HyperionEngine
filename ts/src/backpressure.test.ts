@@ -141,3 +141,47 @@ describe('BackpressuredProducer', () => {
     expect(bp.freeSpace).toBeLessThan(64);
   });
 });
+
+describe('BackpressuredProducer convenience methods', () => {
+  const HEADER = 32;
+
+  it('setVelocity writes SetVelocity command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setVelocity(0, 1.0, 2.0, 3.0)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetVelocity: 1 cmd + 4 entity_id + 12 payload (3 x f32) = 17 bytes
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.SetVelocity);
+  });
+
+  it('setRotation writes SetRotation command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setRotation(0, 0, 0, 0, 1)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetRotation: 1 cmd + 4 entity_id + 16 payload (4 x f32) = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.SetRotation);
+  });
+
+  it('setScale writes SetScale command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setScale(0, 2.0, 2.0, 2.0)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetScale: 1 cmd + 4 entity_id + 12 payload (3 x f32) = 17 bytes
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.SetScale);
+  });
+
+  it('setParent writes SetParent command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setParent(1, 0)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetParent: 1 cmd + 4 entity_id + 4 payload (1 x u32) = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetParent);
+  });
+});

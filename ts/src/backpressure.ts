@@ -117,4 +117,22 @@ export class BackpressuredProducer {
     new Uint32Array(p.buffer)[0] = primitive;
     return this.writeCommand(CommandType.SetRenderPrimitive, entityId, p);
   }
+
+  setVelocity(entityId: number, vx: number, vy: number, vz: number): boolean {
+    return this.writeCommand(CommandType.SetVelocity, entityId, new Float32Array([vx, vy, vz]));
+  }
+
+  setRotation(entityId: number, x: number, y: number, z: number, w: number): boolean {
+    return this.writeCommand(CommandType.SetRotation, entityId, new Float32Array([x, y, z, w]));
+  }
+
+  setScale(entityId: number, sx: number, sy: number, sz: number): boolean {
+    return this.writeCommand(CommandType.SetScale, entityId, new Float32Array([sx, sy, sz]));
+  }
+
+  setParent(entityId: number, parentId: number): boolean {
+    const p = new Float32Array(1);
+    new Uint32Array(p.buffer)[0] = parentId;
+    return this.writeCommand(CommandType.SetParent, entityId, p);
+  }
 }
