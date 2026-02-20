@@ -1,9 +1,11 @@
 //! ECS systems that operate on component queries.
 
+use std::collections::HashMap;
+
 use glam::Mat4;
 use hecs::World;
 
-use crate::components::{Active, ModelMatrix, Position, Rotation, Scale, Velocity};
+use crate::components::{Active, ModelMatrix, Parent, Position, Rotation, Scale, Velocity};
 
 /// Apply velocity to position. Runs once per fixed-timestep tick.
 pub fn velocity_system(world: &mut World, dt: f32) {
@@ -26,6 +28,36 @@ pub fn transform_system(world: &mut World) {
 /// Count active entities. Useful for debug overlay.
 pub fn count_active(world: &World) -> usize {
     world.query::<&Active>().iter().count()
+}
+
+/// Propagate parent transforms to children.
+/// For each entity with a Parent != u32::MAX, multiply parent's ModelMatrix
+/// by child's ModelMatrix to produce the child's world ModelMatrix.
+pub fn propagate_transforms(world: &mut World, ext_to_entity: &HashMap<u32, hecs::Entity>) {
+    let mut updates: Vec<(hecs::Entity, [f32; 16])> = Vec::new();
+
+    for (entity, parent_comp, matrix, _active) in world
+        .query::<(hecs::Entity, &Parent, &ModelMatrix, &Active)>()
+        .iter()
+    {
+        if parent_comp.0 == u32::MAX {
+            continue;
+        }
+        if let Some(&parent_entity) = ext_to_entity.get(&parent_comp.0) {
+            if let Ok(parent_matrix) = world.get::<&ModelMatrix>(parent_entity) {
+                let parent_mat4 = glam::Mat4::from_cols_array(&parent_matrix.0);
+                let child_mat4 = glam::Mat4::from_cols_array(&matrix.0);
+                let result = parent_mat4 * child_mat4;
+                updates.push((entity, result.to_cols_array()));
+            }
+        }
+    }
+
+    for (entity, new_matrix) in updates {
+        if let Ok(mut m) = world.get::<&mut ModelMatrix>(entity) {
+            m.0 = new_matrix;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +134,63 @@ mod tests {
         world.spawn((Position::default(),));
 
         assert_eq!(count_active(&world), 2);
+    }
+
+    #[test]
+    fn propagate_transforms_applies_parent_matrix() {
+        let mut world = World::new();
+
+        let parent = world.spawn((
+            Position(Vec3::new(10.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+
+        let child = world.spawn((
+            Position(Vec3::new(5.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            Parent(0),
+            Children::default(),
+            Active,
+        ));
+
+        transform_system(&mut world);
+
+        let mut ext_to_entity = std::collections::HashMap::new();
+        ext_to_entity.insert(0u32, parent);
+        ext_to_entity.insert(1u32, child);
+
+        propagate_transforms(&mut world, &ext_to_entity);
+
+        let child_matrix = world.get::<&ModelMatrix>(child).unwrap();
+        assert!((child_matrix.0[12] - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn propagate_transforms_skips_unparented() {
+        let mut world = World::new();
+        let entity = world.spawn((
+            Position(Vec3::new(5.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+
+        transform_system(&mut world);
+
+        let ext_to_entity = std::collections::HashMap::new();
+        propagate_transforms(&mut world, &ext_to_entity);
+
+        let matrix = world.get::<&ModelMatrix>(entity).unwrap();
+        assert!((matrix.0[12] - 5.0).abs() < 0.001);
     }
 }
