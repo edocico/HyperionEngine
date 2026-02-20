@@ -58,6 +58,77 @@ pub struct MeshHandle(pub u32);
 #[repr(C)]
 pub struct RenderPrimitive(pub u8);
 
+/// Parent entity (external ID). u32::MAX = no parent.
+#[derive(Debug, Clone, Copy)]
+pub struct Parent(pub u32);
+
+impl Default for Parent {
+    fn default() -> Self {
+        Self(u32::MAX) // sentinel: no parent
+    }
+}
+
+/// Children list. Fixed-capacity inline array (max 32 children).
+#[derive(Debug, Clone)]
+pub struct Children {
+    pub slots: [u32; Self::MAX_CHILDREN],
+    pub count: u8,
+}
+
+impl Children {
+    pub const MAX_CHILDREN: usize = 32;
+
+    pub fn add(&mut self, child_id: u32) -> bool {
+        if (self.count as usize) >= Self::MAX_CHILDREN {
+            return false;
+        }
+        self.slots[self.count as usize] = child_id;
+        self.count += 1;
+        true
+    }
+
+    pub fn remove(&mut self, child_id: u32) {
+        for i in 0..self.count as usize {
+            if self.slots[i] == child_id {
+                self.count -= 1;
+                self.slots[i] = self.slots[self.count as usize];
+                return;
+            }
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<u32> {
+        if index < self.count as usize {
+            Some(self.slots[index])
+        } else {
+            None
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u32] {
+        &self.slots[..self.count as usize]
+    }
+}
+
+impl Default for Children {
+    fn default() -> Self {
+        Self {
+            slots: [0; Self::MAX_CHILDREN],
+            count: 0,
+        }
+    }
+}
+
+/// Local-space model matrix (relative to parent).
+#[derive(Debug, Clone, Copy)]
+pub struct LocalMatrix(pub [f32; 16]);
+
+impl Default for LocalMatrix {
+    fn default() -> Self {
+        Self(glam::Mat4::IDENTITY.to_cols_array())
+    }
+}
+
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
@@ -191,5 +262,58 @@ mod tests {
         let bytes = bytemuck::bytes_of(&rp);
         assert_eq!(bytes.len(), 1);
         assert_eq!(bytes[0], 2);
+    }
+
+    #[test]
+    fn parent_default_is_none_sentinel() {
+        let p = Parent::default();
+        assert_eq!(p.0, u32::MAX);
+    }
+
+    #[test]
+    fn children_default_is_empty() {
+        let c = Children::default();
+        assert_eq!(c.count, 0);
+    }
+
+    #[test]
+    fn children_add_and_get() {
+        let mut c = Children::default();
+        c.add(5);
+        c.add(10);
+        assert_eq!(c.count, 2);
+        assert_eq!(c.get(0), Some(5));
+        assert_eq!(c.get(1), Some(10));
+        assert_eq!(c.get(2), None);
+    }
+
+    #[test]
+    fn children_remove() {
+        let mut c = Children::default();
+        c.add(1);
+        c.add(2);
+        c.add(3);
+        c.remove(2);
+        assert_eq!(c.count, 2);
+        assert_eq!(c.get(0), Some(1));
+        assert_eq!(c.get(1), Some(3));
+    }
+
+    #[test]
+    fn children_max_capacity() {
+        let mut c = Children::default();
+        for i in 0..Children::MAX_CHILDREN as u32 {
+            assert!(c.add(i));
+        }
+        assert!(!c.add(999));
+    }
+
+    #[test]
+    fn local_matrix_default_is_identity() {
+        let m = LocalMatrix::default();
+        assert_eq!(m.0[0], 1.0);
+        assert_eq!(m.0[5], 1.0);
+        assert_eq!(m.0[10], 1.0);
+        assert_eq!(m.0[15], 1.0);
     }
 }
