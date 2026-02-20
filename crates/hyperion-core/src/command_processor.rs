@@ -83,6 +83,8 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     TextureLayerIndex::default(),
                     MeshHandle::default(),
                     RenderPrimitive::default(),
+                    Parent::default(),
+                    Children::default(),
                     Active,
                 ));
                 entity_map.insert(cmd.entity_id, entity);
@@ -168,8 +170,40 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
             }
 
             CommandType::SetParent => {
-                // Design only in Phase 4.5 — no-op stub
-                // Full scene graph implementation in Phase 5
+                if let Some(child_entity) = entity_map.get(cmd.entity_id) {
+                    let new_parent_id =
+                        u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+
+                    // Remove from old parent's Children if currently parented
+                    if let Ok(old_parent) = world.get::<&Parent>(child_entity) {
+                        let old_id = old_parent.0;
+                        if old_id != u32::MAX {
+                            if let Some(old_parent_entity) = entity_map.get(old_id) {
+                                if let Ok(mut children) =
+                                    world.get::<&mut Children>(old_parent_entity)
+                                {
+                                    children.remove(cmd.entity_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Update child's Parent component
+                    if let Ok(mut parent) = world.get::<&mut Parent>(child_entity) {
+                        parent.0 = new_parent_id;
+                    }
+
+                    // Add to new parent's Children (if not u32::MAX = unparent)
+                    if new_parent_id != u32::MAX {
+                        if let Some(parent_entity) = entity_map.get(new_parent_id) {
+                            if let Ok(mut children) =
+                                world.get::<&mut Children>(parent_entity)
+                            {
+                                children.add(cmd.entity_id);
+                            }
+                        }
+                    }
+                }
             }
 
             CommandType::Noop => {}
@@ -335,5 +369,79 @@ mod tests {
             &mut map,
         );
         // No assertion needed -- just verifying no panic.
+    }
+
+    #[test]
+    fn set_parent_adds_parent_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        process_commands(
+            &[make_spawn_cmd(0), make_spawn_cmd(1)],
+            &mut world,
+            &mut map,
+        );
+
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&0u32.to_le_bytes());
+        let cmd = Command {
+            cmd_type: CommandType::SetParent,
+            entity_id: 1,
+            payload,
+        };
+        process_commands(&[cmd], &mut world, &mut map);
+
+        let child_entity = map.get(1).unwrap();
+        let parent = world.get::<&Parent>(child_entity).unwrap();
+        assert_eq!(parent.0, 0);
+
+        let parent_entity = map.get(0).unwrap();
+        let children = world.get::<&Children>(parent_entity).unwrap();
+        assert!(children.as_slice().contains(&1));
+    }
+
+    #[test]
+    fn set_parent_with_max_sentinel_unparents() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        process_commands(
+            &[make_spawn_cmd(0), make_spawn_cmd(1)],
+            &mut world,
+            &mut map,
+        );
+
+        // Parent entity 1 to entity 0
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&0u32.to_le_bytes());
+        process_commands(
+            &[Command {
+                cmd_type: CommandType::SetParent,
+                entity_id: 1,
+                payload,
+            }],
+            &mut world,
+            &mut map,
+        );
+
+        // Unparent entity 1
+        payload[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        process_commands(
+            &[Command {
+                cmd_type: CommandType::SetParent,
+                entity_id: 1,
+                payload,
+            }],
+            &mut world,
+            &mut map,
+        );
+
+        let child_entity = map.get(1).unwrap();
+        let parent = world.get::<&Parent>(child_entity).unwrap();
+        assert_eq!(parent.0, u32::MAX);
+
+        let parent_entity = map.get(0).unwrap();
+        let children = world.get::<&Children>(parent_entity).unwrap();
+        assert!(!children.as_slice().contains(&1));
     }
 }
