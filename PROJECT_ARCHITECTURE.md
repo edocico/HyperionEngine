@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.8.0 (Phase 0-5 + Phase 4.5 + Post-Plan Integration completate) | **81 test Rust across 7 moduli + 175 test TypeScript across 23 file**
+> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.9.0 (Phase 0-5.5 + Phase 4.5 + Post-Plan Integration completate) | **86 test Rust across 7 moduli + 224 test TypeScript across 29 file**
 
 ---
 
@@ -17,7 +17,7 @@ L'obiettivo architetturale primario e la **separazione fisica** tra UI, logica d
 - Non supporta networking o multiplayer
 - Non compila con SIMD128 attivo (richiede flag target-feature specifici per wasm-pack)
 - Non gestisce audio o input (Phase 6)
-- Non supporta mesh 3D — solo quad 2D instanziati
+- Non supporta mesh 3D — solo primitive 2D (quad, line, gradient, box shadow, MSDF text)
 
 ### Design Principle: "Command Buffer Architecture"
 
@@ -1473,6 +1473,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
 | **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
 | **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder + pool, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
+| **5.5** | Rendering Primitives | **Completata** | `PrimitiveParams([f32;8])` component + `SetPrimParams0/1` commands, multi-type CullPass (6 types × DrawIndirectArgs), multi-pipeline ForwardPass (`SHADER_SOURCES`), line rendering (screen-space expansion + SDF dash), MSDF text (FontAtlas + text layout + median SDF), gradient (linear/radial/conic), box shadow (Evan Wallace erf), FXAA + tonemapping (PBR Neutral/ACES), JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass), `SelectionManager`, `enableOutlines()/disableOutlines()` API |
 | **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
 | **7** | Polish & DX | Pianificata | Shader hot-reload, dev watch mode, performance profiler |
 
@@ -1480,17 +1481,19 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 | Metrica | Valore |
 | --- | --- |
-| Test Rust | 81 (tutti passanti) |
-| Test TypeScript | 175 (tutti passanti) |
+| Test Rust | 86 (tutti passanti) |
+| Test TypeScript | 224 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 30+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl`, `vite-env.d.ts`) |
-| File test TypeScript | 23 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`) |
+| Moduli TypeScript | 40+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` × 11, `vite-env.d.ts`) |
+| File test TypeScript | 29 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `text-layout`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
-| WASM exports | 17 (16 engine functions + 1 smoke test) |
-| ECS Components | 13 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, Active, Parent, Children, LocalMatrix) |
-| CommandType variants | 11 (Noop + 10 comandi) |
+| WASM exports | 19 (18 engine functions + 1 smoke test) |
+| ECS Components | 14 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, Active, Parent, Children, LocalMatrix) |
+| CommandType variants | 13 (Noop + 12 comandi, incl. SetPrimParams0/1) |
+| WGSL Shaders | 11 (basic, line, gradient, box-shadow, msdf-text, fxaa-tonemap, selection-seed, jfa, outline-composite, cull, prefix-sum) |
+| Render Passes | 6 (CullPass, ForwardPass, FXAATonemapPass, SelectionSeedPass, JFAPass, OutlineCompositePass) |
 
 ---
 
@@ -1508,7 +1511,7 @@ Per aggiungere un comando (es. `SetColor(r, g, b, a)`):
 
 **Test**: Test Rust in `ring_buffer.rs::tests` per il parsing. Test Rust in `command_processor.rs::tests` per la mutazione ECS. Test TypeScript in `ring-buffer.test.ts` per la serializzazione. Test in `integration.test.ts` per la verifica cross-boundary degli offset.
 
-**Nota**: Il prossimo discriminante libero e `11` — `SetParent` (10) e l'ultimo assegnato.
+**Nota**: Il prossimo discriminante libero e `13` — `SetPrimParams1` (12) e l'ultimo assegnato.
 
 ### 17.2 Aggiungere un Nuovo Componente ECS
 
@@ -1796,3 +1799,93 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **LeakDetector** | Backstop diagnostico via `FinalizationRegistry` per rilevare EntityHandle non disposed. Non garantito dalla spec — solo warning |
 | **RawAPI** | Interfaccia numerica diretta per entity management senza overhead di oggetti. Per scenari ad alte prestazioni (100k+ entita) |
 | **Memory compaction** | Processo di rilascio della capacita in eccesso nelle strutture dati interne (`EntityMap.shrink_to_fit`, `RenderState.shrink_to_fit`) dopo molti spawn/despawn |
+| **PrimitiveParams** | `[f32; 8]` per-entity component per parametri specifici del tipo di primitiva. Split in due ring buffer commands (`SetPrimParams0` + `SetPrimParams1`) per il limite di 16 byte payload |
+| **RenderPrimitiveType** | Enum che identifica il tipo di primitiva: Quad=0, Line=1, SDFGlyph=2, BezierPath=3, Gradient=4, BoxShadow=5. Usato dal CullPass per raggruppare le entita e dal ForwardPass per selezionare la pipeline |
+| **Multi-pipeline ForwardPass** | Architettura dove ogni tipo di primitiva ha la propria `GPURenderPipeline` con shader dedicato, ma tutte condividono lo stesso bind group layout. `drawIndexedIndirect` per tipo a offset `type * 20` bytes |
+| **JFA (Jump Flood Algorithm)** | Algoritmo GPU per calcolare distance field in O(log₂ N) pass. Usato per outline di selezione. Ping-pong tra due texture, ogni pass dimezza il step size |
+| **MSDF (Multi-channel Signed Distance Field)** | Tecnica di rendering testo che codifica la distanza dal bordo del glifo in 3 canali (RGB). `median(r,g,b)` produce un SDF pulito per anti-aliasing indipendente dalla scala |
+| **SelectionManager** | Classe CPU-side che traccia entita selezionate (`Set<number>`) con dirty tracking e upload maschera GPU. Interfaccia per `SelectionSeedPass` |
+| **Dead-pass culling** | Feature del RenderGraph che elimina automaticamente i pass opzionali i cui output non sono consumati da nessun pass vivo. Abilita lo switching dinamico tra pipeline con/senza outline |
+
+---
+
+## 20. Phase 5.5: Rendering Primitives
+
+### 20.0 Panoramica
+
+Phase 5.5 estende il rendering engine da quad-only a **multi-primitiva**. Ogni tipo di primitiva (linea, testo MSDF, gradiente, box shadow) ha il proprio shader WGSL e pipeline GPU, ma tutte condividono lo stesso bind group layout e lo stesso meccanismo di culling.
+
+### 20.1 PrimitiveParams: Dati Per-Primitiva
+
+**Rust**: `PrimitiveParams([f32; 8])` component in `components.rs` — 8 float configurabili per entita. Significato dipende dal `RenderPrimitive` type:
+
+| Tipo | Params 0-3 | Params 4-7 |
+| --- | --- | --- |
+| **Line** (1) | startX, startY, endX, endY | width, dashLen, gapLen, \_pad |
+| **SDFGlyph** (2) | atlasU0, atlasV0, atlasU1, atlasV1 | distRange, fontSize, \_pad, \_pad |
+| **Gradient** (4) | type, angle, stop0_pos, stop0_r | stop0_g, stop0_b, stop1_pos, stop1_r |
+| **BoxShadow** (5) | rectW, rectH, cornerRadius, blur | colorR, colorG, colorB, colorA |
+
+**Ring buffer**: Due comandi (`SetPrimParams0` discriminante 11, `SetPrimParams1` discriminante 12) perche il ring buffer ha un limite di 16 byte per payload e PrimitiveParams occupa 32 byte.
+
+**WASM exports**: `engine_gpu_prim_params_ptr()` e `engine_gpu_prim_params_f32_len()` espongono il buffer SoA per l'upload a GPU.
+
+### 20.2 Multi-Type CullPass
+
+Il CullPass ora raggruppa le entita visibili per tipo di primitiva. Il compute shader:
+
+1. Legge `renderMeta[idx * 2 + 1]` per ottenere il tipo di primitiva
+2. Incrementa atomicamente `drawArgs[primType].instanceCount`
+3. Scrive l'indice entita nella regione per-tipo: `visibleIndices[primType * maxEntitiesPerType + slot]`
+
+Il buffer `indirect-args` contiene 6 × `DrawIndirectArgs` (5 u32 ciascuno = 120 bytes totali). Il `prepare()` resetta tutti gli `instanceCount` a zero ogni frame.
+
+### 20.3 Multi-Pipeline ForwardPass
+
+`ForwardPass.SHADER_SOURCES: Record<number, string>` mappa tipo di primitiva → codice WGSL. Al `setup()`, viene creata una `GPURenderPipeline` per ogni tipo registrato, tutte con lo stesso `pipelineLayout` (stessi bind group layout).
+
+Nell'`execute()`, il pass itera su ogni pipeline registrata:
+
+```typescript
+for (const [primType, pipeline] of this.pipelines) {
+    renderPass.setPipeline(pipeline);
+    renderPass.drawIndexedIndirect(indirectBuffer, primType * 20);
+}
+```
+
+Questo permette di aggiungere nuovi tipi di primitiva senza toccare il codice del pass — basta registrare un nuovo shader.
+
+### 20.4 Post-Processing: FXAA + Tonemapping
+
+Il `ForwardPass` ora scrive a `scene-hdr` (texture intermedia) invece che a `swapchain`. Il `FXAATonemapPass` legge `scene-hdr`, applica FXAA (Lottes) + tonemapping opzionale (PBR Neutral o ACES), e scrive a `swapchain`.
+
+La pipeline completa senza outline: `CullPass → ForwardPass (→ scene-hdr) → FXAATonemapPass (→ swapchain)`
+
+### 20.5 JFA Selection Outlines
+
+Quando le outline sono abilitate, la pipeline diventa:
+
+```text
+CullPass → ForwardPass (→ scene-hdr)
+         → SelectionSeedPass (→ selection-seed)
+         → JFAPass-0 (→ jfa-iter-0)
+         → JFAPass-1 (→ jfa-iter-1)
+         → ...
+         → JFAPass-N (→ jfa-iter-N)
+         → OutlineCompositePass (scene-hdr + jfa-iter-N → swapchain)
+```
+
+`FXAATonemapPass` viene eliminato automaticamente dal dead-pass culling del RenderGraph perche `OutlineCompositePass` scrive a `swapchain`. Il composite shader include il proprio FXAA.
+
+**JFA iterations**: `ceil(log₂(max(width, height)))` — circa 11 per 1080p. Ogni iterazione e un nodo separato nel RenderGraph con nome risorsa unico (`jfa-iter-N`). Il renderer mappa queste risorse logiche a due texture fisiche di ping-pong nel ResourcePool.
+
+**SelectionManager** (`ts/src/selection.ts`): `Set<number>` CPU-side con dirty tracking. `uploadMask(device, buffer)` scrive una maschera u32 (0/1 per entita) nel buffer `selection-mask`. Il seed shader controlla questa maschera nel vertex shader e emette triangoli degeneri per entita non selezionate.
+
+### 20.6 MSDF Text Rendering
+
+Il subsistema di testo MSDF:
+
+1. **FontAtlas** (`text/font-atlas.ts`): Parser per JSON di `msdf-atlas-gen`. Contiene metriche per glifo (unicode, advance, planeBounds, atlasBounds) + `glyphMap` per lookup O(1).
+2. **Text Layout** (`text/text-layout.ts`): `layoutText(text, atlas, fontSize, startX, startY)` posiziona i glifi usando le metriche dell'atlas. Ritorna `LayoutGlyph[]`.
+3. **TextManager** (`text/text-manager.ts`): Cache per font atlas caricati.
+4. **Shader** (`shaders/msdf-text.wgsl`): Vertex shader mappa UV del quad alla regione dell'atlas via PrimitiveParams. Fragment shader campiona la texture MSDF, calcola `median(r,g,b)`, e applica anti-aliasing basato su screen-pixel-range (`dpdx`/`dpdy`).
