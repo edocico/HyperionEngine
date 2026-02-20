@@ -14,6 +14,8 @@ function mockProducer(): BackpressuredProducer {
     setMeshHandle: vi.fn(() => true),
     setRenderPrimitive: vi.fn(() => true),
     setParent: vi.fn(() => true),
+    setPrimParams0: vi.fn(() => true),
+    setPrimParams1: vi.fn(() => true),
     writeCommand: vi.fn(() => true),
     flush: vi.fn(),
     pendingCount: 0,
@@ -157,5 +159,44 @@ describe('EntityHandle', () => {
     const child = new EntityHandle(1, p);
     child.unparent();
     expect(p.setParent).toHaveBeenCalledWith(1, 0xFFFFFFFF);
+  });
+
+  describe('primitive params', () => {
+    it('line() sets render primitive and params', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      const result = h.line(0, 0, 100, 100, 2);
+      expect(result).toBe(h);
+      expect(p.setRenderPrimitive).toHaveBeenCalledWith(1, 1); // Line = 1
+      expect(p.setPrimParams0).toHaveBeenCalledWith(1, 0, 0, 100, 100);
+      expect(p.setPrimParams1).toHaveBeenCalledWith(1, 2, 0, 0, 0);
+    });
+
+    it('gradient() sets render primitive and params', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      const result = h.gradient(0, 45, [0, 1, 0, 0, 0.5, 0]);
+      expect(result).toBe(h);
+      expect(p.setRenderPrimitive).toHaveBeenCalledWith(1, 4); // Gradient = 4
+      expect(p.setPrimParams0).toHaveBeenCalledWith(1, 0, 45, 0, 1);
+      expect(p.setPrimParams1).toHaveBeenCalledWith(1, 0, 0, 0.5, 0);
+    });
+
+    it('boxShadow() sets render primitive and params', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      const result = h.boxShadow(100, 80, 8, 20, 0, 0, 0, 0.5);
+      expect(result).toBe(h);
+      expect(p.setRenderPrimitive).toHaveBeenCalledWith(1, 5); // BoxShadow = 5
+      expect(p.setPrimParams0).toHaveBeenCalledWith(1, 100, 80, 8, 20);
+      expect(p.setPrimParams1).toHaveBeenCalledWith(1, 0, 0, 0, 0.5);
+    });
+
+    it('line() throws after destroy', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      h.destroy();
+      expect(() => h.line(0, 0, 100, 100, 2)).toThrow('destroyed');
+    });
   });
 });

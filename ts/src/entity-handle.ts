@@ -1,6 +1,16 @@
 import type { BackpressuredProducer } from './backpressure';
 import type { TextureHandle } from './types';
 
+/** Render primitive type enum (must match Rust RenderPrimitive values). */
+export const enum RenderPrimitiveType {
+  Quad = 0,
+  Line = 1,
+  SDFGlyph = 2,
+  BezierPath = 3,
+  Gradient = 4,
+  BoxShadow = 5,
+}
+
 /**
  * Opaque handle to an entity, providing a fluent builder API.
  *
@@ -105,6 +115,34 @@ export class EntityHandle implements Disposable {
   unparent(): this {
     this.check();
     this._producer!.setParent(this._id, 0xFFFFFFFF);
+    return this;
+  }
+
+  /** Configure this entity as a line. Returns `this` for chaining. */
+  line(x0: number, y0: number, x1: number, y1: number, width: number): this {
+    this.check();
+    this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Line);
+    this._producer!.setPrimParams0(this._id, x0, y0, x1, y1);
+    this._producer!.setPrimParams1(this._id, width, 0, 0, 0);
+    return this;
+  }
+
+  /** Configure this entity as a gradient. Returns `this` for chaining. */
+  gradient(type: number, angle: number, params: number[]): this {
+    this.check();
+    this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Gradient);
+    this._producer!.setPrimParams0(this._id, type, angle, params[0] ?? 0, params[1] ?? 0);
+    this._producer!.setPrimParams1(this._id, params[2] ?? 0, params[3] ?? 0, params[4] ?? 0, params[5] ?? 0);
+    return this;
+  }
+
+  /** Configure this entity as a box shadow. Returns `this` for chaining. */
+  boxShadow(rectW: number, rectH: number, cornerRadius: number, blur: number,
+            r: number, g: number, b: number, a: number): this {
+    this.check();
+    this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.BoxShadow);
+    this._producer!.setPrimParams0(this._id, rectW, rectH, cornerRadius, blur);
+    this._producer!.setPrimParams1(this._id, r, g, b, a);
     return this;
   }
 
