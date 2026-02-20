@@ -7,3 +7,8 @@ export { RawAPI } from './raw-api';
 export { CameraAPI } from './camera-api';
 export { SelectionManager } from './selection';
 export type { OutlineOptions } from './renderer';
+export { RenderPrimitiveType } from './entity-handle';
+export type { FontAtlas, GlyphMetrics } from './text/font-atlas';
+export { loadFontAtlas } from './text/font-atlas';
+export { layoutText } from './text/text-layout';
+export type { LayoutGlyph } from './text/text-layout';
