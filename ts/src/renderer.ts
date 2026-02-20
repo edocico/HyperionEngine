@@ -1,5 +1,6 @@
 import shaderCode from './shaders/basic.wgsl?raw';
 import lineShaderCode from './shaders/line.wgsl?raw';
+import msdfShaderCode from './shaders/msdf-text.wgsl?raw';
 import gradientShaderCode from './shaders/gradient.wgsl?raw';
 import boxShadowShaderCode from './shaders/box-shadow.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
@@ -109,6 +110,7 @@ export async function createRenderer(
   ForwardPass.SHADER_SOURCES = {
     0: shaderCode,              // Quad
     1: lineShaderCode,          // Line
+    2: msdfShaderCode,          // SDFGlyph (MSDF text)
     4: gradientShaderCode,      // Gradient
     5: boxShadowShaderCode,     // BoxShadow
   };
