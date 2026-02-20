@@ -7,7 +7,8 @@
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, MeshHandle, ModelMatrix, Position, RenderPrimitive, TextureLayerIndex,
+    Active, BoundingRadius, MeshHandle, ModelMatrix, Position, PrimitiveParams, RenderPrimitive,
+    TextureLayerIndex,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -176,6 +177,7 @@ pub struct RenderState {
     gpu_bounds: Vec<f32>,        // 4 f32/entity (xyz + radius)
     gpu_render_meta: Vec<u32>,   // 2 u32/entity (mesh_handle + primitive)
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
+    gpu_prim_params: Vec<f32>,   // 8 f32/entity (primitive-specific parameters)
     gpu_count: u32,
 
     /// Per-buffer dirty tracking for partial upload optimization.
@@ -190,6 +192,7 @@ impl RenderState {
             gpu_bounds: Vec::new(),
             gpu_render_meta: Vec::new(),
             gpu_tex_indices: Vec::new(),
+            gpu_prim_params: Vec::new(),
             gpu_count: 0,
             dirty_tracker: DirtyTracker::new(0),
         }
@@ -238,6 +241,7 @@ impl RenderState {
         self.gpu_bounds.clear();
         self.gpu_render_meta.clear();
         self.gpu_tex_indices.clear();
+        self.gpu_prim_params.clear();
 
         // Pre-allocate based on previous frame's entity count to avoid reallocation.
         let hint = self.gpu_count as usize;
@@ -245,10 +249,11 @@ impl RenderState {
         self.gpu_bounds.reserve(hint * 4);
         self.gpu_render_meta.reserve(hint * 2);
         self.gpu_tex_indices.reserve(hint);
+        self.gpu_prim_params.reserve(hint * 8);
         self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, tex, mesh, prim, _active) in world
+        for (pos, matrix, radius, tex, mesh, prim, pp, _active) in world
             .query::<(
                 &Position,
                 &ModelMatrix,
@@ -256,6 +261,7 @@ impl RenderState {
                 &TextureLayerIndex,
                 &MeshHandle,
                 &RenderPrimitive,
+                &PrimitiveParams,
                 &Active,
             )>()
             .iter()
@@ -274,6 +280,9 @@ impl RenderState {
             // Texture indices (1 u32)
             self.gpu_tex_indices.push(tex.0);
 
+            // Primitive params (8 f32)
+            self.gpu_prim_params.extend_from_slice(&pp.0);
+
             self.gpu_count += 1;
         }
 
@@ -281,6 +290,7 @@ impl RenderState {
         debug_assert_eq!(self.gpu_count as usize * 4, self.gpu_bounds.len());
         debug_assert_eq!(self.gpu_count as usize * 2, self.gpu_render_meta.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
+        debug_assert_eq!(self.gpu_count as usize * 8, self.gpu_prim_params.len());
     }
 
     /// Number of entities in the GPU buffer.
@@ -372,6 +382,27 @@ impl RenderState {
         self.gpu_tex_indices.len() as u32
     }
 
+    // --- SoA buffer accessors: primitive params ---
+
+    /// Primitive params data (8 f32 per entity).
+    pub fn gpu_prim_params(&self) -> &[f32] {
+        &self.gpu_prim_params
+    }
+
+    /// Raw pointer to the primitive params buffer for WASM export. Returns null if empty.
+    pub fn gpu_prim_params_ptr(&self) -> *const f32 {
+        if self.gpu_prim_params.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_prim_params.as_ptr()
+        }
+    }
+
+    /// Number of f32 values in the primitive params buffer.
+    pub fn gpu_prim_params_f32_len(&self) -> u32 {
+        self.gpu_prim_params.len() as u32
+    }
+
     /// Release excess heap memory from all internal buffers.
     /// Call after a large batch of entity despawns to reclaim memory.
     pub fn shrink_to_fit(&mut self) {
@@ -380,6 +411,7 @@ impl RenderState {
         self.gpu_bounds.shrink_to_fit();
         self.gpu_render_meta.shrink_to_fit();
         self.gpu_tex_indices.shrink_to_fit();
+        self.gpu_prim_params.shrink_to_fit();
     }
 }
 
@@ -477,6 +509,7 @@ mod tests {
             TextureLayerIndex::default(),
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
 
@@ -523,6 +556,7 @@ mod tests {
                 TextureLayerIndex::default(),
                 MeshHandle::default(),
                 RenderPrimitive::default(),
+                PrimitiveParams::default(),
                 Active,
             ));
         }
@@ -552,6 +586,7 @@ mod tests {
             TextureLayerIndex::default(),
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
         // Entity missing BoundingRadius, MeshHandle, RenderPrimitive — visible to collect() but not collect_gpu()
@@ -585,6 +620,7 @@ mod tests {
             TextureLayerIndex((2 << 16) | 10), // tier 2, layer 10
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
         world.spawn((
@@ -597,6 +633,7 @@ mod tests {
             TextureLayerIndex(0), // default
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
         crate::systems::transform_system(&mut world);
@@ -635,6 +672,7 @@ mod tests {
             TextureLayerIndex(0),
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
 
@@ -660,6 +698,7 @@ mod tests {
             TextureLayerIndex(0),
             MeshHandle::default(),
             RenderPrimitive::default(),
+            PrimitiveParams::default(),
             Active,
         ));
 
@@ -684,6 +723,7 @@ mod tests {
             TextureLayerIndex(0),
             MeshHandle(7),
             RenderPrimitive(2),
+            PrimitiveParams::default(),
             Active,
         ));
 
@@ -812,16 +852,47 @@ mod tests {
             state.gpu_bounds.extend_from_slice(&[0.0; 4]);
             state.gpu_render_meta.extend_from_slice(&[0u32; 2]);
             state.gpu_tex_indices.push(0);
+            state.gpu_prim_params.extend_from_slice(&[0.0; 8]);
         }
 
         state.gpu_transforms.clear();
         state.gpu_bounds.clear();
         state.gpu_render_meta.clear();
         state.gpu_tex_indices.clear();
+        state.gpu_prim_params.clear();
 
         let old_cap = state.gpu_transforms.capacity();
         state.shrink_to_fit();
         assert!(state.gpu_transforms.capacity() < old_cap);
+        assert!(state.gpu_prim_params.capacity() < 8000);
+    }
+
+    #[test]
+    fn collect_gpu_includes_prim_params() {
+        let mut world = World::new();
+        let mut pp = PrimitiveParams::default();
+        pp.0[0] = 42.0;
+        pp.0[7] = 99.0;
+
+        world.spawn((
+            Position(glam::Vec3::ZERO),
+            ModelMatrix([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            pp,
+            Active,
+        ));
+
+        let mut rs = RenderState::new();
+        rs.collect_gpu(&world);
+
+        assert_eq!(rs.gpu_entity_count(), 1);
+        let params = rs.gpu_prim_params();
+        assert_eq!(params.len(), 8); // 8 f32 per entity
+        assert_eq!(params[0], 42.0);
+        assert_eq!(params[7], 99.0);
     }
 
     #[test]

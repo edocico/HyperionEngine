@@ -216,6 +216,28 @@ pub fn engine_gpu_tex_indices_len() -> u32 {
     }
 }
 
+/// Pointer to the prim params buffer (8 f32 per entity).
+#[wasm_bindgen]
+pub fn engine_gpu_prim_params_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_prim_params_ptr())
+    }
+}
+
+/// Number of f32 values in the prim params buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_prim_params_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_prim_params_f32_len())
+    }
+}
+
 /// Compact the entity map by truncating trailing empty slots.
 #[wasm_bindgen]
 pub fn engine_compact_entity_map() {
