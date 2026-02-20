@@ -94,6 +94,20 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
+  /** Set parent entity for scene graph hierarchy. Returns `this` for chaining. */
+  parent(parentId: number): this {
+    this.check();
+    this._producer!.setParent(this._id, parentId);
+    return this;
+  }
+
+  /** Remove this entity from its parent (sends SetParent with MAX sentinel). Returns `this` for chaining. */
+  unparent(): this {
+    this.check();
+    this._producer!.setParent(this._id, 0xFFFFFFFF);
+    return this;
+  }
+
   /**
    * Get or set plugin data on this entity handle.
    * Data is stored per-key and cleared on `init()` (pool reuse).

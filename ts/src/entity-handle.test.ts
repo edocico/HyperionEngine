@@ -143,4 +143,19 @@ describe('EntityHandle', () => {
     h.init(99, p);
     expect(h.data('physics')).toBeUndefined();
   });
+
+  it('parent() sends SetParent command', () => {
+    const p = mockProducer();
+    const child = new EntityHandle(1, p);
+    const result = child.parent(0);
+    expect(result).toBe(child);
+    expect(p.setParent).toHaveBeenCalledWith(1, 0);
+  });
+
+  it('unparent() sends SetParent with MAX sentinel', () => {
+    const p = mockProducer();
+    const child = new EntityHandle(1, p);
+    child.unparent();
+    expect(p.setParent).toHaveBeenCalledWith(1, 0xFFFFFFFF);
+  });
 });
