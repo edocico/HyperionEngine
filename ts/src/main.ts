@@ -38,6 +38,14 @@ async function main() {
     }
   });
 
+  // Test lines
+  for (let i = 0; i < 10; i++) {
+    engine.spawn()
+      .position(0, 0, 0)
+      .scale(1, 1, 1)
+      .line(-200 + i * 40, -100, -200 + i * 40, 100, 2);
+  }
+
   // Update overlay each frame
   engine.addHook('frameEnd', () => {
     const s = engine.stats;
