@@ -18,6 +18,7 @@ import { EntityHandlePool } from './entity-pool';
 import { GameLoop } from './game-loop';
 import { Camera } from './camera';
 import { LeakDetector } from './leak-detector';
+import { RawAPI } from './raw-api';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -37,6 +38,7 @@ export class Hyperion implements Disposable {
   private readonly loop: GameLoop;
   private readonly pool: EntityHandlePool;
   private readonly leakDetector: LeakDetector;
+  private readonly rawApi: RawAPI;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -53,6 +55,7 @@ export class Hyperion implements Disposable {
     this.camera = new Camera();
     this.pool = new EntityHandlePool();
     this.leakDetector = new LeakDetector();
+    this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -114,6 +117,11 @@ export class Hyperion implements Disposable {
   /** The execution mode label (e.g., "A", "B", "C"). */
   get mode(): string {
     return this.bridge.mode;
+  }
+
+  /** Low-level numeric ID interface for bulk or performance-critical operations. */
+  get raw(): RawAPI {
+    return this.rawApi;
   }
 
   /**
