@@ -74,6 +74,24 @@ impl EntityMap {
             self.free_list.push(external_id);
         }
     }
+
+    /// Current allocated capacity (length of the sparse map).
+    pub fn capacity(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Shrink the sparse map by truncating trailing `None` slots,
+    /// then releasing unused heap memory. Also prunes the free list
+    /// to remove IDs that are no longer within bounds.
+    pub fn shrink_to_fit(&mut self) {
+        let last_used = self.map.iter().rposition(|opt| opt.is_some());
+        match last_used {
+            Some(idx) => self.map.truncate(idx + 1),
+            None => self.map.clear(),
+        }
+        self.map.shrink_to_fit();
+        self.free_list.retain(|&id| (id as usize) < self.map.len());
+    }
 }
 
 /// Process a batch of commands against the ECS world.
@@ -401,6 +419,29 @@ mod tests {
         let parent_entity = map.get(0).unwrap();
         let children = world.get::<&Children>(parent_entity).unwrap();
         assert!(children.as_slice().contains(&1));
+    }
+
+    #[test]
+    fn entity_map_shrink_to_fit() {
+        let mut map = EntityMap::new();
+        let mut world = World::new();
+
+        for i in 0..100 {
+            let entity = world.spawn((Position::default(), Active));
+            map.insert(i, entity);
+        }
+
+        for i in 50..100 {
+            map.remove(i);
+        }
+
+        let old_capacity = map.capacity();
+        map.shrink_to_fit();
+        assert!(map.capacity() <= 50, "capacity {} should be <= 50 (was {})", map.capacity(), old_capacity);
+
+        for i in 0..50 {
+            assert!(map.get(i).is_some());
+        }
     }
 
     #[test]
