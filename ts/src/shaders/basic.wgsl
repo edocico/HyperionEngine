@@ -5,13 +5,8 @@ struct CameraUniform {
     viewProjection: mat4x4f,
 };
 
-struct EntityData {
-    model: mat4x4f,
-    boundingSphere: vec4f,
-};
-
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
-@group(0) @binding(1) var<storage, read> entities: array<EntityData>;
+@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
 @group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
 @group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;
 
@@ -36,7 +31,7 @@ fn vs_main(
     @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
     let entityIdx = visibleIndices[instanceIdx];
-    let model = entities[entityIdx].model;
+    let model = transforms[entityIdx];
 
     // Decode texture tier and layer from packed u32
     let packed = texLayerIndices[entityIdx];
