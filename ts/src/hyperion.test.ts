@@ -147,6 +147,29 @@ describe('Hyperion', () => {
     expect(spawned.length).toBe(5);
     expect(bridge.commandBuffer.spawnEntity).toHaveBeenCalledTimes(5);
   });
+
+  it('loadTexture delegates to textureManager', async () => {
+    const renderer = mockRenderer();
+    (renderer.textureManager.loadTexture as any).mockResolvedValue(42);
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const handle = await engine.loadTexture('/test.png');
+    expect(handle).toBe(42);
+    expect(renderer.textureManager.loadTexture).toHaveBeenCalledWith('/test.png', undefined);
+  });
+
+  it('loadTextures loads multiple in parallel', async () => {
+    const renderer = mockRenderer();
+    let callCount = 0;
+    (renderer.textureManager.loadTexture as any).mockImplementation(async () => callCount++);
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const handles = await engine.loadTextures(['/a.png', '/b.png', '/c.png']);
+    expect(handles).toEqual([0, 1, 2]);
+  });
+
+  it('loadTexture throws when no renderer', async () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    await expect(engine.loadTexture('/test.png')).rejects.toThrow('no renderer');
+  });
 });
 
 describe('Hyperion.create', () => {

@@ -11,7 +11,7 @@ import {
 } from './worker-bridge';
 import type { Renderer } from './renderer';
 import { createRenderer } from './renderer';
-import type { ResolvedConfig, HyperionConfig } from './types';
+import type { ResolvedConfig, HyperionConfig, TextureHandle } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
@@ -161,6 +161,40 @@ export class Hyperion implements Disposable {
     this.leakDetector.unregister(handle);
     this.entityCount--;
     this.pool.release(handle);
+  }
+
+  /**
+   * Load a single texture from a URL. Returns a packed TextureHandle
+   * (tier << 16 | layer) suitable for `entity.texture(handle)`.
+   * Throws if no renderer is available.
+   */
+  async loadTexture(url: string, tier?: number): Promise<TextureHandle> {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot load textures: no renderer available');
+    return this.renderer.textureManager.loadTexture(url, tier);
+  }
+
+  /**
+   * Load multiple textures in sequence. Returns an array of TextureHandles
+   * in the same order as the input URLs. An optional `onProgress` callback
+   * is invoked after each texture finishes loading.
+   */
+  async loadTextures(
+    urls: string[],
+    opts?: { onProgress?: (loaded: number, total: number) => void; concurrency?: number },
+  ): Promise<TextureHandle[]> {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot load textures: no renderer available');
+
+    const results: TextureHandle[] = [];
+    let loaded = 0;
+    for (const url of urls) {
+      const handle = await this.renderer.textureManager.loadTexture(url);
+      results.push(handle);
+      loaded++;
+      opts?.onProgress?.(loaded, urls.length);
+    }
+    return results;
   }
 
   /** Start the game loop (requestAnimationFrame). */
