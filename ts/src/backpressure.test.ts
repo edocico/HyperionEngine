@@ -184,4 +184,24 @@ describe('BackpressuredProducer convenience methods', () => {
     expect(bytes.length).toBe(9);
     expect(bytes[0]).toBe(CommandType.SetParent);
   });
+
+  it('setPrimParams0 writes SetPrimParams0 command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setPrimParams0(1, 1.0, 2.0, 3.0, 4.0)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetPrimParams0: 1 cmd + 4 entity_id + 16 payload (4 x f32) = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.SetPrimParams0);
+  });
+
+  it('setPrimParams1 writes SetPrimParams1 command', () => {
+    const sab = new SharedArrayBuffer(HEADER + 1024);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    expect(producer.setPrimParams1(1, 5.0, 6.0, 7.0, 8.0)).toBe(true);
+    const { bytes } = extractUnread(sab);
+    // SetPrimParams1: 1 cmd + 4 entity_id + 16 payload (4 x f32) = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.SetPrimParams1);
+  });
 });

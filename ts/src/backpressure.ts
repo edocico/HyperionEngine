@@ -135,4 +135,12 @@ export class BackpressuredProducer {
     new Uint32Array(p.buffer)[0] = parentId;
     return this.writeCommand(CommandType.SetParent, entityId, p);
   }
+
+  setPrimParams0(entityId: number, p0: number, p1: number, p2: number, p3: number): boolean {
+    return this.writeCommand(CommandType.SetPrimParams0, entityId, new Float32Array([p0, p1, p2, p3]));
+  }
+
+  setPrimParams1(entityId: number, p4: number, p5: number, p6: number, p7: number): boolean {
+    return this.writeCommand(CommandType.SetPrimParams1, entityId, new Float32Array([p4, p5, p6, p7]));
+  }
 }
