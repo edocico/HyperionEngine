@@ -41,6 +41,21 @@ describe('WorkerSupervisor', () => {
     expect(supervisor.overflowCount).toBe(42);
   });
 
+  it('calls onEscalate after maxMissed beats with custom threshold', () => {
+    const sab = createMockSAB();
+    const onEscalate = vi.fn();
+    const supervisor = new WorkerSupervisor(sab, {
+      maxMissedBeats: 2,
+      onTimeout: onEscalate,
+    });
+
+    // Simulate 2 missed beats without heartbeat increment
+    supervisor.check();
+    supervisor.check();
+
+    expect(onEscalate).toHaveBeenCalledWith(1);
+  });
+
   it('should stop checking after timeout until reset', () => {
     const sab = createMockSAB();
     const onTimeout = vi.fn();
