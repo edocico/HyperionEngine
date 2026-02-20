@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-18 | **Versione**: 0.6.0 (Phase 0-4 + Phase 4.5 completate) | **68 test Rust across 7 moduli + 90 test TypeScript across 14 file**
+> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.7.0 (Phase 0-4 + Phase 4.5 + Post-Plan Integration completate) | **68 test Rust across 7 moduli + 95 test TypeScript across 14 file**
 
 ---
 
@@ -198,15 +198,19 @@ HyperionEngine/
         ├── ring-buffer.ts              # RingBufferProducer: Atomics-based SPSC producer, CommandType enum
         ├── ring-buffer.test.ts         # 14 test: write/read/overflow/sequential/texture layer/fast path
         ├── ring-buffer-utils.test.ts   # 4 test: ring buffer utility functions
-        ├── backpressure.ts             # PrioritizedCommandQueue: priority-based command queuing
-        ├── backpressure.test.ts        # 7 test: priority ordering, limits, critical bypass
+        ├── backpressure.ts             # PrioritizedCommandQueue + BackpressuredProducer:
+        │                               #   priority-based command queuing + RingBufferProducer wrapper
+        ├── backpressure.test.ts        # 12 test: priority ordering, limits, critical bypass,
+        │                               #   BackpressuredProducer pass-through/overflow/flush
         ├── supervisor.ts               # WorkerSupervisor: heartbeat monitoring + timeout
         ├── supervisor.test.ts          # 4 test: heartbeat, timeout detection
         ├── worker-bridge.ts            # EngineBridge + GPURenderState, createWorkerBridge(),
-        │                               #   createFullIsolationBridge(), createDirectBridge()
-        ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch
-        ├── renderer.ts                 # GPU-driven renderer: compute culling pipeline,
-        │                               #   indirect draw, TextureManager integration, multi-tier textures
+        │                               #   createFullIsolationBridge(), createDirectBridge().
+        │                               #   Uses BackpressuredProducer + WorkerSupervisor (Mode A/B)
+        ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch.
+        │                               #   Increments heartbeat counter after each tick
+        ├── renderer.ts                 # RenderGraph-based coordinator: ResourcePool + CullPass +
+        │                               #   ForwardPass + TextureManager. Accepts SoA GPURenderState
         ├── texture-manager.ts          # TextureManager: multi-tier Texture2DArray with lazy
         │                               #   allocation + exponential growth, concurrency limiter
         ├── texture-manager.test.ts     # 13 test: tier selection, packing, lazy alloc, growth
@@ -214,7 +218,8 @@ HyperionEngine/
         │                               #   isSphereInFrustum(), isPointInFrustum()
         ├── camera.test.ts              # 10 test: camera math, frustum plane extraction, culling
         ├── frustum.test.ts             # 7 test: frustum culling accuracy (sphere-plane tests)
-        ├── render-worker.ts            # Mode A render worker: OffscreenCanvas + createRenderer()
+        ├── render-worker.ts            # Mode A render worker: OffscreenCanvas + createRenderer().
+        │                               #   Wraps ArrayBuffers to typed arrays for GPURenderState
         ├── vite-env.d.ts               # Type declarations for WGSL ?raw imports and Vite client
         ├── render/
         │   ├── render-pass.ts          # RenderPass interface + FrameState type
@@ -223,15 +228,17 @@ HyperionEngine/
         │   ├── render-graph.ts         # RenderGraph: DAG pass scheduling (Kahn's sort)
         │   ├── render-graph.test.ts    # 8 test: ordering, dead-pass culling, cycles
         │   └── passes/
-        │       ├── cull-pass.ts        # CullPass: GPU frustum culling compute pass
+        │       ├── cull-pass.ts        # CullPass: GPU frustum culling compute pass with
+        │       │                       #   prepare() (frustum upload + indirect reset) + execute()
         │       ├── cull-pass.test.ts   # 1 test: CullPass construction
-        │       ├── forward-pass.ts     # ForwardPass: forward rendering pass skeleton
+        │       ├── forward-pass.ts     # ForwardPass: forward rendering with SoA transforms,
+        │       │                       #   lazy depth texture, camera uniform, drawIndexedIndirect
         │       ├── forward-pass.test.ts # 1 test: ForwardPass construction
         │       ├── prefix-sum-reference.ts # CPU Blelloch exclusive scan reference
         │       └── prefix-sum.test.ts  # 6 test: Blelloch scan correctness
         ├── shaders/
-        │   ├── basic.wgsl              # Render shader: visibility indirection +
-        │   │                           #   multi-tier Texture2DArray sampling
+        │   ├── basic.wgsl              # Render shader: SoA transforms (array<mat4x4f>),
+        │   │                           #   visibility indirection, multi-tier Texture2DArray
         │   ├── cull.wgsl               # Compute shader: sphere-frustum culling (SoA) +
         │   │                           #   atomicAdd per indirect draw
         │   └── prefix-sum.wgsl         # Compute shader: Blelloch exclusive scan
@@ -345,7 +352,7 @@ HyperionEngine/
     │                      ▼                             │
     │  ┌─── Phase 7: GPU Draw (Indirect) ───────────┐   │
     │  │  basic.wgsl (vertex + fragment shader)      │   │
-    │  │    vertex: visibleIndices → entityData       │   │
+    │  │    vertex: visibleIndices → transforms[idx]  │   │
     │  │      → decode packed texIdx (tier, layer)   │   │
     │  │      → transform + project                   │   │
     │  │    fragment: switch(tier) → sample tex array │   │
@@ -630,21 +637,23 @@ Il payload e un array fisso di 16 byte (il massimo — `SetRotation` usa 4 × f3
 ```typescript
 interface GPURenderState {
     entityCount: number;
-    entityData: Float32Array;      // 20 f32/entity (mat4x4 + bounding sphere)
-    texIndices: Uint32Array;       // 1 u32/entity (packed tier|layer)
+    transforms: Float32Array;      // SoA: 16 f32/entity (mat4x4)
+    bounds: Float32Array;          // SoA: 4 f32/entity (x, y, z, radius)
+    renderMeta: Uint32Array;       // SoA: 1 u32/entity (packed render flags)
+    texIndices: Uint32Array;       // SoA: 1 u32/entity (packed tier|layer)
 }
 
 interface EngineBridge {
     mode: ExecutionMode;           // "A", "B", o "C"
-    commandBuffer: RingBufferProducer;
-    tick(dt: number): void;        // Worker: postMessage. Mode C: sync call.
+    commandBuffer: BackpressuredProducer;  // Wraps RingBufferProducer con overflow queue
+    tick(dt: number): void;        // flush() + Worker: postMessage. Mode C: sync call.
     ready(): Promise<void>;        // Risolve quando WASM e caricato.
     destroy(): void;               // Worker: terminate(). Mode C: noop.
     latestRenderState: GPURenderState | null;  // Ultimo stato render dal WASM
 }
 ```
 
-`EngineBridge` e il **contratto uniforme** tra il main loop e il backend di esecuzione. Il codice in `main.ts` non sa (e non deve sapere) se gira in Worker o in single-thread. Le factory `createWorkerBridge()`, `createFullIsolationBridge()` o `createDirectBridge()` restituiscono l'implementazione corretta. `latestRenderState` espone i dati GPU-ready (entity data + texture indices) prodotti dall'ultimo tick WASM.
+`EngineBridge` e il **contratto uniforme** tra il main loop e il backend di esecuzione. Il codice in `main.ts` non sa (e non deve sapere) se gira in Worker o in single-thread. Le factory `createWorkerBridge()`, `createFullIsolationBridge()` o `createDirectBridge()` restituiscono l'implementazione corretta. `latestRenderState` espone i dati GPU-ready (SoA buffers: transforms, bounds, renderMeta, texIndices) prodotti dall'ultimo tick WASM. Tutte e tre le factory wrappano `RingBufferProducer` in `BackpressuredProducer` per gestire overflow con coda prioritizzata. In Mode A/B, un `WorkerSupervisor` monitora il heartbeat del Worker con check ogni 1 secondo.
 
 ### Engine (Rust)
 
@@ -778,7 +787,7 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║  SharedArrayBuffer: [header 32B][data region]                 ║
 +═══════════════════════════════════════════════════════════════+
 ║               GPU-Driven Render Layer (TS + WebGPU)           ║
-║  renderer.ts         → Compute culling + indirect draw pipeline║
+║  renderer.ts         → RenderGraph coordinator (CullPass+FwdPass)║
 ║  texture-manager.ts  → Multi-tier Texture2DArray (lazy alloc) ║
 ║  render/render-graph  → DAG pass scheduling (Kahn's sort)     ║
 ║  render/render-pass   → RenderPass interface + ResourcePool   ║
@@ -828,40 +837,55 @@ La scelta di gestire il rendering interamente da TypeScript con l'API WebGPU nat
 
 La separazione e netta: Rust/WASM produce dati GPU-ready (entity data come buffer contigui di f32/u32), TypeScript li uploada nella GPU e gestisce l'intera pipeline di rendering.
 
-### Architettura del Renderer (GPU-Driven)
+### Architettura del Renderer (RenderGraph Coordinator)
 
 **File**: `ts/src/renderer.ts`
 
-Il renderer usa un pattern **GPU-driven** con compute culling e indirect draw. Ogni frame: (1) uploada entity data nella GPU, (2) un compute shader esegue frustum culling per-entity, (3) un draw call indiretto renderizza solo le entita visibili.
+Il renderer usa un pattern **RenderGraph coordinator** con compute culling e indirect draw. `createRenderer()` crea un `ResourcePool` con buffer GPU condivisi, wires `CullPass` + `ForwardPass`, compila un `RenderGraph` DAG, e restituisce un'interfaccia `Renderer`. Ogni frame: (1) uploada i buffer SoA nella GPU, (2) `CullPass` esegue frustum culling per-entity, (3) `ForwardPass` renderizza le entita visibili via `drawIndexedIndirect`.
 
 ```
-                renderer.render(entityData, entityCount, camera, texIndices?)
+                renderer.render(state: GPURenderState, camera)
                                          │
           ┌──────────────────────────────┼────────────────────────────┐
           ▼                              ▼                            ▼
-  writeBuffer(entityBuf)      writeBuffer(cullUniforms)    writeBuffer(cameraBuf)
-  20 f32/entity               6 frustum planes + count     viewProj mat4x4
+  writeBuffer(transforms)     writeBuffer(bounds)         setTextureView('swapchain')
+  16 f32/entity (mat4x4)     4 f32/entity (sphere)        context.getCurrentTexture()
+          │                              │                            │
+          ▼                              ▼                            │
+  writeBuffer(texIndices)     writeBuffer(renderMeta)                 │
+  1 u32/entity                1 u32/entity                           │
           │                              │                            │
           └──────────────┬───────────────┘                            │
                          ▼                                            │
-              ┌─── Compute Pass (cull.wgsl) ───────┐                  │
-              │  workgroup_size(256)                 │                  │
-              │  per-entity: sphere vs 6 planes     │                  │
-              │  visible → atomicAdd(instanceCount) │                  │
-              │         → visibleIndices[slot] = idx│                  │
-              │  Output: indirect draw args          │                  │
+              ┌─── CullPass.prepare() ──────────────┐                 │
+              │  extractFrustumPlanes(camera.vp)     │                 │
+              │  writeBuffer(cullUniforms, planes+N) │                 │
+              │  writeBuffer(indirectArgs, reset)     │                 │
               └────────────────────┬────────────────┘                  │
-                                   │                                   │
                                    ▼                                   │
-              ┌─── Render Pass (basic.wgsl) ────────┐                  │
-              │  vertex: visibleIndices[inst_id]     │◄─────────────────┘
-              │    → entityData[idx] → model mat    │
+              ┌─── CullPass.execute() ──────────────┐                  │
+              │  cull.wgsl: workgroup_size(256)       │                  │
+              │  per-entity: sphere vs 6 planes      │                  │
+              │  visible → atomicAdd(instanceCount)  │                  │
+              │         → visibleIndices[slot] = idx │                  │
+              │  Output: indirect draw args           │                  │
+              └────────────────────┬────────────────┘                  │
+                                   ▼                                   │
+              ┌─── ForwardPass.prepare() ───────────┐                  │
+              │  writeBuffer(cameraBuf, viewProj)    │                  │
+              └────────────────────┬────────────────┘                  │
+                                   ▼                                   │
+              ┌─── ForwardPass.execute() ───────────┐                  │
+              │  ensureDepthTexture(w, h)            │◄─────────────────┘
+              │  vertex: visibleIndices[inst_id]     │
+              │    → transforms[idx] → model mat    │
               │    → texLayerIndices[idx] → tier,lay│
-              │    → transform + project             │
               │  fragment: switch(tier)               │
               │    → textureSample(tierN, uv, layer) │
               │  drawIndexedIndirect(indirectBuffer)  │
               └────────────────────┬────────────────┘
+                                   ▼
+                   graph.render(device, frameState, resources)
                                    ▼
                          queue.submit([encoder])
 ```
@@ -871,34 +895,36 @@ Il renderer usa un pattern **GPU-driven** con compute culling e indirect draw. O
 | Costante | Valore | Scopo |
 | --- | --- | --- |
 | `MAX_ENTITIES` | 100,000 | Limite massimo entita supportate |
-| `FLOATS_PER_GPU_ENTITY` | 20 | 16 (mat4x4) + 4 (bounding sphere) |
-| `BYTES_PER_GPU_ENTITY` | 80 | 20 × 4 bytes |
 | `INDIRECT_BUFFER_SIZE` | 20 bytes | 5 × u32 (drawIndexedIndirect args) |
 
-**Buffer layout GPU**:
+**Buffer layout GPU (SoA — Structure of Arrays)**:
 
-| Buffer | Tipo | Contenuto | Aggiornamento |
-| --- | --- | --- | --- |
-| Entity data | `STORAGE \| COPY_DST` | `[mat4×4 + boundingSphere]` × N | Ogni frame via `writeBuffer` |
-| Texture layer indices | `STORAGE \| COPY_DST` | `[u32 packed]` × N | Ogni frame via `writeBuffer` |
-| Camera uniform | `UNIFORM \| COPY_DST` | `mat4×4 viewProjection` | Ogni frame via `writeBuffer` |
-| Cull uniforms | `UNIFORM \| COPY_DST` | 6 × vec4 frustum planes + u32 count | Ogni frame via `writeBuffer` |
-| Visible indices | `STORAGE` | `[u32]` × MAX_ENTITIES | Scritto dal compute shader |
-| Indirect draw args | `STORAGE \| INDIRECT \| COPY_DST` | 5 × u32 (indexCount, instanceCount, ...) | Reset CPU + atomicAdd dal compute |
-| Depth texture | `GPUTexture` | `depth24plus` | Creata all'init |
-| Vertex/Index buffer | `VERTEX \| INDEX` | Unit quad (4 vertices + 6 indices) | Creato all'init, immutabile |
+| Buffer | Nome ResourcePool | Tipo | Contenuto | Aggiornamento |
+| --- | --- | --- | --- | --- |
+| Transforms | `entity-transforms` | `STORAGE \| COPY_DST` | `[mat4×4]` × N (16 f32/entity) | Ogni frame via `writeBuffer` |
+| Bounds | `entity-bounds` | `STORAGE \| COPY_DST` | `[vec4f]` × N (x, y, z, radius) | Ogni frame via `writeBuffer` |
+| Render meta | `render-meta` | `STORAGE \| COPY_DST` | `[u32]` × N (packed render flags) | Ogni frame via `writeBuffer` |
+| Tex indices | `tex-indices` | `STORAGE \| COPY_DST` | `[u32 packed]` × N (tier\|layer) | Ogni frame via `writeBuffer` |
+| Cull uniforms | (CullPass internal) | `UNIFORM \| COPY_DST` | 6 × vec4 frustum planes + u32 count | Ogni frame in `CullPass.prepare()` |
+| Camera uniform | (ForwardPass internal) | `UNIFORM \| COPY_DST` | `mat4×4 viewProjection` | Ogni frame in `ForwardPass.prepare()` |
+| Visible indices | `visible-indices` | `STORAGE` | `[u32]` × MAX_ENTITIES | Scritto dal compute shader |
+| Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 5 × u32 | Reset in `CullPass.prepare()` + atomicAdd dal compute |
+| Depth texture | (ForwardPass internal) | `GPUTexture` | `depth24plus` | Lazy creato/ricreato al resize via `ensureDepthTexture()` |
+| Vertex/Index buffer | (ForwardPass internal) | `VERTEX \| INDEX` | Unit quad (4 vertices + 6 indices) | Creato in `ForwardPass.setup()`, immutabile |
+| Texture views | `tier0`–`tier3` | `GPUTextureView` | Texture2DArray tier views | Registrati in ResourcePool da coordinator |
+| Sampler | `texSampler` | `GPUSampler` | Linear filtering sampler | Registrato in ResourcePool da coordinator |
+| Swapchain | `swapchain` | `GPUTextureView` | Current frame's swapchain texture view | Settato ogni frame dal coordinator |
 
 ### Pipeline Compute: Frustum Culling (cull.wgsl)
 
 **File**: `ts/src/shaders/cull.wgsl`
 
-Il compute shader esegue frustum culling sulla GPU, testando la bounding sphere di ogni entita contro i 6 piani del frustum. Ogni thread processa una singola entita.
+Il compute shader esegue frustum culling sulla GPU, testando la bounding sphere di ogni entita contro i 6 piani del frustum. Ogni thread processa una singola entita. I buffer di input sono **SoA** (Structure of Arrays): transforms e bounds sono buffer separati, non un monolitico `EntityData`.
 
 ```
-struct EntityData {
-    model: mat4x4f,
-    boundingSphere: vec4f   // xyz = posizione, w = raggio
-}
+// SoA bindings (non piu EntityData monolitico)
+@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;    // model matrices
+@group(0) @binding(2) var<storage, read> bounds: array<vec4f>;            // xyz=pos, w=radius
 
 struct CullUniforms {
     frustumPlanes: array<vec4f, 6>,
@@ -918,28 +944,31 @@ struct DrawIndirectArgs {
 **Algoritmo** (per-thread):
 
 1. `global_id.x >= totalEntities` → return (guard)
-2. Leggi `boundingSphere` dall'entity data
+2. Leggi `bounds[entity_idx]` per ottenere center (xyz) e raggio (w)
 3. Per ognuno dei 6 piani del frustum: `dist = dot(plane.xyz, center) + plane.w`
 4. Se `dist < -radius` per qualsiasi piano → entita completamente fuori → skip
 5. Altrimenti: `slot = atomicAdd(&drawArgs.instanceCount, 1)` → `visibleIndices[slot] = entity_idx`
 
 **Bind group del compute** (group 0):
 
-- Binding 0: Cull uniforms (read)
-- Binding 1: Entity data (read)
-- Binding 2: Visible indices (read-write)
-- Binding 3: Indirect draw args (read-write)
+- Binding 0: Cull uniforms (uniform, read)
+- Binding 1: Transforms — `array<mat4x4f>` (storage, read)
+- Binding 2: Bounds — `array<vec4f>` (storage, read)
+- Binding 3: Visible indices (storage, read-write)
+- Binding 4: Indirect draw args (storage, read-write)
+
+**CullPass lifecycle**: `setup()` crea il pipeline e bind group. `prepare()` estrae i frustum planes da `frame.cameraViewProjection` via `extractFrustumPlanes()` (importata da `camera.ts`), uploada i 112 byte di cull uniforms, e resetta gli indirect draw args a `[6, 0, 0, 0, 0]`. `execute()` dispatcha `ceil(entityCount / 256)` workgroups.
 
 ### Pipeline Render: Visibility Indirection (basic.wgsl)
 
 **File**: `ts/src/shaders/basic.wgsl`
 
-Il render shader usa **visibility indirection**: il vertex shader non legge direttamente dall'instance_index, ma lo usa come indice nel `visibleIndices` buffer per ottenere l'indice reale dell'entita nel buffer entity data.
+Il render shader usa **visibility indirection**: il vertex shader non legge direttamente dall'instance_index, ma lo usa come indice nel `visibleIndices` buffer per ottenere l'indice reale dell'entita nei buffer SoA.
 
 ```
-// Bind Group 0 (Vertex stage)
+// Bind Group 0 (Vertex stage) — SoA layout
 @group(0) @binding(0) var<uniform> camera: CameraUniform;        // viewProjection mat4x4
-@group(0) @binding(1) var<storage, read> entities: array<EntityData>;    // 20 f32/entity
+@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;    // SoA: model matrices
 @group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;     // dal compute
 @group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;    // packed tier|layer
 
@@ -952,7 +981,7 @@ Il render shader usa **visibility indirection**: il vertex shader non legge dire
 
 @vertex fn vs_main(@builtin(instance_index) instIdx: u32, ...) -> VertexOutput {
     let entityIdx = visibleIndices[instIdx];           // indirection
-    let model = entities[entityIdx].model;              // model matrix
+    let model = transforms[entityIdx];                  // SoA: direct mat4x4f
     let packed = texLayerIndices[entityIdx];             // texture index
     let tier = packed >> 16u;
     let layer = packed & 0xFFFFu;
@@ -971,6 +1000,8 @@ Il render shader usa **visibility indirection**: il vertex shader non legge dire
 ```
 
 Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scritto dal compute shader. Solo le entita che hanno passato il frustum culling vengono renderizzate. Il vertex shader risolve l'indice reale tramite `visibleIndices[instance_index]`.
+
+**ForwardPass lifecycle**: `setup()` crea il render pipeline, vertex/index buffer (unit quad), camera buffer, e bind groups. `prepare()` uploada `frame.cameraViewProjection` nel camera buffer. `execute()` acquisisce la swapchain view da ResourcePool, assicura la depth texture via `ensureDepthTexture()` (lazy create/recreate al resize), e codifica il render pass completo con `drawIndexedIndirect`.
 
 ### TextureManager: Multi-Tier Texture2DArray
 
@@ -1034,19 +1065,12 @@ I due buffer sono indicizzati con lo stesso ordine — l'entita all'indice N nel
 | **Mode B** (Partial Isolation) | `postMessage` con `ArrayBuffer` trasferibile dal Worker al Main Thread | Transfer (no copy) |
 | **Mode A** (Full Isolation) | `MessageChannel` tra ECS Worker e Render Worker, con `ArrayBuffer` trasferibile | Transfer (no copy) |
 
-In Mode C, il renderer accede direttamente alla memoria WASM:
+In Mode C, il renderer accede direttamente alla memoria WASM. I dati vengono raccolti come `GPURenderState` (SoA buffers) e passati al renderer:
 
 ```typescript
-const ptr = wasm.engine_gpu_data_ptr();
-const count = wasm.engine_gpu_entity_count();
-const f32Len = wasm.engine_gpu_data_f32_len();
-const entityData = new Float32Array(wasm.memory.buffer, ptr, f32Len);
-
-const texPtr = wasm.engine_gpu_tex_indices_ptr();
-const texLen = wasm.engine_gpu_tex_indices_len();
-const texIndices = new Uint32Array(wasm.memory.buffer, texPtr, texLen);
-
-renderer.render(entityData, count, camera, texIndices);
+// Il bridge Mode C raccoglie i buffer SoA dal WASM e li espone come latestRenderState
+// renderer.render() accetta GPURenderState + camera
+renderer.render(bridge.latestRenderState, camera);
 ```
 
 ### Sistema Camera: Proiezione Ortografica + Frustum Planes
@@ -1079,7 +1103,7 @@ La camera usa una **proiezione ortografica** appropriata per un engine 2D/2.5D. 
 depth_ndc = (z - near) / (far - near)
 ```
 
-**Estrazione piani del frustum**: `extractFrustumPlanes()` estrae i 6 piani (left, right, bottom, top, near, far) dalla matrice view-projection usando il metodo di Gribb-Hartmann. Ogni piano e normalizzato (normal.length = 1) per permettere il test di distanza sfera-piano nel compute shader. La stessa funzione e duplicata internamente in `renderer.ts` come `extractFrustumPlanesInternal()` per evitare dipendenze circolari.
+**Estrazione piani del frustum**: `extractFrustumPlanes()` estrae i 6 piani (left, right, bottom, top, near, far) dalla matrice view-projection usando il metodo di Gribb-Hartmann. Ogni piano e normalizzato (normal.length = 1) per permettere il test di distanza sfera-piano nel compute shader. `CullPass` importa `extractFrustumPlanes` direttamente da `camera.ts` — non ci sono piu duplicazioni.
 
 ### Pattern `engine_push_commands`: Bridge SAB → WASM
 
@@ -1123,7 +1147,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (68 test Rust across 7 moduli + 90 test TypeScript across 14 file)
+### Struttura (68 test Rust across 7 moduli + 95 test TypeScript across 14 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1159,7 +1183,8 @@ ts/src/
   camera.test.ts                    10 test: orthographic NDC mapping, Camera class, frustum planes
   frustum.test.ts                    7 test: frustum culling accuracy (sphere-plane tests)
   texture-manager.test.ts           13 test: tier selection, packing/unpacking, lazy alloc, exponential growth
-  backpressure.test.ts               7 test: priority ordering, soft/hard limits, critical bypass
+  backpressure.test.ts              12 test: priority ordering, soft/hard limits, critical bypass,
+                                           BackpressuredProducer pass-through/overflow/flush
   supervisor.test.ts                 4 test: heartbeat monitoring, timeout detection
   render/render-pass.test.ts         6 test: ResourcePool CRUD, pass contract validation
   render/render-graph.test.ts        8 test: topological ordering, dead-pass culling, cycle detection,
@@ -1196,7 +1221,7 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 68 test
+# Rust — 68 test (invariato)
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
 cargo test -p hyperion-core ring_buffer               # Ring buffer (13 test)
@@ -1204,7 +1229,7 @@ cargo test -p hyperion-core render_state              # Render state (24 test)
 cargo test -p hyperion-core components                # Components (13 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 90 test
+# TypeScript — 95 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
@@ -1307,9 +1332,9 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Tipi public con `new()` senza parametri | Clippy `new_without_default` | `impl Default` esplicito su `Engine` e `EntityMap` |
 | `@webgpu/types` `Float32Array` strictness | `writeBuffer` richiede `Float32Array<ArrayBuffer>`, non `Float32Array<ArrayBufferLike>` | Cast esplicito `as Float32Array<ArrayBuffer>` quando la sorgente potrebbe essere `ArrayBufferLike` |
 | Indirect draw buffer richiede `STORAGE \| INDIRECT \| COPY_DST` | Il compute shader scrive instanceCount (STORAGE), il render pass lo legge (INDIRECT), la CPU lo resetta a zero ogni frame (COPY_DST) | Combinare tutti e tre gli usage flags alla creazione del buffer |
-| `extractFrustumPlanesInternal` duplicata in `renderer.ts` | Evita dipendenza circolare con `camera.ts` | `render-worker.ts` usa `createRenderer()` da `renderer.ts`, la funzione non e piu duplicata nel worker |
-| WebGPU non testabile in headless | Playwright/Puppeteer headless non ha GPU adapter — `requestAdapter()` ritorna null | Test visuaali WebGPU solo con browser reale (`npm run dev` → Chrome) |
-| Depth texture non ricreata al resize | `renderer.ts` crea la depth texture una sola volta all'init | Se il canvas viene ridimensionato, le dimensioni della depth texture non corrispondono al render target |
+| Frustum extraction vive in `camera.ts` | `extractFrustumPlanes()` e definita solo in `camera.ts`. La vecchia `extractFrustumPlanesInternal` in `renderer.ts` e stata rimossa | `CullPass` importa direttamente da `camera.ts` |
+| WebGPU non testabile in headless | Playwright/Puppeteer headless non ha GPU adapter — `requestAdapter()` ritorna null | Test visuali WebGPU solo con browser reale (`npm run dev` → Chrome) |
+| Depth texture lazy recreation | `ForwardPass.ensureDepthTexture()` crea/ricrea la depth texture quando le dimensioni del canvas cambiano | `resize()` invalida il tracking, `execute()` ricrea al frame successivo. **Bug risolto** (prima la depth texture era creata una sola volta all'init) |
 | `createImageBitmap` non disponibile ovunque nei Worker | Firefox e Chrome supportano, Safari ha supporto parziale | `TextureManager` va istanziato solo dove `createImageBitmap` e disponibile |
 | WGSL non supporta dynamic indexing su texture bindings | Limitazione del linguaggio | `switch(tier)` nel fragment shader — aggiungere nuovi tier richiede aggiornare lo shader |
 | `Texture2DArray maxTextureArrayLayers` varia per device | WebGPU spec garantisce minimo 256 | `TextureManager` alloca 256 layer per tier. Su device con meno layer, il caricamento fallira |
@@ -1326,7 +1351,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
 | Entity IDs non compattati dopo molti spawn/despawn | Free-list LIFO puo lasciare buchi nel Vec | Spreco di memoria per mappe molto sparse | Accettabile per < 1M entita |
 | Nessuna validazione del quaternione in `SetRotation` | Il payload e accettato cosi com'e | Quaternioni non normalizzati producono scale anomale nella model matrix | Aggiungere normalizzazione in `process_commands` |
-| Full SoA buffer re-upload ogni frame | `renderer.ts` uploada tutti i buffer SoA ogni frame via `writeBuffer` | Nessuna ottimizzazione partial upload | Futuro: usare `DirtyTracker` (gia in Rust) per partial upload quando `transform_dirty_ratio < 0.3` |
+| Full SoA buffer re-upload ogni frame | Il coordinator in `renderer.ts` uploada tutti e 4 i buffer SoA (transforms, bounds, renderMeta, texIndices) ogni frame via `writeBuffer` | Nessuna ottimizzazione partial upload | Futuro: usare `DirtyTracker` (gia in Rust) per partial upload quando `transform_dirty_ratio < 0.3` |
 | Texture indices buffer parallelo al entity buffer | I due buffer devono essere indicizzati nello stesso ordine | Entrambi popolati nello stesso loop `collect_gpu()` — allineamento garantito | **Risolto by design** |
 
 ---
@@ -1343,6 +1368,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **3** | GPU-Driven Pipeline | **Completata** | WGSL compute culling (`cull.wgsl`), StorageBuffer layout (20 f32/entity), `drawIndexedIndirect`, visibility indirection (`basic.wgsl`), `BoundingRadius` component, `extractFrustumPlanes()`, frustum test suite |
 | **4** | Asset Pipeline & Textures | **Completata** | `TextureManager` (multi-tier Texture2DArray 64/128/256/512), `createImageBitmap` loading pipeline, `TextureLayerIndex` component, `SetTextureLayer` command, packed texture index encoding (tier<<16\|layer), multi-tier WGSL sampling, concurrency limiter, URL caching |
 | **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
+| **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
 | **5** | TypeScript API & Lifecycle | Prossima | API consumer, `dispose()` + `using`, FinalizationRegistry, entity pooling |
 | **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
 | **7** | Polish & DX | Pianificata | Shader hot-reload, dev watch mode, performance profiler |
@@ -1352,7 +1378,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Metrica | Valore |
 | --- | --- |
 | Test Rust | 68 (tutti passanti) |
-| Test TypeScript | 90 (tutti passanti) |
+| Test TypeScript | 95 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
 | Moduli TypeScript | 20+ (`main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl`, `vite-env.d.ts`) |
 | File test TypeScript | 14 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `prefix-sum`, `integration`) |
@@ -1422,7 +1448,7 @@ Se servisse un tier 4 (es. 1024×1024):
 
 **TypeScript** (`texture-manager.ts`): Aggiungere `1024` a `TIER_SIZES`: `[64, 128, 256, 512, 1024]`. `NUM_TIERS` si aggiorna automaticamente (`TIER_SIZES.length`). Il costruttore `TextureManager` crea automaticamente il nuovo tier array.
 
-**TypeScript** (`renderer.ts`): Aggiungere binding per `tier4Tex` nel bind group 1 del render pipeline. Aggiungere `getTierView(4)` alla creazione del bind group.
+**TypeScript** (`renderer.ts`): Registrare `tier4` view nel `ResourcePool` del coordinator. Aggiungere binding per `tier4Tex` nel bind group layout di `ForwardPass.setup()`. Aggiungere `resources.getTextureView('tier4')` alla creazione del bind group 1.
 
 **WGSL** (`basic.wgsl`): Aggiungere `@group(1) @binding(5) var tier4Tex: texture_2d_array<f32>;`. Aggiungere `case 4u:` nel `switch(in.texTier)` del fragment shader.
 
@@ -1470,7 +1496,9 @@ Se servisse un tier 4 (es. 1024×1024):
 | **RenderGraph** | DAG di RenderPass con ordinamento topologico (Kahn's algorithm) e dead-pass culling |
 | **Blelloch scan** | Algoritmo prefix sum esclusivo work-efficient (O(n) work, O(log n) span) per stream compaction GPU |
 | **PrioritizedCommandQueue** | Coda comandi con 4 livelli di priorita (critical > high > normal > low) e limiti soft/hard configurabili |
-| **WorkerSupervisor** | Monitor heartbeat per Worker con detection timeout configurabile |
+| **BackpressuredProducer** | Wrapper di `RingBufferProducer` che usa `PrioritizedCommandQueue` come overflow buffer. Metodi convenience (spawnEntity, setPosition, etc.) e `flush()` per drenare la coda nel ring buffer |
+| **WorkerSupervisor** | Monitor heartbeat per Worker con detection timeout configurabile. Controlla i contatori heartbeat nel ring buffer header ogni 1 secondo |
+| **GPURenderState** | Interfaccia TypeScript per i dati SoA dal WASM: transforms (Float32Array), bounds (Float32Array), renderMeta (Uint32Array), texIndices (Uint32Array), entityCount |
 | **NDC** | Normalized Device Coordinates — spazio di coordinate normalizzato dopo la proiezione. WebGPU: X/Y in [-1, 1], Z in [0, 1] |
 | **Orthographic projection** | Proiezione che preserva dimensioni degli oggetti indipendentemente dalla distanza — nessuna distorsione prospettica |
 | **`?raw` import** | Direttiva Vite che importa un file come stringa grezza al build time, usata per caricare shader WGSL senza richieste runtime |
