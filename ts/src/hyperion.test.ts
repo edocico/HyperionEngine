@@ -5,6 +5,7 @@ import type { Renderer } from './renderer';
 import type { ResolvedConfig } from './types';
 import { ExecutionMode } from './capabilities';
 import { SelectionManager } from './selection';
+import { AudioManager } from './audio-manager';
 
 function mockBridge(): EngineBridge {
   return {
@@ -349,6 +350,18 @@ describe('Hyperion immediate mode', () => {
     e.positionImmediate(1, 2, 3);
     // destroy should not throw even with active immediate overrides
     engine.destroy();
+  });
+});
+
+describe('Hyperion audio', () => {
+  it('audio getter returns AudioManager', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.audio).toBeInstanceOf(AudioManager);
+  });
+
+  it('audio getter returns same instance', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.audio).toBe(engine.audio);
   });
 });
 

@@ -27,6 +27,7 @@ import type { HookPhase, HookFn } from './game-loop';
 import { InputManager } from './input-manager';
 import { ImmediateState } from './immediate-state';
 import { hitTestRay } from './hit-tester';
+import { AudioManager } from './audio-manager';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -51,6 +52,7 @@ export class Hyperion implements Disposable {
   private readonly pluginRegistry: PluginRegistry;
   private readonly inputManager: InputManager;
   private readonly immediateState: ImmediateState;
+  private readonly audioManager: AudioManager;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -72,6 +74,7 @@ export class Hyperion implements Disposable {
     this.pluginRegistry = new PluginRegistry();
     this.inputManager = new InputManager();
     this.immediateState = new ImmediateState();
+    this.audioManager = new AudioManager();
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -155,6 +158,11 @@ export class Hyperion implements Disposable {
   /** Input manager for keyboard, pointer, and scroll state. */
   get input(): InputManager {
     return this.inputManager;
+  }
+
+  /** Audio manager for loading and playing sounds with 2D spatial audio. */
+  get audio(): AudioManager {
+    return this.audioManager;
   }
 
   /**
