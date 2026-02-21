@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (291 tests)
+cd ts && npm test                            # All vitest tests (364 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -73,7 +73,7 @@ cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # Selectio
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (39 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (45 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (28 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (6 tests)
@@ -88,6 +88,10 @@ cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere h
 cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state (8 tests)
 cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
 cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
+cd ts && npx vitest run src/audio-types.test.ts               # Audio branded types + defaults (3 tests)
+cd ts && npx vitest run src/sound-registry.test.ts            # SoundRegistry load/decode/dedup (13 tests)
+cd ts && npx vitest run src/playback-engine.test.ts           # PlaybackEngine play/stop/spatial (26 tests)
+cd ts && npx vitest run src/audio-manager.test.ts             # AudioManager facade + lifecycle (25 tests)
 ```
 
 ### Development Workflow
@@ -171,11 +175,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`, `input` (InputManager), `picking` (hitTest API), immediate-mode transform patching. `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`, `input` (InputManager), `picking` (hitTest API), `audio` (AudioManager), immediate-mode transform patching, auto-updates audio listener from camera per tick. `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.data/.positionImmediate/.clearImmediate`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking |
-| `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01) |
+| `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01), `x`/`y` position getters for audio listener tracking |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
 | `plugin.ts` | `HyperionPlugin` interface + `PluginRegistry` — plugin lifecycle with install/cleanup |
 | `types.ts` | Core types: `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
@@ -185,7 +189,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
 | `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B). `GPURenderState` includes `entityIds: Uint32Array` |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
-| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). Demonstrates click-to-select, WASD camera, scroll-zoom |
+| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). Demonstrates click-to-select with spatial audio, WASD camera, scroll-zoom |
 | `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass` + `FXAATonemapPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Multi-primitive pipeline with per-type shaders. Optional JFA selection outline pipeline (`SelectionSeedPass` → `JFAPass×N` → `OutlineCompositePass`). `SelectionManager` integration + `enableOutlines`/`disableOutlines` API. `onDeviceLost` callback + `device.lost` listener |
 | `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` (pixel → world-space `Ray`). Forward-compatible with perspective cameras |
@@ -206,6 +210,10 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection against SoA bounds buffer. Returns closest hit entityId (smallest positive t) or null. `Ray` interface. 2.5D/3D-ready |
 | `immediate-state.ts` | `ImmediateState` — Shadow position map (`Map<entityId, [x,y,z]>`) for zero-latency rendering. `patchTransforms()` patches SoA transform column 3 before GPU upload |
 | `selection.ts` | `SelectionManager` — CPU-side `Set<number>` with dirty tracking + GPU mask upload. `select()/deselect()/toggle()/clear()`, `uploadMask()` |
+| `audio-types.ts` | Branded types `SoundHandle`, `PlaybackId` (zero runtime overhead), `PlaybackOptions`, `SpatialConfig` interfaces, `DEFAULT_PLAYBACK_OPTIONS`, `DEFAULT_SPATIAL_CONFIG` |
+| `sound-registry.ts` | `SoundRegistry` — URL-deduplicated audio buffer management with DI (`AudioDecoder`, `AudioFetcher`). `load()`/`loadAll()`/`unload()`/`destroy()`. O(1) bidirectional handle↔URL mapping |
+| `playback-engine.ts` | `PlaybackEngine` — Web Audio node graph (`source → gain → panner → masterGain → destination`). `play()`/`stop()`/`setVolume()`/`setPitch()`/`setSoundPosition()`/`setListenerPosition()`. 2D spatial: `pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`. Master volume + mute/unmute |
+| `audio-manager.ts` | `AudioManager` — Public facade wrapping `SoundRegistry` + `PlaybackEngine`. Lazy `AudioContext` init (respects browser autoplay policy). All control methods are safe no-ops before init (optional chaining). `suspend()`/`resume()`/`destroy()` lifecycle. Configurable `SpatialConfig` |
 | `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics` types, `parseFontAtlas()`, `loadFontAtlas()` for MSDF atlas JSON loading |
 | `text/text-layout.ts` | `layoutText()` — Positions glyphs using atlas metrics, returns `LayoutGlyph[]` |
 | `text/text-manager.ts` | `TextManager` — Loads and caches font atlases for MSDF text rendering |
@@ -263,6 +271,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **ExternalId is immutable** — Set once on SpawnEntity, never updated. If entity recycling via free list changes the external ID, a new ExternalId is spawned with the new entity.
 - **Duplicate Ray interface** — `Ray` is defined in both `camera.ts` and `hit-tester.ts` with identical shape `{ origin: [n,n,n], direction: [n,n,n] }`. TypeScript structural typing makes them interchangeable. Future: consolidate to single definition.
 - **mat4Inverse uses general cofactor expansion** — NOT an orthographic-specific shortcut. ~50 lines but forward-compatible with perspective cameras. Returns `null` for singular matrices.
+- **AudioContext requires user gesture** — Browsers block `AudioContext` creation/resumption without a user gesture. `AudioManager` lazily creates the context on first `load()` or `play()`, which is typically triggered by a click. If audio doesn't play, ensure the first audio call happens inside a user-initiated event handler.
+- **AudioManager.destroy() nullifies before await** — `destroy()` nullifies `ctx`/`engine`/`registry` references before `await ctx.close()` to prevent concurrent callers from touching dead objects during the async teardown.
+- **StereoPannerNode browser support** — `StereoPannerNode` is supported in all modern browsers (Chrome 42+, Firefox 52+, Safari 14.1+). Older Safari versions may need a polyfill.
+- **SoundRegistry uses bidirectional maps** — `urlToHandle` + `handleToUrl` for O(1) both directions. Both maps must stay in sync during `load()`/`unload()`/`destroy()`.
+- **PlaybackEngine accepts optional SpatialConfig** — Constructor takes `(ctx: AudioContext, spatial?: SpatialConfig)`. `AudioManager` forwards its merged config. Default: `panSpread=20, rolloff=10, maxDistance=100`.
+- **Audio listener auto-updates from camera** — In `Hyperion.tick()`, after `inputManager.resetFrame()`, the audio listener position is updated from `CameraAPI.x`/`CameraAPI.y` (only if audio is initialized). This means spatial audio automatically tracks the camera without explicit user code.
+- **`source.onended` auto-cleans finished playbacks** — `PlaybackEngine` registers an `onended` handler on each `AudioBufferSourceNode` that calls `cleanup()`. Non-looping sounds are automatically removed from the active map when they finish. No explicit `stop()` needed for fire-and-forget sounds.
 
 ## Conventions
 
@@ -276,7 +291,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, and Phase 6 (Input System) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. **Next: Phase 7 (Audio System).**
+Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, Phase 6 (Input System), and Phase 7 (Audio System) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. Phase 7 (Audio System) added: Web Audio API integration with three-layer architecture (`SoundRegistry` for buffer management, `PlaybackEngine` for node graph + spatial audio, `AudioManager` as public facade). Branded types (`SoundHandle`, `PlaybackId`) for type safety. Lazy `AudioContext` initialization respecting browser autoplay policy. 2D spatial audio with `StereoPannerNode` (`pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`). Audio listener auto-updates from camera position per tick. Full lifecycle wiring: `pause()` suspends, `resume()` resumes, `destroy()` tears down audio. DI-based testability (AudioDecoder, AudioFetcher, contextFactory). Public API: `engine.audio`. **Next: Phase 8.**
 
 ## Documentation
 
@@ -288,3 +303,4 @@ Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan In
 - `docs/plans/2026-02-18-phase-4.5-stabilization-arch-foundations.md` — Phase 4.5 implementation plan (completed). 15 tasks for stabilization and architecture foundations.
 - `docs/plans/2026-02-20-phase-5.5-rendering-primitives.md` — Phase 5.5 implementation plan (completed). 45 tasks for multi-primitive rendering, post-processing, and selection outlines.
 - `docs/plans/2026-02-21-phase-6-input-system.md` — Phase 6 implementation plan (completed). 24 tasks for input system, CPU picking, and immediate mode.
+- `docs/plans/2026-02-21-phase-7-audio-system.md` — Phase 7 implementation plan (completed). 22 tasks for Web Audio API integration, spatial audio, and engine lifecycle wiring.

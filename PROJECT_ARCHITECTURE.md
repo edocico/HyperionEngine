@@ -1998,3 +1998,105 @@ L'intero flusso dalla pressione del mouse alla outline sullo schermo:
 ```
 
 Tutto il picking e CPU-side (nessun readback GPU). Il flusso completo richiede 1-2 frame per mostrare l'outline dopo il click.
+
+---
+
+## 22. Audio System (Phase 7)
+
+### 22.1 Architecture Overview
+
+Il sistema audio usa la Web Audio API del browser con un'architettura a tre strati:
+
+```text
+AudioManager (facade pubblica — engine.audio)
+    ├── SoundRegistry (gestione buffer audio con URL dedup)
+    └── PlaybackEngine (grafo nodi Web Audio + audio spaziale 2D)
+            ├── AudioBufferSourceNode × N (playback attivi)
+            ├── GainNode × N (volume per-suono con attenuazione spaziale)
+            ├── StereoPannerNode × N (panning stereo)
+            └── masterGain → AudioContext.destination
+```
+
+**Decisione architetturale**: Web Audio API nativa (non WASM AudioWorklet DSP, previsto nel design doc §10). Motivazione: (a) Web Audio gia gira su thread audio dedicato del browser, (b) mixing nativo e piu veloce di WASM, (c) ~70% meno codice, (d) stessa API surface — WASM DSP puo essere aggiunto in futuro.
+
+### 22.2 Branded Types
+
+```typescript
+type SoundHandle  = number & { readonly __brand: 'SoundHandle' };
+type PlaybackId   = number & { readonly __brand: 'PlaybackId' };
+```
+
+Zero-overhead a runtime (solo `number`), ma impediscono mix accidentali a compile-time. Creati via cast: `this.nextHandle++ as SoundHandle`.
+
+### 22.3 SoundRegistry
+
+Gestisce il caricamento, decodifica, e caching dei buffer audio.
+
+- **URL deduplication**: `urlToHandle: Map<string, SoundHandle>` + `handleToUrl: Map<SoundHandle, string>` (bidirezionale, O(1) in entrambe le direzioni)
+- **Dependency Injection**: `AudioDecoder = (data: ArrayBuffer) => Promise<AudioBuffer>`, `AudioFetcher = (url: string) => Promise<ArrayBuffer>` — iniettati nel costruttore per testabilita (i test girano in Node.js senza Web Audio API)
+- **Batch loading**: `loadAll(urls, { onProgress })` carica sequenzialmente con callback di progresso
+
+### 22.4 PlaybackEngine
+
+Gestisce i playback attivi con grafo nodi Web Audio.
+
+**Catena nodi per ogni `play()`**:
+```text
+AudioBufferSourceNode → GainNode → StereoPannerNode → masterGain → destination
+```
+
+**Audio spaziale 2D**:
+
+```text
+pan = clamp(dx / panSpread, -1, 1)     // dx = soundX - listenerX
+gain = baseVolume / (1 + distance / rolloff)
+if (distance > maxDistance) gain = 0
+```
+
+Parametri default: `panSpread = 20`, `rolloff = 10`, `maxDistance = 100`.
+
+**Lifecycle automatico**: `source.onended` chiama `cleanup(id)` — i suoni non-loop vengono rimossi automaticamente dalla mappa attiva quando finiscono.
+
+### 22.5 AudioManager
+
+Facade pubblica (`engine.audio`) che wrappa SoundRegistry + PlaybackEngine.
+
+- **Lazy init**: `AudioContext` creato al primo `load()` o `play()`, rispettando la policy autoplay del browser
+- **Safe no-ops**: tutti i metodi di controllo usano optional chaining (`this.engine?.stop(id)`) — sicuri prima dell'inizializzazione
+- **Destroy ordering**: nullifica `ctx`/`engine`/`registry` PRIMA di `await ctx.close()` per prevenire accesso concorrente durante teardown asincrono
+- **SpatialConfig forwarding**: la config spaziale viene passata dal costruttore di AudioManager a PlaybackEngine
+
+### 22.6 Integrazione con Hyperion
+
+```typescript
+// hyperion.ts
+private readonly audioManager: AudioManager;
+
+get audio(): AudioManager { return this.audioManager; }
+
+pause()   { this.loop.pause();   void this.audioManager.suspend(); }
+resume()  { this.loop.resume();  void this.audioManager.resume(); }
+destroy() { /* ... */ void this.audioManager.destroy(); /* ... */ }
+
+private tick(dt: number) {
+  // ... bridge.tick, immediateState.patch, render ...
+  this.inputManager.resetFrame();
+  if (this.audioManager.isInitialized) {
+    this.audioManager.setListenerPosition(this.cameraApi.x, this.cameraApi.y);
+  }
+}
+```
+
+**Auto-update listener**: la posizione del listener audio viene aggiornata automaticamente dalla posizione della camera ad ogni tick, senza codice utente esplicito.
+
+### 22.7 Testabilita
+
+Tutti e tre i layer audio usano dependency injection per testare in Node.js senza browser:
+
+| Classe | DI Points |
+| ------ | --------- |
+| `SoundRegistry` | `AudioDecoder`, `AudioFetcher` |
+| `PlaybackEngine` | `AudioContext` (mock con `createBufferSource`/`createGain`/`createStereoPanner` finti) |
+| `AudioManager` | `contextFactory: () => AudioContext` |
+
+67 test audio totali (3 types + 13 registry + 26 playback + 25 manager).
