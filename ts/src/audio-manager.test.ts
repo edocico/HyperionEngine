@@ -174,3 +174,57 @@ describe('AudioManager spatial', () => {
     expect(() => am.setSoundPosition(0 as PlaybackId, 5, 10)).not.toThrow();
   });
 });
+
+describe('AudioManager lifecycle', () => {
+  it('suspend calls ctx.suspend()', async () => {
+    const ctx = mockAudioContext();
+    const am = new AudioManager({ contextFactory: () => ctx as any });
+    am.init();
+    await am.suspend();
+    expect(ctx.suspend).toHaveBeenCalled();
+  });
+
+  it('resume calls ctx.resume()', async () => {
+    const ctx = mockAudioContext();
+    const am = new AudioManager({ contextFactory: () => ctx as any });
+    am.init();
+    await am.resume();
+    expect(ctx.resume).toHaveBeenCalled();
+  });
+
+  it('destroy closes context and clears state', async () => {
+    const ctx = mockAudioContext();
+    const am = new AudioManager({ contextFactory: () => ctx as any });
+    await am.load('test.mp3');
+    await am.destroy();
+    expect(ctx.close).toHaveBeenCalled();
+    expect(am.isInitialized).toBe(false);
+  });
+
+  it('destroy is no-op before init', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    await am.destroy();
+    expect(am.isInitialized).toBe(false);
+  });
+
+  it('suspend/resume are no-ops before init', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    await am.suspend();
+    await am.resume();
+    expect(am.isInitialized).toBe(false);
+  });
+
+  it('master volume control delegates to engine', () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    am.init();
+    expect(() => am.setMasterVolume(0.5)).not.toThrow();
+    expect(() => am.mute()).not.toThrow();
+    expect(() => am.unmute()).not.toThrow();
+  });
+
+  it('unload delegates to registry', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    const h = await am.load('test.mp3');
+    expect(() => am.unload(h)).not.toThrow();
+  });
+});

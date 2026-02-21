@@ -82,4 +82,40 @@ export class AudioManager {
   setListenerPosition(x: number, y: number): void {
     this.engine?.setListenerPosition(x, y);
   }
+
+  async suspend(): Promise<void> {
+    if (!this.ctx) return;
+    await this.ctx.suspend();
+  }
+
+  async resume(): Promise<void> {
+    if (!this.ctx) return;
+    await this.ctx.resume();
+  }
+
+  async destroy(): Promise<void> {
+    if (!this.ctx) return;
+    this.engine?.destroy();
+    this.registry?.destroy();
+    await this.ctx.close();
+    this.ctx = null;
+    this.engine = null;
+    this.registry = null;
+  }
+
+  setMasterVolume(volume: number): void {
+    this.engine?.setMasterVolume(volume);
+  }
+
+  mute(): void {
+    this.engine?.mute();
+  }
+
+  unmute(): void {
+    this.engine?.unmute();
+  }
+
+  unload(handle: SoundHandle): void {
+    this.registry?.unload(handle);
+  }
 }
