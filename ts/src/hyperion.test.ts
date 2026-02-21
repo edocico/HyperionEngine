@@ -21,6 +21,7 @@ function mockBridge(): EngineBridge {
       setMeshHandle: vi.fn(() => true),
       setRenderPrimitive: vi.fn(() => true),
       setParent: vi.fn(() => true),
+      setListenerPosition: vi.fn(() => true),
       writeCommand: vi.fn(() => true),
       flush: vi.fn(),
       pendingCount: 0,
