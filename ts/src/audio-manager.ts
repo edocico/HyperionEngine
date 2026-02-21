@@ -74,4 +74,12 @@ export class AudioManager {
   stopAll(): void {
     this.engine?.stopAll();
   }
+
+  setSoundPosition(id: PlaybackId, x: number, y: number): void {
+    this.engine?.setSoundPosition(id, x, y);
+  }
+
+  setListenerPosition(x: number, y: number): void {
+    this.engine?.setListenerPosition(x, y);
+  }
 }

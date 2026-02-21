@@ -149,3 +149,28 @@ describe('AudioManager playback control', () => {
     expect(() => am.stopAll()).not.toThrow();
   });
 });
+
+describe('AudioManager spatial', () => {
+  it('setSoundPosition delegates to engine', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    const h = await am.load('test.mp3');
+    const id = am.play(h)!;
+    expect(() => am.setSoundPosition(id, 5, 10)).not.toThrow();
+  });
+
+  it('setListenerPosition delegates to engine', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    am.init();
+    expect(() => am.setListenerPosition(10, 20)).not.toThrow();
+  });
+
+  it('setListenerPosition is no-op before init', () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    expect(() => am.setListenerPosition(10, 20)).not.toThrow();
+  });
+
+  it('setSoundPosition is no-op before init', () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    expect(() => am.setSoundPosition(0 as PlaybackId, 5, 10)).not.toThrow();
+  });
+});
