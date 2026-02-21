@@ -143,13 +143,18 @@ export class PlaybackEngine {
     const dy = sy - this.listenerY;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
-    p.panner.pan.value = Math.max(-1, Math.min(1, dx / this.spatialConfig.panSpread));
+    const now = this.ctx.currentTime;
+    const TAU = 0.015; // 15ms time constant for smooth transitions
 
-    if (distance > this.spatialConfig.maxDistance) {
-      p.gain.gain.value = 0;
-    } else {
-      p.gain.gain.value = p.baseVolume / (1 + distance / this.spatialConfig.rolloff);
-    }
+    const newPan = Math.max(-1, Math.min(1, dx / this.spatialConfig.panSpread));
+    p.panner.pan.setValueAtTime(p.panner.pan.value, now);
+    p.panner.pan.setTargetAtTime(newPan, now, TAU);
+
+    const newGain = distance > this.spatialConfig.maxDistance
+      ? 0
+      : p.baseVolume / (1 + distance / this.spatialConfig.rolloff);
+    p.gain.gain.setValueAtTime(p.gain.gain.value, now);
+    p.gain.gain.setTargetAtTime(newGain, now, TAU);
   }
 
   private cleanup(id: PlaybackId): void {

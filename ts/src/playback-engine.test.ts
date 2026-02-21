@@ -15,17 +15,26 @@ function mockSourceNode() {
   };
 }
 
+function mockAudioParam(initial: number) {
+  return {
+    value: initial,
+    setValueAtTime: vi.fn(),
+    setTargetAtTime: vi.fn(function(this: { value: number }, target: number) { this.value = target; }),
+  };
+}
+
 function mockGainNode() {
-  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), gain: { value: 1 } };
+  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), gain: mockAudioParam(1) };
 }
 
 function mockPannerNode() {
-  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), pan: { value: 0 } };
+  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), pan: mockAudioParam(0) };
 }
 
 function mockAudioContext() {
   return {
     state: 'running' as AudioContextState,
+    currentTime: 0,
     destination: {} as AudioDestinationNode,
     createBufferSource: vi.fn(() => mockSourceNode()),
     createGain: vi.fn(() => mockGainNode()),
