@@ -70,3 +70,42 @@ describe('AudioManager', () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AudioManager load + play', () => {
+  function createManager() {
+    return new AudioManager({ contextFactory: () => mockAudioContext() as any });
+  }
+
+  it('load auto-initializes if needed', async () => {
+    const am = createManager();
+    expect(am.isInitialized).toBe(false);
+    await am.load('test.mp3');
+    expect(am.isInitialized).toBe(true);
+  });
+
+  it('load returns a SoundHandle', async () => {
+    const am = createManager();
+    const handle = await am.load('test.mp3');
+    expect(typeof handle).toBe('number');
+  });
+
+  it('play returns null for unknown handle', () => {
+    const am = createManager();
+    am.init();
+    const id = am.play(999 as any);
+    expect(id).toBeNull();
+  });
+
+  it('play returns PlaybackId after successful load', async () => {
+    const am = createManager();
+    const handle = await am.load('test.mp3');
+    const id = am.play(handle);
+    expect(typeof id).toBe('number');
+  });
+
+  it('loadAll loads multiple sounds', async () => {
+    const am = createManager();
+    const handles = await am.loadAll(['a.mp3', 'b.mp3']);
+    expect(handles).toHaveLength(2);
+  });
+});

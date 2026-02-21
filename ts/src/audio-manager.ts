@@ -38,4 +38,24 @@ export class AudioManager {
     );
     this.engine = new PlaybackEngine(this.ctx);
   }
+
+  async load(url: string): Promise<SoundHandle> {
+    this.init();
+    return this.registry!.load(url);
+  }
+
+  async loadAll(
+    urls: string[],
+    opts?: { onProgress?: (loaded: number, total: number) => void },
+  ): Promise<SoundHandle[]> {
+    this.init();
+    return this.registry!.loadAll(urls, opts);
+  }
+
+  play(handle: SoundHandle, opts?: PlaybackOptions): PlaybackId | null {
+    this.init();
+    const buffer = this.registry!.getBuffer(handle);
+    if (!buffer) return null;
+    return this.engine!.play(buffer, opts);
+  }
 }
