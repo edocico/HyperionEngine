@@ -32,6 +32,10 @@ interface WasmEngine {
   engine_gpu_prim_params_f32_len(): number;
   engine_gpu_entity_ids_ptr(): number;
   engine_gpu_entity_ids_len(): number;
+  // Listener position exports
+  engine_listener_x(): number;
+  engine_listener_y(): number;
+  engine_listener_z(): number;
   memory: WebAssembly.Memory;
 }
 
@@ -94,6 +98,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         texIndices: ArrayBuffer;
         primParams: ArrayBuffer;
         entityIds: ArrayBuffer;
+        listenerX: number;
+        listenerY: number;
+        listenerZ: number;
       } | null = null;
 
       if (count > 0) {
@@ -137,6 +144,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
           texIndices: texIndices.buffer as ArrayBuffer,
           primParams: primParams.buffer as ArrayBuffer,
           entityIds: entityIds.buffer as ArrayBuffer,
+          listenerX: wasm!.engine_listener_x(),
+          listenerY: wasm!.engine_listener_y(),
+          listenerZ: wasm!.engine_listener_z(),
         };
       }
 
@@ -150,7 +160,12 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
           type: "tick-done",
           dt: msg.dt,
           tickCount,
-          renderState: null,
+          renderState: {
+            entityCount: 0,
+            listenerX: wasm!.engine_listener_x(),
+            listenerY: wasm!.engine_listener_y(),
+            listenerZ: wasm!.engine_listener_z(),
+          },
         });
       }
       break;

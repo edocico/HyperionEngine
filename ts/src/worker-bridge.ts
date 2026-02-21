@@ -73,17 +73,18 @@ export function createWorkerBridge(
     } else if (msg.type === "error") {
       console.error("Engine Worker error:", msg.error);
     } else if (msg.type === "tick-done" && msg.renderState) {
+      const rs = msg.renderState;
       latestRenderState = {
-        entityCount: msg.renderState.entityCount,
-        transforms: new Float32Array(msg.renderState.transforms),
-        bounds: new Float32Array(msg.renderState.bounds),
-        renderMeta: new Uint32Array(msg.renderState.renderMeta),
-        texIndices: new Uint32Array(msg.renderState.texIndices),
-        primParams: new Float32Array(msg.renderState.primParams ?? []),
-        entityIds: new Uint32Array(msg.renderState.entityIds ?? []),
-        listenerX: msg.renderState.listenerX ?? 0,
-        listenerY: msg.renderState.listenerY ?? 0,
-        listenerZ: msg.renderState.listenerZ ?? 0,
+        entityCount: rs.entityCount,
+        transforms: rs.transforms ? new Float32Array(rs.transforms) : new Float32Array(0),
+        bounds: rs.bounds ? new Float32Array(rs.bounds) : new Float32Array(0),
+        renderMeta: rs.renderMeta ? new Uint32Array(rs.renderMeta) : new Uint32Array(0),
+        texIndices: rs.texIndices ? new Uint32Array(rs.texIndices) : new Uint32Array(0),
+        primParams: rs.primParams ? new Float32Array(rs.primParams) : new Float32Array(0),
+        entityIds: rs.entityIds ? new Uint32Array(rs.entityIds) : new Uint32Array(0),
+        listenerX: rs.listenerX ?? 0,
+        listenerY: rs.listenerY ?? 0,
+        listenerZ: rs.listenerZ ?? 0,
       };
     }
   };
@@ -161,8 +162,8 @@ export function createFullIsolationBridge(
       checkBothReady();
     } else if (msg.type === "error") {
       console.error("ECS Worker error:", msg.error);
-    } else if (msg.type === "tick-done" && msg.renderState) {
-      // Forward render state to Render Worker.
+    } else if (msg.type === "tick-done" && msg.renderState && msg.renderState.entityCount > 0) {
+      // Forward render state to Render Worker (only when there are entities to render).
       const transferables = [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices];
       if (msg.renderState.primParams) transferables.push(msg.renderState.primParams);
       if (msg.renderState.entityIds) transferables.push(msg.renderState.entityIds);
@@ -251,6 +252,10 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_gpu_prim_params_f32_len(): number;
     engine_gpu_entity_ids_ptr(): number;
     engine_gpu_entity_ids_len(): number;
+    // Listener position exports
+    engine_listener_x(): number;
+    engine_listener_y(): number;
+    engine_listener_z(): number;
     memory: WebAssembly.Memory;
   };
 
@@ -293,9 +298,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
           primParams: ppPtr ? new Float32Array(new Float32Array(engine.memory.buffer, ppPtr, ppLen)) : new Float32Array(0),
           entityIds: eidPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, eidPtr, eidLen)) : new Uint32Array(0),
-          listenerX: 0,
-          listenerY: 0,
-          listenerZ: 0,
+          listenerX: engine.engine_listener_x(),
+          listenerY: engine.engine_listener_y(),
+          listenerZ: engine.engine_listener_z(),
         };
       } else {
         latestRenderState = {
@@ -306,9 +311,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           texIndices: new Uint32Array(0),
           primParams: new Float32Array(0),
           entityIds: new Uint32Array(0),
-          listenerX: 0,
-          listenerY: 0,
-          listenerZ: 0,
+          listenerX: engine.engine_listener_x(),
+          listenerY: engine.engine_listener_y(),
+          listenerZ: engine.engine_listener_z(),
         };
       }
     },
