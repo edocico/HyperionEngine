@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ImmediateState } from './immediate-state';
+import { hitTestRay } from './hit-tester';
+import type { Ray } from './hit-tester';
 
 describe('ImmediateState', () => {
   it('starts empty', () => {
@@ -114,5 +116,36 @@ describe('ImmediateState', () => {
     expect(transforms[1 * 16 + 12]).toBe(400);
     expect(transforms[1 * 16 + 13]).toBe(500);
     expect(transforms[1 * 16 + 14]).toBe(600);
+  });
+});
+
+describe('integration: immediate mode + picking', () => {
+  it('hitTest uses bounds (not patched transforms) — known limitation', () => {
+    const state = new ImmediateState();
+
+    // Entity at WASM position (0, 0, -5) with radius 1
+    const bounds = new Float32Array([0, 0, -5, 1]);
+    const transforms = new Float32Array(16);
+    transforms[0] = 1; transforms[5] = 1; transforms[10] = 1; transforms[15] = 1;
+    transforms[12] = 0; transforms[13] = 0; transforms[14] = -5;
+    const entityIds = new Uint32Array([42]);
+
+    // Override entity 42 to position (10, 10, -5) via immediate mode
+    state.set(42, 10, 10, -5);
+    state.patchTransforms(transforms, entityIds, 1);
+
+    // Transforms are patched (rendering will show entity at 10, 10)
+    expect(transforms[12]).toBe(10);
+    expect(transforms[13]).toBe(10);
+
+    // But bounds still has old position — hitTestRay reads from bounds
+    const ray: Ray = { origin: [0, 0, 100], direction: [0, 0, -1] };
+    const result = hitTestRay(ray, bounds, entityIds);
+    expect(result).toBe(42); // still hits at old position (0, 0, -5)
+
+    // A ray at the new position would miss — bounds not patched
+    const rayAtNew: Ray = { origin: [10, 10, 100], direction: [0, 0, -1] };
+    const result2 = hitTestRay(rayAtNew, bounds, entityIds);
+    expect(result2).toBeNull(); // miss: bounds still at (0, 0, -5)
   });
 });
