@@ -109,3 +109,43 @@ describe('AudioManager load + play', () => {
     expect(handles).toHaveLength(2);
   });
 });
+
+describe('AudioManager playback control', () => {
+  async function loadedManager() {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    const handle = await am.load('test.mp3');
+    const id = am.play(handle)!;
+    return { am, handle, id };
+  }
+
+  it('stop is forwarded to engine', async () => {
+    const { am, id } = await loadedManager();
+    expect(() => am.stop(id)).not.toThrow();
+  });
+
+  it('setVolume is forwarded to engine', async () => {
+    const { am, id } = await loadedManager();
+    expect(() => am.setVolume(id, 0.5)).not.toThrow();
+  });
+
+  it('setPitch is forwarded to engine', async () => {
+    const { am, id } = await loadedManager();
+    expect(() => am.setPitch(id, 1.5)).not.toThrow();
+  });
+
+  it('stopAll stops all playbacks', async () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    const h = await am.load('test.mp3');
+    am.play(h);
+    am.play(h);
+    expect(() => am.stopAll()).not.toThrow();
+  });
+
+  it('control methods are no-op before init', () => {
+    const am = new AudioManager({ contextFactory: () => mockAudioContext() as any });
+    expect(() => am.stop(0 as PlaybackId)).not.toThrow();
+    expect(() => am.setVolume(0 as PlaybackId, 0.5)).not.toThrow();
+    expect(() => am.setPitch(0 as PlaybackId, 1)).not.toThrow();
+    expect(() => am.stopAll()).not.toThrow();
+  });
+});

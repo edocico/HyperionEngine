@@ -58,4 +58,20 @@ export class AudioManager {
     if (!buffer) return null;
     return this.engine!.play(buffer, opts);
   }
+
+  stop(id: PlaybackId): void {
+    this.engine?.stop(id);
+  }
+
+  setVolume(id: PlaybackId, volume: number): void {
+    this.engine?.setVolume(id, volume);
+  }
+
+  setPitch(id: PlaybackId, pitch: number): void {
+    this.engine?.setPitch(id, pitch);
+  }
+
+  stopAll(): void {
+    this.engine?.stopAll();
+  }
 }
