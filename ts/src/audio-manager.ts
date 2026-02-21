@@ -101,7 +101,7 @@ export class AudioManager {
     this.engine = null;
     this.registry?.destroy();
     this.registry = null;
-    await ctx.close();
+    try { await ctx.close(); } catch { /* context may already be closed */ }
   }
 
   setMasterVolume(volume: number): void {
