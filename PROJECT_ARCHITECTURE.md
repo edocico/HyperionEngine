@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.0 (Phase 0-5.5 + Phase 4.5 + Post-Plan Integration + Phase 6 Input completate) | **88 test Rust across 7 moduli + 291 test TypeScript across 33 file**
+> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.0 (Phase 0-7 complete) | **88 test Rust across 7 moduli + 364 test TypeScript across 37 file**
 
 ---
 
@@ -16,8 +16,8 @@ L'obiettivo architetturale primario e la **separazione fisica** tra UI, logica d
 
 - Non supporta networking o multiplayer
 - Non compila con SIMD128 attivo (richiede flag target-feature specifici per wasm-pack)
-- Non gestisce audio (Phase 7)
 - Non supporta mesh 3D — solo primitive 2D (quad, line, gradient, box shadow, MSDF text)
+- Non supporta camera prospettica — solo ortografica (forward-compatible con prospettica via `mat4Inverse`)
 
 ### Design Principle: "Command Buffer Architecture"
 
@@ -162,11 +162,18 @@ HyperionEngine/
 ├── PROJECT_ARCHITECTURE.md             # Questo documento
 ├── docs/
 │   └── plans/
-│       ├── 2026-02-17-hyperion-engine-design.md             # Architectural Design Document (completo)
+│       ├── hyperion-engine-design-v3.md                     # Architectural Design Document v3 (completo)
+│       ├── hyperion-engine-roadmap-unified-v3.md            # Unified roadmap v3 (all phases)
 │       ├── 2026-02-17-hyperion-engine-phase0-phase1.md      # Implementation plan Phase 0-1 (completato)
 │       ├── 2026-02-17-hyperion-engine-phase2.md             # Implementation plan Phase 2 (completato)
 │       ├── 2026-02-17-hyperion-engine-phase3.md             # Implementation plan Phase 3 (completato)
-│       └── 2026-02-17-hyperion-engine-phase4.md             # Implementation plan Phase 4 (completato)
+│       ├── 2026-02-17-hyperion-engine-phase4.md             # Implementation plan Phase 4 (completato)
+│       ├── 2026-02-18-phase-4.5-stabilization-arch-foundations.md  # Phase 4.5 (completato)
+│       ├── 2026-02-20-phase5-typescript-api-lifecycle.md    # Phase 5 (completato)
+│       ├── 2026-02-20-post-plan-integration-wiring.md       # Post-Plan Integration (completato)
+│       ├── 2026-02-20-phase-5.5-rendering-primitives.md     # Phase 5.5 (completato)
+│       ├── 2026-02-21-phase-6-input-system.md               # Phase 6 Input (completato)
+│       └── 2026-02-21-phase-7-audio-system.md               # Phase 7 Audio (completato)
 ├── crates/
 │   └── hyperion-core/
 │       ├── Cargo.toml                  # Crate config: wasm-bindgen, hecs, glam, bytemuck
@@ -181,17 +188,19 @@ HyperionEngine/
 │           ├── command_processor.rs     # EntityMap (sparse Vec + free-list + shrink_to_fit +
 │           │                           #   iter_mapped) + process_commands() incl. SetParent
 │           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum
-│           │                           #   (11 variants incl. SetParent), parse_commands()
+│           │                           #   (13 variants incl. SetParent, SetPrimParams0/1),
+│           │                           #   parse_commands()
 │           ├── components.rs           # Position, Rotation, Scale, Velocity, ModelMatrix,
 │           │                           #   BoundingRadius, TextureLayerIndex, MeshHandle,
-│           │                           #   RenderPrimitive, Active, Parent, Children,
-│           │                           #   LocalMatrix — tutti #[repr(C)] Pod
+│           │                           #   RenderPrimitive, PrimitiveParams, ExternalId,
+│           │                           #   Active, Parent, Children, LocalMatrix
+│           │                           #   — tutti #[repr(C)] Pod
 │           ├── systems.rs              # velocity_system, transform_system, count_active,
 │           │                           #   propagate_transforms (scene graph hierarchy)
 │           └── render_state.rs         # RenderState: collect() per legacy matrices,
 │                                       #   collect_gpu() per SoA buffers (transforms/bounds/
-│                                       #   renderMeta/texIndices) + BitSet/DirtyTracker +
-│                                       #   shrink_to_fit() per memory compaction
+│                                       #   renderMeta/texIndices/primParams/entityIds) +
+│                                       #   BitSet/DirtyTracker + shrink_to_fit()
 └── ts/
     ├── package.json                    # Scripts: dev, build, build:wasm, test
     ├── tsconfig.json                   # strict, ES2022, bundler moduleResolution
@@ -201,19 +210,26 @@ HyperionEngine/
         ├── index.ts                    # Barrel export for public API surface
         ├── hyperion.ts                 # Hyperion class: public API facade with create(), spawn(),
         │                               #   batch(), start/pause/resume/destroy, use()/unuse(),
-        │                               #   addHook/removeHook, loadTexture, compact(), resize()
-        ├── hyperion.test.ts            # 26 test: Hyperion facade lifecycle, spawn, batch, hooks,
-        │                               #   plugins, destroy, stats, compact, resize
+        │                               #   addHook/removeHook, loadTexture/loadTextures, compact(),
+        │                               #   resize(), enableOutlines/disableOutlines,
+        │                               #   enablePostProcessing, selection, input, picking, audio
+        ├── hyperion.test.ts            # 45 test: facade lifecycle, spawn, batch, hooks, plugins,
+        │                               #   destroy, stats, compact, resize, outlines, selection,
+        │                               #   input, picking, audio, immediate-mode
         ├── entity-handle.ts            # EntityHandle: fluent builder over BackpressuredProducer
         │                               #   with .position/.velocity/.rotation/.scale/.texture/
-        │                               #   .mesh/.primitive/.parent/.unparent/.data. Disposable
-        ├── entity-handle.test.ts       # 17 test: fluent API, dispose, data, pool recycling
+        │                               #   .mesh/.primitive/.parent/.unparent/.data/.line/
+        │                               #   .gradient/.boxShadow/.positionImmediate/.clearImmediate.
+        │                               #   Disposable. RenderPrimitiveType enum
+        ├── entity-handle.test.ts       # 28 test: fluent API, dispose, data, pool recycling,
+        │                               #   line/gradient/boxShadow, immediate-mode
         ├── entity-pool.ts              # EntityHandlePool: object pool (cap 1024) for recycling
         ├── entity-pool.test.ts         # 5 test: acquire/release, capacity, init reset
         ├── game-loop.ts                # GameLoop: RAF lifecycle with preTick/postTick/frameEnd
         │                               #   hook phases, FPS tracking, lastTime=-1 sentinel
         ├── game-loop.test.ts           # 6 test: RAF lifecycle, hooks, FPS tracking
-        ├── camera-api.ts               # CameraAPI: wrapper around Camera with zoom (min 0.01)
+        ├── camera-api.ts               # CameraAPI: wrapper around Camera with zoom (min 0.01),
+        │                               #   x/y position getters for audio listener tracking
         ├── camera-api.test.ts          # 3 test: zoom clamping, viewProjection delegation
         ├── raw-api.ts                  # RawAPI: low-level numeric ID entity management
         ├── raw-api.test.ts             # 4 test: spawn/despawn/setPosition/setVelocity
@@ -221,41 +237,80 @@ HyperionEngine/
         ├── plugin.test.ts              # 5 test: install, cleanup, destroyAll ordering
         ├── types.ts                    # Core types: HyperionConfig, ResolvedConfig, HyperionStats,
         │                               #   MemoryStats, CompactOptions, TextureHandle
-        ├── types.test.ts               # 7 test: config defaults, type validation
+        ├── types.test.ts               # 4 test: config defaults, type validation
         ├── leak-detector.ts            # LeakDetector: FinalizationRegistry backstop for undisposed
         │                               #   EntityHandles
         ├── leak-detector.test.ts       # 2 test: registration, cleanup callback
-        ├── main.ts                     # Entry point: uses Hyperion public API (~50 lines)
+        ├── selection.ts                # SelectionManager: CPU-side Set<number> with dirty tracking
+        │                               #   + GPU mask upload. select/deselect/toggle/clear
+        ├── selection.test.ts           # 10 test: select, deselect, toggle, clear, dirty tracking
+        ├── input-manager.ts            # InputManager: keyboard (isKeyDown), pointer (pointerX/Y,
+        │                               #   isButtonDown), scroll (scrollDeltaX/Y) + callbacks
+        │                               #   (onKey/onClick/onPointerMove/onScroll). DOM lifecycle
+        ├── input-manager.test.ts       # 24 test: keyboard+pointer+scroll state, callbacks, DOM
+        ├── hit-tester.ts               # hitTestRay(): CPU ray-sphere intersection against SoA
+        │                               #   bounds buffer. Returns closest hit entityId or null
+        ├── hit-tester.test.ts          # 8 test: ray-sphere hits, misses, depth ordering
+        ├── immediate-state.ts          # ImmediateState: shadow position map for zero-latency
+        │                               #   rendering. patchTransforms() patches SoA column 3
+        ├── immediate-state.test.ts     # 8 test: shadow state, patch transforms
+        ├── input-picking.test.ts       # 3 test: input-to-picking integration
+        ├── audio-types.ts              # Branded types SoundHandle, PlaybackId (zero runtime
+        │                               #   overhead), PlaybackOptions, SpatialConfig interfaces
+        ├── audio-types.test.ts         # 3 test: branded types + defaults
+        ├── sound-registry.ts           # SoundRegistry: URL-deduplicated audio buffer management
+        │                               #   with DI (AudioDecoder, AudioFetcher). O(1) bidirectional
+        │                               #   handle<->URL mapping
+        ├── sound-registry.test.ts      # 13 test: load/decode/dedup/unload/destroy
+        ├── playback-engine.ts          # PlaybackEngine: Web Audio node graph (source -> gain ->
+        │                               #   panner -> masterGain -> destination). 2D spatial audio
+        │                               #   with StereoPannerNode + distance attenuation
+        ├── playback-engine.test.ts     # 26 test: play/stop/spatial/volume/pitch/mute
+        ├── audio-manager.ts            # AudioManager: public facade wrapping SoundRegistry +
+        │                               #   PlaybackEngine. Lazy AudioContext init. Lifecycle:
+        │                               #   suspend/resume/destroy
+        ├── audio-manager.test.ts       # 25 test: facade lifecycle, lazy init, spatial config
+        ├── main.ts                     # Entry point: uses Hyperion public API. Demonstrates
+        │                               #   click-to-select with spatial audio, WASD camera, zoom
         ├── capabilities.ts             # detectCapabilities(), selectExecutionMode(), logCapabilities()
         ├── capabilities.test.ts        # 4 test: mode selection across capability combinations
         ├── ring-buffer.ts              # RingBufferProducer: Atomics-based SPSC producer, CommandType enum
-        ├── ring-buffer.test.ts         # 14 test: write/read/overflow/sequential/texture layer/fast path
+        ├── ring-buffer.test.ts         # 16 test: write/read/overflow/sequential/texture layer/fast path/
+        │                               #   SetPrimParams wrap-around
         ├── ring-buffer-utils.test.ts   # 4 test: ring buffer utility functions
         ├── backpressure.ts             # PrioritizedCommandQueue + BackpressuredProducer:
         │                               #   priority-based command queuing + RingBufferProducer wrapper
-        ├── backpressure.test.ts        # 12 test: priority ordering, limits, critical bypass,
-        │                               #   BackpressuredProducer pass-through/overflow/flush
+        ├── backpressure.test.ts        # 18 test: priority ordering, limits, critical bypass,
+        │                               #   BackpressuredProducer pass-through/overflow/flush,
+        │                               #   setParent/setMeshHandle/setRenderPrimitive/setPrimParams
         ├── supervisor.ts               # WorkerSupervisor: heartbeat monitoring + timeout
-        ├── supervisor.test.ts          # 4 test: heartbeat, timeout detection
+        ├── supervisor.test.ts          # 5 test: heartbeat, timeout detection, configurable threshold
         ├── worker-bridge.ts            # EngineBridge + GPURenderState, createWorkerBridge(),
         │                               #   createFullIsolationBridge(), createDirectBridge().
         │                               #   Uses BackpressuredProducer + WorkerSupervisor (Mode A/B)
         ├── engine-worker.ts            # Web Worker: WASM init + tick loop dispatch.
         │                               #   Increments heartbeat counter after each tick
         ├── renderer.ts                 # RenderGraph-based coordinator: ResourcePool + CullPass +
-        │                               #   ForwardPass + TextureManager. Accepts SoA GPURenderState.
-        │                               #   Added onDeviceLost callback + device.lost listener
+        │                               #   ForwardPass + FXAATonemapPass + selection outline
+        │                               #   pipeline. Multi-primitive. SelectionManager integration.
+        │                               #   onDeviceLost callback + device.lost listener
         ├── texture-manager.ts          # TextureManager: multi-tier Texture2DArray with lazy
         │                               #   allocation + exponential growth, concurrency limiter.
         │                               #   Added retainBitmaps option for device-lost recovery
         ├── texture-manager.test.ts     # 16 test: tier selection, packing, lazy alloc, growth
         ├── camera.ts                   # Orthographic camera, extractFrustumPlanes(),
-        │                               #   isSphereInFrustum(), isPointInFrustum()
-        ├── camera.test.ts              # 10 test: camera math, frustum plane extraction, culling
+        │                               #   isSphereInFrustum(), mat4Inverse(), screenToRay()
+        ├── camera.test.ts              # 19 test: camera math, frustum planes, ray casting,
+        │                               #   mat4Inverse, screenToRay
         ├── frustum.test.ts             # 7 test: frustum culling accuracy (sphere-plane tests)
         ├── render-worker.ts            # Mode A render worker: OffscreenCanvas + createRenderer().
         │                               #   Wraps ArrayBuffers to typed arrays for GPURenderState
         ├── vite-env.d.ts               # Type declarations for WGSL ?raw imports and Vite client
+        ├── text/
+        │   ├── font-atlas.ts           # FontAtlas + GlyphMetrics, parseFontAtlas(), loadFontAtlas()
+        │   ├── text-layout.ts          # layoutText(): positions glyphs, returns LayoutGlyph[]
+        │   ├── text-layout.test.ts     # 3 test: MSDF text layout
+        │   └── text-manager.ts         # TextManager: loads and caches font atlases
         ├── render/
         │   ├── render-pass.ts          # RenderPass interface + FrameState type
         │   ├── render-pass.test.ts     # 6 test: ResourcePool CRUD, pass contract
@@ -264,19 +319,44 @@ HyperionEngine/
         │   ├── render-graph.test.ts    # 8 test: ordering, dead-pass culling, cycles
         │   └── passes/
         │       ├── cull-pass.ts        # CullPass: GPU frustum culling compute pass with
-        │       │                       #   prepare() (frustum upload + indirect reset) + execute()
-        │       ├── cull-pass.test.ts   # 1 test: CullPass construction
-        │       ├── forward-pass.ts     # ForwardPass: forward rendering with SoA transforms,
-        │       │                       #   lazy depth texture, camera uniform, drawIndexedIndirect
-        │       ├── forward-pass.test.ts # 1 test: ForwardPass construction
+        │       │                       #   per-primitive-type grouping (6 types). prepare() +
+        │       │                       #   execute()
+        │       ├── cull-pass.test.ts   # 2 test: CullPass construction + type grouping
+        │       ├── forward-pass.ts     # ForwardPass: multi-pipeline forward rendering with
+        │       │                       #   SHADER_SOURCES per primitive type, SoA transforms,
+        │       │                       #   per-type drawIndexedIndirect. Writes scene-hdr
+        │       ├── forward-pass.test.ts # 2 test: ForwardPass construction + multi-pipeline
+        │       ├── fxaa-tonemap-pass.ts  # FXAATonemapPass: full-screen triangle post-process.
+        │       │                         #   Reads scene-hdr, writes swapchain. Configurable
+        │       │                         #   tonemap (none/PBR-neutral/ACES). Optional pass
+        │       ├── fxaa-tonemap-pass.test.ts  # 3 test: construction, tonemap modes
+        │       ├── selection-seed-pass.ts # SelectionSeedPass: renders selected entities as
+        │       │                          #   JFA seeds. Reads selection-mask, writes selection-seed
+        │       ├── selection-seed-pass.test.ts # 3 test: seed pass construction
+        │       ├── jfa-pass.ts         # JFAPass: single JFA iteration, ping-pong textures.
+        │       │                       #   iterationsForDimension() helper
+        │       ├── jfa-pass.test.ts    # 9 test: JFA iteration counts, resource naming
+        │       ├── outline-composite-pass.ts  # OutlineCompositePass: SDF distance outline from
+        │       │                              #   JFA result + scene. Built-in FXAA. Dead-pass
+        │       │                              #   culls FXAATonemapPass when active
+        │       ├── outline-composite-pass.test.ts # 6 test: composite, dead-pass culling
         │       ├── prefix-sum-reference.ts # CPU Blelloch exclusive scan reference
         │       └── prefix-sum.test.ts  # 6 test: Blelloch scan correctness
         ├── shaders/
-        │   ├── basic.wgsl              # Render shader: SoA transforms (array<mat4x4f>),
-        │   │                           #   visibility indirection, multi-tier Texture2DArray
-        │   ├── cull.wgsl               # Compute shader: sphere-frustum culling (SoA) +
-        │   │                           #   atomicAdd per indirect draw
-        │   └── prefix-sum.wgsl         # Compute shader: Blelloch exclusive scan
+        │   ├── basic.wgsl              # Quad render: SoA transforms, visibility indirection,
+        │   │                           #   renderMeta + primParams, multi-tier Texture2DArray
+        │   ├── line.wgsl               # Line render: screen-space quad expansion from primParams,
+        │   │                           #   SDF dash pattern, anti-aliased edges
+        │   ├── gradient.wgsl           # 2-stop gradient (linear, radial, conic)
+        │   ├── box-shadow.wgsl         # SDF box shadow (Evan Wallace erf approximation)
+        │   ├── msdf-text.wgsl          # MSDF text: median(r,g,b) signed distance + AA
+        │   ├── fxaa-tonemap.wgsl       # Combined FXAA (Lottes) + PBR Neutral/ACES tonemapping
+        │   ├── selection-seed.wgsl     # Selection seed: UV-encoded seed positions for JFA
+        │   ├── jfa.wgsl                # Jump Flood Algorithm: 9 neighbors at ±step
+        │   ├── outline-composite.wgsl  # SDF distance outline from JFA result + built-in FXAA
+        │   ├── cull.wgsl               # Compute: sphere-frustum culling (SoA), per-type grouping,
+        │   │                           #   6 DrawIndirectArgs, atomicAdd
+        │   └── prefix-sum.wgsl         # Compute: Blelloch exclusive scan (workgroup-level)
         └── integration.test.ts         # 5 test: binary protocol, texture pipeline, GPU data format
 ```
 
@@ -430,6 +510,8 @@ Itera il `Vec<Command>` e muta il mondo ECS via pattern matching sul `CommandTyp
 | `SetMeshHandle` (8) | `mesh.0 = u32` | 4 bytes: 1 × u32 LE |
 | `SetRenderPrimitive` (9) | `prim.0 = u32` | 4 bytes: 1 × u32 LE |
 | `SetParent` (10) | Set parent + update Children; `0xFFFFFFFF` = unparent | 4 bytes: 1 × u32 LE |
+| `SetPrimParams0` (11) | `prim_params.0[0..4] = [f32; 4]` | 16 bytes: 4 × f32 LE |
+| `SetPrimParams1` (12) | `prim_params.0[4..8] = [f32; 4]` | 16 bytes: 4 × f32 LE |
 | `Noop` (0) | Nulla | Nessuno |
 
 I comandi su entita inesistenti vengono silenziosamente ignorati (nessun panic). Questo e intenzionale: tra la scrittura del comando su JS e il suo processamento su Rust, l'entita potrebbe essere stata gia despawnata.
@@ -474,11 +556,17 @@ Offset (bytes)    Dimensione    Descrizione
 | 0                4 bytes       write_head (u32, atomic)  |  ← scritto da JS
 | 4                4 bytes       read_head  (u32, atomic)  |  ← scritto da Rust
 | 8                4 bytes       capacity   (u32, const)   |
-| 12               4 bytes       padding (allineamento 16) |
+| 12               4 bytes       padding (allineamento)    |
+| 16               4 bytes       heartbeat_w1 (u32, atomic)|  ← Worker 1 heartbeat counter
+| 20               4 bytes       heartbeat_w2 (u32, atomic)|  ← Worker 2 heartbeat counter
+| 24               4 bytes       supervisor_flags (u32)    |  ← Flag per WorkerSupervisor
+| 28               4 bytes       overflow_counter (u32)    |  ← Contatore overflow ring buffer
 +──────────────────────────────────────────────────────────+
-| 16               capacity      data region (comandi)     |
+| 32               capacity      data region (comandi)     |
 +──────────────────────────────────────────────────────────+
 ```
+
+L'header e stato esteso da 16 a **32 byte** in Phase 4.5 per supportare il monitoraggio heartbeat dei Worker e il contatore di overflow. `HEADER_SIZE = 32` in entrambi i lati (Rust e TypeScript).
 
 **Protocollo di sincronizzazione**:
 
@@ -608,6 +696,8 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 #[repr(C)] struct ModelMatrix(pub [f32; 16]);    // 64 bytes (4×4 matrix)
 #[repr(C)] struct BoundingRadius(pub f32);       // 4 bytes — per frustum culling
 #[repr(C)] struct TextureLayerIndex(pub u32);    // 4 bytes — packed (tier << 16) | layer
+#[repr(C)] struct PrimitiveParams(pub [f32; 8]); // 32 bytes — per-entity shader params
+#[repr(C)] struct ExternalId(pub u32);            // 4 bytes — immutable external entity ID
 #[repr(C)] struct Parent(pub u32);               // 4 bytes — external parent entity ID
 #[repr(C)] struct Children { count: u32, ids: [u32; 32] } // 132 bytes — fixed inline array
 #[repr(C)] struct LocalMatrix(pub [f32; 16]);    // 64 bytes — local-space model matrix
@@ -623,6 +713,8 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 | `ModelMatrix` | `Mat4::IDENTITY` | Matrice 4×4 per la GPU, ricalcolata ogni frame |
 | `BoundingRadius` | `0.5` | Raggio della bounding sphere per GPU frustum culling |
 | `TextureLayerIndex` | `0` | Indice texture packed: `(tier << 16) \| layer`. Tier seleziona il Texture2DArray, layer la slice |
+| `PrimitiveParams` | `[0.0; 8]` | 8 float per entity, usati dai shader di linee/gradienti/box shadow/MSDF text. Split in due comandi ring buffer (SetPrimParams0 per [0..4], SetPrimParams1 per [4..8]) |
+| `ExternalId` | Assegnato da SpawnEntity | ID esterno immutabile, set una volta allo spawn. Usato per SoA entity ID tracking (picking, immediate-mode) |
 | `Parent` | — (not spawned by default) | External parent entity ID. Added via `SetParent` command |
 | `Children` | `count: 0, ids: [0; 32]` | Fixed 32-slot inline array of child external IDs. No heap allocation |
 | `LocalMatrix` | `Mat4::IDENTITY` | Local-space model matrix before parent transform. Used by `propagate_transforms` |
@@ -647,7 +739,9 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
           SetTextureLayer = 7,               SetMeshHandle = 8,
           SetMeshHandle = 8,                 SetRenderPrimitive = 9,
           SetRenderPrimitive = 9,            SetParent = 10,
-          SetParent = 10,                  }
+          SetParent = 10,                    SetPrimParams0 = 11,
+          SetPrimParams0 = 11,               SetPrimParams1 = 12,
+          SetPrimParams1 = 12,             }
       }
 ```
 
@@ -668,6 +762,8 @@ I discriminanti `u8` **devono restare sincronizzati manualmente**. Non esiste co
 | SetMeshHandle (8) | 4 (1 × u32) | 9 |
 | SetRenderPrimitive (9) | 4 (1 × u32) | 9 |
 | SetParent (10) | 4 (1 × u32, 0xFFFFFFFF = unparent) | 9 |
+| SetPrimParams0 (11) | 16 (4 × f32) | 21 |
+| SetPrimParams1 (12) | 16 (4 × f32) | 21 |
 
 ### Command
 
@@ -691,6 +787,8 @@ interface GPURenderState {
     bounds: Float32Array;          // SoA: 4 f32/entity (x, y, z, radius)
     renderMeta: Uint32Array;       // SoA: 1 u32/entity (packed render flags)
     texIndices: Uint32Array;       // SoA: 1 u32/entity (packed tier|layer)
+    primParams: Float32Array;      // SoA: 8 f32/entity (shader params per primitive type)
+    entityIds: Uint32Array;        // SoA: 1 u32/entity (external ID, CPU-only for picking)
 }
 
 interface EngineBridge {
@@ -724,7 +822,7 @@ L'Engine e il **Mediator** che coordina tutti i sottosistemi. Non e un singleton
 
 **File**: `crates/hyperion-core/src/lib.rs`
 
-Il layer WASM espone 16 funzioni esterne + 1 smoke test:
+Il layer WASM espone 24 funzioni esterne + 1 smoke test:
 
 ```rust
 static mut ENGINE: Option<Engine> = None;
@@ -742,14 +840,32 @@ static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 #[wasm_bindgen] pub fn engine_render_state_ptr() -> *const f32
 #[wasm_bindgen] pub fn engine_render_state_f32_len() -> u32
 
-// GPU-driven render state (20 f32/entity: mat4x4 + bounding sphere)
-#[wasm_bindgen] pub fn engine_gpu_data_ptr() -> *const f32
-#[wasm_bindgen] pub fn engine_gpu_data_f32_len() -> u32
+// GPU-driven SoA buffers — transforms (16 f32/entity)
+#[wasm_bindgen] pub fn engine_gpu_transforms_ptr() -> *const f32
+#[wasm_bindgen] pub fn engine_gpu_transforms_f32_len() -> u32
+
+// GPU-driven SoA buffers — bounds (4 f32/entity: x, y, z, radius)
+#[wasm_bindgen] pub fn engine_gpu_bounds_ptr() -> *const f32
+#[wasm_bindgen] pub fn engine_gpu_bounds_f32_len() -> u32
+
+// GPU-driven SoA buffers — render meta (2 u32/entity)
+#[wasm_bindgen] pub fn engine_gpu_render_meta_ptr() -> *const u32
+#[wasm_bindgen] pub fn engine_gpu_render_meta_len() -> u32
+
+// Entity count
 #[wasm_bindgen] pub fn engine_gpu_entity_count() -> u32
 
-// Texture layer indices (parallel buffer, 1 u32/entity)
+// Texture layer indices (1 u32/entity, packed tier|layer)
 #[wasm_bindgen] pub fn engine_gpu_tex_indices_ptr() -> *const u32
 #[wasm_bindgen] pub fn engine_gpu_tex_indices_len() -> u32
+
+// Primitive params (8 f32/entity, shader params)
+#[wasm_bindgen] pub fn engine_gpu_prim_params_ptr() -> *const f32
+#[wasm_bindgen] pub fn engine_gpu_prim_params_f32_len() -> u32
+
+// Entity IDs (1 u32/entity, external ID for picking)
+#[wasm_bindgen] pub fn engine_gpu_entity_ids_ptr() -> *const u32
+#[wasm_bindgen] pub fn engine_gpu_entity_ids_len() -> u32
 
 // Memory compaction (Phase 5)
 #[wasm_bindgen] pub fn engine_compact_entity_map()
@@ -759,7 +875,7 @@ static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 #[wasm_bindgen] pub fn add(a: i32, b: i32) -> i32  // smoke test
 ```
 
-Le funzioni GPU-driven (`engine_gpu_*`) sono state aggiunte in Phase 3-4. Le funzioni `engine_compact_*` e `engine_entity_map_capacity` sono state aggiunte in Phase 5 per supportare la memory compaction dall'API TypeScript per supportare il compute culling. Ogni entita produce 20 float (16 per la model matrix + 4 per la bounding sphere: x, y, z della posizione + w del raggio). Il buffer `tex_indices` e parallelo — indicizzato con lo stesso ordine delle entita nel buffer GPU data.
+Le funzioni GPU-driven espongono 6 buffer SoA paralleli. `engine_gpu_transforms_*` e `engine_gpu_bounds_*` sono i dati geometrici, `engine_gpu_render_meta_*` contiene mesh handle + primitive type packed, `engine_gpu_tex_indices_*` le texture, `engine_gpu_prim_params_*` i parametri shader, e `engine_gpu_entity_ids_*` gli ID esterni per picking. Tutti i buffer sono indicizzati con lo stesso ordine delle entita in `engine_gpu_entity_count()`.
 
 **Perche `static mut` e safe qui?** `wasm32-unknown-unknown` e single-threaded per specifica. Non esiste parallelismo reale — anche con `SharedArrayBuffer`, il modulo WASM gira su un singolo thread. Ogni `unsafe` block ha un commento `// SAFETY` che documenta questa invariante.
 
@@ -826,17 +942,30 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                    Browser Entry (HTML + Vite)                ║
 ║  index.html → <script type="module" src="main.ts">           ║
 +═══════════════════════════════════════════════════════════════+
-║                   Public API Layer (TS — Phase 5)             ║
+║                   Public API Layer (TS — Phase 5-7)            ║
 ║  hyperion.ts   → Hyperion facade (create, spawn, batch,      ║
-║                   start/pause/resume/destroy, plugins, hooks) ║
+║                   start/pause/resume/destroy, plugins, hooks, ║
+║                   selection, input, picking, audio, outlines) ║
 ║  entity-handle → EntityHandle fluent builder + EntityPool     ║
 ║  game-loop.ts  → GameLoop (RAF + preTick/postTick/frameEnd)  ║
-║  camera-api.ts → CameraAPI (zoom, viewProjection)            ║
+║  camera-api.ts → CameraAPI (zoom, viewProjection, x/y pos)  ║
 ║  raw-api.ts    → RawAPI (low-level numeric entity mgmt)      ║
 ║  plugin.ts     → PluginRegistry (install/cleanup lifecycle)  ║
 ║  types.ts      → HyperionConfig, HyperionStats, TextureHandle║
 ║  leak-detector → LeakDetector (FinalizationRegistry backstop)║
 ║  index.ts      → Barrel export                               ║
++═══════════════════════════════════════════════════════════════+
+║               Input & Selection Layer (TS — Phase 6)          ║
+║  input-manager  → InputManager (keyboard/pointer/scroll)     ║
+║  hit-tester     → hitTestRay() CPU ray-sphere picking        ║
+║  immediate-state→ ImmediateState shadow position map          ║
+║  selection      → SelectionManager (CPU Set + GPU mask)       ║
++═══════════════════════════════════════════════════════════════+
+║                  Audio Layer (TS — Phase 7)                   ║
+║  audio-manager  → AudioManager facade (lazy AudioContext)     ║
+║  sound-registry → SoundRegistry (URL-deduplicated buffers)   ║
+║  playback-engine→ PlaybackEngine (Web Audio node graph)      ║
+║  audio-types    → SoundHandle, PlaybackId branded types      ║
 +═══════════════════════════════════════════════════════════════+
 ║                   Orchestration Layer (TS)                    ║
 ║  main.ts → Hyperion.create() → engine.start()                ║
@@ -853,18 +982,21 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║  SharedArrayBuffer: [header 32B][data region]                 ║
 +═══════════════════════════════════════════════════════════════+
 ║               GPU-Driven Render Layer (TS + WebGPU)           ║
-║  renderer.ts         → RenderGraph coordinator (CullPass+FwdPass)║
+║  renderer.ts         → RenderGraph coordinator (multi-pipeline)║
 ║  texture-manager.ts  → Multi-tier Texture2DArray (lazy alloc) ║
 ║  render/render-graph  → DAG pass scheduling (Kahn's sort)     ║
 ║  render/render-pass   → RenderPass interface + ResourcePool   ║
-║  render/passes/       → CullPass, ForwardPass, prefix-sum     ║
-║  camera.ts           → Orthographic projection + frustum      ║
+║  render/passes/       → CullPass, ForwardPass, FXAATonemapPass║
+║                         SelectionSeedPass, JFAPass,           ║
+║                         OutlineCompositePass, prefix-sum       ║
+║  camera.ts           → Orthographic projection + frustum +    ║
+║                         mat4Inverse + screenToRay             ║
 ║  backpressure.ts     → PrioritizedCommandQueue                ║
 ║  supervisor.ts       → Worker heartbeat monitoring            ║
-║  shaders/cull.wgsl   → Compute: sphere-frustum culling (SoA) ║
-║  shaders/basic.wgsl  → Render: visibility indirection +       ║
-║                         multi-tier texture sampling            ║
-║  shaders/prefix-sum  → Blelloch exclusive scan (workgroup)    ║
+║  text/               → FontAtlas + text layout + TextManager  ║
+║  shaders/            → cull, basic, line, gradient, box-shadow║
+║                        msdf-text, fxaa-tonemap, selection-seed║
+║                        jfa, outline-composite, prefix-sum     ║
 +═══════════════════════════════════════════════════════════════+
 ║                   Simulation Layer (Rust/WASM)                ║
 ║  lib.rs       → WASM exports (engine_init, engine_update,     ║
@@ -878,7 +1010,8 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║  components.rs → Position, Rotation, Scale, Velocity,         ║
 ║                   ModelMatrix, BoundingRadius,                 ║
 ║                   TextureLayerIndex, MeshHandle,               ║
-║                   RenderPrimitive, Active, Parent,             ║
+║                   RenderPrimitive, PrimitiveParams,            ║
+║                   ExternalId, Active, Parent,                  ║
 ║                   Children, LocalMatrix                        ║
 ║  systems.rs    → velocity_system, transform_system,           ║
 ║                   propagate_transforms, count_active           ║
@@ -964,7 +1097,7 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
 | Costante | Valore | Scopo |
 | --- | --- | --- |
 | `MAX_ENTITIES` | 100,000 | Limite massimo entita supportate |
-| `INDIRECT_BUFFER_SIZE` | 20 bytes | 5 × u32 (drawIndexedIndirect args) |
+| `INDIRECT_BUFFER_SIZE` | 120 bytes | 6 tipi × 5 × u32 (drawIndexedIndirect args per tipo primitivo) |
 
 **Buffer layout GPU (SoA — Structure of Arrays)**:
 
@@ -974,12 +1107,17 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
 | Bounds | `entity-bounds` | `STORAGE \| COPY_DST` | `[vec4f]` × N (x, y, z, radius) | Ogni frame via `writeBuffer` |
 | Render meta | `render-meta` | `STORAGE \| COPY_DST` | `[u32]` × N (packed render flags) | Ogni frame via `writeBuffer` |
 | Tex indices | `tex-indices` | `STORAGE \| COPY_DST` | `[u32 packed]` × N (tier\|layer) | Ogni frame via `writeBuffer` |
+| Prim params | `prim-params` | `STORAGE \| COPY_DST` | `[f32]` × 8N (shader params) | Ogni frame via `writeBuffer` |
+| Selection mask | `selection-mask` | `STORAGE \| COPY_DST` | `[u32]` × ceil(N/32) (bitfield) | Su dirty flag via `SelectionManager.uploadMask()` |
 | Cull uniforms | (CullPass internal) | `UNIFORM \| COPY_DST` | 6 × vec4 frustum planes + u32 count | Ogni frame in `CullPass.prepare()` |
 | Camera uniform | (ForwardPass internal) | `UNIFORM \| COPY_DST` | `mat4×4 viewProjection` | Ogni frame in `ForwardPass.prepare()` |
 | Visible indices | `visible-indices` | `STORAGE` | `[u32]` × MAX_ENTITIES | Scritto dal compute shader |
-| Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 5 × u32 | Reset in `CullPass.prepare()` + atomicAdd dal compute |
+| Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 6 × 5 × u32 (120 bytes, per-type) | Reset in `CullPass.prepare()` + atomicAdd dal compute |
 | Depth texture | (ForwardPass internal) | `GPUTexture` | `depth24plus` | Lazy creato/ricreato al resize via `ensureDepthTexture()` |
 | Vertex/Index buffer | (ForwardPass internal) | `VERTEX \| INDEX` | Unit quad (4 vertices + 6 indices) | Creato in `ForwardPass.setup()`, immutabile |
+| Scene HDR | `scene-hdr` | `GPUTexture` (rgba16float) | HDR render target | ForwardPass output, FXAATonemapPass/OutlineComposite input |
+| Selection seed | `selection-seed` | `GPUTexture` | JFA seed positions | SelectionSeedPass output, JFAPass input |
+| JFA ping-pong | `jfa-a`, `jfa-b` | `GPUTexture` | JFA iteration textures | Ping-pong between JFA iterations |
 | Texture views | `tier0`–`tier3` | `GPUTextureView` | Texture2DArray tier views | Registrati in ResourcePool da coordinator |
 | Sampler | `texSampler` | `GPUSampler` | Linear filtering sampler | Registrato in ResourcePool da coordinator |
 | Swapchain | `swapchain` | `GPUTextureView` | Current frame's swapchain texture view | Settato ogni frame dal coordinator |
@@ -1026,7 +1164,7 @@ struct DrawIndirectArgs {
 - Binding 3: Visible indices (storage, read-write)
 - Binding 4: Indirect draw args (storage, read-write)
 
-**CullPass lifecycle**: `setup()` crea il pipeline e bind group. `prepare()` estrae i frustum planes da `frame.cameraViewProjection` via `extractFrustumPlanes()` (importata da `camera.ts`), uploada i 112 byte di cull uniforms, e resetta gli indirect draw args a `[6, 0, 0, 0, 0]`. `execute()` dispatcha `ceil(entityCount / 256)` workgroups.
+**CullPass lifecycle**: `setup()` crea il pipeline e bind group. `prepare()` estrae i frustum planes da `frame.cameraViewProjection` via `extractFrustumPlanes()` (importata da `camera.ts`), uploada i cull uniforms, e resetta i **6 × 5 u32** indirect draw args (uno per tipo primitivo: Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow). Il compute shader scrive `visibleIndices` e incrementa atomicamente `instanceCount` nell'args del tipo corrispondente. `execute()` dispatcha `ceil(entityCount / 256)` workgroups.
 
 ### Pipeline Render: Visibility Indirection (basic.wgsl)
 
@@ -1070,7 +1208,7 @@ Il render shader usa **visibility indirection**: il vertex shader non legge dire
 
 Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scritto dal compute shader. Solo le entita che hanno passato il frustum culling vengono renderizzate. Il vertex shader risolve l'indice reale tramite `visibleIndices[instance_index]`.
 
-**ForwardPass lifecycle**: `setup()` crea il render pipeline, vertex/index buffer (unit quad), camera buffer, e bind groups. `prepare()` uploada `frame.cameraViewProjection` nel camera buffer. `execute()` acquisisce la swapchain view da ResourcePool, assicura la depth texture via `ensureDepthTexture()` (lazy create/recreate al resize), e codifica il render pass completo con `drawIndexedIndirect`.
+**ForwardPass lifecycle**: `setup()` crea **multiple render pipeline** (una per tipo primitivo registrato in `SHADER_SOURCES: Record<number, string>`), vertex/index buffer (unit quad), camera buffer, e bind groups condivisi. `prepare()` uploada `frame.cameraViewProjection` nel camera buffer. `execute()` assicura la depth texture via `ensureDepthTexture()`, poi per ogni tipo primitivo registrato: seleziona il pipeline corrispondente e chiama `drawIndexedIndirect(indirectBuffer, primType * 20)`. Scrive su `scene-hdr` (non direttamente su swapchain).
 
 ### TextureManager: Multi-Tier Texture2DArray
 
@@ -1108,23 +1246,32 @@ Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scrit
 
 **File Rust**: `crates/hyperion-core/src/render_state.rs`
 
-`RenderState` colleziona i dati GPU di tutte le entita attive in due buffer contigui paralleli:
+`RenderState` colleziona i dati GPU di tutte le entita attive in buffer SoA (Structure-of-Arrays) paralleli:
 
 ```rust
 pub struct RenderState {
-    pub matrices: Vec<[f32; 16]>,   // Legacy: solo model matrices
-    gpu_data: Vec<f32>,             // GPU-driven: 20 f32/entity (mat4x4 + bounding sphere)
-    gpu_tex_indices: Vec<u32>,      // Parallelo: 1 u32/entity (packed tier|layer)
-    gpu_count: u32,                 // Numero entita nel buffer GPU
+    pub matrices: Vec<[f32; 16]>,      // Legacy: solo model matrices
+    gpu_transforms: Vec<f32>,          // SoA: 16 f32/entity (mat4x4 column-major)
+    gpu_bounds: Vec<f32>,              // SoA: 4 f32/entity (x, y, z, radius)
+    gpu_render_meta: Vec<u32>,         // SoA: 2 u32/entity (mesh_handle + primitive)
+    gpu_tex_indices: Vec<u32>,         // SoA: 1 u32/entity (packed tier|layer)
+    gpu_prim_params: Vec<f32>,         // SoA: 8 f32/entity (shader params)
+    gpu_entity_ids: Vec<u32>,          // SoA: 1 u32/entity (external ID, CPU-only)
+    gpu_count: u32,                    // Numero entita nei buffer GPU
+    pub dirty_tracker: DirtyTracker,   // BitSet per partial upload optimization
 }
 ```
 
-`collect_gpu()` itera tutte le entita con `(Position, ModelMatrix, BoundingRadius, TextureLayerIndex, Active)`:
+`collect_gpu()` itera tutte le entita con `(Position, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, ExternalId, Active)`:
 
-- **gpu_data**: 16 f32 (model matrix column-major) + 4 f32 (position.x, position.y, position.z, radius) = **20 f32 (80 bytes) per entita**
+- **gpu_transforms**: 16 f32 per entita (model matrix column-major)
+- **gpu_bounds**: 4 f32 per entita (position.x, position.y, position.z, radius)
+- **gpu_render_meta**: 2 u32 per entita (mesh_handle packed con primitive type)
 - **gpu_tex_indices**: 1 u32 per entita, packed `(tier << 16) | layer`
+- **gpu_prim_params**: 8 f32 per entita (parametri shader per linee/gradienti/box shadow/MSDF)
+- **gpu_entity_ids**: 1 u32 per entita (external ID per picking e immediate-mode, CPU-only)
 
-I due buffer sono indicizzati con lo stesso ordine — l'entita all'indice N nel gpu_data corrisponde all'indice N nel gpu_tex_indices.
+Tutti i buffer sono indicizzati con lo stesso ordine — l'entita all'indice N in `gpu_transforms` corrisponde all'indice N in tutti gli altri buffer.
 
 **Trasferimento dati per Execution Mode**:
 
@@ -1216,7 +1363,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (81 test Rust across 7 moduli + 175 test TypeScript across 23 file)
+### Struttura (88 test Rust across 7 moduli + 364 test TypeScript across 37 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1224,24 +1371,28 @@ Il test suite e organizzato in due livelli per linguaggio:
 
 ```
 crates/hyperion-core/src/
-  ring_buffer.rs          15 test: empty drain, spawn read, position+payload, multiple cmds, read_head advance,
-                                   parse_commands (spawn, position, multiple, incomplete, empty, set_texture_layer,
-                                   set_parent, set_mesh_handle, set_render_primitive)
-  components.rs           19 test: default values, Pod transmute, texture layer pack/unpack,
+  ring_buffer.rs          17 test: empty drain, spawn read, position+payload, multiple cmds,
+                                   read_head advance, parse_commands (spawn, position, multiple,
+                                   incomplete, empty, set_texture_layer, set_parent, set_mesh_handle,
+                                   set_render_primitive), header size, set_prim_params round-trip
+  components.rs           20 test: default values, Pod transmute, texture layer pack/unpack,
                                    MeshHandle/RenderPrimitive defaults + custom values,
+                                   PrimitiveParams Pod + default, ExternalId,
                                    Parent/Children/LocalMatrix defaults + Pod + child add/remove
-  command_processor.rs    11 test: spawn, set position, despawn, ID recycling, set_texture_layer,
-                                   nonexistent entity safety, set_parent with child bookkeeping,
-                                   shrink_to_fit
+  command_processor.rs    13 test: spawn, set position, despawn, ID recycling, set_texture_layer,
+                                   set_mesh_handle, set_render_primitive, nonexistent entity safety,
+                                   set_parent with child bookkeeping, shrink_to_fit,
+                                   process_set_prim_params, spawn_sets_external_id,
+                                   set_parent_with_max_sentinel_unparents
   engine.rs                6 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
                                    render_state collected after update, propagate parent transforms
   systems.rs               6 test: velocity moves position, transform→matrix, transform applies scale,
                                    count_active, propagate_transforms applies parent matrix,
                                    propagate_transforms skips unparented
-  render_state.rs         24 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
+  render_state.rs         27 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
                                    multiple, skip without bounding radius, texture layer indices,
-                                   empty tex indices, SoA buffers, bounds, render meta,
-                                   BitSet (set/get, idempotent, OOB, clear, ensure_capacity),
+                                   empty tex indices, SoA buffers, bounds, render meta, prim params,
+                                   entity IDs, BitSet (set/get, idempotent, OOB, clear, ensure_capacity),
                                    DirtyTracker (mark/check, clear, ratio, ensure_capacity, meta),
                                    shrink_to_fit
 ```
@@ -1251,28 +1402,35 @@ crates/hyperion-core/src/
 ```
 ts/src/
   capabilities.test.ts              4 test: Mode A/B/C selection across capability combinations
-  ring-buffer.test.ts               14 test: free space, spawn write, position+payload, overflow, sequential,
+  ring-buffer.test.ts               16 test: free space, spawn write, position+payload, overflow, sequential,
                                            SetTextureLayer, TypedArray fast path, wrap-around
   ring-buffer-utils.test.ts          4 test: ring buffer utility functions (extractUnread)
-  camera.test.ts                    10 test: orthographic NDC mapping, Camera class, frustum planes
+  camera.test.ts                    19 test: orthographic NDC mapping, Camera class, frustum planes,
+                                           mat4Inverse, screenToRay
   frustum.test.ts                    7 test: frustum culling accuracy (sphere-plane tests)
   texture-manager.test.ts           16 test: tier selection, packing/unpacking, lazy alloc, exponential growth,
                                            retainBitmaps option
-  backpressure.test.ts              16 test: priority ordering, soft/hard limits, critical bypass,
+  backpressure.test.ts              18 test: priority ordering, soft/hard limits, critical bypass,
                                            BackpressuredProducer pass-through/overflow/flush,
-                                           setParent/setMeshHandle/setRenderPrimitive convenience
+                                           setParent/setMeshHandle/setRenderPrimitive/setPrimParams convenience
   supervisor.test.ts                 5 test: heartbeat monitoring, timeout detection, configurable threshold
   render/render-pass.test.ts         6 test: ResourcePool CRUD, pass contract validation
   render/render-graph.test.ts        8 test: topological ordering, dead-pass culling, cycle detection,
                                            lazy recompile, duplicate names, empty graph, multiple writers
-  render/passes/cull-pass.test.ts    1 test: CullPass construction
-  render/passes/forward-pass.test.ts 1 test: ForwardPass construction
+  render/passes/cull-pass.test.ts    2 test: CullPass construction, extraction
+  render/passes/forward-pass.test.ts 2 test: ForwardPass construction, multi-pipeline
+  render/passes/fxaa-tonemap-pass.test.ts   3 test: FXAATonemapPass construction, tonemap modes
+  render/passes/selection-seed-pass.test.ts 3 test: SelectionSeedPass construction, seed rendering
+  render/passes/jfa-pass.test.ts            9 test: JFA iterations, ping-pong, iterationsForDimension
+  render/passes/outline-composite-pass.test.ts 6 test: OutlineComposite construction, SDF outline, FXAA
   render/passes/prefix-sum.test.ts   6 test: Blelloch scan correctness (simple, all-visible, all-invisible,
                                            single element, non-power-of-2, compacted indices)
   integration.test.ts                5 test: binary protocol, texture pipeline, GPU data format
-  hyperion.test.ts                  26 test: Hyperion facade lifecycle, spawn, batch, hooks,
-                                           plugins, destroy, stats, compact, resize
-  entity-handle.test.ts             17 test: fluent API, dispose, data map, pool recycling
+  hyperion.test.ts                  45 test: Hyperion facade lifecycle, spawn, batch, hooks,
+                                           plugins, destroy, stats, compact, resize, input, picking,
+                                           audio, selection, outlines, immediate mode
+  entity-handle.test.ts             28 test: fluent API, dispose, data map, pool recycling,
+                                           positionImmediate, clearImmediate, line, gradient, boxShadow
   entity-pool.test.ts                5 test: acquire/release, capacity limit, init reset
   game-loop.test.ts                  6 test: RAF lifecycle, hook phases, FPS tracking
   raw-api.test.ts                    4 test: spawn/despawn/setPosition/setVelocity
@@ -1280,6 +1438,19 @@ ts/src/
   plugin.test.ts                     5 test: install, cleanup, destroyAll ordering
   types.test.ts                      4 test: config defaults, type validation
   leak-detector.test.ts              2 test: registration, cleanup callback
+  selection.test.ts                 10 test: select/deselect/toggle/clear, dirty tracking, GPU mask upload
+  input-manager.test.ts             24 test: keyboard isKeyDown, pointer position/buttons, scroll deltas,
+                                           onKey/onClick/onPointerMove/onScroll callbacks, DOM lifecycle
+  hit-tester.test.ts                 8 test: ray-sphere intersection, closest hit, miss, 2.5D depth ordering
+  immediate-state.test.ts            8 test: shadow position map, patchTransforms, set/get/clear
+  input-picking.test.ts              3 test: input→picking integration, screenToRay→hitTest pipeline
+  text/text-layout.test.ts           3 test: MSDF text layout, glyph positioning, atlas metrics
+  audio-types.test.ts                3 test: branded types SoundHandle/PlaybackId, defaults
+  sound-registry.test.ts            13 test: load/decode/dedup, unload, destroy, bidirectional maps
+  playback-engine.test.ts           26 test: play/stop, setVolume/setPitch, spatial pan/attenuation,
+                                           setListenerPosition, master volume, mute/unmute
+  audio-manager.test.ts             25 test: facade lifecycle, lazy AudioContext, suspend/resume/destroy,
+                                           safe no-ops before init, SpatialConfig forwarding
 ```
 
 ### Pattern di Test: Cross-Boundary Protocol Verification
@@ -1307,27 +1478,30 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 81 test
+# Rust — 88 test
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
-cargo test -p hyperion-core ring_buffer               # Ring buffer (13 test)
-cargo test -p hyperion-core render_state              # Render state (25 test)
-cargo test -p hyperion-core components                # Components (19 test)
-cargo test -p hyperion-core command_proc              # Command processor (8 test)
+cargo test -p hyperion-core ring_buffer               # Ring buffer (17 test)
+cargo test -p hyperion-core render_state              # Render state (27 test)
+cargo test -p hyperion-core components                # Components (20 test)
+cargo test -p hyperion-core command_proc              # Command processor (13 test)
 cargo test -p hyperion-core systems                   # Systems (6 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 175 test
+# TypeScript — 364 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
 cd ts && npx vitest run src/frustum.test.ts           # Frustum culling
 cd ts && npx vitest run src/texture-manager.test.ts   # Texture manager
 cd ts && npx vitest run src/render/render-graph.test.ts # RenderGraph DAG
-cd ts && npx vitest run src/hyperion.test.ts          # Hyperion facade (26 test)
-cd ts && npx vitest run src/entity-handle.test.ts     # EntityHandle (17 test)
+cd ts && npx vitest run src/hyperion.test.ts          # Hyperion facade (45 test)
+cd ts && npx vitest run src/entity-handle.test.ts     # EntityHandle (28 test)
 cd ts && npx vitest run src/game-loop.test.ts         # GameLoop (6 test)
 cd ts && npx vitest run src/plugin.test.ts            # PluginRegistry (5 test)
+cd ts && npx vitest run src/selection.test.ts         # SelectionManager (10 test)
+cd ts && npx vitest run src/input-manager.test.ts     # InputManager (24 test)
+cd ts && npx vitest run src/audio-manager.test.ts     # AudioManager (25 test)
 cd ts && npx tsc --noEmit                             # Type-check solo
 
 # Visual testing — build WASM + dev server
@@ -1448,7 +1622,6 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 | Limitazione | Causa | Impatto | Stato |
 | --- | --- | --- | --- |
-| Nessun input handling | Phase 6 | L'engine non processa eventi tastiera/mouse | Futuro |
 | Nessun rendering fallback senza WebGPU | Solo WebGPU supportato | Senza WebGPU il renderer e `null`, solo la simulazione ECS gira | Futuro: WebGL 2 fallback |
 | `webgpuInWorker` detection via UA string | Non esiste API per testare WebGPU in Worker dal Main Thread | Falsi negativi su browser non-Chromium con supporto futuro | Aggiornare euristica quando Firefox supporta |
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
@@ -1474,23 +1647,24 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
 | **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder + pool, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
 | **5.5** | Rendering Primitives | **Completata** | `PrimitiveParams([f32;8])` component + `SetPrimParams0/1` commands, multi-type CullPass (6 types × DrawIndirectArgs), multi-pipeline ForwardPass (`SHADER_SOURCES`), line rendering (screen-space expansion + SDF dash), MSDF text (FontAtlas + text layout + median SDF), gradient (linear/radial/conic), box shadow (Evan Wallace erf), FXAA + tonemapping (PBR Neutral/ACES), JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass), `SelectionManager`, `enableOutlines()/disableOutlines()` API |
-| **6** | Audio & Input | Pianificata | AudioWorklet isolation, predictive input layer |
-| **7** | Polish & DX | Pianificata | Shader hot-reload, dev watch mode, performance profiler |
+| **6** | Input System | **Completata** | `ExternalId(u32)` ECS component, `entityIds` SoA buffer, `InputManager` (keyboard/pointer/scroll + callbacks), `Camera.screenToRay()` + `mat4Inverse`, `hitTestRay()` CPU ray-sphere picking, `ImmediateState` shadow position map + transform patching, `SelectionManager` CPU-side + GPU mask, `EntityHandle.positionImmediate()/clearImmediate()`, public API `engine.input`/`engine.picking.hitTest()` |
+| **7** | Audio System | **Completata** | `SoundRegistry` (URL-deduplicated buffer management, DI), `PlaybackEngine` (Web Audio node graph, 2D spatial pan + distance attenuation), `AudioManager` facade (lazy AudioContext, browser autoplay policy), branded types (`SoundHandle`/`PlaybackId`), audio listener auto-update from camera, `pause()`/`resume()`/`destroy()` lifecycle wiring, public API `engine.audio` |
+| **8** | TBD | Pianificata | — |
 
 ### Metriche Attuali
 
 | Metrica | Valore |
 | --- | --- |
-| Test Rust | 86 (tutti passanti) |
-| Test TypeScript | 224 (tutti passanti) |
+| Test Rust | 88 (tutti passanti) |
+| Test TypeScript | 364 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
 | Moduli TypeScript | 40+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` × 11, `vite-env.d.ts`) |
-| File test TypeScript | 29 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `text-layout`) |
+| File test TypeScript | 37 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
-| WASM exports | 19 (18 engine functions + 1 smoke test) |
-| ECS Components | 14 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, Active, Parent, Children, LocalMatrix) |
+| WASM exports | 25 (24 engine functions + 1 smoke test) |
+| ECS Components | 15 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, ExternalId, Active, Parent, Children, LocalMatrix) |
 | CommandType variants | 13 (Noop + 12 comandi, incl. SetPrimParams0/1) |
 | WGSL Shaders | 11 (basic, line, gradient, box-shadow, msdf-text, fxaa-tonemap, selection-seed, jfa, outline-composite, cull, prefix-sum) |
 | Render Passes | 6 (CullPass, ForwardPass, FXAATonemapPass, SelectionSeedPass, JFAPass, OutlineCompositePass) |
@@ -1503,11 +1677,11 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 Per aggiungere un comando (es. `SetColor(r, g, b, a)`):
 
-**Rust** (`ring_buffer.rs`): Aggiungere variante a `CommandType`: `SetColor = 8`, aggiungere `from_u8`: `8 => Some(Self::SetColor)`, aggiungere `payload_size`: `Self::SetColor => 16` (4 × f32).
+**Rust** (`ring_buffer.rs`): Aggiungere variante a `CommandType`: `SetColor = 13`, aggiungere `from_u8`: `13 => Some(Self::SetColor)`, aggiungere `payload_size`: `Self::SetColor => 16` (4 × f32).
 
 **Rust** (`command_processor.rs`): Aggiungere branch nel match di `process_commands`.
 
-**TypeScript** (`ring-buffer.ts`): Aggiungere a `CommandType`: `SetColor = 8`, aggiungere a `PAYLOAD_SIZES`: `[CommandType.SetColor]: 16`. Opzionale: aggiungere convenience method su `RingBufferProducer`.
+**TypeScript** (`ring-buffer.ts`): Aggiungere a `CommandType`: `SetColor = 13`, aggiungere a `PAYLOAD_SIZES`: `[CommandType.SetColor]: 16`. Opzionale: aggiungere convenience method su `RingBufferProducer`.
 
 **Test**: Test Rust in `ring_buffer.rs::tests` per il parsing. Test Rust in `command_processor.rs::tests` per la mutazione ECS. Test TypeScript in `ring-buffer.test.ts` per la serializzazione. Test in `integration.test.ts` per la verifica cross-boundary degli offset.
 
