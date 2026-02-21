@@ -2,27 +2,25 @@ import { describe, it, expect, vi } from 'vitest';
 import { PlaybackEngine } from './playback-engine';
 import type { PlaybackId } from './audio-types';
 
-function mockNode(overrides: Record<string, unknown> = {}) {
-  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), ...overrides };
-}
-
 function mockSourceNode() {
-  return mockNode({
+  return {
+    connect: vi.fn().mockReturnThis(),
+    disconnect: vi.fn(),
     buffer: null as AudioBuffer | null,
     loop: false,
     playbackRate: { value: 1 },
     start: vi.fn(),
     stop: vi.fn(),
     onended: null as (() => void) | null,
-  });
+  };
 }
 
 function mockGainNode() {
-  return mockNode({ gain: { value: 1 } });
+  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), gain: { value: 1 } };
 }
 
 function mockPannerNode() {
-  return mockNode({ pan: { value: 0 } });
+  return { connect: vi.fn().mockReturnThis(), disconnect: vi.fn(), pan: { value: 0 } };
 }
 
 function mockAudioContext() {

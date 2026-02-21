@@ -45,7 +45,7 @@ function mockAudioContext() {
 describe('AudioManager', () => {
   it('constructs without creating AudioContext', () => {
     const factory = vi.fn(() => mockAudioContext() as any);
-    const am = new AudioManager({ contextFactory: factory });
+    new AudioManager({ contextFactory: factory });
     expect(factory).not.toHaveBeenCalled();
   });
 
