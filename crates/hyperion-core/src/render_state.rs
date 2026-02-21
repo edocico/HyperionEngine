@@ -7,8 +7,8 @@
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, MeshHandle, ModelMatrix, Position, PrimitiveParams, RenderPrimitive,
-    TextureLayerIndex,
+    Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Position, PrimitiveParams,
+    RenderPrimitive, TextureLayerIndex,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -178,6 +178,7 @@ pub struct RenderState {
     gpu_render_meta: Vec<u32>,   // 2 u32/entity (mesh_handle + primitive)
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_prim_params: Vec<f32>,   // 8 f32/entity (primitive-specific parameters)
+    gpu_entity_ids: Vec<u32>,    // 1 u32/entity (external entity ID for picking)
     gpu_count: u32,
 
     /// Per-buffer dirty tracking for partial upload optimization.
@@ -193,6 +194,7 @@ impl RenderState {
             gpu_render_meta: Vec::new(),
             gpu_tex_indices: Vec::new(),
             gpu_prim_params: Vec::new(),
+            gpu_entity_ids: Vec::new(),
             gpu_count: 0,
             dirty_tracker: DirtyTracker::new(0),
         }
@@ -242,6 +244,7 @@ impl RenderState {
         self.gpu_render_meta.clear();
         self.gpu_tex_indices.clear();
         self.gpu_prim_params.clear();
+        self.gpu_entity_ids.clear();
 
         // Pre-allocate based on previous frame's entity count to avoid reallocation.
         let hint = self.gpu_count as usize;
@@ -250,10 +253,11 @@ impl RenderState {
         self.gpu_render_meta.reserve(hint * 2);
         self.gpu_tex_indices.reserve(hint);
         self.gpu_prim_params.reserve(hint * 8);
+        self.gpu_entity_ids.reserve(hint);
         self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, tex, mesh, prim, pp, _active) in world
+        for (pos, matrix, radius, tex, mesh, prim, pp, ext_id, _active) in world
             .query::<(
                 &Position,
                 &ModelMatrix,
@@ -262,6 +266,7 @@ impl RenderState {
                 &MeshHandle,
                 &RenderPrimitive,
                 &PrimitiveParams,
+                &ExternalId,
                 &Active,
             )>()
             .iter()
@@ -283,6 +288,9 @@ impl RenderState {
             // Primitive params (8 f32)
             self.gpu_prim_params.extend_from_slice(&pp.0);
 
+            // Entity ID (1 u32)
+            self.gpu_entity_ids.push(ext_id.0);
+
             self.gpu_count += 1;
         }
 
@@ -291,6 +299,7 @@ impl RenderState {
         debug_assert_eq!(self.gpu_count as usize * 2, self.gpu_render_meta.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
         debug_assert_eq!(self.gpu_count as usize * 8, self.gpu_prim_params.len());
+        debug_assert_eq!(self.gpu_count as usize, self.gpu_entity_ids.len());
     }
 
     /// Number of entities in the GPU buffer.
@@ -403,6 +412,28 @@ impl RenderState {
         self.gpu_prim_params.len() as u32
     }
 
+    // --- SoA buffer accessors: entity IDs ---
+
+    /// External entity IDs, one per GPU entity (parallel to other SoA buffers).
+    /// Maps SoA index back to external entity ID for hit testing and picking.
+    pub fn gpu_entity_ids(&self) -> &[u32] {
+        &self.gpu_entity_ids
+    }
+
+    /// Raw pointer to the entity IDs buffer for WASM export. Returns null if empty.
+    pub fn gpu_entity_ids_ptr(&self) -> *const u32 {
+        if self.gpu_entity_ids.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_entity_ids.as_ptr()
+        }
+    }
+
+    /// Number of entity IDs (same as gpu_entity_count).
+    pub fn gpu_entity_ids_len(&self) -> u32 {
+        self.gpu_entity_ids.len() as u32
+    }
+
     /// Release excess heap memory from all internal buffers.
     /// Call after a large batch of entity despawns to reclaim memory.
     pub fn shrink_to_fit(&mut self) {
@@ -412,6 +443,7 @@ impl RenderState {
         self.gpu_render_meta.shrink_to_fit();
         self.gpu_tex_indices.shrink_to_fit();
         self.gpu_prim_params.shrink_to_fit();
+        self.gpu_entity_ids.shrink_to_fit();
     }
 }
 
@@ -510,6 +542,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
 
@@ -557,6 +590,7 @@ mod tests {
                 MeshHandle::default(),
                 RenderPrimitive::default(),
                 PrimitiveParams::default(),
+                ExternalId(i as u32),
                 Active,
             ));
         }
@@ -588,6 +622,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
         // Entity missing BoundingRadius, MeshHandle, RenderPrimitive — visible to collect() but not collect_gpu()
@@ -622,6 +657,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
         world.spawn((
@@ -635,6 +671,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(1),
             Active,
         ));
         crate::systems::transform_system(&mut world);
@@ -674,6 +711,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
 
@@ -700,6 +738,7 @@ mod tests {
             MeshHandle::default(),
             RenderPrimitive::default(),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
 
@@ -725,6 +764,7 @@ mod tests {
             MeshHandle(7),
             RenderPrimitive(2),
             PrimitiveParams::default(),
+            ExternalId(0),
             Active,
         ));
 
@@ -884,6 +924,7 @@ mod tests {
             MeshHandle(0),
             RenderPrimitive(0),
             pp,
+            ExternalId(0),
             Active,
         ));
 
@@ -905,5 +946,34 @@ mod tests {
             tracker.mark_meta_dirty(i);
         }
         assert!((tracker.meta_dirty_ratio(100) - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn collect_gpu_includes_entity_ids() {
+        use crate::command_processor::{process_commands, EntityMap};
+        use crate::ring_buffer::{Command, CommandType};
+
+        let mut world = World::new();
+        let mut entity_map = EntityMap::new();
+
+        // Spawn two entities with external IDs 10 and 20
+        for &ext_id in &[10u32, 20] {
+            let cmd = Command {
+                cmd_type: CommandType::SpawnEntity,
+                entity_id: ext_id,
+                payload: [0u8; 16],
+            };
+            process_commands(&[cmd], &mut world, &mut entity_map);
+        }
+
+        let mut state = RenderState::new();
+        state.collect_gpu(&world);
+
+        assert_eq!(state.gpu_entity_count(), 2);
+        assert_eq!(state.gpu_entity_ids().len(), 2);
+        // Order may vary (hecs iteration), but both IDs must be present
+        let mut ids = state.gpu_entity_ids().to_vec();
+        ids.sort();
+        assert_eq!(ids, vec![10, 20]);
     }
 }
