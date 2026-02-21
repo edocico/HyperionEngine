@@ -8,6 +8,7 @@ export class SoundRegistry {
   private readonly fetcher: AudioFetcher;
   private readonly buffers = new Map<SoundHandle, AudioBuffer>();
   private readonly urlToHandle = new Map<string, SoundHandle>();
+  private readonly handleToUrl = new Map<SoundHandle, string>();
   private nextHandle = 0;
 
   constructor(decoder: AudioDecoder, fetcher: AudioFetcher) {
@@ -24,6 +25,7 @@ export class SoundRegistry {
     const handle = this.nextHandle++ as SoundHandle;
     this.buffers.set(handle, buffer);
     this.urlToHandle.set(url, handle);
+    this.handleToUrl.set(handle, url);
     return handle;
   }
 
@@ -33,17 +35,17 @@ export class SoundRegistry {
 
   unload(handle: SoundHandle): void {
     this.buffers.delete(handle);
-    for (const [url, h] of this.urlToHandle) {
-      if (h === handle) {
-        this.urlToHandle.delete(url);
-        break;
-      }
+    const url = this.handleToUrl.get(handle);
+    if (url !== undefined) {
+      this.urlToHandle.delete(url);
+      this.handleToUrl.delete(handle);
     }
   }
 
   destroy(): void {
     this.buffers.clear();
     this.urlToHandle.clear();
+    this.handleToUrl.clear();
   }
 
   async loadAll(

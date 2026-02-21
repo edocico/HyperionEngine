@@ -20,8 +20,9 @@ export class PlaybackEngine {
   private listenerY = 0;
   private spatialConfig: SpatialConfig = { ...DEFAULT_SPATIAL_CONFIG };
 
-  constructor(ctx: AudioContext) {
+  constructor(ctx: AudioContext, spatial?: SpatialConfig) {
     this.ctx = ctx;
+    if (spatial) this.spatialConfig = spatial;
     this.masterGain = ctx.createGain();
     this.masterGain.connect(ctx.destination);
   }

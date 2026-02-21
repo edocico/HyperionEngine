@@ -36,7 +36,7 @@ export class AudioManager {
         return resp.arrayBuffer();
       },
     );
-    this.engine = new PlaybackEngine(this.ctx);
+    this.engine = new PlaybackEngine(this.ctx, this.spatialConfig);
   }
 
   async load(url: string): Promise<SoundHandle> {
@@ -95,12 +95,13 @@ export class AudioManager {
 
   async destroy(): Promise<void> {
     if (!this.ctx) return;
-    this.engine?.destroy();
-    this.registry?.destroy();
-    await this.ctx.close();
+    const ctx = this.ctx;
     this.ctx = null;
+    this.engine?.destroy();
     this.engine = null;
+    this.registry?.destroy();
     this.registry = null;
+    await ctx.close();
   }
 
   setMasterVolume(volume: number): void {
