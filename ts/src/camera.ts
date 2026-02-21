@@ -31,7 +31,7 @@ export function orthographic(
 }
 
 /** Multiply two 4x4 column-major matrices: result = a * b. */
-function mat4Multiply(a: Float32Array, b: Float32Array): Float32Array {
+export function mat4Multiply(a: Float32Array, b: Float32Array): Float32Array {
   const out = new Float32Array(16);
   for (let col = 0; col < 4; col++) {
     for (let row = 0; row < 4; row++) {
@@ -43,6 +43,89 @@ function mat4Multiply(a: Float32Array, b: Float32Array): Float32Array {
     }
   }
   return out;
+}
+
+/**
+ * Compute the inverse of a 4x4 column-major matrix using cofactor expansion.
+ * Returns a new Float32Array, or null if the matrix is singular.
+ *
+ * This is a general-purpose inverse (NOT an orthographic shortcut) — forward-
+ * compatible with perspective cameras for future 3D support.
+ */
+export function mat4Inverse(m: Float32Array): Float32Array | null {
+  const m00 = m[0],  m01 = m[1],  m02 = m[2],  m03 = m[3];
+  const m10 = m[4],  m11 = m[5],  m12 = m[6],  m13 = m[7];
+  const m20 = m[8],  m21 = m[9],  m22 = m[10], m23 = m[11];
+  const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
+
+  // 2x2 sub-determinants (reused across cofactors)
+  const s0 = m00 * m11 - m10 * m01;
+  const s1 = m00 * m12 - m10 * m02;
+  const s2 = m00 * m13 - m10 * m03;
+  const s3 = m01 * m12 - m11 * m02;
+  const s4 = m01 * m13 - m11 * m03;
+  const s5 = m02 * m13 - m12 * m03;
+
+  const c5 = m22 * m33 - m32 * m23;
+  const c4 = m21 * m33 - m31 * m23;
+  const c3 = m21 * m32 - m31 * m22;
+  const c2 = m20 * m33 - m30 * m23;
+  const c1 = m20 * m32 - m30 * m22;
+  const c0 = m20 * m31 - m30 * m21;
+
+  const det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
+
+  if (Math.abs(det) < 1e-10) {
+    return null;
+  }
+
+  const invDet = 1.0 / det;
+
+  return new Float32Array([
+    ( m11 * c5 - m12 * c4 + m13 * c3) * invDet,  // [0]
+    (-m01 * c5 + m02 * c4 - m03 * c3) * invDet,  // [1]
+    ( m31 * s5 - m32 * s4 + m33 * s3) * invDet,  // [2]
+    (-m21 * s5 + m22 * s4 - m23 * s3) * invDet,  // [3]
+
+    (-m10 * c5 + m12 * c2 - m13 * c1) * invDet,  // [4]
+    ( m00 * c5 - m02 * c2 + m03 * c1) * invDet,  // [5]
+    (-m30 * s5 + m32 * s2 - m33 * s1) * invDet,  // [6]
+    ( m20 * s5 - m22 * s2 + m23 * s1) * invDet,  // [7]
+
+    ( m10 * c4 - m11 * c2 + m13 * c0) * invDet,  // [8]
+    (-m00 * c4 + m01 * c2 - m03 * c0) * invDet,  // [9]
+    ( m30 * s4 - m31 * s2 + m33 * s0) * invDet,  // [10]
+    (-m20 * s4 + m21 * s2 - m23 * s0) * invDet,  // [11]
+
+    (-m10 * c3 + m11 * c1 - m12 * c0) * invDet,  // [12]
+    ( m00 * c3 - m01 * c1 + m02 * c0) * invDet,  // [13]
+    (-m30 * s3 + m31 * s1 - m32 * s0) * invDet,  // [14]
+    ( m20 * s3 - m21 * s1 + m22 * s0) * invDet,  // [15]
+  ]);
+}
+
+/** A ray in 3D world space. */
+export interface Ray {
+  origin: [number, number, number];
+  direction: [number, number, number];
+}
+
+/**
+ * Transform a point (x, y, z, 1) by a 4x4 column-major matrix,
+ * performing the perspective divide by w.
+ */
+function transformPoint(
+  m: Float32Array,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+  return [
+    (m[0] * x + m[4] * y + m[8]  * z + m[12]) / w,
+    (m[1] * x + m[5] * y + m[9]  * z + m[13]) / w,
+    (m[2] * x + m[6] * y + m[10] * z + m[14]) / w,
+  ];
 }
 
 /**
@@ -173,5 +256,54 @@ export class Camera {
       this.dirty = false;
     }
     return this._viewProjection;
+  }
+
+  /**
+   * Unproject a screen pixel into a world-space ray.
+   *
+   * Converts pixel coords to NDC, computes the inverse VP matrix, and
+   * unprojects two NDC points (near z=0, far z=1) to produce a ray.
+   *
+   * Works with both orthographic (parallel rays) and perspective cameras
+   * (diverging rays from eye point).
+   *
+   * @param pixelX   Horizontal pixel coordinate (0 = left edge)
+   * @param pixelY   Vertical pixel coordinate (0 = top edge)
+   * @param canvasWidth  Canvas width in pixels
+   * @param canvasHeight Canvas height in pixels
+   * @returns A Ray with origin on the near plane and normalized direction
+   */
+  screenToRay(
+    pixelX: number,
+    pixelY: number,
+    canvasWidth: number,
+    canvasHeight: number,
+  ): Ray {
+    // Pixel coords → NDC.  Y is flipped (screen Y-down, NDC Y-up).
+    const ndcX =  (pixelX / canvasWidth)  * 2 - 1;
+    const ndcY = -((pixelY / canvasHeight) * 2 - 1);
+
+    // Inverse view-projection
+    const invVP = mat4Inverse(this.viewProjection);
+    if (invVP === null) {
+      // Degenerate camera — return a default forward ray
+      return { origin: [0, 0, 0], direction: [0, 0, -1] };
+    }
+
+    // Unproject near (z=0) and far (z=1) NDC points — WebGPU depth range [0,1]
+    const near = transformPoint(invVP, ndcX, ndcY, 0);
+    const far  = transformPoint(invVP, ndcX, ndcY, 1);
+
+    // Direction = normalized(far - near)
+    const dx = far[0] - near[0];
+    const dy = far[1] - near[1];
+    const dz = far[2] - near[2];
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const invLen = len > 0 ? 1 / len : 0;
+
+    return {
+      origin: near,
+      direction: [dx * invLen, dy * invLen, dz * invLen],
+    };
   }
 }
