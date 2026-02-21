@@ -25,6 +25,9 @@ interface RenderState {
   texIndices: ArrayBuffer;
   primParams: ArrayBuffer;
   entityIds: ArrayBuffer;
+  listenerX?: number;
+  listenerY?: number;
+  listenerZ?: number;
 }
 
 let latestRenderState: RenderState | null = null;
@@ -80,6 +83,9 @@ function renderLoop(): void {
         texIndices: new Uint32Array(latestRenderState.texIndices),
         primParams: new Float32Array(latestRenderState.primParams ?? []),
         entityIds: new Uint32Array(latestRenderState.entityIds ?? []),
+        listenerX: latestRenderState.listenerX ?? 0,
+        listenerY: latestRenderState.listenerY ?? 0,
+        listenerZ: latestRenderState.listenerZ ?? 0,
       }, camera);
     }
 

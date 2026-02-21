@@ -18,6 +18,9 @@ export interface GPURenderState {
   texIndices: Uint32Array;     // 1 u32/entity
   primParams: Float32Array;    // 8 f32/entity (primitive parameters)
   entityIds: Uint32Array;      // 1 u32/entity (external entity ID)
+  listenerX: number;           // audio listener world-space X
+  listenerY: number;           // audio listener world-space Y
+  listenerZ: number;           // audio listener world-space Z
 }
 
 export interface EngineBridge {
@@ -78,6 +81,9 @@ export function createWorkerBridge(
         texIndices: new Uint32Array(msg.renderState.texIndices),
         primParams: new Float32Array(msg.renderState.primParams ?? []),
         entityIds: new Uint32Array(msg.renderState.entityIds ?? []),
+        listenerX: msg.renderState.listenerX ?? 0,
+        listenerY: msg.renderState.listenerY ?? 0,
+        listenerZ: msg.renderState.listenerZ ?? 0,
       };
     }
   };
@@ -287,6 +293,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
           primParams: ppPtr ? new Float32Array(new Float32Array(engine.memory.buffer, ppPtr, ppLen)) : new Float32Array(0),
           entityIds: eidPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, eidPtr, eidLen)) : new Uint32Array(0),
+          listenerX: 0,
+          listenerY: 0,
+          listenerZ: 0,
         };
       } else {
         latestRenderState = {
@@ -297,6 +306,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           texIndices: new Uint32Array(0),
           primParams: new Float32Array(0),
           entityIds: new Uint32Array(0),
+          listenerX: 0,
+          listenerY: 0,
+          listenerZ: 0,
         };
       }
     },
