@@ -405,6 +405,9 @@ export class Hyperion implements Disposable {
 
   /** Per-frame tick: advance the ECS then render if state is available. */
   private tick(dt: number): void {
+    // Send camera position to WASM before tick so it can extrapolate during simulation
+    this.bridge.commandBuffer.setListenerPosition(this.cameraApi.x, this.cameraApi.y, 0);
+
     this.bridge.tick(dt);
     const state = this.bridge.latestRenderState;
     if (state && state.entityIds && this.immediateState.count > 0) {
@@ -415,8 +418,10 @@ export class Hyperion implements Disposable {
       this.renderer.render(state, this.camera);
     }
     this.inputManager.resetFrame();
-    if (this.audioManager.isInitialized) {
-      this.audioManager.setListenerPosition(this.cameraApi.x, this.cameraApi.y);
+
+    // Read WASM-extrapolated listener position from render state
+    if (state && this.audioManager.isInitialized) {
+      this.audioManager.setListenerPosition(state.listenerX, state.listenerY);
     }
   }
 
