@@ -25,6 +25,17 @@ export class InputManager {
   private readonly pointerMoveCallbacks = new Set<PointerMoveCallback>();
   private readonly scrollCallbacks = new Set<ScrollCallback>();
 
+  // DOM attachment state
+  private attachedTarget: EventTarget | null = null;
+  private readonly boundHandlers = {
+    keydown: (e: Event) => this.onDomKeyDown(e),
+    keyup: (e: Event) => this.onDomKeyUp(e),
+    pointermove: (e: Event) => this.onDomPointerMove(e),
+    pointerdown: (e: Event) => this.onDomPointerDown(e),
+    pointerup: (e: Event) => this.onDomPointerUp(e),
+    wheel: (e: Event) => this.onDomWheel(e),
+  };
+
   // ── Keyboard ──────────────────────────────────────────────────────
 
   /** Whether a keyboard key is currently held down. */
@@ -169,7 +180,86 @@ export class InputManager {
     this.scrollCallbacks.clear();
   }
 
-  // ── Internal ──────────────────────────────────────────────────────
+  // ── DOM attachment ────────────────────────────────────────────────
+
+  /**
+   * Attach DOM event listeners to the given target (typically a canvas or document).
+   * Only one target may be attached at a time; calling attach again detaches the previous.
+   */
+  attach(target: EventTarget): void {
+    if (this.attachedTarget) {
+      this.detach();
+    }
+    this.attachedTarget = target;
+    target.addEventListener('keydown', this.boundHandlers.keydown);
+    target.addEventListener('keyup', this.boundHandlers.keyup);
+    target.addEventListener('pointermove', this.boundHandlers.pointermove);
+    target.addEventListener('pointerdown', this.boundHandlers.pointerdown);
+    target.addEventListener('pointerup', this.boundHandlers.pointerup);
+    target.addEventListener('wheel', this.boundHandlers.wheel, { passive: false });
+  }
+
+  /** Remove all DOM event listeners from the attached target. */
+  detach(): void {
+    const target = this.attachedTarget;
+    if (!target) return;
+    target.removeEventListener('keydown', this.boundHandlers.keydown);
+    target.removeEventListener('keyup', this.boundHandlers.keyup);
+    target.removeEventListener('pointermove', this.boundHandlers.pointermove);
+    target.removeEventListener('pointerdown', this.boundHandlers.pointerdown);
+    target.removeEventListener('pointerup', this.boundHandlers.pointerup);
+    target.removeEventListener('wheel', this.boundHandlers.wheel);
+    this.attachedTarget = null;
+  }
+
+  /** Detach from DOM, clear all state, and remove all callbacks. */
+  destroy(): void {
+    this.detach();
+    this.keysDown.clear();
+    this.buttonsDown.clear();
+    this._pointerX = 0;
+    this._pointerY = 0;
+    this._scrollDeltaX = 0;
+    this._scrollDeltaY = 0;
+    this.removeAllListeners();
+  }
+
+  // ── Internal: DOM event handlers ──────────────────────────────────
+
+  private onDomKeyDown(e: Event): void {
+    const ke = e as KeyboardEvent;
+    this.handleKeyDown(ke.code);
+  }
+
+  private onDomKeyUp(e: Event): void {
+    const ke = e as KeyboardEvent;
+    this.handleKeyUp(ke.code);
+  }
+
+  private onDomPointerMove(e: Event): void {
+    const pe = e as PointerEvent;
+    this.handlePointerMove(pe.offsetX, pe.offsetY);
+  }
+
+  private onDomPointerDown(e: Event): void {
+    const pe = e as PointerEvent;
+    this.handlePointerDown(pe.button, pe.offsetX, pe.offsetY);
+  }
+
+  private onDomPointerUp(e: Event): void {
+    const pe = e as PointerEvent;
+    this.handlePointerUp(pe.button, pe.offsetX, pe.offsetY);
+  }
+
+  private onDomWheel(e: Event): void {
+    const we = e as WheelEvent;
+    if (typeof we.preventDefault === 'function') {
+      we.preventDefault();
+    }
+    this.handleScroll(we.deltaX, we.deltaY);
+  }
+
+  // ── Internal: callback dispatch ───────────────────────────────────
 
   private fireKeyCallbacks(code: string): void {
     // Fire exact-match callbacks

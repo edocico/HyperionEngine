@@ -184,4 +184,97 @@ describe('InputManager', () => {
       expect(scrollFn).not.toHaveBeenCalled();
     });
   });
+
+  describe('DOM attach/detach', () => {
+    /**
+     * Helper: create a bare EventTarget and dispatch events with custom properties.
+     * Node.js has EventTarget but not KeyboardEvent/PointerEvent/WheelEvent,
+     * so we use Object.assign on plain Event instances.
+     */
+    function fireEvent(target: EventTarget, type: string, props: Record<string, unknown>): void {
+      const event = Object.assign(new Event(type), props);
+      target.dispatchEvent(event);
+    }
+
+    it('attaches and responds to keyboard events', () => {
+      const im = new InputManager();
+      const target = new EventTarget();
+      im.attach(target);
+
+      fireEvent(target, 'keydown', { code: 'KeyW' });
+      expect(im.isKeyDown('KeyW')).toBe(true);
+
+      fireEvent(target, 'keyup', { code: 'KeyW' });
+      expect(im.isKeyDown('KeyW')).toBe(false);
+    });
+
+    it('responds to pointer events', () => {
+      const im = new InputManager();
+      const target = new EventTarget();
+      im.attach(target);
+
+      fireEvent(target, 'pointermove', { offsetX: 150, offsetY: 250 });
+      expect(im.pointerX).toBe(150);
+      expect(im.pointerY).toBe(250);
+
+      fireEvent(target, 'pointerdown', { button: 0, offsetX: 160, offsetY: 260 });
+      expect(im.isPointerDown(0)).toBe(true);
+
+      fireEvent(target, 'pointerup', { button: 0, offsetX: 170, offsetY: 270 });
+      expect(im.isPointerDown(0)).toBe(false);
+    });
+
+    it('responds to wheel events with preventDefault', () => {
+      const im = new InputManager();
+      const target = new EventTarget();
+      im.attach(target);
+
+      // Wheel events should call handleScroll
+      fireEvent(target, 'wheel', { deltaX: 5, deltaY: -10, preventDefault: vi.fn() });
+      expect(im.scrollDeltaX).toBe(5);
+      expect(im.scrollDeltaY).toBe(-10);
+    });
+
+    it('detach removes listeners', () => {
+      const im = new InputManager();
+      const target = new EventTarget();
+      im.attach(target);
+      im.detach();
+
+      fireEvent(target, 'keydown', { code: 'KeyA' });
+      expect(im.isKeyDown('KeyA')).toBe(false);
+
+      fireEvent(target, 'pointermove', { offsetX: 999, offsetY: 999 });
+      expect(im.pointerX).toBe(0);
+    });
+
+    it('destroy clears state and detaches', () => {
+      const im = new InputManager();
+      const target = new EventTarget();
+      im.attach(target);
+
+      // Build up some state
+      im.handleKeyDown('KeyA');
+      im.handlePointerDown(0, 10, 20);
+      im.handleScroll(5, 5);
+      const fn = vi.fn();
+      im.onKey('*', fn);
+
+      im.destroy();
+
+      // State is cleared
+      expect(im.isKeyDown('KeyA')).toBe(false);
+      expect(im.isPointerDown(0)).toBe(false);
+      expect(im.scrollDeltaX).toBe(0);
+      expect(im.scrollDeltaY).toBe(0);
+
+      // Listeners are gone: DOM events no longer tracked
+      fireEvent(target, 'keydown', { code: 'KeyB' });
+      expect(im.isKeyDown('KeyB')).toBe(false);
+
+      // Callbacks are gone
+      im.handleKeyDown('Space');
+      expect(fn).not.toHaveBeenCalled();
+    });
+  });
 });
