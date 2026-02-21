@@ -54,4 +54,29 @@ export class ImmediateState {
       }
     }
   }
+
+  /**
+   * Patch the SoA bounds buffer with immediate-mode overrides.
+   *
+   * For each overridden entity, finds its SoA index via entityIds lookup
+   * and writes the shadow position into bounds xyz (offsets 0, 1, 2
+   * in the 4-float-per-entity layout). Radius (offset 3) is NOT patched.
+   */
+  patchBounds(
+    bounds: Float32Array,
+    entityIds: Uint32Array,
+    entityCount: number,
+  ): void {
+    if (this.overrides.size === 0) return;
+    for (let i = 0; i < entityCount; i++) {
+      const pos = this.overrides.get(entityIds[i]);
+      if (pos) {
+        const base = i * 4; // bounds layout: [x, y, z, radius]
+        bounds[base]     = pos[0]; // x
+        bounds[base + 1] = pos[1]; // y
+        bounds[base + 2] = pos[2]; // z
+        // bounds[base + 3] = radius — intentionally NOT patched
+      }
+    }
+  }
 }

@@ -90,6 +90,50 @@ describe('ImmediateState', () => {
     expect(transforms[1 * 16 + 15]).toBe(1); // m33
   });
 
+  it('patchBounds modifies bounds buffer at correct offsets', () => {
+    const state = new ImmediateState();
+    // 2 entities, bounds layout: [x, y, z, radius] per entity
+    const bounds = new Float32Array([
+      0, 0, -5, 1.0,   // entity 10: position (0,0,-5), radius 1
+      5, 5, -3, 2.0,   // entity 20: position (5,5,-3), radius 2
+    ]);
+    const entityIds = new Uint32Array([10, 20]);
+
+    // Override entity 20 to position (7, 8, 9)
+    state.set(20, 7, 8, 9);
+
+    state.patchBounds(bounds, entityIds, 2);
+
+    // Entity 10 (index 0) should be unchanged
+    expect(bounds[0]).toBe(0);
+    expect(bounds[1]).toBe(0);
+    expect(bounds[2]).toBe(-5);
+    expect(bounds[3]).toBe(1.0); // radius preserved
+
+    // Entity 20 (index 1) should have overridden xyz
+    expect(bounds[4]).toBe(7);
+    expect(bounds[5]).toBe(8);
+    expect(bounds[6]).toBe(9);
+    expect(bounds[7]).toBe(2.0); // radius preserved!
+  });
+
+  it('patchBounds skips entities not in override map', () => {
+    const state = new ImmediateState();
+    const bounds = new Float32Array([10, 20, 30, 1.5]);
+    const entityIds = new Uint32Array([42]);
+
+    // Override entity 999 which is NOT in the SoA
+    state.set(999, 7, 8, 9);
+
+    state.patchBounds(bounds, entityIds, 1);
+
+    // Original values should be unchanged
+    expect(bounds[0]).toBe(10);
+    expect(bounds[1]).toBe(20);
+    expect(bounds[2]).toBe(30);
+    expect(bounds[3]).toBe(1.5);
+  });
+
   it('patchTransforms skips entities not in SoA', () => {
     const state = new ImmediateState();
     // 2 entities
