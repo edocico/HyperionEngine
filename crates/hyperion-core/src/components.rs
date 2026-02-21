@@ -151,6 +151,14 @@ impl Default for Children {
     }
 }
 
+/// Heap fallback for entities with more than 32 children.
+/// Only attached when Children::add() overflows.
+/// NOT #[repr(C)]/Pod — contains Vec (heap-allocated). Never uploaded to GPU.
+#[derive(Debug, Clone)]
+pub struct OverflowChildren {
+    pub items: Vec<u32>,
+}
+
 /// Local-space model matrix (relative to parent).
 #[derive(Debug, Clone, Copy)]
 pub struct LocalMatrix(pub [f32; 16]);
@@ -373,5 +381,16 @@ mod tests {
         c.add(1);
         assert!(!c.remove(999));
         assert_eq!(c.count, 1);
+    }
+
+    #[test]
+    fn overflow_children_basic() {
+        let mut oc = OverflowChildren { items: vec![] };
+        oc.items.push(100);
+        oc.items.push(200);
+        assert_eq!(oc.items.len(), 2);
+        oc.items.retain(|&id| id != 100);
+        assert_eq!(oc.items.len(), 1);
+        assert_eq!(oc.items[0], 200);
     }
 }
