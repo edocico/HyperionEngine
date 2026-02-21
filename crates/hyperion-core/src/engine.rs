@@ -53,8 +53,11 @@ impl Engine {
                 let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
                 let new_pos = [x, y, z];
                 let dt = FIXED_DT;
-                for i in 0..3 {
-                    self.listener_vel[i] = (new_pos[i] - self.listener_prev_pos[i]) / dt;
+                for ((vel, &np), &prev) in self.listener_vel.iter_mut()
+                    .zip(new_pos.iter())
+                    .zip(self.listener_prev_pos.iter())
+                {
+                    *vel = (np - prev) / dt;
                 }
                 self.listener_pos = new_pos;
                 self.listener_prev_pos = new_pos;
@@ -101,8 +104,8 @@ impl Engine {
     /// A single fixed-timestep tick.
     fn fixed_tick(&mut self) {
         velocity_system(&mut self.world, FIXED_DT);
-        for i in 0..3 {
-            self.listener_pos[i] += self.listener_vel[i] * FIXED_DT;
+        for (pos, &vel) in self.listener_pos.iter_mut().zip(self.listener_vel.iter()) {
+            *pos += vel * FIXED_DT;
         }
     }
 

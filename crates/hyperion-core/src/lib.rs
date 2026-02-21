@@ -295,6 +295,39 @@ pub fn engine_entity_map_capacity() -> u32 {
     }
 }
 
+/// Returns the extrapolated listener X position.
+#[wasm_bindgen]
+pub fn engine_listener_x() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.listener_x())
+    }
+}
+
+/// Returns the extrapolated listener Y position.
+#[wasm_bindgen]
+pub fn engine_listener_y() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.listener_y())
+    }
+}
+
+/// Returns the extrapolated listener Z position.
+#[wasm_bindgen]
+pub fn engine_listener_z() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.listener_z())
+    }
+}
+
 /// Smoke test.
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
