@@ -305,6 +305,8 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
             }
 
             CommandType::Noop => {}
+
+            CommandType::SetListenerPosition => {} // handled in Engine::process_commands
         }
     }
 }

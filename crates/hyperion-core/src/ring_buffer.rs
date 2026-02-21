@@ -45,6 +45,7 @@ pub enum CommandType {
     SetParent = 10,
     SetPrimParams0 = 11,   // params[0..3], 4 × f32 = 16 bytes
     SetPrimParams1 = 12,   // params[4..7], 4 × f32 = 16 bytes
+    SetListenerPosition = 13, // listener xyz, 3 × f32 = 12 bytes
 }
 
 impl CommandType {
@@ -64,6 +65,7 @@ impl CommandType {
             10 => Some(Self::SetParent),
             11 => Some(Self::SetPrimParams0),
             12 => Some(Self::SetPrimParams1),
+            13 => Some(Self::SetListenerPosition),
             _ => None,
         }
     }
@@ -79,6 +81,7 @@ impl CommandType {
             Self::SetRenderPrimitive => 4,  // u8 padded to 4 for alignment
             Self::SetParent => 4,           // parent entity id (u32 LE), 0xFFFFFFFF = unparent
             Self::SetPrimParams0 | Self::SetPrimParams1 => 16, // 4 × f32
+            Self::SetListenerPosition => 12, // 3 × f32
         }
     }
 
@@ -610,5 +613,30 @@ mod tests {
         // A second drain should yield nothing.
         let commands2 = consumer.drain();
         assert!(commands2.is_empty());
+    }
+
+    #[test]
+    fn parse_set_listener_position() {
+        let mut data = Vec::new();
+        data.push(CommandType::SetListenerPosition as u8);
+        data.extend_from_slice(&0u32.to_le_bytes()); // entity_id = 0 (sentinel)
+        data.extend_from_slice(&1.5f32.to_le_bytes()); // x
+        data.extend_from_slice(&2.5f32.to_le_bytes()); // y
+        data.extend_from_slice(&3.5f32.to_le_bytes()); // z
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetListenerPosition);
+        assert_eq!(cmds[0].entity_id, 0);
+        let x = f32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        let y = f32::from_le_bytes(cmds[0].payload[4..8].try_into().unwrap());
+        let z = f32::from_le_bytes(cmds[0].payload[8..12].try_into().unwrap());
+        assert_eq!((x, y, z), (1.5, 2.5, 3.5));
+    }
+
+    #[test]
+    fn set_listener_position_payload_size_is_12() {
+        let cmd_type = CommandType::from_u8(13).unwrap();
+        assert_eq!(cmd_type, CommandType::SetListenerPosition);
+        assert_eq!(cmd_type.payload_size(), 12);
     }
 }
