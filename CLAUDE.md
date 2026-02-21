@@ -17,18 +17,18 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (88 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (99 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
-cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (15 tests)
-cargo test -p hyperion-core engine           # Engine tests only (6 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (26 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (12 tests)
-cargo test -p hyperion-core systems          # Systems tests only (6 tests)
-cargo test -p hyperion-core components       # Component tests only (19 tests)
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (19 tests)
+cargo test -p hyperion-core engine           # Engine tests only (9 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (27 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (15 tests)
+cargo test -p hyperion-core systems          # Systems tests only (7 tests)
+cargo test -p hyperion-core components       # Component tests only (23 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -48,14 +48,14 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (364 tests)
+cd ts && npm test                            # All vitest tests (367 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run specific test files
-cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (16 tests)
+cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (17 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
 cd ts && npx vitest run src/capabilities.test.ts              # Capability detection (4 tests)
@@ -85,7 +85,7 @@ cd ts && npx vitest run src/types.test.ts                     # Config types + d
 cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
 cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (24 tests)
 cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing (8 tests)
-cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state (8 tests)
+cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state + bounds patching (10 tests)
 cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
 cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
 cd ts && npx vitest run src/audio-types.test.ts               # Audio branded types + defaults (3 tests)
@@ -163,11 +163,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity` |
-| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z` |
+| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy. Listener position state with velocity derivation and extrapolation |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (13 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`), `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (14 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`, `SetListenerPosition`), `Command` struct |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
 
@@ -175,7 +175,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`, `input` (InputManager), `picking` (hitTest API), `audio` (AudioManager), immediate-mode transform patching, auto-updates audio listener from camera per tick. `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`, `input` (InputManager), `picking` (hitTest API), `audio` (AudioManager), immediate-mode transform + bounds patching, ring-buffer-driven audio listener (camera → WASM → extrapolated → PlaybackEngine). `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.data/.positionImmediate/.clearImmediate`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking |
@@ -187,14 +187,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `index.ts` | Barrel export for public API surface |
 | `capabilities.ts` | Detects browser features, selects ExecutionMode A/B/C |
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
-| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B). `GPURenderState` includes `entityIds: Uint32Array` |
+| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B). `GPURenderState` includes `entityIds: Uint32Array` and `listenerX/Y/Z: number` |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
 | `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). Demonstrates click-to-select with spatial audio, WASD camera, scroll-zoom |
 | `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass` + `FXAATonemapPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Multi-primitive pipeline with per-type shaders. Optional JFA selection outline pipeline (`SelectionSeedPass` → `JFAPass×N` → `OutlineCompositePass`). `SelectionManager` integration + `enableOutlines`/`disableOutlines` API. `onDeviceLost` callback + `device.lost` listener |
 | `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` (pixel → world-space `Ray`). Forward-compatible with perspective cameras |
 | `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
-| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, etc.) |
+| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, setListenerPosition, etc.) |
 | `supervisor.ts` | `WorkerSupervisor` — Worker heartbeat monitoring + timeout detection with configurable intervals |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type — modular rendering pipeline abstraction with reads/writes resource declarations |
 | `render/resource-pool.ts` | `ResourcePool` — named registry for GPU resources (GPUBuffer, GPUTexture, GPUTextureView, GPUSampler) |
@@ -208,11 +208,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference implementation of Blelloch exclusive scan |
 | `input-manager.ts` | `InputManager` — keyboard (`isKeyDown`), pointer (`pointerX/Y`, `isButtonDown`), scroll (`scrollDeltaX/Y`) state tracking + callback registration (`onKey`/`onClick`/`onPointerMove`/`onScroll` with unsubscribe). DOM `attach`/`detach`/`destroy` lifecycle |
 | `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection against SoA bounds buffer. Returns closest hit entityId (smallest positive t) or null. `Ray` interface. 2.5D/3D-ready |
-| `immediate-state.ts` | `ImmediateState` — Shadow position map (`Map<entityId, [x,y,z]>`) for zero-latency rendering. `patchTransforms()` patches SoA transform column 3 before GPU upload |
+| `immediate-state.ts` | `ImmediateState` — Shadow position map (`Map<entityId, [x,y,z]>`) for zero-latency rendering. `patchTransforms()` patches SoA transform column 3 before GPU upload. `patchBounds()` patches SoA bounds xyz (stride 4, preserves radius) for consistent picking |
 | `selection.ts` | `SelectionManager` — CPU-side `Set<number>` with dirty tracking + GPU mask upload. `select()/deselect()/toggle()/clear()`, `uploadMask()` |
 | `audio-types.ts` | Branded types `SoundHandle`, `PlaybackId` (zero runtime overhead), `PlaybackOptions`, `SpatialConfig` interfaces, `DEFAULT_PLAYBACK_OPTIONS`, `DEFAULT_SPATIAL_CONFIG` |
 | `sound-registry.ts` | `SoundRegistry` — URL-deduplicated audio buffer management with DI (`AudioDecoder`, `AudioFetcher`). `load()`/`loadAll()`/`unload()`/`destroy()`. O(1) bidirectional handle↔URL mapping |
-| `playback-engine.ts` | `PlaybackEngine` — Web Audio node graph (`source → gain → panner → masterGain → destination`). `play()`/`stop()`/`setVolume()`/`setPitch()`/`setSoundPosition()`/`setListenerPosition()`. 2D spatial: `pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`. Master volume + mute/unmute |
+| `playback-engine.ts` | `PlaybackEngine` — Web Audio node graph (`source → gain → panner → masterGain → destination`). `play()`/`stop()`/`setVolume()`/`setPitch()`/`setSoundPosition()`/`setListenerPosition()`. 2D spatial: `pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`. Spatial updates use `setTargetAtTime` smoothing (15ms TAU) to avoid zipper artifacts. Master volume + mute/unmute |
 | `audio-manager.ts` | `AudioManager` — Public facade wrapping `SoundRegistry` + `PlaybackEngine`. Lazy `AudioContext` init (respects browser autoplay policy). All control methods are safe no-ops before init (optional chaining). `suspend()`/`resume()`/`destroy()` lifecycle. Configurable `SpatialConfig` |
 | `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics` types, `parseFontAtlas()`, `loadFontAtlas()` for MSDF atlas JSON loading |
 | `text/text-layout.ts` | `layoutText()` — Positions glyphs using atlas metrics, returns `LayoutGlyph[]` |
@@ -258,7 +258,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Plugin teardown order** — `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()`. This ensures plugins can still access engine resources during their cleanup phase.
 - **`GameLoop` first-frame sentinel** — `GameLoop` uses `lastTime = -1` sentinel to detect the first RAF callback and set dt=0, avoiding a massive first-frame dt spike (which would be `performance.now()` milliseconds).
 - **Scene graph `SetParent` uses `0xFFFFFFFF` for unparent** — The `SetParent` command payload is a `u32` parent entity ID. The special value `0xFFFFFFFF` means "remove parent" (unparent). This allows the same command type for both parenting and unparenting.
-- **`Children` component uses fixed 32-slot inline array** — No heap allocation for child lists. Entities with more than 32 children will silently drop additional children. This is a design trade-off for cache performance.
+- **`Children` component uses fixed 32-slot inline array with `OverflowChildren` heap fallback** — No heap allocation for child lists up to 32. When the 33rd child is added, an `OverflowChildren(Vec<u32>)` component is attached as a heap-backed fallback. `Children.remove()` returns `bool`; if `false`, the `SetParent` handler checks `OverflowChildren`. Empty `OverflowChildren` is removed automatically.
 - **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders (quad, line, MSDF, gradient, box shadow) MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler). Unused bindings must still be declared for bind group compatibility when switching pipelines within the same render pass.
 - **ForwardPass.SHADER_SOURCES keyed by RenderPrimitiveType** — `Record<number, string>` where keys are `RenderPrimitiveType` values (0=Quad, 1=Line, 2=SDFGlyph, 4=Gradient, 5=BoxShadow). Type 3 (BezierPath) is reserved but not yet implemented. Adding a new primitive type requires: (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES`, (3) optionally extend `EntityHandle` with a convenience method.
 - **Per-type indirect draw at offset `primType * 20`** — CullPass writes 6 consecutive `DrawIndirectArgs` (5 u32 each = 20 bytes). ForwardPass issues `drawIndexedIndirect(buffer, primType * 20)` for each registered type.
@@ -266,7 +266,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **RenderGraph dead-pass culling enables pipeline switching** — When outlines are enabled, `OutlineCompositePass` writes to `swapchain`, which dead-pass culls `FXAATonemapPass`. When outlines are disabled, the outline passes are removed from the graph and `FXAATonemapPass` is restored automatically.
 - **PrimitiveParams is 8 floats per entity** — Split across two ring buffer commands (`SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8]) due to the 16-byte payload limit of the ring buffer protocol.
 - **MSDF text requires external atlas** — `loadFontAtlas(jsonUrl, textureUrl)` loads msdf-atlas-gen JSON metadata + texture. The atlas must be generated externally using msdf-atlas-gen. Glyph UV rectangles are passed via PrimitiveParams.
-- **CPU picking uses bounds, not transforms** — `hitTestRay()` reads from the SoA bounds buffer (entity position + radius). Immediate-mode `patchTransforms()` only patches the transforms buffer, NOT bounds. This means picking during immediate-mode drag uses the WASM-reported position (1-2 frame stale), not the shadow position. For most use cases this is imperceptible.
+- **Immediate-mode patches both transforms and bounds** — `ImmediateState.patchTransforms()` patches SoA transform column 3, and `patchBounds()` patches SoA bounds xyz (stride 4, preserving radius). Both are called in `Hyperion.tick()`. Picking during immediate-mode drag now uses the patched position, not the WASM-reported position (1-2 frame stale).
 - **InputManager.resetFrame() called per tick** — Scroll deltas accumulate within a frame and reset at the end of each tick. Read `scrollDeltaX/Y` in `preTick` hooks, not `frameEnd`.
 - **ExternalId is immutable** — Set once on SpawnEntity, never updated. If entity recycling via free list changes the external ID, a new ExternalId is spawned with the new entity.
 - **Duplicate Ray interface** — `Ray` is defined in both `camera.ts` and `hit-tester.ts` with identical shape `{ origin: [n,n,n], direction: [n,n,n] }`. TypeScript structural typing makes them interchangeable. Future: consolidate to single definition.
@@ -276,8 +276,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **StereoPannerNode browser support** — `StereoPannerNode` is supported in all modern browsers (Chrome 42+, Firefox 52+, Safari 14.1+). Older Safari versions may need a polyfill.
 - **SoundRegistry uses bidirectional maps** — `urlToHandle` + `handleToUrl` for O(1) both directions. Both maps must stay in sync during `load()`/`unload()`/`destroy()`.
 - **PlaybackEngine accepts optional SpatialConfig** — Constructor takes `(ctx: AudioContext, spatial?: SpatialConfig)`. `AudioManager` forwards its merged config. Default: `panSpread=20, rolloff=10, maxDistance=100`.
-- **Audio listener auto-updates from camera** — In `Hyperion.tick()`, after `inputManager.resetFrame()`, the audio listener position is updated from `CameraAPI.x`/`CameraAPI.y` (only if audio is initialized). This means spatial audio automatically tracks the camera without explicit user code.
+- **Audio listener is ring-buffer driven with WASM extrapolation** — In `Hyperion.tick()`, camera position is sent to WASM via `SetListenerPosition` ring buffer command. WASM derives velocity from position delta and extrapolates during fixed ticks. The extrapolated position is read back from `GPURenderState.listenerX/Y/Z` and forwarded to `PlaybackEngine.setListenerPosition()`. This keeps spatial audio in sync with the WASM simulation clock, not the JS render clock.
 - **`source.onended` auto-cleans finished playbacks** — `PlaybackEngine` registers an `onended` handler on each `AudioBufferSourceNode` that calls `cleanup()`. Non-looping sounds are automatically removed from the active map when they finish. No explicit `stop()` needed for fire-and-forget sounds.
+- **`SetListenerPosition` uses entity_id=0 as sentinel** — The `SetListenerPosition` command (discriminant 13) carries 12-byte payload (x, y, z as f32). The entity_id field is always 0 because this is engine-level state, not entity-specific. WASM intercepts it in `process_commands()` before entity lookup.
 
 ## Conventions
 
@@ -291,7 +292,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, Phase 6 (Input System), and Phase 7 (Audio System) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. Phase 7 (Audio System) added: Web Audio API integration with three-layer architecture (`SoundRegistry` for buffer management, `PlaybackEngine` for node graph + spatial audio, `AudioManager` as public facade). Branded types (`SoundHandle`, `PlaybackId`) for type safety. Lazy `AudioContext` initialization respecting browser autoplay policy. 2D spatial audio with `StereoPannerNode` (`pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`). Audio listener auto-updates from camera position per tick. Full lifecycle wiring: `pause()` suspends, `resume()` resumes, `destroy()` tears down audio. DI-based testability (AudioDecoder, AudioFetcher, contextFactory). Public API: `engine.audio`. **Next: Phase 8.**
+Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, Phase 6 (Input System), Phase 7 (Audio System), and Phase 7.5 (Stability Bugfix) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. Phase 7 (Audio System) added: Web Audio API integration with three-layer architecture (`SoundRegistry` for buffer management, `PlaybackEngine` for node graph + spatial audio, `AudioManager` as public facade). Branded types (`SoundHandle`, `PlaybackId`) for type safety. Lazy `AudioContext` initialization respecting browser autoplay policy. 2D spatial audio with `StereoPannerNode` (`pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`). Full lifecycle wiring: `pause()` suspends, `resume()` resumes, `destroy()` tears down audio. DI-based testability (AudioDecoder, AudioFetcher, contextFactory). Public API: `engine.audio`. Phase 7.5 (Stability Bugfix) fixed three real defects: (1) `OverflowChildren(Vec<u32>)` heap fallback for entities with 33+ children (Children.remove() now returns bool), (2) `ImmediateState.patchBounds()` patches SoA bounds buffer for consistent picking during drag, (3) ring-buffer-driven audio listener via `SetListenerPosition` command (discriminant 13) with WASM-side velocity derivation and extrapolation, `engine_listener_x/y/z()` exports, `setTargetAtTime` smoothing in PlaybackEngine. **Next: Phase 8.**
 
 ## Documentation
 
@@ -304,3 +305,5 @@ Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan In
 - `docs/plans/2026-02-20-phase-5.5-rendering-primitives.md` — Phase 5.5 implementation plan (completed). 45 tasks for multi-primitive rendering, post-processing, and selection outlines.
 - `docs/plans/2026-02-21-phase-6-input-system.md` — Phase 6 implementation plan (completed). 24 tasks for input system, CPU picking, and immediate mode.
 - `docs/plans/2026-02-21-phase-7-audio-system.md` — Phase 7 implementation plan (completed). 22 tasks for Web Audio API integration, spatial audio, and engine lifecycle wiring.
+- `docs/plans/2026-02-21-phase-7.5-stability-bugfix-design.md` — Phase 7.5 design doc. Three defect analyses with fix strategies.
+- `docs/plans/2026-02-21-phase-7.5-stability-bugfix.md` — Phase 7.5 implementation plan (completed). 24 tasks for OverflowChildren, immediate-mode bounds patching, and ring-buffer-driven audio listener.

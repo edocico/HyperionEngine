@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.0 (Phase 0-7 complete) | **88 test Rust across 7 moduli + 364 test TypeScript across 37 file**
+> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.1 (Phase 0-7.5 complete) | **99 test Rust across 7 moduli + 367 test TypeScript across 37 file**
 
 ---
 
@@ -173,7 +173,9 @@ HyperionEngine/
 │       ├── 2026-02-20-post-plan-integration-wiring.md       # Post-Plan Integration (completato)
 │       ├── 2026-02-20-phase-5.5-rendering-primitives.md     # Phase 5.5 (completato)
 │       ├── 2026-02-21-phase-6-input-system.md               # Phase 6 Input (completato)
-│       └── 2026-02-21-phase-7-audio-system.md               # Phase 7 Audio (completato)
+│       ├── 2026-02-21-phase-7-audio-system.md               # Phase 7 Audio (completato)
+│       ├── 2026-02-21-phase-7.5-stability-bugfix-design.md  # Phase 7.5 Design (completato)
+│       └── 2026-02-21-phase-7.5-stability-bugfix.md         # Phase 7.5 Implementation (completato)
 ├── crates/
 │   └── hyperion-core/
 │       ├── Cargo.toml                  # Crate config: wasm-bindgen, hecs, glam, bytemuck
@@ -184,17 +186,19 @@ HyperionEngine/
 │           │                           #   engine_entity_map_capacity + altri
 │           ├── engine.rs               # Engine struct: fixed-timestep accumulator, tick loop,
 │           │                           #   spiral-of-death cap, interpolation alpha,
-│           │                           #   propagate_transforms wired into update()
+│           │                           #   propagate_transforms wired into update(),
+│           │                           #   listener position with velocity derivation + extrapolation
 │           ├── command_processor.rs     # EntityMap (sparse Vec + free-list + shrink_to_fit +
 │           │                           #   iter_mapped) + process_commands() incl. SetParent
 │           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum
-│           │                           #   (13 variants incl. SetParent, SetPrimParams0/1),
-│           │                           #   parse_commands()
+│           │                           #   (14 variants incl. SetParent, SetPrimParams0/1,
+│           │                           #   SetListenerPosition), parse_commands()
 │           ├── components.rs           # Position, Rotation, Scale, Velocity, ModelMatrix,
 │           │                           #   BoundingRadius, TextureLayerIndex, MeshHandle,
 │           │                           #   RenderPrimitive, PrimitiveParams, ExternalId,
 │           │                           #   Active, Parent, Children, LocalMatrix
-│           │                           #   — tutti #[repr(C)] Pod
+│           │                           #   — tutti #[repr(C)] Pod.
+│           │                           #   OverflowChildren(Vec<u32>) — heap fallback (NOT Pod)
 │           ├── systems.rs              # velocity_system, transform_system, count_active,
 │           │                           #   propagate_transforms (scene graph hierarchy)
 │           └── render_state.rs         # RenderState: collect() per legacy matrices,
@@ -512,6 +516,7 @@ Itera il `Vec<Command>` e muta il mondo ECS via pattern matching sul `CommandTyp
 | `SetParent` (10) | Set parent + update Children; `0xFFFFFFFF` = unparent | 4 bytes: 1 × u32 LE |
 | `SetPrimParams0` (11) | `prim_params.0[0..4] = [f32; 4]` | 16 bytes: 4 × f32 LE |
 | `SetPrimParams1` (12) | `prim_params.0[4..8] = [f32; 4]` | 16 bytes: 4 × f32 LE |
+| `SetListenerPosition` (13) | Engine-level: updates `listener_pos`, derives velocity | 12 bytes: 3 × f32 LE (x, y, z). entity_id=0 (sentinel) |
 | `Noop` (0) | Nulla | Nessuno |
 
 I comandi su entita inesistenti vengono silenziosamente ignorati (nessun panic). Questo e intenzionale: tra la scrittura del comando su JS e il suo processamento su Rust, l'entita potrebbe essere stata gia despawnata.
@@ -700,6 +705,7 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 #[repr(C)] struct ExternalId(pub u32);            // 4 bytes — immutable external entity ID
 #[repr(C)] struct Parent(pub u32);               // 4 bytes — external parent entity ID
 #[repr(C)] struct Children { count: u32, ids: [u32; 32] } // 132 bytes — fixed inline array
+            struct OverflowChildren { items: Vec<u32> } // heap fallback for 33+ children (NOT #[repr(C)]/Pod)
 #[repr(C)] struct LocalMatrix(pub [f32; 16]);    // 64 bytes — local-space model matrix
             struct Active;                        // 0 bytes (tag component)
 ```
@@ -716,7 +722,8 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
 | `PrimitiveParams` | `[0.0; 8]` | 8 float per entity, usati dai shader di linee/gradienti/box shadow/MSDF text. Split in due comandi ring buffer (SetPrimParams0 per [0..4], SetPrimParams1 per [4..8]) |
 | `ExternalId` | Assegnato da SpawnEntity | ID esterno immutabile, set una volta allo spawn. Usato per SoA entity ID tracking (picking, immediate-mode) |
 | `Parent` | — (not spawned by default) | External parent entity ID. Added via `SetParent` command |
-| `Children` | `count: 0, ids: [0; 32]` | Fixed 32-slot inline array of child external IDs. No heap allocation |
+| `Children` | `count: 0, ids: [0; 32]` | Fixed 32-slot inline array of child external IDs. No heap allocation. `remove()` returns `bool` |
+| `OverflowChildren` | `items: Vec::new()` | Heap fallback for 33+ children. NOT `#[repr(C)]`/Pod. Attached when `Children.add()` returns false. Removed when empty |
 | `LocalMatrix` | `Mat4::IDENTITY` | Local-space model matrix before parent transform. Used by `propagate_transforms` |
 | `Active` | — | Marker component: entita attiva e simulabile |
 
@@ -741,7 +748,8 @@ Tutti i componenti spaziali sono `#[repr(C)]` con `bytemuck::Pod` + `Zeroable`. 
           SetRenderPrimitive = 9,            SetParent = 10,
           SetParent = 10,                    SetPrimParams0 = 11,
           SetPrimParams0 = 11,               SetPrimParams1 = 12,
-          SetPrimParams1 = 12,             }
+          SetPrimParams1 = 12,               SetListenerPosition = 13,
+          SetListenerPosition = 13,        }
       }
 ```
 
@@ -764,6 +772,7 @@ I discriminanti `u8` **devono restare sincronizzati manualmente**. Non esiste co
 | SetParent (10) | 4 (1 × u32, 0xFFFFFFFF = unparent) | 9 |
 | SetPrimParams0 (11) | 16 (4 × f32) | 21 |
 | SetPrimParams1 (12) | 16 (4 × f32) | 21 |
+| SetListenerPosition (13) | 12 (3 × f32) | 17 |
 
 ### Command
 
@@ -789,6 +798,9 @@ interface GPURenderState {
     texIndices: Uint32Array;       // SoA: 1 u32/entity (packed tier|layer)
     primParams: Float32Array;      // SoA: 8 f32/entity (shader params per primitive type)
     entityIds: Uint32Array;        // SoA: 1 u32/entity (external ID, CPU-only for picking)
+    listenerX: number;             // Audio listener X (WASM-extrapolated)
+    listenerY: number;             // Audio listener Y (WASM-extrapolated)
+    listenerZ: number;             // Audio listener Z (WASM-extrapolated)
 }
 
 interface EngineBridge {
@@ -811,8 +823,13 @@ pub struct Engine {
     pub entity_map: EntityMap,     // ID esterno → Entity interno
     accumulator: f32,              // Tempo residuo non ancora consumato da tick fissi
     tick_count: u64,               // Contatore monotono di tick fissi eseguiti
+    listener_pos: [f32; 3],        // Audio listener position (from SetListenerPosition)
+    listener_prev_pos: [f32; 3],   // Previous position (for velocity derivation)
+    listener_vel: [f32; 3],        // Derived velocity (pos - prev) / FIXED_DT
 }
 ```
+
+**Audio listener extrapolation**: `process_commands()` intercepts `SetListenerPosition` before entity lookup (entity_id=0 is a sentinel). It derives velocity from `(new_pos - prev_pos) / FIXED_DT`. During `fixed_tick()`, the listener position is extrapolated: `listener_pos += listener_vel * FIXED_DT`. WASM exports `engine_listener_x/y/z()` expose the extrapolated position for TypeScript to read and forward to `PlaybackEngine`.
 
 L'Engine e il **Mediator** che coordina tutti i sottosistemi. Non e un singleton nel senso classico — e wrappato in un `Option<Engine>` statico mutable solo perche WASM richiede un punto di accesso globale per le funzioni `#[wasm_bindgen]`. Su wasm32 (single-threaded per definizione), `static mut` e sicuro con adeguati commenti `// SAFETY`.
 
@@ -822,7 +839,7 @@ L'Engine e il **Mediator** che coordina tutti i sottosistemi. Non e un singleton
 
 **File**: `crates/hyperion-core/src/lib.rs`
 
-Il layer WASM espone 24 funzioni esterne + 1 smoke test:
+Il layer WASM espone 27 funzioni esterne + 1 smoke test:
 
 ```rust
 static mut ENGINE: Option<Engine> = None;
@@ -871,6 +888,11 @@ static mut RING_BUFFER: Option<RingBufferConsumer> = None;
 #[wasm_bindgen] pub fn engine_compact_entity_map()
 #[wasm_bindgen] pub fn engine_compact_render_state()
 #[wasm_bindgen] pub fn engine_entity_map_capacity() -> u32
+
+// Audio listener position (Phase 7.5) — extrapolated by WASM fixed ticks
+#[wasm_bindgen] pub fn engine_listener_x() -> f32
+#[wasm_bindgen] pub fn engine_listener_y() -> f32
+#[wasm_bindgen] pub fn engine_listener_z() -> f32
 
 #[wasm_bindgen] pub fn add(a: i32, b: i32) -> i32  // smoke test
 ```
@@ -1012,7 +1034,7 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                   TextureLayerIndex, MeshHandle,               ║
 ║                   RenderPrimitive, PrimitiveParams,            ║
 ║                   ExternalId, Active, Parent,                  ║
-║                   Children, LocalMatrix                        ║
+║                   Children, OverflowChildren, LocalMatrix      ║
 ║  systems.rs    → velocity_system, transform_system,           ║
 ║                   propagate_transforms, count_active           ║
 ║  hecs::World   → Archetype storage, component queries         ║
@@ -1363,7 +1385,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (88 test Rust across 7 moduli + 364 test TypeScript across 37 file)
+### Struttura (99 test Rust across 7 moduli + 367 test TypeScript across 37 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1371,22 +1393,26 @@ Il test suite e organizzato in due livelli per linguaggio:
 
 ```
 crates/hyperion-core/src/
-  ring_buffer.rs          17 test: empty drain, spawn read, position+payload, multiple cmds,
+  ring_buffer.rs          19 test: empty drain, spawn read, position+payload, multiple cmds,
                                    read_head advance, parse_commands (spawn, position, multiple,
                                    incomplete, empty, set_texture_layer, set_parent, set_mesh_handle,
-                                   set_render_primitive), header size, set_prim_params round-trip
-  components.rs           20 test: default values, Pod transmute, texture layer pack/unpack,
+                                   set_render_primitive, set_listener_position), header size,
+                                   set_prim_params round-trip
+  components.rs           23 test: default values, Pod transmute, texture layer pack/unpack,
                                    MeshHandle/RenderPrimitive defaults + custom values,
                                    PrimitiveParams Pod + default, ExternalId,
-                                   Parent/Children/LocalMatrix defaults + Pod + child add/remove
-  command_processor.rs    13 test: spawn, set position, despawn, ID recycling, set_texture_layer,
+                                   Parent/Children/LocalMatrix defaults + Pod + child add/remove,
+                                   OverflowChildren heap fallback
+  command_processor.rs    15 test: spawn, set position, despawn, ID recycling, set_texture_layer,
                                    set_mesh_handle, set_render_primitive, nonexistent entity safety,
                                    set_parent with child bookkeeping, shrink_to_fit,
                                    process_set_prim_params, spawn_sets_external_id,
-                                   set_parent_with_max_sentinel_unparents
-  engine.rs                6 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
-                                   render_state collected after update, propagate parent transforms
-  systems.rs               6 test: velocity moves position, transform→matrix, transform applies scale,
+                                   set_parent_with_max_sentinel_unparents,
+                                   overflow_children heap fallback, set_listener_position
+  engine.rs                9 test: commands+ticks integration, accumulator, spiral-of-death, model matrix,
+                                   render_state collected after update, propagate parent transforms,
+                                   listener position extrapolation
+  systems.rs               7 test: velocity moves position, transform→matrix, transform applies scale,
                                    count_active, propagate_transforms applies parent matrix,
                                    propagate_transforms skips unparented
   render_state.rs         27 test: collect matrices, clear previous, ptr null/valid, collect_gpu single/
@@ -1402,8 +1428,9 @@ crates/hyperion-core/src/
 ```
 ts/src/
   capabilities.test.ts              4 test: Mode A/B/C selection across capability combinations
-  ring-buffer.test.ts               16 test: free space, spawn write, position+payload, overflow, sequential,
-                                           SetTextureLayer, TypedArray fast path, wrap-around
+  ring-buffer.test.ts               17 test: free space, spawn write, position+payload, overflow, sequential,
+                                           SetTextureLayer, TypedArray fast path, wrap-around,
+                                           SetListenerPosition
   ring-buffer-utils.test.ts          4 test: ring buffer utility functions (extractUnread)
   camera.test.ts                    19 test: orthographic NDC mapping, Camera class, frustum planes,
                                            mat4Inverse, screenToRay
@@ -1442,7 +1469,7 @@ ts/src/
   input-manager.test.ts             24 test: keyboard isKeyDown, pointer position/buttons, scroll deltas,
                                            onKey/onClick/onPointerMove/onScroll callbacks, DOM lifecycle
   hit-tester.test.ts                 8 test: ray-sphere intersection, closest hit, miss, 2.5D depth ordering
-  immediate-state.test.ts            8 test: shadow position map, patchTransforms, set/get/clear
+  immediate-state.test.ts           10 test: shadow position map, patchTransforms, patchBounds, set/get/clear
   input-picking.test.ts              3 test: input→picking integration, screenToRay→hitTest pipeline
   text/text-layout.test.ts           3 test: MSDF text layout, glyph positioning, atlas metrics
   audio-types.test.ts                3 test: branded types SoundHandle/PlaybackId, defaults
@@ -1478,17 +1505,17 @@ I test Rust verificano il lato consumer con buffer simulati in memoria heap (non
 ### Comandi
 
 ```bash
-# Rust — 88 test
+# Rust — 99 test
 cargo test -p hyperion-core                           # Tutti
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped  # Singolo
-cargo test -p hyperion-core ring_buffer               # Ring buffer (17 test)
+cargo test -p hyperion-core ring_buffer               # Ring buffer (19 test)
 cargo test -p hyperion-core render_state              # Render state (27 test)
-cargo test -p hyperion-core components                # Components (20 test)
-cargo test -p hyperion-core command_proc              # Command processor (13 test)
-cargo test -p hyperion-core systems                   # Systems (6 test)
+cargo test -p hyperion-core components                # Components (23 test)
+cargo test -p hyperion-core command_proc              # Command processor (15 test)
+cargo test -p hyperion-core systems                   # Systems (7 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 364 test
+# TypeScript — 367 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
@@ -1614,7 +1641,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Plugin teardown order matters | Plugins may reference engine resources during cleanup | `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()` |
 | `GameLoop` first-frame dt spike | `performance.now()` would be the entire page lifetime | Uses `lastTime = -1` sentinel to detect first RAF callback and set dt=0 |
 | `SetParent` uses `0xFFFFFFFF` for unparent | Same command type for both parenting and unparenting | Payload is parent entity ID; special value `0xFFFFFFFF` means "remove parent" |
-| `Children` fixed 32-slot inline array | Cache performance trade-off over heap allocation | Entities with more than 32 children silently drop additional children |
+| `Children` fixed 32-slot inline array + `OverflowChildren` heap fallback | Cache performance trade-off with safety net | Inline array for up to 32 children; `OverflowChildren(Vec<u32>)` heap fallback for 33+. `remove()` returns `bool`, handler checks overflow on `false` |
 
 ---
 
@@ -1649,23 +1676,24 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **5.5** | Rendering Primitives | **Completata** | `PrimitiveParams([f32;8])` component + `SetPrimParams0/1` commands, multi-type CullPass (6 types × DrawIndirectArgs), multi-pipeline ForwardPass (`SHADER_SOURCES`), line rendering (screen-space expansion + SDF dash), MSDF text (FontAtlas + text layout + median SDF), gradient (linear/radial/conic), box shadow (Evan Wallace erf), FXAA + tonemapping (PBR Neutral/ACES), JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass), `SelectionManager`, `enableOutlines()/disableOutlines()` API |
 | **6** | Input System | **Completata** | `ExternalId(u32)` ECS component, `entityIds` SoA buffer, `InputManager` (keyboard/pointer/scroll + callbacks), `Camera.screenToRay()` + `mat4Inverse`, `hitTestRay()` CPU ray-sphere picking, `ImmediateState` shadow position map + transform patching, `SelectionManager` CPU-side + GPU mask, `EntityHandle.positionImmediate()/clearImmediate()`, public API `engine.input`/`engine.picking.hitTest()` |
 | **7** | Audio System | **Completata** | `SoundRegistry` (URL-deduplicated buffer management, DI), `PlaybackEngine` (Web Audio node graph, 2D spatial pan + distance attenuation), `AudioManager` facade (lazy AudioContext, browser autoplay policy), branded types (`SoundHandle`/`PlaybackId`), audio listener auto-update from camera, `pause()`/`resume()`/`destroy()` lifecycle wiring, public API `engine.audio` |
+| **7.5** | Stability Bugfix | **Completata** | `OverflowChildren(Vec<u32>)` heap fallback for 33+ children (`Children.remove()` returns bool), `ImmediateState.patchBounds()` for consistent picking during drag, ring-buffer-driven audio listener via `SetListenerPosition` command (discriminant 13) with WASM velocity derivation + extrapolation, `engine_listener_x/y/z()` exports, `GPURenderState.listenerX/Y/Z`, `setTargetAtTime` smoothing in PlaybackEngine |
 | **8** | TBD | Pianificata | — |
 
 ### Metriche Attuali
 
 | Metrica | Valore |
 | --- | --- |
-| Test Rust | 88 (tutti passanti) |
-| Test TypeScript | 364 (tutti passanti) |
+| Test Rust | 99 (tutti passanti) |
+| Test TypeScript | 367 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
 | Moduli TypeScript | 40+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` × 11, `vite-env.d.ts`) |
 | File test TypeScript | 37 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
-| WASM exports | 25 (24 engine functions + 1 smoke test) |
-| ECS Components | 15 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, ExternalId, Active, Parent, Children, LocalMatrix) |
-| CommandType variants | 13 (Noop + 12 comandi, incl. SetPrimParams0/1) |
+| WASM exports | 28 (27 engine functions + 1 smoke test) |
+| ECS Components | 16 (Position, Rotation, Scale, Velocity, ModelMatrix, BoundingRadius, TextureLayerIndex, MeshHandle, RenderPrimitive, PrimitiveParams, ExternalId, Active, Parent, Children, OverflowChildren, LocalMatrix) |
+| CommandType variants | 14 (Noop + 13 comandi, incl. SetPrimParams0/1, SetListenerPosition) |
 | WGSL Shaders | 11 (basic, line, gradient, box-shadow, msdf-text, fxaa-tonemap, selection-seed, jfa, outline-composite, cull, prefix-sum) |
 | Render Passes | 6 (CullPass, ForwardPass, FXAATonemapPass, SelectionSeedPass, JFAPass, OutlineCompositePass) |
 
@@ -1677,15 +1705,15 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 
 Per aggiungere un comando (es. `SetColor(r, g, b, a)`):
 
-**Rust** (`ring_buffer.rs`): Aggiungere variante a `CommandType`: `SetColor = 13`, aggiungere `from_u8`: `13 => Some(Self::SetColor)`, aggiungere `payload_size`: `Self::SetColor => 16` (4 × f32).
+**Rust** (`ring_buffer.rs`): Aggiungere variante a `CommandType`: `SetColor = 14`, aggiungere `from_u8`: `14 => Some(Self::SetColor)`, aggiungere `payload_size`: `Self::SetColor => 16` (4 × f32).
 
 **Rust** (`command_processor.rs`): Aggiungere branch nel match di `process_commands`.
 
-**TypeScript** (`ring-buffer.ts`): Aggiungere a `CommandType`: `SetColor = 13`, aggiungere a `PAYLOAD_SIZES`: `[CommandType.SetColor]: 16`. Opzionale: aggiungere convenience method su `RingBufferProducer`.
+**TypeScript** (`ring-buffer.ts`): Aggiungere a `CommandType`: `SetColor = 14`, aggiungere a `PAYLOAD_SIZES`: `[CommandType.SetColor]: 16`. Opzionale: aggiungere convenience method su `RingBufferProducer`.
 
 **Test**: Test Rust in `ring_buffer.rs::tests` per il parsing. Test Rust in `command_processor.rs::tests` per la mutazione ECS. Test TypeScript in `ring-buffer.test.ts` per la serializzazione. Test in `integration.test.ts` per la verifica cross-boundary degli offset.
 
-**Nota**: Il prossimo discriminante libero e `13` — `SetPrimParams1` (12) e l'ultimo assegnato.
+**Nota**: Il prossimo discriminante libero e `14` — `SetListenerPosition` (13) e l'ultimo assegnato.
 
 ### 17.2 Aggiungere un Nuovo Componente ECS
 
@@ -1865,7 +1893,7 @@ Eseguito in `Engine::update()` dopo `transform_system()`. Per ogni entita con `P
 
 Questo produce model matrix world-space corrette per la GPU, anche con gerarchie annidate (propagazione ricorsiva indiretta: i parent vengono processati prima dei figli grazie all'ordinamento naturale degli archetype di hecs).
 
-**Limitazione**: `Children` usa un array inline di 32 slot. Nessuna allocazione heap, ma entita con piu di 32 figli perderanno i figli in eccesso silenziosamente.
+**Overflow handling**: `Children` usa un array inline di 32 slot per cache performance. Quando il 33esimo figlio viene aggiunto e `Children.add()` ritorna `false`, il handler `SetParent` attacca un componente `OverflowChildren(Vec<u32>)` come fallback heap-allocated. Alla rimozione, `Children.remove()` ritorna `bool`; se `false`, il handler controlla `OverflowChildren`. Componenti `OverflowChildren` vuoti vengono rimossi automaticamente.
 
 ### 18.7 Memory Compaction
 
@@ -2145,17 +2173,20 @@ RingBuffer command (per WASM)  +  ImmediateState.set(id, x, y, z) (shadow)
     ↓
 In tick(), DOPO bridge.tick() e PRIMA di renderer.render():
     immediateState.patchTransforms(transforms, entityIds, entityCount)
+    immediateState.patchBounds(bounds, entityIds, entityCount)
     ↓
 Scansione SoA: se entityIds[i] ha override, patcha colonna 3 di transforms[i*16+12..14]
+                e patcha bounds[i*4+0..2] (xyz, preservando radius in bounds[i*4+3])
 ```
 
 **`ImmediateState`** (`ts/src/immediate-state.ts`):
 
 - Backing store: `Map<number, [number, number, number]>`
 - `set(id, x, y, z)` / `clear(id)` / `clearAll()`
-- `patchTransforms(transforms, entityIds, count)` modifica il buffer SoA in-place
+- `patchTransforms(transforms, entityIds, count)` modifica il buffer SoA transforms in-place
+- `patchBounds(bounds, entityIds, count)` modifica il buffer SoA bounds xyz in-place (stride 4, preserva radius)
 
-**Limitazione nota**: il patching modifica solo i transform (per rendering), NON i bounds (per culling/picking). Il picking durante drag usa la posizione WASM (1-2 frame stale). Per la maggior parte dei casi d'uso, questa differenza e impercettibile.
+Entrambi i metodi vengono chiamati in `Hyperion.tick()`. Il picking durante drag ora usa la posizione patchata, non quella WASM (1-2 frame stale).
 
 **EntityHandle integration**: `.positionImmediate(x, y, z)` invia sia il comando ring buffer sia aggiorna lo shadow state. `.clearImmediate()` rimuove l'override. Il cleanup e automatico su `destroy()`.
 
@@ -2253,15 +2284,19 @@ resume()  { this.loop.resume();  void this.audioManager.resume(); }
 destroy() { /* ... */ void this.audioManager.destroy(); /* ... */ }
 
 private tick(dt: number) {
-  // ... bridge.tick, immediateState.patch, render ...
-  this.inputManager.resetFrame();
-  if (this.audioManager.isInitialized) {
-    this.audioManager.setListenerPosition(this.cameraApi.x, this.cameraApi.y);
+  // 1. Send camera position to WASM via ring buffer
+  this.bridge.commandBuffer.setListenerPosition(this.cameraApi.x, this.cameraApi.y, 0);
+  // 2. bridge.tick() → WASM derives velocity, extrapolates during fixed ticks
+  this.bridge.tick(dt);
+  // 3. Read extrapolated position from WASM render state
+  const rs = this.bridge.latestRenderState;
+  if (rs && this.audioManager.isInitialized) {
+    this.audioManager.setListenerPosition(rs.listenerX, rs.listenerY);
   }
 }
 ```
 
-**Auto-update listener**: la posizione del listener audio viene aggiornata automaticamente dalla posizione della camera ad ogni tick, senza codice utente esplicito.
+**Ring-buffer-driven listener** (Phase 7.5): la posizione del listener audio NON viene letta direttamente dalla camera. Viene inviata al WASM tramite `SetListenerPosition` command (discriminante 13), dove l'Engine deriva la velocita dal delta posizionale e la extrapola durante i tick fissi. La posizione extrapolata viene letta da `GPURenderState.listenerX/Y/Z` e inoltrata al `PlaybackEngine`. Questo mantiene l'audio spaziale sincronizzato con il clock di simulazione WASM, non con il clock di rendering JS. `PlaybackEngine.applySpatial()` usa `setTargetAtTime` (TAU 15ms) invece di assegnamento diretto `.value =` per evitare artefatti zipper.
 
 ### 22.7 Testabilita
 
