@@ -164,7 +164,7 @@ describe('ImmediateState', () => {
 });
 
 describe('integration: immediate mode + picking', () => {
-  it('hitTest uses bounds (not patched transforms) — known limitation', () => {
+  it('hitTest uses patched bounds — desync fixed', () => {
     const state = new ImmediateState();
 
     // Entity at WASM position (0, 0, -5) with radius 1
@@ -177,19 +177,24 @@ describe('integration: immediate mode + picking', () => {
     // Override entity 42 to position (10, 10, -5) via immediate mode
     state.set(42, 10, 10, -5);
     state.patchTransforms(transforms, entityIds, 1);
+    state.patchBounds(bounds, entityIds, 1);
 
     // Transforms are patched (rendering will show entity at 10, 10)
     expect(transforms[12]).toBe(10);
     expect(transforms[13]).toBe(10);
 
-    // But bounds still has old position — hitTestRay reads from bounds
+    // Bounds are NOW also patched — hitTestRay reads from patched bounds
+    expect(bounds[0]).toBe(10);
+    expect(bounds[1]).toBe(10);
+
+    // A ray at the OLD position should now MISS (bounds moved)
     const ray: Ray = { origin: [0, 0, 100], direction: [0, 0, -1] };
     const result = hitTestRay(ray, bounds, entityIds);
-    expect(result).toBe(42); // still hits at old position (0, 0, -5)
+    expect(result).toBeNull(); // miss: bounds moved to (10, 10, -5)
 
-    // A ray at the new position would miss — bounds not patched
+    // A ray at the NEW position should HIT (bounds patched!)
     const rayAtNew: Ray = { origin: [10, 10, 100], direction: [0, 0, -1] };
     const result2 = hitTestRay(rayAtNew, bounds, entityIds);
-    expect(result2).toBeNull(); // miss: bounds still at (0, 0, -5)
+    expect(result2).toBe(42); // hit! bounds are now at (10, 10, -5)
   });
 });
