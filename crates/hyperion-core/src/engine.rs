@@ -5,7 +5,7 @@ use hecs::World;
 
 use crate::command_processor::{process_commands, EntityMap};
 use crate::render_state::RenderState;
-use crate::ring_buffer::Command;
+use crate::ring_buffer::{Command, CommandType};
 use crate::systems::{propagate_transforms, transform_system, velocity_system};
 
 /// Fixed timestep: 60 ticks per second.
@@ -46,6 +46,20 @@ impl Engine {
     /// Apply a batch of commands to the ECS world.
     /// Called before `update()` each frame.
     pub fn process_commands(&mut self, commands: &[Command]) {
+        for cmd in commands {
+            if cmd.cmd_type == CommandType::SetListenerPosition {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let new_pos = [x, y, z];
+                let dt = FIXED_DT;
+                for i in 0..3 {
+                    self.listener_vel[i] = (new_pos[i] - self.listener_prev_pos[i]) / dt;
+                }
+                self.listener_pos = new_pos;
+                self.listener_prev_pos = new_pos;
+            }
+        }
         process_commands(commands, &mut self.world, &mut self.entity_map);
     }
 
@@ -256,5 +270,25 @@ mod tests {
         assert_eq!(engine.listener_x(), 0.0);
         assert_eq!(engine.listener_y(), 0.0);
         assert_eq!(engine.listener_z(), 0.0);
+    }
+
+    #[test]
+    fn engine_processes_set_listener_position() {
+        let mut engine = Engine::new();
+
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&5.0f32.to_le_bytes());
+        payload[4..8].copy_from_slice(&10.0f32.to_le_bytes());
+        payload[8..12].copy_from_slice(&0.0f32.to_le_bytes());
+
+        let cmd = Command {
+            cmd_type: CommandType::SetListenerPosition,
+            entity_id: 0,
+            payload,
+        };
+        engine.process_commands(&[cmd]);
+
+        assert!((engine.listener_x() - 5.0).abs() < 0.001);
+        assert!((engine.listener_y() - 10.0).abs() < 0.001);
     }
 }
