@@ -1,5 +1,5 @@
-import type { PlaybackId, PlaybackOptions } from './audio-types';
-import { DEFAULT_PLAYBACK_OPTIONS } from './audio-types';
+import type { PlaybackId, PlaybackOptions, SpatialConfig } from './audio-types';
+import { DEFAULT_PLAYBACK_OPTIONS, DEFAULT_SPATIAL_CONFIG } from './audio-types';
 
 interface ActivePlayback {
   source: AudioBufferSourceNode;
@@ -14,6 +14,9 @@ export class PlaybackEngine {
   private readonly masterGain: GainNode;
   private readonly playbacks = new Map<PlaybackId, ActivePlayback>();
   private nextId = 0;
+  private listenerX = 0;
+  private listenerY = 0;
+  private spatialConfig: SpatialConfig = { ...DEFAULT_SPATIAL_CONFIG };
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
@@ -65,7 +68,26 @@ export class PlaybackEngine {
     if (!p) return;
     const clamped = Math.max(0, Math.min(1, volume));
     p.baseVolume = clamped;
-    p.gain.gain.value = clamped;
+    if (p.position) {
+      this.applySpatial(p);
+    } else {
+      p.gain.gain.value = clamped;
+    }
+  }
+
+  setListenerPosition(x: number, y: number): void {
+    this.listenerX = x;
+    this.listenerY = y;
+    for (const [, p] of this.playbacks) {
+      if (p.position) this.applySpatial(p);
+    }
+  }
+
+  setSoundPosition(id: PlaybackId, x: number, y: number): void {
+    const p = this.playbacks.get(id);
+    if (!p) return;
+    p.position = [x, y];
+    this.applySpatial(p);
   }
 
   stopAll(): void {
@@ -76,6 +98,22 @@ export class PlaybackEngine {
 
   get activeCount(): number {
     return this.playbacks.size;
+  }
+
+  private applySpatial(p: ActivePlayback): void {
+    if (!p.position) return;
+    const [sx, sy] = p.position;
+    const dx = sx - this.listenerX;
+    const dy = sy - this.listenerY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    p.panner.pan.value = Math.max(-1, Math.min(1, dx / this.spatialConfig.panSpread));
+
+    if (distance > this.spatialConfig.maxDistance) {
+      p.gain.gain.value = 0;
+    } else {
+      p.gain.gain.value = p.baseVolume / (1 + distance / this.spatialConfig.rolloff);
+    }
   }
 
   private cleanup(id: PlaybackId): void {

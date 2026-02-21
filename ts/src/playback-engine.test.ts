@@ -198,3 +198,60 @@ describe('PlaybackEngine pitch + looping', () => {
     expect(source.playbackRate.value).toBe(0.5);
   });
 });
+
+describe('PlaybackEngine spatial audio', () => {
+  it('setSoundPosition pans left when entity is left of listener', () => {
+    const ctx = mockAudioContext();
+    const panner = mockPannerNode();
+    ctx.createStereoPanner = vi.fn(() => panner) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setListenerPosition(0, 0);
+    eng.setSoundPosition(id, -10, 0);
+    expect(panner.pan.value).toBeCloseTo(-0.5, 5);
+  });
+
+  it('setSoundPosition pans right when entity is right of listener', () => {
+    const ctx = mockAudioContext();
+    const panner = mockPannerNode();
+    ctx.createStereoPanner = vi.fn(() => panner) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setListenerPosition(0, 0);
+    eng.setSoundPosition(id, 20, 0);
+    expect(panner.pan.value).toBeCloseTo(1.0, 5);
+  });
+
+  it('setSoundPosition attenuates volume by distance', () => {
+    const ctx = mockAudioContext();
+    const gainNode = mockGainNode();
+    ctx.createGain = vi.fn(() => gainNode) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer(), { volume: 1 });
+    eng.setListenerPosition(0, 0);
+    eng.setSoundPosition(id, 10, 0);
+    expect(gainNode.gain.value).toBeCloseTo(0.5, 5);
+  });
+
+  it('setSoundPosition silences sounds beyond maxDistance', () => {
+    const ctx = mockAudioContext();
+    const gainNode = mockGainNode();
+    ctx.createGain = vi.fn(() => gainNode) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setListenerPosition(0, 0);
+    eng.setSoundPosition(id, 200, 0);
+    expect(gainNode.gain.value).toBe(0);
+  });
+
+  it('setListenerPosition updates all positioned sounds', () => {
+    const ctx = mockAudioContext();
+    const panner = mockPannerNode();
+    ctx.createStereoPanner = vi.fn(() => panner) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setSoundPosition(id, 10, 0);
+    eng.setListenerPosition(10, 0); // same position = pan 0
+    expect(panner.pan.value).toBeCloseTo(0, 5);
+  });
+});
