@@ -6,14 +6,23 @@ vi.stubGlobal('fetch', vi.fn(async () => ({
   arrayBuffer: vi.fn(async () => new ArrayBuffer(1024)),
 })));
 
+function mockAudioParam(initial: number) {
+  return {
+    value: initial,
+    setValueAtTime: vi.fn(),
+    setTargetAtTime: vi.fn(function(this: { value: number }, target: number) { this.value = target; }),
+  };
+}
+
 function mockAudioContext() {
   return {
     state: 'running' as AudioContextState,
+    currentTime: 0,
     destination: {} as AudioDestinationNode,
     createBufferSource: vi.fn(() => ({
       buffer: null,
       loop: false,
-      playbackRate: { value: 1 },
+      playbackRate: mockAudioParam(1),
       connect: vi.fn().mockReturnThis(),
       disconnect: vi.fn(),
       start: vi.fn(),
@@ -21,12 +30,12 @@ function mockAudioContext() {
       onended: null,
     })),
     createGain: vi.fn(() => ({
-      gain: { value: 1 },
+      gain: mockAudioParam(1),
       connect: vi.fn().mockReturnThis(),
       disconnect: vi.fn(),
     })),
     createStereoPanner: vi.fn(() => ({
-      pan: { value: 0 },
+      pan: mockAudioParam(0),
       connect: vi.fn().mockReturnThis(),
       disconnect: vi.fn(),
     })),
