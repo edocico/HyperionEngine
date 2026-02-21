@@ -78,6 +78,17 @@ impl Default for PrimitiveParams {
     }
 }
 
+/// External entity ID visible to TypeScript. Set on spawn, never changes.
+/// Used by the render state to map SoA index → entityId for hit testing
+/// and immediate-mode position overrides.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct ExternalId(pub u32);
+
+// SAFETY: ExternalId is a #[repr(C)] newtype around u32 — trivially Pod/Zeroable.
+unsafe impl bytemuck::Pod for ExternalId {}
+unsafe impl bytemuck::Zeroable for ExternalId {}
+
 /// Parent entity (external ID). u32::MAX = no parent.
 #[derive(Debug, Clone, Copy)]
 pub struct Parent(pub u32);
