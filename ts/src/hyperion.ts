@@ -25,6 +25,7 @@ import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
 import type { HookPhase, HookFn } from './game-loop';
 import { InputManager } from './input-manager';
+import { hitTestRay } from './hit-tester';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -151,6 +152,27 @@ export class Hyperion implements Disposable {
   /** Input manager for keyboard, pointer, and scroll state. */
   get input(): InputManager {
     return this.inputManager;
+  }
+
+  /**
+   * Picking API for hit-testing screen coordinates against entity bounding spheres.
+   * Uses Camera.screenToRay() and CPU-side ray-sphere intersection.
+   */
+  get picking(): { hitTest: (pixelX: number, pixelY: number) => number | null } {
+    return {
+      hitTest: (pixelX: number, pixelY: number): number | null => {
+        this.checkDestroyed();
+        const state = this.bridge.latestRenderState;
+        if (!state || state.entityCount === 0 || !state.entityIds) return null;
+
+        const ray = this.camera.screenToRay(
+          pixelX, pixelY,
+          this.config.canvas.width, this.config.canvas.height,
+        );
+
+        return hitTestRay(ray, state.bounds, state.entityIds);
+      },
+    };
   }
 
   /**

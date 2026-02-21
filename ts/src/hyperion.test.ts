@@ -304,6 +304,22 @@ describe('Hyperion input', () => {
   });
 });
 
+describe('Hyperion picking', () => {
+  it('engine.picking exists', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.picking).toBeDefined();
+    expect(typeof engine.picking.hitTest).toBe('function');
+    engine.destroy();
+  });
+
+  it('hitTest returns null with no entities', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const result = engine.picking.hitTest(400, 300);
+    expect(result).toBeNull();
+    engine.destroy();
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
