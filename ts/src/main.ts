@@ -1,4 +1,5 @@
 import { Hyperion } from './hyperion';
+import type { SoundHandle } from './audio-types';
 
 async function main() {
   const overlay = document.getElementById('overlay')!;
@@ -46,12 +47,23 @@ async function main() {
       .line(-200 + i * 40, -100, -200 + i * 40, 100, 2);
   }
 
-  // --- Input: click to select/deselect entities ---
+  // --- Audio: load a click sound (file is optional; demo works silently if absent) ---
+  let sfxHandle: SoundHandle | null = null;
+  engine.audio.load('sfx/click.ogg').then(h => { sfxHandle = h; }).catch(() => {});
+
+  // --- Input: click to select/deselect entities + play spatial sound ---
   engine.input.onClick((button, x, y) => {
     if (button !== 0) return;
     const entityId = engine.picking.hitTest(x, y);
     if (entityId !== null) {
       engine.selection?.toggle(entityId);
+      if (sfxHandle !== null) {
+        const worldX = (x / canvas.width - 0.5) * 20;
+        const id = engine.audio.play(sfxHandle, { volume: 0.8 });
+        if (id !== null) {
+          engine.audio.setSoundPosition(id, worldX, 0);
+        }
+      }
     }
   });
 
@@ -81,7 +93,7 @@ async function main() {
   engine.addHook('frameEnd', () => {
     const s = engine.stats;
     overlay.textContent =
-      `Hyperion Engine\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}\nWASD/Arrows: move | Scroll: zoom | Click: select`;
+      `Hyperion Engine\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}\nWASD/Arrows: move | Scroll: zoom | Click: select+sound`;
   });
 
   engine.start();
