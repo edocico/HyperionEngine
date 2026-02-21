@@ -281,6 +281,29 @@ describe('Hyperion', () => {
   });
 });
 
+describe('Hyperion input', () => {
+  it('engine.input is available', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.input).toBeDefined();
+    expect(typeof engine.input.isKeyDown).toBe('function');
+    expect(typeof engine.input.onKey).toBe('function');
+    expect(typeof engine.input.onClick).toBe('function');
+    engine.destroy();
+  });
+
+  it('engine.input.isKeyDown returns false initially', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.input.isKeyDown('Space')).toBe(false);
+    engine.destroy();
+  });
+
+  it('destroy cleans up InputManager', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.destroy();
+    // Should not throw
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');

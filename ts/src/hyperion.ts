@@ -24,6 +24,7 @@ import { RawAPI } from './raw-api';
 import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
 import type { HookPhase, HookFn } from './game-loop';
+import { InputManager } from './input-manager';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -46,6 +47,7 @@ export class Hyperion implements Disposable {
   private readonly leakDetector: LeakDetector;
   private readonly rawApi: RawAPI;
   private readonly pluginRegistry: PluginRegistry;
+  private readonly inputManager: InputManager;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -65,6 +67,7 @@ export class Hyperion implements Disposable {
     this.leakDetector = new LeakDetector();
     this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
     this.pluginRegistry = new PluginRegistry();
+    this.inputManager = new InputManager();
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -120,7 +123,9 @@ export class Hyperion implements Disposable {
       }
     }
 
-    return new Hyperion(config, bridge, renderer);
+    const instance = new Hyperion(config, bridge, renderer);
+    instance.inputManager.attach(config.canvas);
+    return instance;
   }
 
   /** The execution mode label (e.g., "A", "B", "C"). */
@@ -141,6 +146,11 @@ export class Hyperion implements Disposable {
   /** Installed plugin registry. */
   get plugins(): PluginRegistry {
     return this.pluginRegistry;
+  }
+
+  /** Input manager for keyboard, pointer, and scroll state. */
+  get input(): InputManager {
+    return this.inputManager;
   }
 
   /**
@@ -283,6 +293,7 @@ export class Hyperion implements Disposable {
     this.destroyed = true;
     this.pluginRegistry.destroyAll();
     this.loop.stop();
+    this.inputManager.destroy();
     this.bridge.destroy();
     this.renderer?.destroy();
   }
