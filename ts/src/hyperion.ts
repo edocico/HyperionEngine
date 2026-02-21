@@ -25,6 +25,7 @@ import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
 import type { HookPhase, HookFn } from './game-loop';
 import { InputManager } from './input-manager';
+import { ImmediateState } from './immediate-state';
 import { hitTestRay } from './hit-tester';
 
 /**
@@ -49,6 +50,7 @@ export class Hyperion implements Disposable {
   private readonly rawApi: RawAPI;
   private readonly pluginRegistry: PluginRegistry;
   private readonly inputManager: InputManager;
+  private readonly immediateState: ImmediateState;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -69,6 +71,7 @@ export class Hyperion implements Disposable {
     this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
     this.pluginRegistry = new PluginRegistry();
     this.inputManager = new InputManager();
+    this.immediateState = new ImmediateState();
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -230,7 +233,7 @@ export class Hyperion implements Disposable {
     this.bridge.commandBuffer.spawnEntity(id);
     this.entityCount++;
 
-    const handle = this.pool.acquire(id, this.bridge.commandBuffer);
+    const handle = this.pool.acquire(id, this.bridge.commandBuffer, this.immediateState);
     this.leakDetector.register(handle, id);
     return handle;
   }
@@ -316,6 +319,7 @@ export class Hyperion implements Disposable {
     this.pluginRegistry.destroyAll();
     this.loop.stop();
     this.inputManager.destroy();
+    this.immediateState.clearAll();
     this.bridge.destroy();
     this.renderer?.destroy();
   }
@@ -392,6 +396,9 @@ export class Hyperion implements Disposable {
   private tick(dt: number): void {
     this.bridge.tick(dt);
     const state = this.bridge.latestRenderState;
+    if (state && state.entityIds && this.immediateState.count > 0) {
+      this.immediateState.patchTransforms(state.transforms, state.entityIds, state.entityCount);
+    }
     if (this.renderer && state && state.entityCount > 0) {
       this.renderer.render(state, this.camera);
     }

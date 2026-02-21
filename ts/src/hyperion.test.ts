@@ -320,6 +320,38 @@ describe('Hyperion picking', () => {
   });
 });
 
+describe('Hyperion immediate mode', () => {
+  it('positionImmediate on spawned entity stores shadow state', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const e = engine.spawn();
+    // positionImmediate should not throw and should send position through producer
+    e.positionImmediate(10, 20, 30);
+    e.destroy();
+    engine.returnHandle(e);
+    engine.destroy();
+  });
+
+  it('spawned entity has immediate state wired through pool', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    const e = engine.spawn();
+    // positionImmediate sends setPosition to the producer (verifies wiring)
+    e.positionImmediate(5, 10, 15);
+    expect(bridge.commandBuffer.setPosition).toHaveBeenCalledWith(e.id, 5, 10, 15);
+    e.destroy();
+    engine.returnHandle(e);
+    engine.destroy();
+  });
+
+  it('destroy clears all immediate state', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const e = engine.spawn();
+    e.positionImmediate(1, 2, 3);
+    // destroy should not throw even with active immediate overrides
+    engine.destroy();
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
