@@ -173,6 +173,49 @@ mod tests {
     }
 
     #[test]
+    fn propagate_transforms_includes_overflow_children() {
+        let mut world = World::new();
+
+        // Parent at position (10, 0, 0)
+        let parent = world.spawn((
+            Position(Vec3::new(10.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+
+        // Child at position (5, 0, 0) with Parent(0)
+        // This child is in OverflowChildren (simulating overflow)
+        let child = world.spawn((
+            Position(Vec3::new(5.0, 0.0, 0.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            Parent(0),
+            Children::default(),
+            Active,
+        ));
+
+        // Manually add OverflowChildren to parent (simulating overflow scenario)
+        let _ = world.insert_one(parent, OverflowChildren { items: vec![1] });
+
+        transform_system(&mut world);
+
+        let mut ext_to_entity = std::collections::HashMap::new();
+        ext_to_entity.insert(0u32, parent);
+        ext_to_entity.insert(1u32, child);
+
+        propagate_transforms(&mut world, &ext_to_entity);
+
+        let child_matrix = world.get::<&ModelMatrix>(child).unwrap();
+        // 10 + 5 = 15
+        assert!((child_matrix.0[12] - 15.0).abs() < 0.001);
+    }
+
+    #[test]
     fn propagate_transforms_skips_unparented() {
         let mut world = World::new();
         let entity = world.spawn((
