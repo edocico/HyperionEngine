@@ -101,6 +101,9 @@ impl Engine {
     /// A single fixed-timestep tick.
     fn fixed_tick(&mut self) {
         velocity_system(&mut self.world, FIXED_DT);
+        for i in 0..3 {
+            self.listener_pos[i] += self.listener_vel[i] * FIXED_DT;
+        }
     }
 
     /// How many fixed ticks have elapsed since engine start.
@@ -270,6 +273,25 @@ mod tests {
         assert_eq!(engine.listener_x(), 0.0);
         assert_eq!(engine.listener_y(), 0.0);
         assert_eq!(engine.listener_z(), 0.0);
+    }
+
+    #[test]
+    fn engine_listener_extrapolates_position() {
+        let mut engine = Engine::new();
+
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&10.0f32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetListenerPosition,
+            entity_id: 0,
+            payload,
+        }]);
+
+        // Velocity = (10 - 0) / (1/60) = 600 units/sec
+        // After 1 tick, position: 10 + 600 * (1/60) = 20
+        engine.update(FIXED_DT);
+
+        assert!((engine.listener_x() - 20.0).abs() < 0.1);
     }
 
     #[test]
