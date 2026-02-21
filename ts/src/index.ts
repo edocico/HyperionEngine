@@ -17,3 +17,7 @@ export type { FontAtlas, GlyphMetrics } from './text/font-atlas';
 export { loadFontAtlas } from './text/font-atlas';
 export { layoutText } from './text/text-layout';
 export type { LayoutGlyph } from './text/text-layout';
+export { AudioManager } from './audio-manager';
+export type { AudioManagerOptions } from './audio-manager';
+export type { SoundHandle, PlaybackId, PlaybackOptions, SpatialConfig } from './audio-types';
+export { DEFAULT_PLAYBACK_OPTIONS, DEFAULT_SPATIAL_CONFIG } from './audio-types';
