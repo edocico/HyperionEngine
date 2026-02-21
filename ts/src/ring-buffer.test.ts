@@ -260,4 +260,24 @@ describe("RingBufferProducer", () => {
     expect(view.getFloat32(13, true)).toBeCloseTo(7.0);
     expect(view.getFloat32(17, true)).toBeCloseTo(8.0);
   });
+
+  it('writes and reads SetListenerPosition command', () => {
+    const sab = new SharedArrayBuffer(32 + 256);
+    const producer = new RingBufferProducer(sab);
+    const result = producer.writeCommand(
+      CommandType.SetListenerPosition,
+      0,
+      new Float32Array([1.5, 2.5, 3.5]),
+    );
+    expect(result).toBe(true);
+
+    const data = extractUnread(sab);
+    expect(data.bytes.byteLength).toBe(1 + 4 + 12); // cmd + entityId + 3xf32
+    const view = new DataView(data.bytes.buffer, data.bytes.byteOffset);
+    expect(view.getUint8(0)).toBe(13); // SetListenerPosition
+    expect(view.getUint32(1, true)).toBe(0); // sentinel entity ID
+    expect(view.getFloat32(5, true)).toBeCloseTo(1.5);
+    expect(view.getFloat32(9, true)).toBeCloseTo(2.5);
+    expect(view.getFloat32(13, true)).toBeCloseTo(3.5);
+  });
 });

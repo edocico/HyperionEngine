@@ -26,6 +26,7 @@ export const enum CommandType {
   SetParent = 10,
   SetPrimParams0 = 11,
   SetPrimParams1 = 12,
+  SetListenerPosition = 13,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -43,6 +44,7 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetParent]: 4,
   [CommandType.SetPrimParams0]: 16,
   [CommandType.SetPrimParams1]: 16,
+  [CommandType.SetListenerPosition]: 12,
 };
 
 export class RingBufferProducer {
