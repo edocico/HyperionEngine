@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (86 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (88 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -25,8 +25,8 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 # Run specific test groups
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (15 tests)
 cargo test -p hyperion-core engine           # Engine tests only (6 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (25 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (11 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (26 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (12 tests)
 cargo test -p hyperion-core systems          # Systems tests only (6 tests)
 cargo test -p hyperion-core components       # Component tests only (19 tests)
 
@@ -48,21 +48,21 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (224 tests)
+cd ts && npm test                            # All vitest tests (291 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run specific test files
-cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (14 tests)
+cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (16 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
-cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum (10 tests)
+cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
 cd ts && npx vitest run src/capabilities.test.ts              # Capability detection (4 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
 cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager (16 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (16 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (18 tests)
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
@@ -73,8 +73,8 @@ cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # Selectio
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (31 tests)
-cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (17 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (39 tests)
+cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (28 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (6 tests)
 cd ts && npx vitest run src/raw-api.test.ts                   # RawAPI numeric interface (4 tests)
@@ -83,6 +83,10 @@ cd ts && npx vitest run src/plugin.test.ts                    # PluginRegistry (
 cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector backstop (2 tests)
 cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
 cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
+cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (24 tests)
+cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing (8 tests)
+cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state (8 tests)
+cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
 cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
 ```
 
@@ -155,20 +159,20 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (13 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`), `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
-| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`. `fromParts()` test factory |
-| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.data`. `RenderPrimitiveType` enum. Implements `Disposable` |
+| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enablePostProcessing()`, `input` (InputManager), `picking` (hitTest API), immediate-mode transform patching. `fromParts()` test factory |
+| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.data/.positionImmediate/.clearImmediate`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking |
 | `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01) |
@@ -179,12 +183,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `index.ts` | Barrel export for public API surface |
 | `capabilities.ts` | Detects browser features, selects ExecutionMode A/B/C |
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
-| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B) |
+| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B). `GPURenderState` includes `entityIds: Uint32Array` |
 | `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
-| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). ~50 lines, down from 140 |
+| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). Demonstrates click-to-select, WASD camera, scroll-zoom |
 | `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass` + `FXAATonemapPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Multi-primitive pipeline with per-type shaders. Optional JFA selection outline pipeline (`SelectionSeedPass` → `JFAPass×N` → `OutlineCompositePass`). `SelectionManager` integration + `enableOutlines`/`disableOutlines` API. `onDeviceLost` callback + `device.lost` listener |
 | `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
-| `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()` |
+| `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` (pixel → world-space `Ray`). Forward-compatible with perspective cameras |
 | `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
 | `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, etc.) |
 | `supervisor.ts` | `WorkerSupervisor` — Worker heartbeat monitoring + timeout detection with configurable intervals |
@@ -198,6 +202,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/jfa-pass.ts` | `JFAPass` — Single JFA iteration. Ping-pong between textures. Constructor takes iteration index, `iterationsForDimension()` helper. Each iteration has unique resource name (`jfa-iter-N`). Optional pass |
 | `render/passes/outline-composite-pass.ts` | `OutlineCompositePass` — Reads `scene-hdr` + JFA result, writes `swapchain`. SDF distance outline with configurable color/width. Includes built-in FXAA. Dead-pass culls `FXAATonemapPass` when active |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference implementation of Blelloch exclusive scan |
+| `input-manager.ts` | `InputManager` — keyboard (`isKeyDown`), pointer (`pointerX/Y`, `isButtonDown`), scroll (`scrollDeltaX/Y`) state tracking + callback registration (`onKey`/`onClick`/`onPointerMove`/`onScroll` with unsubscribe). DOM `attach`/`detach`/`destroy` lifecycle |
+| `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection against SoA bounds buffer. Returns closest hit entityId (smallest positive t) or null. `Ray` interface. 2.5D/3D-ready |
+| `immediate-state.ts` | `ImmediateState` — Shadow position map (`Map<entityId, [x,y,z]>`) for zero-latency rendering. `patchTransforms()` patches SoA transform column 3 before GPU upload |
 | `selection.ts` | `SelectionManager` — CPU-side `Set<number>` with dirty tracking + GPU mask upload. `select()/deselect()/toggle()/clear()`, `uploadMask()` |
 | `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics` types, `parseFontAtlas()`, `loadFontAtlas()` for MSDF atlas JSON loading |
 | `text/text-layout.ts` | `layoutText()` — Positions glyphs using atlas metrics, returns `LayoutGlyph[]` |
@@ -234,7 +241,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. The `TextureManager` allocates 256 layers per tier. On devices with fewer layers, loading will fail. Future: query `device.limits.maxTextureArrayLayers`.
 - **TextureManager lazy allocation** — Tiers are now lazily allocated (no GPU textures created until first use). Growth follows exponential steps: 0→16→32→64→128→256 layers per tier. `getTierView()` creates a minimal 1-layer placeholder for bind group validity. Resize copies existing layers via `copyTextureToTexture`.
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. The fragment shader uses a `switch` on the tier value. Adding new tiers requires updating the shader.
-- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices) must be indexed by the same entity index. All are populated in the same `collect_gpu()` loop in Rust, ensuring alignment. The `ResourcePool` stores them under `entity-transforms`, `entity-bounds`, `tex-indices`.
+- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must be indexed by the same entity index. All are populated in the same `collect_gpu()` loop in Rust, ensuring alignment. The `ResourcePool` stores them under `entity-transforms`, `entity-bounds`, `tex-indices`. Entity IDs are CPU-only (used for picking/immediate-mode, not uploaded to GPU).
 - **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds` + `render-meta`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args` + `render-meta` + `prim-params`, writes `scene-hdr`. FXAATonemapPass reads `scene-hdr`, writes `swapchain`. Texture views: `tier0`-`tier3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
 - **BackpressuredProducer wraps RingBufferProducer** — All three bridge factories (`createWorkerBridge`, `createFullIsolationBridge`, `createDirectBridge`) use `BackpressuredProducer` instead of raw `RingBufferProducer`. `flush()` is called at the start of every `tick()`.
 - **Worker heartbeat via ring buffer header** — Engine-worker increments `Atomics.add(header, HEARTBEAT_W1_OFFSET, 1)` after each tick. `WorkerSupervisor` checks heartbeat counters every 1s via `setInterval`. Currently logs warnings only; escalation is TODO(Phase 5).
@@ -251,6 +258,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **RenderGraph dead-pass culling enables pipeline switching** — When outlines are enabled, `OutlineCompositePass` writes to `swapchain`, which dead-pass culls `FXAATonemapPass`. When outlines are disabled, the outline passes are removed from the graph and `FXAATonemapPass` is restored automatically.
 - **PrimitiveParams is 8 floats per entity** — Split across two ring buffer commands (`SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8]) due to the 16-byte payload limit of the ring buffer protocol.
 - **MSDF text requires external atlas** — `loadFontAtlas(jsonUrl, textureUrl)` loads msdf-atlas-gen JSON metadata + texture. The atlas must be generated externally using msdf-atlas-gen. Glyph UV rectangles are passed via PrimitiveParams.
+- **CPU picking uses bounds, not transforms** — `hitTestRay()` reads from the SoA bounds buffer (entity position + radius). Immediate-mode `patchTransforms()` only patches the transforms buffer, NOT bounds. This means picking during immediate-mode drag uses the WASM-reported position (1-2 frame stale), not the shadow position. For most use cases this is imperceptible.
+- **InputManager.resetFrame() called per tick** — Scroll deltas accumulate within a frame and reset at the end of each tick. Read `scrollDeltaX/Y` in `preTick` hooks, not `frameEnd`.
+- **ExternalId is immutable** — Set once on SpawnEntity, never updated. If entity recycling via free list changes the external ID, a new ExternalId is spawned with the new entity.
+- **Duplicate Ray interface** — `Ray` is defined in both `camera.ts` and `hit-tester.ts` with identical shape `{ origin: [n,n,n], direction: [n,n,n] }`. TypeScript structural typing makes them interchangeable. Future: consolidate to single definition.
+- **mat4Inverse uses general cofactor expansion** — NOT an orthographic-specific shortcut. ~50 lines but forward-compatible with perspective cameras. Returns `null` for singular matrices.
 
 ## Conventions
 
@@ -264,7 +276,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Plan Integration are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). EntityHandle extended with `.line()/.gradient()/.boxShadow()` convenience methods. Public API: `Hyperion.selection`, `enableOutlines()`, `disableOutlines()`, `enablePostProcessing()`. **Next: Phase 6 (Audio & Input).**
+Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, and Phase 6 (Input System) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. **Next: Phase 7 (Audio System).**
 
 ## Documentation
 
@@ -275,3 +287,4 @@ Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), and Post-Pla
 - `docs/plans/2026-02-17-hyperion-engine-phase3.md` — Phase 3 implementation plan (completed). GPU-driven pipeline with compute culling.
 - `docs/plans/2026-02-18-phase-4.5-stabilization-arch-foundations.md` — Phase 4.5 implementation plan (completed). 15 tasks for stabilization and architecture foundations.
 - `docs/plans/2026-02-20-phase-5.5-rendering-primitives.md` — Phase 5.5 implementation plan (completed). 45 tasks for multi-primitive rendering, post-processing, and selection outlines.
+- `docs/plans/2026-02-21-phase-6-input-system.md` — Phase 6 implementation plan (completed). 24 tasks for input system, CPU picking, and immediate mode.
