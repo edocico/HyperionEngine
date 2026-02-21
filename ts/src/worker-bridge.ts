@@ -17,6 +17,7 @@ export interface GPURenderState {
   renderMeta: Uint32Array;     // 2 u32/entity (meshHandle + renderPrimitive)
   texIndices: Uint32Array;     // 1 u32/entity
   primParams: Float32Array;    // 8 f32/entity (primitive parameters)
+  entityIds: Uint32Array;      // 1 u32/entity (external entity ID)
 }
 
 export interface EngineBridge {
@@ -76,6 +77,7 @@ export function createWorkerBridge(
         renderMeta: new Uint32Array(msg.renderState.renderMeta),
         texIndices: new Uint32Array(msg.renderState.texIndices),
         primParams: new Float32Array(msg.renderState.primParams ?? []),
+        entityIds: new Uint32Array(msg.renderState.entityIds ?? []),
       };
     }
   };
@@ -157,6 +159,7 @@ export function createFullIsolationBridge(
       // Forward render state to Render Worker.
       const transferables = [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices];
       if (msg.renderState.primParams) transferables.push(msg.renderState.primParams);
+      if (msg.renderState.entityIds) transferables.push(msg.renderState.entityIds);
       channel.port1.postMessage(
         { renderState: msg.renderState },
         transferables,
@@ -240,6 +243,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_gpu_tex_indices_len(): number;
     engine_gpu_prim_params_ptr(): number;
     engine_gpu_prim_params_f32_len(): number;
+    engine_gpu_entity_ids_ptr(): number;
+    engine_gpu_entity_ids_len(): number;
     memory: WebAssembly.Memory;
   };
 
@@ -270,6 +275,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
         const texLen = engine.engine_gpu_tex_indices_len();
         const ppPtr = engine.engine_gpu_prim_params_ptr();
         const ppLen = engine.engine_gpu_prim_params_f32_len();
+        const eidPtr = engine.engine_gpu_entity_ids_ptr();
+        const eidLen = engine.engine_gpu_entity_ids_len();
 
         // Copy from WASM memory — live views become stale after next engine_update().
         latestRenderState = {
@@ -279,6 +286,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           renderMeta: mPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, mPtr, mLen)) : new Uint32Array(0),
           texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
           primParams: ppPtr ? new Float32Array(new Float32Array(engine.memory.buffer, ppPtr, ppLen)) : new Float32Array(0),
+          entityIds: eidPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, eidPtr, eidLen)) : new Uint32Array(0),
         };
       } else {
         latestRenderState = {
@@ -288,6 +296,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           renderMeta: new Uint32Array(0),
           texIndices: new Uint32Array(0),
           primParams: new Float32Array(0),
+          entityIds: new Uint32Array(0),
         };
       }
     },

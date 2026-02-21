@@ -30,6 +30,8 @@ interface WasmEngine {
   engine_gpu_tex_indices_len(): number;
   engine_gpu_prim_params_ptr(): number;
   engine_gpu_prim_params_f32_len(): number;
+  engine_gpu_entity_ids_ptr(): number;
+  engine_gpu_entity_ids_len(): number;
   memory: WebAssembly.Memory;
 }
 
@@ -91,6 +93,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         renderMeta: ArrayBuffer;
         texIndices: ArrayBuffer;
         primParams: ArrayBuffer;
+        entityIds: ArrayBuffer;
       } | null = null;
 
       if (count > 0) {
@@ -121,6 +124,11 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         const primParams = new Float32Array(ppLen);
         if (ppPtr) primParams.set(new Float32Array(wasm.memory.buffer, ppPtr, ppLen));
 
+        const eidPtr = wasm.engine_gpu_entity_ids_ptr();
+        const eidLen = wasm.engine_gpu_entity_ids_len();
+        const entityIds = new Uint32Array(eidLen);
+        if (eidPtr) entityIds.set(new Uint32Array(wasm.memory.buffer, eidPtr, eidLen));
+
         renderState = {
           entityCount: count,
           transforms: transforms.buffer as ArrayBuffer,
@@ -128,13 +136,14 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
           renderMeta: renderMeta.buffer as ArrayBuffer,
           texIndices: texIndices.buffer as ArrayBuffer,
           primParams: primParams.buffer as ArrayBuffer,
+          entityIds: entityIds.buffer as ArrayBuffer,
         };
       }
 
       if (renderState) {
         self.postMessage(
           { type: "tick-done", dt: msg.dt, tickCount, renderState },
-          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams]
+          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams, renderState.entityIds]
         );
       } else {
         self.postMessage({

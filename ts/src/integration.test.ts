@@ -63,12 +63,14 @@ describe("Integration: Texture Layer Index Pipeline", () => {
       renderMeta: new Uint32Array(2),
       texIndices: new Uint32Array([0]),
       primParams: new Float32Array(8),
+      entityIds: new Uint32Array([42]),
     };
     expect(state.transforms.length).toBe(16);
     expect(state.bounds.length).toBe(4);
     expect(state.renderMeta.length).toBe(2);
     expect(state.texIndices.length).toBe(1);
     expect(state.primParams.length).toBe(8);
+    expect(state.entityIds.length).toBe(1);
   });
 });
 

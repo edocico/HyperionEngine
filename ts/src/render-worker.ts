@@ -24,6 +24,7 @@ interface RenderState {
   renderMeta: ArrayBuffer;
   texIndices: ArrayBuffer;
   primParams: ArrayBuffer;
+  entityIds: ArrayBuffer;
 }
 
 let latestRenderState: RenderState | null = null;
@@ -78,6 +79,7 @@ function renderLoop(): void {
         renderMeta: new Uint32Array(latestRenderState.renderMeta),
         texIndices: new Uint32Array(latestRenderState.texIndices),
         primParams: new Float32Array(latestRenderState.primParams ?? []),
+        entityIds: new Uint32Array(latestRenderState.entityIds ?? []),
       }, camera);
     }
 
