@@ -118,14 +118,15 @@ impl Children {
         true
     }
 
-    pub fn remove(&mut self, child_id: u32) {
+    pub fn remove(&mut self, child_id: u32) -> bool {
         for i in 0..self.count as usize {
             if self.slots[i] == child_id {
                 self.count -= 1;
                 self.slots[i] = self.slots[self.count as usize];
-                return;
+                return true;
             }
         }
+        false
     }
 
     pub fn get(&self, index: usize) -> Option<u32> {
@@ -355,5 +356,22 @@ mod tests {
         let bytes: &[u8] = bytemuck::bytes_of(&pp);
         assert_eq!(bytes.len(), 32);
         assert!(bytes.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn children_remove_returns_true_when_found() {
+        let mut c = Children::default();
+        c.add(1);
+        c.add(2);
+        assert!(c.remove(2));
+        assert_eq!(c.count, 1);
+    }
+
+    #[test]
+    fn children_remove_returns_false_when_not_found() {
+        let mut c = Children::default();
+        c.add(1);
+        assert!(!c.remove(999));
+        assert_eq!(c.count, 1);
     }
 }
