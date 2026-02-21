@@ -219,12 +219,32 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                         parent.0 = new_parent_id;
                     }
 
-                    // Add to new parent's Children (if not u32::MAX = unparent)
+                    // Add to new parent's Children (if not u32::MAX = unparent).
+                    // Two-phase approach: try inline add, then handle overflow
+                    // separately. We can't use a single if-let chain because the
+                    // RefMut<Children> borrow would keep `world` borrowed, blocking
+                    // the insert_one call needed for OverflowChildren.
+                    let mut overflow_child: Option<(hecs::Entity, u32)> = None;
                     if new_parent_id != u32::MAX
                         && let Some(parent_entity) = entity_map.get(new_parent_id)
-                        && let Ok(mut children) = world.get::<&mut Children>(parent_entity)
+                        && let Ok(mut children) =
+                            world.get::<&mut Children>(parent_entity)
+                        && !children.add(cmd.entity_id)
                     {
-                        children.add(cmd.entity_id);
+                        overflow_child = Some((parent_entity, cmd.entity_id));
+                    }
+                    // Phase 2: handle overflow outside the Children borrow scope
+                    if let Some((parent_entity, child_id)) = overflow_child {
+                        if let Ok(mut overflow) =
+                            world.get::<&mut OverflowChildren>(parent_entity)
+                        {
+                            overflow.items.push(child_id);
+                        } else {
+                            let _ = world.insert_one(
+                                parent_entity,
+                                OverflowChildren { items: vec![child_id] },
+                            );
+                        }
                     }
                 }
             }
@@ -538,6 +558,37 @@ mod tests {
         let hecs_entity = entity_map.get(42).unwrap();
         let ext_id = world.get::<&ExternalId>(hecs_entity).unwrap();
         assert_eq!(ext_id.0, 42);
+    }
+
+    #[test]
+    fn set_parent_overflow_children_beyond_32() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        // Spawn parent
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+
+        // Spawn 33 children and parent them all to entity 0
+        for child_id in 1..=33u32 {
+            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map);
+            let mut payload = [0u8; 16];
+            payload[0..4].copy_from_slice(&0u32.to_le_bytes());
+            process_commands(
+                &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
+                &mut world,
+                &mut map,
+            );
+        }
+
+        // Verify first 32 children are in Children component
+        let parent_entity = map.get(0).unwrap();
+        let children = world.get::<&Children>(parent_entity).unwrap();
+        assert_eq!(children.count, 32);
+
+        // Verify 33rd child is in OverflowChildren
+        let overflow = world.get::<&OverflowChildren>(parent_entity).unwrap();
+        assert_eq!(overflow.items.len(), 1);
+        assert_eq!(overflow.items[0], 33);
     }
 
     #[test]
