@@ -414,6 +414,9 @@ export class Hyperion implements Disposable {
       this.renderer.render(state, this.camera);
     }
     this.inputManager.resetFrame();
+    if (this.audioManager.isInitialized) {
+      this.audioManager.setListenerPosition(this.cameraApi.x, this.cameraApi.y);
+    }
   }
 
   private checkDestroyed(): void {

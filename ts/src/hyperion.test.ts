@@ -388,6 +388,14 @@ describe('Hyperion audio lifecycle', () => {
   });
 });
 
+describe('Hyperion audio listener auto-update', () => {
+  it('audio listener update function exists', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(typeof engine.audio.setListenerPosition).toBe('function');
+    engine.destroy();
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');

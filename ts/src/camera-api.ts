@@ -5,6 +5,8 @@ export class CameraAPI {
   private _zoom = 1.0;
   private _width = 0;
   private _height = 0;
+  private _lastX = 0;
+  private _lastY = 0;
 
   constructor(cam: Camera) {
     this.cam = cam;
@@ -14,7 +16,19 @@ export class CameraAPI {
     return this._zoom;
   }
 
+  /** Current camera X position in world units. */
+  get x(): number {
+    return this._lastX;
+  }
+
+  /** Current camera Y position in world units. */
+  get y(): number {
+    return this._lastY;
+  }
+
   position(x: number, y: number, z = 0): void {
+    this._lastX = x;
+    this._lastY = y;
     this.cam.setPosition(x, y, z);
   }
 
