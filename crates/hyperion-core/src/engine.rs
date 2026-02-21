@@ -18,6 +18,9 @@ pub struct Engine {
     pub render_state: RenderState,
     accumulator: f32,
     tick_count: u64,
+    listener_pos: [f32; 3],
+    listener_prev_pos: [f32; 3],
+    listener_vel: [f32; 3],
 }
 
 impl Default for Engine {
@@ -34,6 +37,9 @@ impl Engine {
             render_state: RenderState::new(),
             accumulator: 0.0,
             tick_count: 0,
+            listener_pos: [0.0; 3],
+            listener_prev_pos: [0.0; 3],
+            listener_vel: [0.0; 3],
         }
     }
 
@@ -92,6 +98,21 @@ impl Engine {
     /// Ranges from 0.0 to 1.0.
     pub fn interpolation_alpha(&self) -> f32 {
         self.accumulator / FIXED_DT
+    }
+
+    /// Returns the extrapolated listener X position.
+    pub fn listener_x(&self) -> f32 {
+        self.listener_pos[0]
+    }
+
+    /// Returns the extrapolated listener Y position.
+    pub fn listener_y(&self) -> f32 {
+        self.listener_pos[1]
+    }
+
+    /// Returns the extrapolated listener Z position.
+    pub fn listener_z(&self) -> f32 {
+        self.listener_pos[2]
     }
 }
 
@@ -227,5 +248,13 @@ mod tests {
             .get::<&crate::components::ModelMatrix>(child_entity)
             .unwrap();
         assert!((matrix.0[12] - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn engine_listener_defaults_to_origin() {
+        let engine = Engine::new();
+        assert_eq!(engine.listener_x(), 0.0);
+        assert_eq!(engine.listener_y(), 0.0);
+        assert_eq!(engine.listener_z(), 0.0);
     }
 }
