@@ -409,6 +409,7 @@ export class Hyperion implements Disposable {
     const state = this.bridge.latestRenderState;
     if (state && state.entityIds && this.immediateState.count > 0) {
       this.immediateState.patchTransforms(state.transforms, state.entityIds, state.entityCount);
+      this.immediateState.patchBounds(state.bounds, state.entityIds, state.entityCount);
     }
     if (this.renderer && state && state.entityCount > 0) {
       this.renderer.render(state, this.camera);
