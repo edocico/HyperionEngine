@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { InputManager } from './input-manager';
 
 describe('InputManager', () => {
@@ -89,6 +89,99 @@ describe('InputManager', () => {
       im.resetFrame();
       expect(im.scrollDeltaX).toBe(0);
       expect(im.scrollDeltaY).toBe(0);
+    });
+  });
+
+  describe('callback registration', () => {
+    it('fires key callback on matching keydown', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onKey('KeyA', fn);
+      im.handleKeyDown('KeyA');
+      expect(fn).toHaveBeenCalledWith('KeyA');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fire for non-matching key', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onKey('KeyA', fn);
+      im.handleKeyDown('KeyB');
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('fires wildcard key callback for any key', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onKey('*', fn);
+      im.handleKeyDown('KeyA');
+      im.handleKeyDown('Space');
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(fn).toHaveBeenCalledWith('KeyA');
+      expect(fn).toHaveBeenCalledWith('Space');
+    });
+
+    it('fires click callback with position on pointerUp', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onClick(fn);
+      im.handlePointerDown(0, 100, 200);
+      im.handlePointerUp(0, 105, 205);
+      expect(fn).toHaveBeenCalledWith(0, 105, 205);
+    });
+
+    it('fires pointerMove callback', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onPointerMove(fn);
+      im.handlePointerMove(42, 84);
+      expect(fn).toHaveBeenCalledWith(42, 84);
+    });
+
+    it('fires scroll callback', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      im.onScroll(fn);
+      im.handleScroll(10, -20);
+      expect(fn).toHaveBeenCalledWith(10, -20);
+    });
+
+    it('removes callback via unsubscribe', () => {
+      const im = new InputManager();
+      const fn = vi.fn();
+      const unsub = im.onKey('KeyA', fn);
+      im.handleKeyDown('KeyA');
+      expect(fn).toHaveBeenCalledTimes(1);
+
+      unsub();
+      im.handleKeyDown('KeyA');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('removeAllListeners clears all callbacks', () => {
+      const im = new InputManager();
+      const keyFn = vi.fn();
+      const clickFn = vi.fn();
+      const moveFn = vi.fn();
+      const scrollFn = vi.fn();
+
+      im.onKey('KeyA', keyFn);
+      im.onClick(clickFn);
+      im.onPointerMove(moveFn);
+      im.onScroll(scrollFn);
+
+      im.removeAllListeners();
+
+      im.handleKeyDown('KeyA');
+      im.handlePointerDown(0, 0, 0);
+      im.handlePointerUp(0, 0, 0);
+      im.handlePointerMove(10, 10);
+      im.handleScroll(5, 5);
+
+      expect(keyFn).not.toHaveBeenCalled();
+      expect(clickFn).not.toHaveBeenCalled();
+      expect(moveFn).not.toHaveBeenCalled();
+      expect(scrollFn).not.toHaveBeenCalled();
     });
   });
 });
