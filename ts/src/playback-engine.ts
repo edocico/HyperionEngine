@@ -14,6 +14,8 @@ export class PlaybackEngine {
   private readonly masterGain: GainNode;
   private readonly playbacks = new Map<PlaybackId, ActivePlayback>();
   private nextId = 0;
+  private _muted = false;
+  private _preMuteVolume = 1;
   private listenerX = 0;
   private listenerY = 0;
   private spatialConfig: SpatialConfig = { ...DEFAULT_SPATIAL_CONFIG };
@@ -90,10 +92,43 @@ export class PlaybackEngine {
     this.applySpatial(p);
   }
 
+  get masterVolume(): number {
+    return this.masterGain.gain.value;
+  }
+
+  get isMuted(): boolean {
+    return this._muted;
+  }
+
+  setMasterVolume(volume: number): void {
+    this.masterGain.gain.value = Math.max(0, Math.min(1, volume));
+    if (!this._muted) {
+      this._preMuteVolume = this.masterGain.gain.value;
+    }
+  }
+
+  mute(): void {
+    if (!this._muted) {
+      this._preMuteVolume = this.masterGain.gain.value;
+    }
+    this._muted = true;
+    this.masterGain.gain.value = 0;
+  }
+
+  unmute(): void {
+    this._muted = false;
+    this.masterGain.gain.value = this._preMuteVolume;
+  }
+
   stopAll(): void {
     for (const id of [...this.playbacks.keys()]) {
       this.stop(id);
     }
+  }
+
+  destroy(): void {
+    this.stopAll();
+    this.masterGain.disconnect();
   }
 
   get activeCount(): number {

@@ -255,3 +255,49 @@ describe('PlaybackEngine spatial audio', () => {
     expect(panner.pan.value).toBeCloseTo(0, 5);
   });
 });
+
+describe('PlaybackEngine master volume + mute', () => {
+  it('setMasterVolume changes master gain', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.setMasterVolume(0.5);
+    expect(eng.masterVolume).toBe(0.5);
+  });
+
+  it('setMasterVolume clamps to 0-1', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.setMasterVolume(-1);
+    expect(eng.masterVolume).toBe(0);
+    eng.setMasterVolume(5);
+    expect(eng.masterVolume).toBe(1);
+  });
+
+  it('mute sets master volume to 0 and remembers previous', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.setMasterVolume(0.8);
+    eng.mute();
+    expect(eng.masterVolume).toBe(0);
+    expect(eng.isMuted).toBe(true);
+  });
+
+  it('unmute restores previous volume', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.setMasterVolume(0.8);
+    eng.mute();
+    eng.unmute();
+    expect(eng.masterVolume).toBe(0.8);
+    expect(eng.isMuted).toBe(false);
+  });
+
+  it('destroy stops all and disconnects master', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.play(mockBuffer());
+    eng.play(mockBuffer());
+    eng.destroy();
+    expect(eng.activeCount).toBe(0);
+  });
+});
