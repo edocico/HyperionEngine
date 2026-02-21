@@ -373,6 +373,7 @@ export class Hyperion implements Disposable {
     if (this.renderer && state && state.entityCount > 0) {
       this.renderer.render(state, this.camera);
     }
+    this.inputManager.resetFrame();
   }
 
   private checkDestroyed(): void {
