@@ -31,6 +31,21 @@ export class SoundRegistry {
     return this.buffers.get(handle);
   }
 
+  async loadAll(
+    urls: string[],
+    opts?: { onProgress?: (loaded: number, total: number) => void },
+  ): Promise<SoundHandle[]> {
+    const handles: SoundHandle[] = [];
+    let loaded = 0;
+    for (const url of urls) {
+      const handle = await this.load(url);
+      handles.push(handle);
+      loaded++;
+      opts?.onProgress?.(loaded, urls.length);
+    }
+    return handles;
+  }
+
   get count(): number {
     return this.buffers.size;
   }

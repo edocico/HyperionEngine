@@ -67,3 +67,28 @@ describe('SoundRegistry', () => {
     expect(decode).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('SoundRegistry batch loading', () => {
+  it('loadAll returns handles in URL order', async () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    const handles = await reg.loadAll(['a.mp3', 'b.mp3', 'c.mp3']);
+    expect(handles).toHaveLength(3);
+    expect(handles[1]).toBe(handles[0] + 1);
+    expect(handles[2]).toBe(handles[0] + 2);
+  });
+
+  it('loadAll fires onProgress after each sound', async () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    const progress: [number, number][] = [];
+    await reg.loadAll(['a.mp3', 'b.mp3'], {
+      onProgress: (loaded, total) => progress.push([loaded, total]),
+    });
+    expect(progress).toEqual([[1, 2], [2, 2]]);
+  });
+
+  it('loadAll with empty array returns empty', async () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    const handles = await reg.loadAll([]);
+    expect(handles).toEqual([]);
+  });
+});
