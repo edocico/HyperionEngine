@@ -54,6 +54,12 @@ export class PlaybackEngine {
     this.cleanup(id);
   }
 
+  setPitch(id: PlaybackId, pitch: number): void {
+    const p = this.playbacks.get(id);
+    if (!p) return;
+    p.source.playbackRate.value = Math.max(0.01, pitch);
+  }
+
   setVolume(id: PlaybackId, volume: number): void {
     const p = this.playbacks.get(id);
     if (!p) return;

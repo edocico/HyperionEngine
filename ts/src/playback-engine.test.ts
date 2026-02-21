@@ -156,3 +156,45 @@ describe('PlaybackEngine stop + volume', () => {
     expect(eng.activeCount).toBe(0);
   });
 });
+
+describe('PlaybackEngine pitch + looping', () => {
+  it('setPitch changes playbackRate', () => {
+    const ctx = mockAudioContext();
+    const source = mockSourceNode();
+    ctx.createBufferSource = vi.fn(() => source) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setPitch(id, 1.5);
+    expect(source.playbackRate.value).toBe(1.5);
+  });
+
+  it('setPitch clamps to positive values', () => {
+    const ctx = mockAudioContext();
+    const source = mockSourceNode();
+    ctx.createBufferSource = vi.fn(() => source) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setPitch(id, -1);
+    expect(source.playbackRate.value).toBe(0.01);
+    eng.setPitch(id, 0);
+    expect(source.playbackRate.value).toBe(0.01);
+  });
+
+  it('play with loop option sets source.loop', () => {
+    const ctx = mockAudioContext();
+    const source = mockSourceNode();
+    ctx.createBufferSource = vi.fn(() => source) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    eng.play(mockBuffer(), { loop: true });
+    expect(source.loop).toBe(true);
+  });
+
+  it('play with pitch option sets playbackRate', () => {
+    const ctx = mockAudioContext();
+    const source = mockSourceNode();
+    ctx.createBufferSource = vi.fn(() => source) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    eng.play(mockBuffer(), { pitch: 0.5 });
+    expect(source.playbackRate.value).toBe(0.5);
+  });
+});
