@@ -202,15 +202,40 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     let new_parent_id =
                         u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
 
-                    // Remove from old parent's Children if currently parented
-                    if let Ok(old_parent) = world.get::<&Parent>(child_entity) {
-                        let old_id = old_parent.0;
-                        if old_id != u32::MAX
-                            && let Some(old_parent_entity) = entity_map.get(old_id)
-                            && let Ok(mut children) =
+                    // Remove from old parent's Children (or OverflowChildren) if currently parented.
+                    // Two-phase: extract old_id first (drops the Parent borrow), then mutate.
+                    let old_parent_id = world
+                        .get::<&Parent>(child_entity)
+                        .ok()
+                        .map(|p| p.0);
+                    if let Some(old_id) = old_parent_id
+                        && old_id != u32::MAX
+                        && let Some(old_parent_entity) = entity_map.get(old_id)
+                    {
+                        let removed_from_inline =
+                            if let Ok(mut children) =
                                 world.get::<&mut Children>(old_parent_entity)
-                        {
-                            children.remove(cmd.entity_id);
+                            {
+                                children.remove(cmd.entity_id)
+                            } else {
+                                false
+                            };
+
+                        if !removed_from_inline {
+                            // Try OverflowChildren
+                            let should_remove_component =
+                                if let Ok(mut overflow) =
+                                    world.get::<&mut OverflowChildren>(old_parent_entity)
+                                {
+                                    overflow.items.retain(|&id| id != cmd.entity_id);
+                                    overflow.items.is_empty()
+                                } else {
+                                    false
+                                };
+                            if should_remove_component {
+                                let _ =
+                                    world.remove_one::<OverflowChildren>(old_parent_entity);
+                            }
                         }
                     }
 
@@ -589,6 +614,42 @@ mod tests {
         let overflow = world.get::<&OverflowChildren>(parent_entity).unwrap();
         assert_eq!(overflow.items.len(), 1);
         assert_eq!(overflow.items[0], 33);
+    }
+
+    #[test]
+    fn remove_child_from_overflow() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+
+        // Spawn parent + 33 children
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        for child_id in 1..=33u32 {
+            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map);
+            let mut payload = [0u8; 16];
+            payload[0..4].copy_from_slice(&0u32.to_le_bytes());
+            process_commands(
+                &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
+                &mut world,
+                &mut map,
+            );
+        }
+
+        // Unparent child 33 (in overflow)
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        process_commands(
+            &[Command { cmd_type: CommandType::SetParent, entity_id: 33, payload }],
+            &mut world,
+            &mut map,
+        );
+
+        // OverflowChildren should be removed (was only 1 item)
+        let parent_entity = map.get(0).unwrap();
+        assert!(world.get::<&OverflowChildren>(parent_entity).is_err());
+
+        // Children should still have 32
+        let children = world.get::<&Children>(parent_entity).unwrap();
+        assert_eq!(children.count, 32);
     }
 
     #[test]
