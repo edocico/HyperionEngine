@@ -31,6 +31,21 @@ export class SoundRegistry {
     return this.buffers.get(handle);
   }
 
+  unload(handle: SoundHandle): void {
+    this.buffers.delete(handle);
+    for (const [url, h] of this.urlToHandle) {
+      if (h === handle) {
+        this.urlToHandle.delete(url);
+        break;
+      }
+    }
+  }
+
+  destroy(): void {
+    this.buffers.clear();
+    this.urlToHandle.clear();
+  }
+
   async loadAll(
     urls: string[],
     opts?: { onProgress?: (loaded: number, total: number) => void },

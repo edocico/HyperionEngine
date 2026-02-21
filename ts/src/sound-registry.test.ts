@@ -92,3 +92,38 @@ describe('SoundRegistry batch loading', () => {
     expect(handles).toEqual([]);
   });
 });
+
+describe('SoundRegistry unload + destroy', () => {
+  it('unload removes a sound by handle', async () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    const h = await reg.load('test.mp3');
+    expect(reg.getBuffer(h)).toBeDefined();
+    reg.unload(h);
+    expect(reg.getBuffer(h)).toBeUndefined();
+    expect(reg.count).toBe(0);
+  });
+
+  it('unload removes URL dedup mapping', async () => {
+    const decode = mockDecoder();
+    const reg = new SoundRegistry(decode, mockFetcher());
+    const h1 = await reg.load('test.mp3');
+    reg.unload(h1);
+    const h2 = await reg.load('test.mp3');
+    expect(decode).toHaveBeenCalledTimes(2);
+    expect(h2).not.toBe(h1);
+  });
+
+  it('unload is no-op for unknown handle', () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    expect(() => reg.unload(999 as SoundHandle)).not.toThrow();
+  });
+
+  it('destroy clears all sounds', async () => {
+    const reg = new SoundRegistry(mockDecoder(), mockFetcher());
+    await reg.load('a.mp3');
+    await reg.load('b.mp3');
+    expect(reg.count).toBe(2);
+    reg.destroy();
+    expect(reg.count).toBe(0);
+  });
+});
