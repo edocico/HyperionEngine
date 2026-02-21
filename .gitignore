@@ -7,3 +7,4 @@ ts/dist/
 firebase-debug.log
 *.docx
 .playwright-mcp/
+.worktrees/
