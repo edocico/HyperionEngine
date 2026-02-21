@@ -1,5 +1,6 @@
 import { EntityHandle } from './entity-handle';
 import type { BackpressuredProducer } from './backpressure';
+import type { ImmediateState } from './immediate-state';
 
 /**
  * Object pool for EntityHandle instances.
@@ -31,13 +32,13 @@ export class EntityHandlePool {
    * If the pool has a recycled handle, it is re-initialized with the new
    * ID and producer. Otherwise a fresh EntityHandle is allocated.
    */
-  acquire(entityId: number, producer: BackpressuredProducer): EntityHandle {
+  acquire(entityId: number, producer: BackpressuredProducer, immediateState?: ImmediateState): EntityHandle {
     const handle = this.pool.pop();
     if (handle) {
-      handle.init(entityId, producer);
+      handle.init(entityId, producer, immediateState);
       return handle;
     }
-    return new EntityHandle(entityId, producer);
+    return new EntityHandle(entityId, producer, immediateState);
   }
 
   /**

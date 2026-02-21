@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EntityHandle } from './entity-handle';
+import { ImmediateState } from './immediate-state';
 import type { BackpressuredProducer } from './backpressure';
 
 function mockProducer(): BackpressuredProducer {
@@ -159,6 +160,70 @@ describe('EntityHandle', () => {
     const child = new EntityHandle(1, p);
     child.unparent();
     expect(p.setParent).toHaveBeenCalledWith(1, 0xFFFFFFFF);
+  });
+
+  describe('immediate mode', () => {
+    it('positionImmediate sends setPosition to producer', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      const result = h.positionImmediate(10, 20, 30);
+      expect(result).toBe(h); // fluent
+      expect(p.setPosition).toHaveBeenCalledWith(7, 10, 20, 30);
+    });
+
+    it('positionImmediate updates immediate state', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      h.positionImmediate(10, 20, 30);
+      expect(imm.has(7)).toBe(true);
+      expect(imm.get(7)).toEqual([10, 20, 30]);
+    });
+
+    it('positionImmediate works without immediate state (optional)', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(7, p); // no ImmediateState
+      expect(() => h.positionImmediate(1, 2, 3)).not.toThrow();
+      expect(p.setPosition).toHaveBeenCalledWith(7, 1, 2, 3);
+    });
+
+    it('clearImmediate removes override', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      h.positionImmediate(10, 20, 30);
+      expect(imm.has(7)).toBe(true);
+      const result = h.clearImmediate();
+      expect(result).toBe(h); // fluent
+      expect(imm.has(7)).toBe(false);
+    });
+
+    it('destroy clears immediate state', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      h.positionImmediate(10, 20, 30);
+      expect(imm.has(7)).toBe(true);
+      h.destroy();
+      expect(imm.has(7)).toBe(false);
+    });
+
+    it('positionImmediate throws after destroy', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      h.destroy();
+      expect(() => h.positionImmediate(1, 2, 3)).toThrow('destroyed');
+    });
+
+    it('clearImmediate throws after destroy', () => {
+      const p = mockProducer();
+      const imm = new ImmediateState();
+      const h = new EntityHandle(7, p, imm);
+      h.destroy();
+      expect(() => h.clearImmediate()).toThrow('destroyed');
+    });
   });
 
   describe('primitive params', () => {

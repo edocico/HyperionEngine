@@ -1,4 +1,5 @@
 import type { BackpressuredProducer } from './backpressure';
+import type { ImmediateState } from './immediate-state';
 import type { TextureHandle } from './types';
 
 /** Render primitive type enum (must match Rust RenderPrimitive values). */
@@ -27,10 +28,11 @@ export class EntityHandle implements Disposable {
   private _id: number = -1;
   private _alive: boolean = false;
   private _producer: BackpressuredProducer | null = null;
+  private _immediateState: ImmediateState | null = null;
   private _data: Map<string, unknown> | null = null;
 
-  constructor(id: number, producer: BackpressuredProducer) {
-    this.init(id, producer);
+  constructor(id: number, producer: BackpressuredProducer, immediateState?: ImmediateState) {
+    this.init(id, producer, immediateState);
   }
 
   /** The numeric entity ID this handle wraps. */
@@ -43,10 +45,11 @@ export class EntityHandle implements Disposable {
    * Re-initialize this handle for pool reuse.
    * Resets the handle with a new ID and producer, clearing any plugin data.
    */
-  init(id: number, producer: BackpressuredProducer): void {
+  init(id: number, producer: BackpressuredProducer, immediateState?: ImmediateState): void {
     this._id = id;
     this._alive = true;
     this._producer = producer;
+    this._immediateState = immediateState ?? null;
     this._data = null;
   }
 
@@ -59,6 +62,34 @@ export class EntityHandle implements Disposable {
   position(x: number, y: number, z: number): this {
     this.check();
     this._producer!.setPosition(this._id, x, y, z);
+    return this;
+  }
+
+  /**
+   * Set entity position with immediate visual feedback.
+   *
+   * Sends the position through the ring buffer (normal path) AND writes
+   * a shadow override to ImmediateState, which patches the SoA transforms
+   * buffer before GPU upload. This provides zero-latency visual response
+   * even though the ring buffer has a 1-2 frame delay.
+   *
+   * Returns `this` for chaining.
+   */
+  positionImmediate(x: number, y: number, z: number): this {
+    this.check();
+    this._producer!.setPosition(this._id, x, y, z);
+    this._immediateState?.set(this._id, x, y, z);
+    return this;
+  }
+
+  /**
+   * Remove the immediate-mode shadow position override for this entity.
+   * The entity will revert to the WASM-computed position on the next frame.
+   * Returns `this` for chaining.
+   */
+  clearImmediate(): this {
+    this.check();
+    this._immediateState?.clear(this._id);
     return this;
   }
 
@@ -172,9 +203,11 @@ export class EntityHandle implements Disposable {
    */
   destroy(): void {
     if (!this._alive) return;
+    this._immediateState?.clear(this._id);
     this._producer!.despawnEntity(this._id);
     this._alive = false;
     this._producer = null;
+    this._immediateState = null;
   }
 
   /** Disposable protocol — same as `destroy()`. */
