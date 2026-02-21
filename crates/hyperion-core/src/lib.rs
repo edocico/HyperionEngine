@@ -238,6 +238,30 @@ pub fn engine_gpu_prim_params_f32_len() -> u32 {
     }
 }
 
+/// Pointer to the entity IDs buffer (one u32 per entity: external entity ID for picking).
+/// Indices are parallel to the other SoA GPU buffers — index i here
+/// corresponds to entity i in the transforms/bounds/renderMeta buffers.
+#[wasm_bindgen]
+pub fn engine_gpu_entity_ids_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_entity_ids_ptr())
+    }
+}
+
+/// Number of u32 values in the entity IDs buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_entity_ids_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_entity_ids_len())
+    }
+}
+
 /// Compact the entity map by truncating trailing empty slots.
 #[wasm_bindgen]
 pub fn engine_compact_entity_map() {
