@@ -299,11 +299,13 @@ export class Hyperion implements Disposable {
   /** Pause the game loop (frames still fire but tick is skipped). */
   pause(): void {
     this.loop.pause();
+    void this.audioManager.suspend();
   }
 
   /** Resume the game loop after a pause. */
   resume(): void {
     this.loop.resume();
+    void this.audioManager.resume();
   }
 
   /**
@@ -328,6 +330,7 @@ export class Hyperion implements Disposable {
     this.loop.stop();
     this.inputManager.destroy();
     this.immediateState.clearAll();
+    void this.audioManager.destroy();
     this.bridge.destroy();
     this.renderer?.destroy();
   }

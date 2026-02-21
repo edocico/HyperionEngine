@@ -365,6 +365,29 @@ describe('Hyperion audio', () => {
   });
 });
 
+describe('Hyperion audio lifecycle', () => {
+  it('destroy calls audioManager.destroy', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const spy = vi.spyOn(engine.audio, 'destroy').mockResolvedValue(undefined);
+    engine.destroy();
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it('pause suspends audio', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const spy = vi.spyOn(engine.audio, 'suspend').mockResolvedValue(undefined);
+    engine.pause();
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it('resume resumes audio', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const spy = vi.spyOn(engine.audio, 'resume').mockResolvedValue(undefined);
+    engine.resume();
+    expect(spy).toHaveBeenCalled();
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
