@@ -46,11 +46,42 @@ async function main() {
       .line(-200 + i * 40, -100, -200 + i * 40, 100, 2);
   }
 
+  // --- Input: click to select/deselect entities ---
+  engine.input.onClick((button, x, y) => {
+    if (button !== 0) return;
+    const entityId = engine.picking.hitTest(x, y);
+    if (entityId !== null) {
+      engine.selection?.toggle(entityId);
+    }
+  });
+
+  // --- Input: WASD camera movement ---
+  let camX = 0, camY = 0;
+  engine.addHook('preTick', (dt) => {
+    const speed = 15;
+    let dx = 0, dy = 0;
+    if (engine.input.isKeyDown('KeyW') || engine.input.isKeyDown('ArrowUp'))    dy += speed * dt;
+    if (engine.input.isKeyDown('KeyS') || engine.input.isKeyDown('ArrowDown'))  dy -= speed * dt;
+    if (engine.input.isKeyDown('KeyA') || engine.input.isKeyDown('ArrowLeft'))  dx -= speed * dt;
+    if (engine.input.isKeyDown('KeyD') || engine.input.isKeyDown('ArrowRight')) dx += speed * dt;
+    if (dx !== 0 || dy !== 0) {
+      camX += dx;
+      camY += dy;
+      engine.cam.position(camX, camY, 0);
+    }
+  });
+
+  // --- Input: scroll to zoom ---
+  engine.input.onScroll((_dx, dy) => {
+    const zoom = engine.cam.zoomLevel;
+    engine.cam.zoom(zoom * (1 - dy * 0.001));
+  });
+
   // Update overlay each frame
   engine.addHook('frameEnd', () => {
     const s = engine.stats;
     overlay.textContent =
-      `Hyperion Engine\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}`;
+      `Hyperion Engine\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}\nWASD/Arrows: move | Scroll: zoom | Click: select`;
   });
 
   engine.start();
