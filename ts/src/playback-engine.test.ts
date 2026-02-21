@@ -96,3 +96,63 @@ describe('PlaybackEngine', () => {
     expect(eng.activeCount).toBe(2);
   });
 });
+
+describe('PlaybackEngine stop + volume', () => {
+  it('stop removes active playback', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    expect(eng.activeCount).toBe(1);
+    eng.stop(id);
+    expect(eng.activeCount).toBe(0);
+  });
+
+  it('stop calls source.stop()', () => {
+    const ctx = mockAudioContext();
+    const source = mockSourceNode();
+    ctx.createBufferSource = vi.fn(() => source) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.stop(id);
+    expect(source.stop).toHaveBeenCalled();
+  });
+
+  it('stop is no-op for unknown id', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    expect(() => eng.stop(999 as PlaybackId)).not.toThrow();
+  });
+
+  it('setVolume changes gain value', () => {
+    const ctx = mockAudioContext();
+    const gainNode = mockGainNode();
+    ctx.createGain = vi.fn(() => gainNode) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setVolume(id, 0.5);
+    expect(gainNode.gain.value).toBe(0.5);
+  });
+
+  it('setVolume clamps to 0-1 range', () => {
+    const ctx = mockAudioContext();
+    const gainNode = mockGainNode();
+    ctx.createGain = vi.fn(() => gainNode) as any;
+    const eng = new PlaybackEngine(ctx as any);
+    const id = eng.play(mockBuffer());
+    eng.setVolume(id, -0.5);
+    expect(gainNode.gain.value).toBe(0);
+    eng.setVolume(id, 2.0);
+    expect(gainNode.gain.value).toBe(1);
+  });
+
+  it('stopAll stops all active playbacks', () => {
+    const ctx = mockAudioContext();
+    const eng = new PlaybackEngine(ctx as any);
+    eng.play(mockBuffer());
+    eng.play(mockBuffer());
+    eng.play(mockBuffer());
+    expect(eng.activeCount).toBe(3);
+    eng.stopAll();
+    expect(eng.activeCount).toBe(0);
+  });
+});

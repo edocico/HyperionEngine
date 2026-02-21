@@ -47,6 +47,27 @@ export class PlaybackEngine {
     return id;
   }
 
+  stop(id: PlaybackId): void {
+    const p = this.playbacks.get(id);
+    if (!p) return;
+    try { p.source.stop(); } catch { /* already stopped */ }
+    this.cleanup(id);
+  }
+
+  setVolume(id: PlaybackId, volume: number): void {
+    const p = this.playbacks.get(id);
+    if (!p) return;
+    const clamped = Math.max(0, Math.min(1, volume));
+    p.baseVolume = clamped;
+    p.gain.gain.value = clamped;
+  }
+
+  stopAll(): void {
+    for (const id of [...this.playbacks.keys()]) {
+      this.stop(id);
+    }
+  }
+
   get activeCount(): number {
     return this.playbacks.size;
   }
