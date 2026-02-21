@@ -110,6 +110,7 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     MeshHandle::default(),
                     RenderPrimitive::default(),
                     PrimitiveParams::default(),
+                    ExternalId(cmd.entity_id),
                     Parent::default(),
                     Children::default(),
                     Active,
@@ -520,6 +521,23 @@ mod tests {
         assert_eq!(pp.0[7], 8.0);
         // Params 0-3 should still be intact
         assert_eq!(pp.0[0], 1.0);
+    }
+
+    #[test]
+    fn spawn_sets_external_id() {
+        let mut world = World::new();
+        let mut entity_map = EntityMap::new();
+
+        let cmd = Command {
+            cmd_type: CommandType::SpawnEntity,
+            entity_id: 42,
+            payload: [0u8; 16],
+        };
+        process_commands(&[cmd], &mut world, &mut entity_map);
+
+        let hecs_entity = entity_map.get(42).unwrap();
+        let ext_id = world.get::<&ExternalId>(hecs_entity).unwrap();
+        assert_eq!(ext_id.0, 42);
     }
 
     #[test]
