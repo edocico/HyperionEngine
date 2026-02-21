@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-20 | **Versione**: 0.9.0 (Phase 0-5.5 + Phase 4.5 + Post-Plan Integration completate) | **86 test Rust across 7 moduli + 224 test TypeScript across 29 file**
+> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.0 (Phase 0-5.5 + Phase 4.5 + Post-Plan Integration + Phase 6 Input completate) | **88 test Rust across 7 moduli + 291 test TypeScript across 33 file**
 
 ---
 
@@ -16,7 +16,7 @@ L'obiettivo architetturale primario e la **separazione fisica** tra UI, logica d
 
 - Non supporta networking o multiplayer
 - Non compila con SIMD128 attivo (richiede flag target-feature specifici per wasm-pack)
-- Non gestisce audio o input (Phase 6)
+- Non gestisce audio (Phase 7)
 - Non supporta mesh 3D — solo primitive 2D (quad, line, gradient, box shadow, MSDF text)
 
 ### Design Principle: "Command Buffer Architecture"
@@ -1889,3 +1889,112 @@ Il subsistema di testo MSDF:
 2. **Text Layout** (`text/text-layout.ts`): `layoutText(text, atlas, fontSize, startX, startY)` posiziona i glifi usando le metriche dell'atlas. Ritorna `LayoutGlyph[]`.
 3. **TextManager** (`text/text-manager.ts`): Cache per font atlas caricati.
 4. **Shader** (`shaders/msdf-text.wgsl`): Vertex shader mappa UV del quad alla regione dell'atlas via PrimitiveParams. Fragment shader campiona la texture MSDF, calcola `median(r,g,b)`, e applica anti-aliasing basato su screen-pixel-range (`dpdx`/`dpdy`).
+
+---
+
+## 21. Input System (Phase 6)
+
+### 21.1 ExternalId e SoA Entity ID Buffer
+
+Per abilitare il picking CPU-side, serve mappare indici SoA → ID entita TypeScript. Il componente `ExternalId(u32)` viene aggiunto a ogni entita durante `SpawnEntity`:
+
+```rust
+CommandType::SpawnEntity => {
+    world.spawn((Position::default(), ..., ExternalId(cmd.entity_id)));
+}
+```
+
+`collect_gpu()` include `ExternalId` nella query hecs e popola un buffer `gpu_entity_ids: Vec<u32>` parallel-indexed con gli altri buffer SoA. Esposto via WASM tramite `engine_gpu_entity_ids_ptr()`/`engine_gpu_entity_ids_len()`. Il buffer `entityIds` e CPU-only — non viene uploadato alla GPU.
+
+### 21.2 InputManager
+
+`InputManager` (`ts/src/input-manager.ts`) gestisce tre canali di input:
+
+- **Keyboard**: `Set<string>` di code correntemente premuti. `isKeyDown(code)` per polling.
+- **Pointer**: posizione `(pointerX, pointerY)`, bottoni attivi `Set<number>`. `isButtonDown(button)` per polling.
+- **Scroll**: delta accumulato `(scrollDeltaX, scrollDeltaY)` che si resetta ogni frame via `resetFrame()`.
+
+**Lifecycle DOM**:
+
+- `attach(target)` registra `keydown/keyup/pointermove/pointerdown/pointerup/wheel` sul target
+- `detach()` rimuove tutti i listener
+- `destroy()` chiama `detach()` e pulisce lo stato
+
+**Callback registration**: `onKey(code, fn)` (supporta wildcard `*`), `onClick(fn)`, `onPointerMove(fn)`, `onScroll(fn)`. Ogni metodo ritorna una funzione `Unsubscribe`.
+
+**Integrazione Hyperion**:
+
+- `Hyperion.create()` crea l'InputManager e lo attacca al canvas
+- `engine.input` espone l'InputManager
+- `resetFrame()` viene chiamato alla fine di ogni `tick()`
+
+### 21.3 CPU Hit Testing (Ray-Sphere)
+
+Il picking CPU-side usa ray-sphere intersection per compatibilita 2.5D e futura estensibilita 3D.
+
+**Pipeline di picking**:
+
+```text
+Pixel (x, y)  →  Camera.screenToRay()  →  Ray { origin, direction }
+                                               ↓
+                               hitTestRay(ray, bounds, entityIds)
+                                               ↓
+                                         entityId | null
+```
+
+**`Camera.screenToRay()`** (`ts/src/camera.ts`):
+
+1. Pixel → NDC (Y-flipped): `ndcX = px/w * 2 - 1`, `ndcY = -(py/h * 2 - 1)`
+2. Calcola inverse VP tramite `mat4Inverse()` (espansione per cofattori, NON shortcut ortografico)
+3. Unproject near (z=0) e far (z=1) — range depth WebGPU [0,1]
+4. Direction = normalize(far - near)
+
+Per camera ortografica, tutti i raggi sono paralleli (direzione costante, origini diverse). Per camera prospettica futura, i raggi divergono dall'occhio — zero cambiamenti API necessari.
+
+**`hitTestRay()`** (`ts/src/hit-tester.ts`):
+
+- Scansione lineare O(n) su tutti i bounding sphere nel buffer SoA `bounds`
+- Intersezione quadratica: `a*t² + b*t + c = 0` dove `a = dot(d,d) = 1` (normalizzato)
+- Ritorna l'entityId con il t positivo minore (frontmost hit)
+- Discriminante negativo = miss, `t < 0` = dietro al raggio
+
+**API pubblica**: `engine.picking.hitTest(pixelX, pixelY)` — combina screenToRay + hitTestRay usando lo stato SoA corrente.
+
+### 21.4 Immediate Mode
+
+Il "immediate mode" permette di bypassare il loop WASM di 1-2 frame per visual feedback istantaneo (es. drag-and-drop):
+
+```text
+EntityHandle.positionImmediate(x, y, z)
+    ↓
+RingBuffer command (per WASM)  +  ImmediateState.set(id, x, y, z) (shadow)
+    ↓
+In tick(), DOPO bridge.tick() e PRIMA di renderer.render():
+    immediateState.patchTransforms(transforms, entityIds, entityCount)
+    ↓
+Scansione SoA: se entityIds[i] ha override, patcha colonna 3 di transforms[i*16+12..14]
+```
+
+**`ImmediateState`** (`ts/src/immediate-state.ts`):
+
+- Backing store: `Map<number, [number, number, number]>`
+- `set(id, x, y, z)` / `clear(id)` / `clearAll()`
+- `patchTransforms(transforms, entityIds, count)` modifica il buffer SoA in-place
+
+**Limitazione nota**: il patching modifica solo i transform (per rendering), NON i bounds (per culling/picking). Il picking durante drag usa la posizione WASM (1-2 frame stale). Per la maggior parte dei casi d'uso, questa differenza e impercettibile.
+
+**EntityHandle integration**: `.positionImmediate(x, y, z)` invia sia il comando ring buffer sia aggiorna lo shadow state. `.clearImmediate()` rimuove l'override. Il cleanup e automatico su `destroy()`.
+
+### 21.5 Click-to-Select Workflow
+
+L'intero flusso dalla pressione del mouse alla outline sullo schermo:
+
+```text
+1. Mouse click  →  InputManager.onClick callback
+2. engine.picking.hitTest(px, py)  →  Camera.screenToRay  →  hitTestRay  →  entityId
+3. engine.selection.toggle(entityId)  →  SelectionManager.dirty = true
+4. Next frame: uploadMask(device, buffer)  →  GPU selection-mask buffer
+5. SelectionSeedPass  →  JFA iterations  →  OutlineCompositePass  →  outline visible
+```
+
+Tutto il picking e CPU-side (nessun readback GPU). Il flusso completo richiede 1-2 frame per mostrare l'outline dopo il click.
