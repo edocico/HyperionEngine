@@ -143,4 +143,12 @@ export class BackpressuredProducer {
   setPrimParams1(entityId: number, p4: number, p5: number, p6: number, p7: number): boolean {
     return this.writeCommand(CommandType.SetPrimParams1, entityId, new Float32Array([p4, p5, p6, p7]));
   }
+
+  setListenerPosition(x: number, y: number, z: number): boolean {
+    return this.writeCommand(
+      CommandType.SetListenerPosition,
+      0, // sentinel entity ID
+      new Float32Array([x, y, z]),
+    );
+  }
 }
