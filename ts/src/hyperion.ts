@@ -23,7 +23,8 @@ import { LeakDetector } from './leak-detector';
 import { RawAPI } from './raw-api';
 import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
-import type { PluginContext } from './plugin-context';
+import { PluginContext } from './plugin-context';
+import { EventBus } from './event-bus';
 import type { HookPhase, HookFn } from './game-loop';
 import { InputManager } from './input-manager';
 import { ImmediateState } from './immediate-state';
@@ -54,6 +55,7 @@ export class Hyperion implements Disposable {
   private readonly inputManager: InputManager;
   private readonly immediateState: ImmediateState;
   private readonly audioManager: AudioManager;
+  private readonly eventBus: EventBus;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -76,6 +78,7 @@ export class Hyperion implements Disposable {
     this.inputManager = new InputManager();
     this.immediateState = new ImmediateState();
     this.audioManager = new AudioManager();
+    this.eventBus = new EventBus();
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -189,11 +192,18 @@ export class Hyperion implements Disposable {
 
   /**
    * Install a plugin. The plugin's `install()` callback is invoked
-   * immediately with `this` engine instance.
+   * immediately with a PluginContext providing sub-APIs for systems,
+   * events, rendering, GPU resources, and storage.
    */
   use(plugin: HyperionPlugin): void {
     this.checkDestroyed();
-    this.pluginRegistry.install(plugin, this as unknown as PluginContext);
+    const ctx = new PluginContext({
+      engine: this,
+      loop: this.loop,
+      eventBus: this.eventBus,
+      renderer: this.renderer,
+    });
+    this.pluginRegistry.install(plugin, ctx);
   }
 
   /**
@@ -344,6 +354,7 @@ export class Hyperion implements Disposable {
     this.loop.stop();
     this.inputManager.destroy();
     this.immediateState.clearAll();
+    this.eventBus.destroy();
     void this.audioManager.destroy();
     this.bridge.destroy();
     this.renderer?.destroy();

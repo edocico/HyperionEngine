@@ -242,23 +242,42 @@ describe('Hyperion', () => {
     expect(config.onDeviceLost).toBe(onLost);
   });
 
-  it('use() installs a plugin', () => {
+  it('use installs a plugin with PluginContext', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
-    const installFn = vi.fn();
-    const plugin = { name: 'test', version: '1.0.0', install: installFn };
-    engine.use(plugin);
+    let receivedCtx: any = null;
+    engine.use({
+      name: 'test', version: '1.0.0',
+      install: (ctx) => { receivedCtx = ctx; },
+    });
     expect(engine.plugins.has('test')).toBe(true);
-    expect(installFn).toHaveBeenCalled();
+    expect(receivedCtx).toBeDefined();
+    expect(receivedCtx.engine).toBe(engine);
+    expect(receivedCtx.systems).toBeDefined();
+    expect(receivedCtx.events).toBeDefined();
+    expect(receivedCtx.rendering).toBeDefined();
+    expect(receivedCtx.gpu).toBeDefined();
+    expect(receivedCtx.storage).toBeDefined();
   });
 
-  it('unuse() removes a plugin', () => {
+  it('unuse calls cleanup returned from install', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     const cleanup = vi.fn();
-    const plugin = { name: 'test', version: '1.0.0', install: () => cleanup };
-    engine.use(plugin);
+    engine.use({ name: 'test', version: '1.0.0', install: () => cleanup });
     engine.unuse('test');
     expect(engine.plugins.has('test')).toBe(false);
     expect(cleanup).toHaveBeenCalled();
+  });
+
+  it('use with null renderer provides null rendering/gpu', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    let receivedCtx: any = null;
+    engine.use({
+      name: 'headless', version: '1.0.0',
+      install: (ctx) => { receivedCtx = ctx; },
+    });
+    expect(receivedCtx.rendering).toBeNull();
+    expect(receivedCtx.gpu).toBeNull();
+    expect(receivedCtx.storage).toBeDefined();
   });
 
   it('destroy() cleans up all plugins', () => {
