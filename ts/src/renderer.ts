@@ -268,8 +268,8 @@ export async function createRenderer(
     graph.compile();
   }
 
-  // --- 9. Return the Renderer object ---
-  return {
+  // --- 9. Build the Renderer object ---
+  const rendererObj: Renderer = {
     textureManager,
     selectionManager,
 
@@ -438,4 +438,40 @@ export async function createRenderer(
       device.destroy();
     },
   };
+
+  // --- Shader Hot-Reload (dev only) ---
+  if (import.meta.hot) {
+    import.meta.hot.accept('./shaders/basic.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('basic', mod.default);
+    });
+    import.meta.hot.accept('./shaders/line.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('line', mod.default);
+    });
+    import.meta.hot.accept('./shaders/msdf-text.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('msdf-text', mod.default);
+    });
+    import.meta.hot.accept('./shaders/gradient.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('gradient', mod.default);
+    });
+    import.meta.hot.accept('./shaders/box-shadow.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('box-shadow', mod.default);
+    });
+    import.meta.hot.accept('./shaders/cull.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('cull', mod.default);
+    });
+    import.meta.hot.accept('./shaders/fxaa-tonemap.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('fxaa-tonemap', mod.default);
+    });
+    import.meta.hot.accept('./shaders/selection-seed.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('selection-seed', mod.default);
+    });
+    import.meta.hot.accept('./shaders/jfa.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('jfa', mod.default);
+    });
+    import.meta.hot.accept('./shaders/outline-composite.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('outline-composite', mod.default);
+    });
+  }
+
+  return rendererObj;
 }
