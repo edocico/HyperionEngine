@@ -57,6 +57,28 @@ function createPluginGpuAPI(device: GPUDevice): PluginGpuAPI {
   };
 }
 
+export interface PluginStorageAPI {
+  createMap<T>(name: string): Map<number, T>;
+  getMap<T>(name: string): Map<number, T> | undefined;
+  destroyAll(): void;
+}
+
+function createPluginStorageAPI(): PluginStorageAPI {
+  const maps = new Map<string, Map<number, unknown>>();
+  return {
+    createMap<T>(name: string): Map<number, T> {
+      if (maps.has(name)) return maps.get(name)! as Map<number, T>;
+      const map = new Map<number, T>();
+      maps.set(name, map as Map<number, unknown>);
+      return map;
+    },
+    getMap<T>(name: string): Map<number, T> | undefined {
+      return maps.get(name) as Map<number, T> | undefined;
+    },
+    destroyAll() { maps.clear(); },
+  };
+}
+
 export interface PluginContextDeps {
   engine: unknown;
   loop: GameLoop;
@@ -70,6 +92,7 @@ export class PluginContext {
   readonly events: PluginEventAPI;
   readonly rendering: PluginRenderingAPI | null;
   readonly gpu: PluginGpuAPI | null;
+  readonly storage: PluginStorageAPI;
 
   constructor(deps: PluginContextDeps) {
     this.engine = deps.engine;
@@ -92,5 +115,6 @@ export class PluginContext {
       removePass: (name) => deps.renderer!.graph.removePass(name),
     } : null;
     this.gpu = deps.renderer ? createPluginGpuAPI(deps.renderer.device) : null;
+    this.storage = createPluginStorageAPI();
   }
 }

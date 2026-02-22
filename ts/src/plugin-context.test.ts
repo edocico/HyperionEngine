@@ -66,3 +66,26 @@ describe('PluginGpuAPI', () => {
     expect(ctx.gpu).toBeNull();
   });
 });
+
+describe('PluginStorageAPI', () => {
+  it('createMap returns a Map', () => {
+    const { ctx } = createTestContext();
+    const map = ctx.storage.createMap<number>('health');
+    expect(map).toBeInstanceOf(Map);
+  });
+
+  it('getMap retrieves existing map', () => {
+    const { ctx } = createTestContext();
+    const m1 = ctx.storage.createMap<string>('names');
+    const m2 = ctx.storage.getMap<string>('names');
+    expect(m1).toBe(m2);
+  });
+
+  it('destroyAll clears all maps', () => {
+    const { ctx } = createTestContext();
+    const map = ctx.storage.createMap<number>('hp');
+    map.set(1, 100);
+    ctx.storage.destroyAll();
+    expect(ctx.storage.getMap('hp')).toBeUndefined();
+  });
+});
