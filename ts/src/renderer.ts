@@ -9,6 +9,8 @@ import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
 import jfaShaderCode from './shaders/jfa.wgsl?raw';
 import outlineCompositeShaderCode from './shaders/outline-composite.wgsl?raw';
+import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
+import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
@@ -19,6 +21,7 @@ import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
 import { OutlineCompositePass } from './render/passes/outline-composite-pass';
 import { SelectionManager } from './selection';
+import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
 
@@ -35,9 +38,11 @@ export interface Renderer {
   render(
     state: GPURenderState,
     camera: { viewProjection: Float32Array },
+    dt?: number,
   ): void;
   readonly textureManager: TextureManager;
   readonly selectionManager: SelectionManager;
+  readonly particleSystem: ParticleSystem;
   readonly graph: RenderGraph;
   readonly device: GPUDevice;
   enableOutlines(options: OutlineOptions): void;
@@ -162,6 +167,12 @@ export async function createRenderer(
   graph.addPass(fxaaPass);
   graph.compile();
 
+  // --- 7b. Create GPU particle system (standalone, outside RenderGraph) ---
+  let currentParticleSimSrc = particleSimulateCode;
+  let currentParticleRenderSrc = particleRenderCode;
+  const particleSystem = new ParticleSystem(device);
+  particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
+
   // --- 8. JFA outline state ---
   let outlinesActive = false;
   let outlineCompositePass: OutlineCompositePass | null = null;
@@ -274,6 +285,7 @@ export async function createRenderer(
   const rendererObj: Renderer = {
     textureManager,
     selectionManager,
+    particleSystem,
 
     get graph() { return graph; },
     get device() { return device; },
@@ -334,6 +346,16 @@ export async function createRenderer(
         case 'outline-composite':
           OutlineCompositePass.SHADER_SOURCE = shaderCode;
           break;
+        case 'particle-simulate':
+          currentParticleSimSrc = shaderCode;
+          particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
+          console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
+          return;
+        case 'particle-render':
+          currentParticleRenderSrc = shaderCode;
+          particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
+          console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
+          return;
         default:
           console.warn(`[Hyperion] Unknown shader pass: ${passName}`);
           return;
@@ -345,7 +367,7 @@ export async function createRenderer(
       console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
     },
 
-    render(state: GPURenderState, camera: { viewProjection: Float32Array }) {
+    render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
       if (state.entityCount === 0) return;
 
       // Upload SoA buffers
@@ -426,13 +448,27 @@ export async function createRenderer(
         cameraViewProjection: camera.viewProjection,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
-        deltaTime: 0,
+        deltaTime: dt ?? 0,
       };
 
       graph.render(device, frameState, resources);
+
+      // --- Particle system: simulate + render AFTER the scene graph ---
+      if (particleSystem.emitterCount > 0) {
+        const swapchainView = resources.getTextureView('swapchain')!;
+        const particleEncoder = device.createCommandEncoder();
+        particleSystem.update(
+          particleEncoder,
+          swapchainView,
+          camera.viewProjection,
+          dt ?? 0,
+        );
+        device.queue.submit([particleEncoder.finish()]);
+      }
     },
 
     destroy() {
+      particleSystem.destroy();
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();
       jfaTextureB?.destroy();
@@ -478,6 +514,12 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/outline-composite.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('outline-composite', mod.default);
+    });
+    import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('particle-simulate', mod.default);
+    });
+    import.meta.hot.accept('./shaders/particle-render.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('particle-render', mod.default);
     });
   }
 

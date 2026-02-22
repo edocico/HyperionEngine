@@ -44,7 +44,6 @@ export class ParticleSystem {
   private spawnPipeline: GPUComputePipeline | null = null;
   private renderPipeline: GPURenderPipeline | null = null;
   private indexBuffer: GPUBuffer | null = null;
-  private presentationFormat: GPUTextureFormat = 'bgra8unorm';
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -64,8 +63,6 @@ export class ParticleSystem {
     renderSource: string,
     format: GPUTextureFormat,
   ): void {
-    this.presentationFormat = format;
-
     const simModule = this.device.createShaderModule({ code: simulateSource });
     const renderModule = this.device.createShaderModule({ code: renderSource });
 

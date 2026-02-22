@@ -472,7 +472,7 @@ export class Hyperion implements Disposable {
       this.immediateState.patchBounds(state.bounds, state.entityIds, state.entityCount);
     }
     if (this.renderer && state && state.entityCount > 0) {
-      this.renderer.render(state, this.camera);
+      this.renderer.render(state, this.camera, dt);
     }
     this.inputManager.resetFrame();
 

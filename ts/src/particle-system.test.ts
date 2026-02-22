@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ParticleSystem } from './particle-system';
-import { DEFAULT_PARTICLE_CONFIG, type ParticleHandle } from './particle-types';
+import { DEFAULT_PARTICLE_CONFIG } from './particle-types';
 
 function mockDevice(): GPUDevice {
   return {

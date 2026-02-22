@@ -44,6 +44,12 @@ function mockRenderer(): Renderer {
       destroy: vi.fn(),
     } as any,
     selectionManager: new SelectionManager(100_000),
+    particleSystem: {
+      createEmitter: vi.fn(() => 1),
+      destroyEmitter: vi.fn(),
+      emitterCount: 0,
+      destroy: vi.fn(),
+    } as any,
     graph: { addPass: vi.fn(), removePass: vi.fn(), destroy: vi.fn() } as any,
     device: {} as any,
     enableOutlines: vi.fn(),
