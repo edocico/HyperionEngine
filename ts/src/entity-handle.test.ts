@@ -257,6 +257,23 @@ describe('EntityHandle', () => {
       expect(p.setPrimParams1).toHaveBeenCalledWith(1, 0, 0, 0, 0.5);
     });
 
+    it('bezier() sets render primitive and params', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      const result = h.bezier(0.1, 0.2, 0.5, 0.8, 0.9, 0.3, 0.05);
+      expect(result).toBe(h);
+      expect(p.setRenderPrimitive).toHaveBeenCalledWith(1, 3); // BezierPath = 3
+      expect(p.setPrimParams0).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.8);
+      expect(p.setPrimParams1).toHaveBeenCalledWith(1, 0.9, 0.3, 0.05, 0);
+    });
+
+    it('bezier() throws after destroy', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      h.destroy();
+      expect(() => h.bezier(0, 0, 0.5, 0.5, 1, 1, 0.02)).toThrow('destroyed');
+    });
+
     it('line() throws after destroy', () => {
       const p = mockProducer();
       const h = new EntityHandle(1, p);

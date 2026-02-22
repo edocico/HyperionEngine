@@ -3,6 +3,7 @@ import lineShaderCode from './shaders/line.wgsl?raw';
 import msdfShaderCode from './shaders/msdf-text.wgsl?raw';
 import gradientShaderCode from './shaders/gradient.wgsl?raw';
 import boxShadowShaderCode from './shaders/box-shadow.wgsl?raw';
+import bezierShaderCode from './shaders/bezier.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
 import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
@@ -138,6 +139,7 @@ export async function createRenderer(
     0: shaderCode,              // Quad
     1: lineShaderCode,          // Line
     2: msdfShaderCode,          // SDFGlyph (MSDF text)
+    3: bezierShaderCode,        // BezierPath
     4: gradientShaderCode,      // Gradient
     5: boxShadowShaderCode,     // BoxShadow
   };
@@ -311,6 +313,9 @@ export async function createRenderer(
         case 'msdf-text':
           ForwardPass.SHADER_SOURCES[2] = shaderCode;
           break;
+        case 'bezier':
+          ForwardPass.SHADER_SOURCES[3] = shaderCode;
+          break;
         case 'gradient':
           ForwardPass.SHADER_SOURCES[4] = shaderCode;
           break;
@@ -455,6 +460,9 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/box-shadow.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('box-shadow', mod.default);
+    });
+    import.meta.hot.accept('./shaders/bezier.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('bezier', mod.default);
     });
     import.meta.hot.accept('./shaders/cull.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('cull', mod.default);

@@ -177,6 +177,16 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
+  /** Configure this entity as a quadratic Bezier curve. Returns `this` for chaining. */
+  bezier(p0x: number, p0y: number, p1x: number, p1y: number,
+         p2x: number, p2y: number, width: number): this {
+    this.check();
+    this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.BezierPath);
+    this._producer!.setPrimParams0(this._id, p0x, p0y, p1x, p1y);
+    this._producer!.setPrimParams1(this._id, p2x, p2y, width, 0);
+    return this;
+  }
+
   /**
    * Get or set plugin data on this entity handle.
    * Data is stored per-key and cleared on `init()` (pool reuse).
