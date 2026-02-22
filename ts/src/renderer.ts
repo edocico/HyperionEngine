@@ -9,6 +9,7 @@ import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
 import jfaShaderCode from './shaders/jfa.wgsl?raw';
 import outlineCompositeShaderCode from './shaders/outline-composite.wgsl?raw';
+import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import { TextureManager } from './texture-manager';
@@ -20,6 +21,8 @@ import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
 import { OutlineCompositePass } from './render/passes/outline-composite-pass';
+import { BloomPass } from './render/passes/bloom-pass';
+import type { BloomConfig } from './render/passes/bloom-pass';
 import { SelectionManager } from './selection';
 import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
@@ -48,6 +51,9 @@ export interface Renderer {
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
+  enableBloom(config?: BloomConfig): void;
+  disableBloom(): void;
+  readonly bloomEnabled: boolean;
   recompileShader(passName: string, shaderCode: string): void;
   destroy(): void;
 }
@@ -173,7 +179,58 @@ export async function createRenderer(
   const particleSystem = new ParticleSystem(device);
   particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
 
-  // --- 8. JFA outline state ---
+  // --- 8a. Bloom state ---
+  let bloomActive = false;
+  let bloomHalfTexture: GPUTexture | null = null;
+  let bloomQuarterTexture: GPUTexture | null = null;
+  let bloomEighthTexture: GPUTexture | null = null;
+  let bloomTexWidth = 0;
+  let bloomTexHeight = 0;
+  let currentBloomConfig: BloomConfig | undefined;
+
+  BloomPass.SHADER_SOURCE = bloomShaderCode;
+
+  /**
+   * Create or recreate bloom intermediate textures to match canvas size.
+   */
+  function ensureBloomTextures(width: number, height: number): void {
+    if (bloomHalfTexture && bloomTexWidth === width && bloomTexHeight === height) return;
+    bloomHalfTexture?.destroy();
+    bloomQuarterTexture?.destroy();
+    bloomEighthTexture?.destroy();
+
+    const halfW = Math.max(1, Math.floor(width / 2));
+    const halfH = Math.max(1, Math.floor(height / 2));
+    const quarterW = Math.max(1, Math.floor(width / 4));
+    const quarterH = Math.max(1, Math.floor(height / 4));
+    const eighthW = Math.max(1, Math.floor(width / 8));
+    const eighthH = Math.max(1, Math.floor(height / 8));
+
+    bloomHalfTexture = device.createTexture({
+      size: { width: halfW, height: halfH },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    bloomQuarterTexture = device.createTexture({
+      size: { width: quarterW, height: quarterH },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    bloomEighthTexture = device.createTexture({
+      size: { width: eighthW, height: eighthH },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    resources.setTextureView('bloom-half', bloomHalfTexture.createView());
+    resources.setTextureView('bloom-quarter', bloomQuarterTexture.createView());
+    resources.setTextureView('bloom-eighth', bloomEighthTexture.createView());
+
+    bloomTexWidth = width;
+    bloomTexHeight = height;
+  }
+
+  // --- 8b. JFA outline state ---
   let outlinesActive = false;
   let outlineCompositePass: OutlineCompositePass | null = null;
   let jfaPasses: JFAPass[] = [];
@@ -221,7 +278,9 @@ export async function createRenderer(
   }
 
   /**
-   * Rebuild the render graph to include or exclude the outline pipeline.
+   * Rebuild the render graph to include or exclude the outline/bloom pipelines.
+   * Bloom and outlines are mutually exclusive (both write to swapchain,
+   * dead-culling FXAATonemapPass).
    */
   function rebuildGraph(withOutlines: boolean, options?: OutlineOptions): void {
     graph.destroy();
@@ -270,10 +329,16 @@ export async function createRenderer(
       }
       outlineCompositePass.setup(device, resources);
       graph.addPass(outlineCompositePass);
+    } else if (bloomActive) {
+      // Bloom writes to swapchain, dead-culling FXAATonemapPass
+      ensureBloomTextures(canvas.width, canvas.height);
+      const bloomPass = new BloomPass(currentBloomConfig);
+      bloomPass.setup(device, resources);
+      graph.addPass(bloomPass);
     }
 
-    // FXAATonemapPass is always added; when outlines are active it gets
-    // dead-pass culled because OutlineCompositePass writes to swapchain.
+    // FXAATonemapPass is always added; when outlines or bloom are active it gets
+    // dead-pass culled because OutlineCompositePass/BloomPass writes to swapchain.
     const newFxaaPass = new FXAATonemapPass();
     newFxaaPass.setup(device, resources);
     graph.addPass(newFxaaPass);
@@ -301,6 +366,11 @@ export async function createRenderer(
         outlineCompositePass.outlineWidth = options.width;
         return;
       }
+      if (bloomActive) {
+        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling bloom.');
+        bloomActive = false;
+        currentBloomConfig = undefined;
+      }
       outlinesActive = true;
       rebuildGraph(true, options);
     },
@@ -309,6 +379,35 @@ export async function createRenderer(
       if (!outlinesActive) return;
       outlinesActive = false;
       rebuildGraph(false);
+    },
+
+    get bloomEnabled(): boolean {
+      return bloomActive;
+    },
+
+    enableBloom(config?: BloomConfig): void {
+      currentBloomConfig = config;
+      if (bloomActive) {
+        // Already active — just rebuild with new config
+        rebuildGraph(false);
+        return;
+      }
+      if (outlinesActive) {
+        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling outlines.');
+        outlinesActive = false;
+      }
+      bloomActive = true;
+      rebuildGraph(false);
+    },
+
+    disableBloom(): void {
+      if (!bloomActive) return;
+      bloomActive = false;
+      currentBloomConfig = undefined;
+      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
+        color: outlineCompositePass.outlineColor,
+        width: outlineCompositePass.outlineWidth,
+      } : undefined);
     },
 
     recompileShader(passName: string, shaderCode: string): void {
@@ -345,6 +444,9 @@ export async function createRenderer(
           break;
         case 'outline-composite':
           OutlineCompositePass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'bloom':
+          BloomPass.SHADER_SOURCE = shaderCode;
           break;
         case 'particle-simulate':
           currentParticleSimSrc = shaderCode;
@@ -432,6 +534,11 @@ export async function createRenderer(
           ensureJFATextures(canvas.width, canvas.height);
           updateJFATextureViews(jfaPasses.length);
         }
+
+        // Recreate bloom textures on resize
+        if (bloomActive) {
+          ensureBloomTextures(canvas.width, canvas.height);
+        }
       }
 
       // Set swapchain view for this frame
@@ -487,6 +594,9 @@ export async function createRenderer(
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();
       jfaTextureB?.destroy();
+      bloomHalfTexture?.destroy();
+      bloomQuarterTexture?.destroy();
+      bloomEighthTexture?.destroy();
       selectionManager.destroy();
       graph.destroy();
       resources.destroy();
@@ -529,6 +639,9 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/outline-composite.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('outline-composite', mod.default);
+    });
+    import.meta.hot.accept('./shaders/bloom.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('bloom', mod.default);
     });
     import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('particle-simulate', mod.default);

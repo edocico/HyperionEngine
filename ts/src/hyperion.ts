@@ -10,6 +10,7 @@ import {
   createFullIsolationBridge,
 } from './worker-bridge';
 import type { Renderer, OutlineOptions } from './renderer';
+import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
@@ -454,6 +455,27 @@ export class Hyperion implements Disposable {
   disableOutlines(): void {
     this.checkDestroyed();
     this.renderer?.disableOutlines();
+  }
+
+  /**
+   * Enable Dual Kawase bloom post-processing.
+   * Mutually exclusive with outlines (enabling bloom disables outlines).
+   *
+   * @param config - Optional bloom configuration (threshold, intensity, tonemapMode)
+   * @throws If no renderer is available (headless mode)
+   */
+  enableBloom(config?: BloomConfig): void {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot enable bloom: no renderer available');
+    this.renderer.enableBloom(config);
+  }
+
+  /**
+   * Disable bloom post-processing. Restores the standard FXAA/tonemap pipeline.
+   */
+  disableBloom(): void {
+    this.checkDestroyed();
+    this.renderer?.disableBloom();
   }
 
   /** Recompile a named shader pass with new WGSL source (dev tool). */

@@ -1,5 +1,6 @@
 import { Hyperion } from './hyperion';
 import type { SoundHandle } from './audio-types';
+import type { ParticleHandle } from './particle-types';
 
 async function main() {
   const overlay = document.getElementById('overlay')!;
@@ -22,6 +23,9 @@ async function main() {
   }
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+
+  // --- Bloom demo ---
+  engine.enableBloom({ threshold: 0.6, intensity: 1.2 });
 
   // Spawn test entities: 50 inside frustum, 50 outside
   engine.batch(() => {
@@ -47,11 +51,25 @@ async function main() {
       .line(-200 + i * 40, -100, -200 + i * 40, 100, 2);
   }
 
+  // --- Bezier curve demo ---
+  engine.spawn()
+    .position(0, -6, 0)
+    .scale(4, 2, 1)
+    .bezier(0.0, 0.5, 0.5, 0.0, 1.0, 0.5, 0.03);
+
+  engine.spawn()
+    .position(5, -6, 0)
+    .scale(3, 2, 1)
+    .bezier(0.0, 0.0, 0.5, 1.0, 1.0, 0.0, 0.02);
+
   // --- Audio: load a click sound (file is optional; demo works silently if absent) ---
   let sfxHandle: SoundHandle | null = null;
   engine.audio.load('sfx/click.ogg').then(h => { sfxHandle = h; }).catch(() => {});
 
-  // --- Input: click to select/deselect entities + play spatial sound ---
+  // --- Particle state ---
+  let particleHandle: ParticleHandle | null = null;
+
+  // --- Input: click to select/deselect entities + play spatial sound + spawn particles ---
   engine.input.onClick((button, x, y) => {
     if (button !== 0) return;
     const entityId = engine.picking.hitTest(x, y);
@@ -65,6 +83,28 @@ async function main() {
         }
       }
     }
+
+    // Spawn sparkle particles at click position
+    if (particleHandle !== null) {
+      engine.destroyParticleEmitter(particleHandle);
+    }
+    const sparkleEntity = engine.spawn().position(
+      (x / canvas.width - 0.5) * 20 * (canvas.width / canvas.height),
+      (0.5 - y / canvas.height) * 20,
+      0
+    );
+    particleHandle = engine.createParticleEmitter({
+      maxParticles: 200,
+      emissionRate: 80,
+      lifetime: [0.3, 1.0],
+      velocityMin: [-3, -5],
+      velocityMax: [3, -0.5],
+      colorStart: [1, 0.8, 0.2, 1],
+      colorEnd: [1, 0.2, 0, 0],
+      sizeStart: 0.15,
+      sizeEnd: 0,
+      gravity: [0, 5],
+    }, sparkleEntity.id);
   });
 
   // --- Input: WASD camera movement ---
@@ -93,7 +133,7 @@ async function main() {
   engine.addHook('frameEnd', () => {
     const s = engine.stats;
     overlay.textContent =
-      `Hyperion Engine\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}\nWASD/Arrows: move | Scroll: zoom | Click: select+sound`;
+      `Hyperion Engine — Phase 9\nMode: ${s.mode}\nFPS: ${s.fps}\nEntities: ${s.entityCount}\nWASD/Arrows: move | Scroll: zoom | Click: select+sound+particles\nFeatures: Bezier curves, Dual Kawase Bloom, GPU particles`;
   });
 
   engine.start();
