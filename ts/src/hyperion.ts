@@ -9,7 +9,7 @@ import {
   createDirectBridge,
   createFullIsolationBridge,
 } from './worker-bridge';
-import type { Renderer, OutlineOptions } from './renderer';
+import type { Renderer, OutlineOptions, BloomOptions } from './renderer';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
@@ -452,6 +452,31 @@ export class Hyperion implements Disposable {
   disableOutlines(): void {
     this.checkDestroyed();
     this.renderer?.disableOutlines();
+  }
+
+  /**
+   * Enable bloom post-processing. Extracts bright pixels, applies a
+   * Dual Kawase blur chain, and composites the result with tonemapping + FXAA.
+   * Mutually exclusive with outlines (both write to swapchain).
+   *
+   * @param options.threshold - Brightness threshold for extraction (default 0.7)
+   * @param options.intensity - Bloom strength multiplier (default 1.0)
+   * @param options.levels - Number of blur levels (default 3)
+   * @param options.tonemapMode - 0=none, 1=PBR Neutral, 2=ACES (default 1)
+   */
+  enableBloom(options?: BloomOptions): void {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot enable bloom: no renderer available');
+    this.renderer.enableBloom(options);
+  }
+
+  /**
+   * Disable bloom post-processing. The bloom pass is removed and
+   * FXAATonemapPass is restored via dead-pass culling.
+   */
+  disableBloom(): void {
+    this.checkDestroyed();
+    this.renderer?.disableBloom();
   }
 
   /** Recompile a named shader pass with new WGSL source (dev tool). */
