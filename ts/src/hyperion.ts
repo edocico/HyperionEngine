@@ -32,6 +32,8 @@ import { hitTestRay } from './hit-tester';
 import { AudioManager } from './audio-manager';
 import { ProfilerOverlay } from './profiler';
 import type { ProfilerConfig } from './profiler';
+import { DEFAULT_PARTICLE_CONFIG } from './particle-types';
+import type { ParticleEmitterConfig, ParticleHandle } from './particle-types';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -458,6 +460,32 @@ export class Hyperion implements Disposable {
   recompileShader(passName: string, shaderCode: string): void {
     this.checkDestroyed();
     this.renderer?.recompileShader(passName, shaderCode);
+  }
+
+  /**
+   * Create a GPU particle emitter. Particles are simulated and rendered
+   * entirely on the GPU, independent of the ECS. Optionally tracks an
+   * entity's position as the emitter origin.
+   *
+   * @param config - Partial config merged with DEFAULT_PARTICLE_CONFIG
+   * @param entityId - Optional external entity ID to track position from
+   * @returns ParticleHandle for later destruction
+   * @throws If no renderer is available (headless mode)
+   */
+  createParticleEmitter(config: Partial<ParticleEmitterConfig>, entityId?: number): ParticleHandle {
+    this.checkDestroyed();
+    if (!this.renderer) throw new Error('Cannot create particle emitter: no renderer available');
+    const merged = { ...DEFAULT_PARTICLE_CONFIG, ...config };
+    return this.renderer.particleSystem.createEmitter(merged, entityId);
+  }
+
+  /**
+   * Destroy a GPU particle emitter and release its GPU resources.
+   * Safe to call even without a renderer (no-op).
+   */
+  destroyParticleEmitter(handle: ParticleHandle): void {
+    this.checkDestroyed();
+    this.renderer?.particleSystem.destroyEmitter(handle);
   }
 
   /** Per-frame tick: advance the ECS then render if state is available. */

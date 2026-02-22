@@ -498,6 +498,29 @@ describe('Hyperion profiler', () => {
   });
 });
 
+describe('Hyperion particles', () => {
+  it('createParticleEmitter delegates to renderer.particleSystem', () => {
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const handle = engine.createParticleEmitter({ maxParticles: 500 });
+    expect(renderer.particleSystem.createEmitter).toHaveBeenCalled();
+    expect(handle).toBe(1);
+  });
+
+  it('destroyParticleEmitter delegates to renderer.particleSystem', () => {
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const handle = engine.createParticleEmitter({});
+    engine.destroyParticleEmitter(handle);
+    expect(renderer.particleSystem.destroyEmitter).toHaveBeenCalledWith(handle);
+  });
+
+  it('createParticleEmitter throws when headless (no renderer)', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(() => engine.createParticleEmitter({})).toThrow('no renderer');
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
