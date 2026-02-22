@@ -28,5 +28,9 @@ export { PluginContext } from './plugin-context';
 export type { PluginSystemsAPI, PluginRenderingAPI, PluginGpuAPI, PluginStorageAPI, PluginEventAPI } from './plugin-context';
 export { EventBus } from './event-bus';
 
+// Profiler
+export { ProfilerOverlay } from './profiler';
+export type { ProfilerConfig } from './profiler';
+
 // Example plugins
 export { fpsCounterPlugin } from './plugins/fps-counter';
