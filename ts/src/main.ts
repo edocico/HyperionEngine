@@ -1,5 +1,6 @@
 import { Hyperion } from './hyperion';
 import type { SoundHandle } from './audio-types';
+import type { EntityHandle } from './entity-handle';
 import type { ParticleHandle } from './particle-types';
 
 async function main() {
@@ -68,6 +69,7 @@ async function main() {
 
   // --- Particle state ---
   let particleHandle: ParticleHandle | null = null;
+  let sparkleEntity: EntityHandle | null = null;
 
   // --- Input: click to select/deselect entities + play spatial sound + spawn particles ---
   engine.input.onClick((button, x, y) => {
@@ -84,11 +86,12 @@ async function main() {
       }
     }
 
-    // Spawn sparkle particles at click position
+    // Spawn sparkle particles at click position (destroy previous first)
     if (particleHandle !== null) {
       engine.destroyParticleEmitter(particleHandle);
     }
-    const sparkleEntity = engine.spawn().position(
+    sparkleEntity?.destroy();
+    sparkleEntity = engine.spawn().position(
       (x / canvas.width - 0.5) * 20 * (canvas.width / canvas.height),
       (0.5 - y / canvas.height) * 20,
       0

@@ -2517,7 +2517,7 @@ Il bloom usa la tecnica Dual Kawase con una catena interna di 6 sub-pass:
 2. **Downsample 1** (`fs_downsample`): scene-hdr (full) -> bloom-half (1/2 res). Kawase 4-tap con half-texel offset: `(center * 4 + 4 corners) / 8`
 3. **Downsample 2** (`fs_downsample`): bloom-half -> bloom-quarter (1/4 res). Stesso filtro
 4. **Upsample 1** (`fs_upsample`): bloom-quarter -> bloom-half. Kawase 9-tap tent filter: `(corners + edges*2 + center*4) / 16`
-5. **Upsample 2** (`fs_upsample`): bloom-half -> bloom-quarter (non usato, i pass intermediari sovrascrivono). Nota: la catena attuale usa 3 livelli fissi
+5. **Upsample 2** (`fs_upsample`): bloom-quarter -> bloom-half. Output used as final bloom contribution in composite step
 6. **Composite** (`fs_composite`): Combina scene (con FXAA) + bloom additivo, poi applica tonemapping
 
 #### Texture Intermedie
@@ -2664,4 +2664,4 @@ Phase 9 aggiunge 4 nuovi file WGSL e 5 nuovi handler `import.meta.hot.accept()`:
 | `particle-simulate.wgsl` | `simulate`, `spawn` | `particle-simulate` |
 | `particle-render.wgsl` | `vs_main`, `fs_main` | `particle-render` |
 
-Il totale di file WGSL con HMR sale a 15 (da 10 in Phase 8).
+Total WGSL files with HMR: 14 (up from 10 in Phase 8). `prefix-sum.wgsl` is excluded (CPU reference only).
