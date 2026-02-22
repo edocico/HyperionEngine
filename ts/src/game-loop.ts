@@ -21,6 +21,11 @@ export class GameLoop {
   private _fps = 0;
   private frameCount = 0;
   private fpsAccum = 0;
+  private _frameDt = 0;
+  private _frameTimeAvg = 0;
+  private _frameTimeMax = 0;
+  private dtSum = 0;
+  private dtMax = 0;
 
   constructor(tickFn: TickFn) {
     this.tickFn = tickFn;
@@ -38,6 +43,18 @@ export class GameLoop {
     return this._fps;
   }
 
+  get frameDt(): number {
+    return this._frameDt;
+  }
+
+  get frameTimeAvg(): number {
+    return this._frameTimeAvg;
+  }
+
+  get frameTimeMax(): number {
+    return this._frameTimeMax;
+  }
+
   start(): void {
     if (this._running) return;
     this._running = true;
@@ -46,6 +63,11 @@ export class GameLoop {
     this.frameCount = 0;
     this.fpsAccum = 0;
     this._fps = 0;
+    this._frameDt = 0;
+    this._frameTimeAvg = 0;
+    this._frameTimeMax = 0;
+    this.dtSum = 0;
+    this.dtMax = 0;
     this.rafId = requestAnimationFrame((t) => this.frame(t));
   }
 
@@ -84,10 +106,18 @@ export class GameLoop {
     }
     this.lastTime = now;
 
+    this._frameDt = dt;
+    this.dtSum += dt;
+    if (dt > this.dtMax) this.dtMax = dt;
+
     this.frameCount++;
     this.fpsAccum += dt;
     if (this.fpsAccum >= 1.0) {
       this._fps = Math.round(this.frameCount / this.fpsAccum);
+      this._frameTimeAvg = this.frameCount > 0 ? this.dtSum / this.frameCount : 0;
+      this._frameTimeMax = this.dtMax;
+      this.dtSum = 0;
+      this.dtMax = 0;
       this.frameCount = 0;
       this.fpsAccum = 0;
     }

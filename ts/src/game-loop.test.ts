@@ -91,4 +91,17 @@ describe('GameLoop', () => {
     }
     expect(loop.fps).toBeGreaterThan(0);
   });
+
+  describe('frame time tracking', () => {
+    it('frameDt starts at 0', () => {
+      const loop = new GameLoop(vi.fn());
+      expect(loop.frameDt).toBe(0);
+    });
+
+    it('frameTimeAvg and frameTimeMax start at 0', () => {
+      const loop = new GameLoop(vi.fn());
+      expect(loop.frameTimeAvg).toBe(0);
+      expect(loop.frameTimeMax).toBe(0);
+    });
+  });
 });
