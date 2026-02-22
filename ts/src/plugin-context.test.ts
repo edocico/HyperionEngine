@@ -59,3 +59,10 @@ describe('PluginRenderingAPI', () => {
     expect(ctx.rendering).toBeNull();
   });
 });
+
+describe('PluginGpuAPI', () => {
+  it('is null when no renderer', () => {
+    const { ctx } = createTestContext();
+    expect(ctx.gpu).toBeNull();
+  });
+});

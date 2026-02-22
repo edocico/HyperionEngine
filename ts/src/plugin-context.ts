@@ -26,6 +26,37 @@ export interface PluginRenderingAPI {
   removePass(name: string): void;
 }
 
+export interface PluginGpuAPI {
+  readonly device: GPUDevice;
+  createBuffer(descriptor: GPUBufferDescriptor): GPUBuffer;
+  createTexture(descriptor: GPUTextureDescriptor): GPUTexture;
+  destroyTracked(): void;
+}
+
+function createPluginGpuAPI(device: GPUDevice): PluginGpuAPI {
+  const trackedBuffers: GPUBuffer[] = [];
+  const trackedTextures: GPUTexture[] = [];
+  return {
+    device,
+    createBuffer(descriptor) {
+      const buf = device.createBuffer(descriptor);
+      trackedBuffers.push(buf);
+      return buf;
+    },
+    createTexture(descriptor) {
+      const tex = device.createTexture(descriptor);
+      trackedTextures.push(tex);
+      return tex;
+    },
+    destroyTracked() {
+      for (const buf of trackedBuffers) buf.destroy();
+      for (const tex of trackedTextures) tex.destroy();
+      trackedBuffers.length = 0;
+      trackedTextures.length = 0;
+    },
+  };
+}
+
 export interface PluginContextDeps {
   engine: unknown;
   loop: GameLoop;
@@ -38,6 +69,7 @@ export class PluginContext {
   readonly systems: PluginSystemsAPI;
   readonly events: PluginEventAPI;
   readonly rendering: PluginRenderingAPI | null;
+  readonly gpu: PluginGpuAPI | null;
 
   constructor(deps: PluginContextDeps) {
     this.engine = deps.engine;
@@ -59,5 +91,6 @@ export class PluginContext {
       addPass: (pass) => deps.renderer!.graph.addPass(pass),
       removePass: (name) => deps.renderer!.graph.removePass(name),
     } : null;
+    this.gpu = deps.renderer ? createPluginGpuAPI(deps.renderer.device) : null;
   }
 }
