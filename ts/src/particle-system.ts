@@ -33,6 +33,7 @@ interface EmitterState {
   cameraBuffer: GPUBuffer;
   simulateBindGroup: GPUBindGroup | null;
   renderBindGroup: GPUBindGroup | null;
+  spawnAccumulator: number;
 }
 
 export class ParticleSystem {
@@ -162,6 +163,7 @@ export class ParticleSystem {
       cameraBuffer,
       simulateBindGroup: null,
       renderBindGroup: null,
+      spawnAccumulator: 0,
     };
 
     // Create bind groups
@@ -213,8 +215,10 @@ export class ParticleSystem {
         }
       }
 
-      // Calculate spawn count for this frame
-      const spawnCount = Math.floor(state.config.emissionRate * dt);
+      // Accumulate fractional spawns across frames for accurate emission rates
+      state.spawnAccumulator += state.config.emissionRate * dt;
+      const spawnCount = Math.floor(state.spawnAccumulator);
+      state.spawnAccumulator -= spawnCount;
 
       // Upload config uniform
       this.uploadConfig(state, emitterX, emitterY, dt, spawnCount);
@@ -222,8 +226,8 @@ export class ParticleSystem {
       // Upload camera VP for this emitter
       this.device.queue.writeBuffer(state.cameraBuffer, 0, cameraVP as Float32Array<ArrayBuffer>);
 
-      // Reset alive counter (counter[0]) to 0 each frame
-      this.device.queue.writeBuffer(state.counterBuffer, 0, new Uint32Array([0]));
+      // Reset both counters (alive + spawn) to 0 each frame
+      this.device.queue.writeBuffer(state.counterBuffer, 0, new Uint32Array([0, 0]));
 
       // --- Compute: simulate ---
       const simPass = encoder.beginComputePass();
@@ -259,7 +263,8 @@ export class ParticleSystem {
 
   /** Destroy all emitters and shared resources. */
   destroy(): void {
-    for (const [handle] of this.emitters) {
+    const handles = [...this.emitters.keys()];
+    for (const handle of handles) {
       this.destroyEmitter(handle as ParticleHandle);
     }
     this.indexBuffer?.destroy();

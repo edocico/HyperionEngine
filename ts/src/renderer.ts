@@ -455,6 +455,20 @@ export async function createRenderer(
 
       // --- Particle system: simulate + render AFTER the scene graph ---
       if (particleSystem.emitterCount > 0) {
+        // Build entity position map from SoA transforms for emitter tracking
+        let entityPositions: Map<number, [number, number]> | undefined;
+        if (state.entityIds) {
+          entityPositions = new Map();
+          for (let i = 0; i < state.entityCount; i++) {
+            // Translation is column 3 of the 4x4 matrix: indices 12 (x) and 13 (y)
+            const base = i * 16;
+            entityPositions.set(state.entityIds[i], [
+              state.transforms[base + 12],
+              state.transforms[base + 13],
+            ]);
+          }
+        }
+
         const swapchainView = resources.getTextureView('swapchain')!;
         const particleEncoder = device.createCommandEncoder();
         particleSystem.update(
@@ -462,6 +476,7 @@ export async function createRenderer(
           swapchainView,
           camera.viewProjection,
           dt ?? 0,
+          entityPositions,
         );
         device.queue.submit([particleEncoder.finish()]);
       }
