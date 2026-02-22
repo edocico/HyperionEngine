@@ -32,5 +32,12 @@ export { EventBus } from './event-bus';
 export { ProfilerOverlay } from './profiler';
 export type { ProfilerConfig } from './profiler';
 
+// Rendering passes
+export type { BloomConfig } from './render/passes/bloom-pass';
+
+// GPU Particle System
+export type { ParticleEmitterConfig, ParticleHandle } from './particle-types';
+export { DEFAULT_PARTICLE_CONFIG } from './particle-types';
+
 // Example plugins
 export { fpsCounterPlugin } from './plugins/fps-counter';
