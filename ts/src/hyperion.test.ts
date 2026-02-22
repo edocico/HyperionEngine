@@ -409,6 +409,17 @@ describe('Hyperion audio listener auto-update', () => {
   });
 });
 
+describe('Hyperion memoryStats', () => {
+  it('memoryStats returns defaults when no renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    const mem = engine.memoryStats;
+    expect(mem.wasmHeapBytes).toBe(0);
+    expect(mem.gpuBufferBytes).toBe(0);
+    expect(mem.entityMapUtilization).toBeGreaterThanOrEqual(0);
+    expect(mem.tierUtilization).toEqual([]);
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');

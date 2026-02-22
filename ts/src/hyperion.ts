@@ -12,7 +12,7 @@ import {
 import type { Renderer, OutlineOptions } from './renderer';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
-import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, CompactOptions } from './types';
+import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
 import { EntityHandlePool } from './entity-pool';
@@ -222,6 +222,16 @@ export class Hyperion implements Disposable {
       mode: this.mode,
       tickCount: this.bridge.latestRenderState?.tickCount ?? 0,
       overflowCount: this.bridge.commandBuffer.pendingCount,
+    };
+  }
+
+  /** Memory statistics snapshot. */
+  get memoryStats(): MemoryStats {
+    return {
+      wasmHeapBytes: 0,
+      gpuBufferBytes: 0,
+      entityMapUtilization: this.entityCount / this.config.maxEntities,
+      tierUtilization: [],
     };
   }
 
