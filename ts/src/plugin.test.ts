@@ -97,4 +97,50 @@ describe('PluginRegistry', () => {
     expect(c2).toHaveBeenCalled();
     expect(registry.list()).toEqual([]);
   });
+
+  describe('error boundaries', () => {
+    it('install catches and re-throws with plugin name context', () => {
+      const registry = new PluginRegistry();
+      const plugin: HyperionPlugin = {
+        name: 'bad', version: '1.0.0',
+        install: () => { throw new Error('boom'); },
+      };
+      expect(() => registry.install(plugin, mockCtx())).toThrow('Plugin "bad" install failed: boom');
+    });
+
+    it('failed install does not leave plugin registered', () => {
+      const registry = new PluginRegistry();
+      const plugin: HyperionPlugin = {
+        name: 'bad', version: '1.0.0',
+        install: () => { throw new Error('boom'); },
+      };
+      try { registry.install(plugin, mockCtx()); } catch {}
+      expect(registry.has('bad')).toBe(false);
+    });
+
+    it('cleanup error is caught and does not throw from uninstall', () => {
+      const registry = new PluginRegistry();
+      const plugin: HyperionPlugin = {
+        name: 'bad', version: '1.0.0',
+        install: () => () => { throw new Error('cleanup boom'); },
+      };
+      registry.install(plugin, mockCtx());
+      expect(() => registry.uninstall('bad')).not.toThrow();
+    });
+
+    it('destroyAll continues even if one cleanup throws', () => {
+      const registry = new PluginRegistry();
+      const c2 = vi.fn();
+      registry.install({
+        name: 'bad', version: '1.0.0',
+        install: () => () => { throw new Error('boom'); },
+      }, mockCtx());
+      registry.install({
+        name: 'good', version: '1.0.0',
+        install: () => c2,
+      }, mockCtx());
+      registry.destroyAll();
+      expect(c2).toHaveBeenCalled();
+    });
+  });
 });

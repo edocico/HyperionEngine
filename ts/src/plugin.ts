@@ -27,14 +27,21 @@ export class PluginRegistry {
       }
     }
     this.plugins.set(plugin.name, plugin);
-    const cleanup = plugin.install(ctx);
-    if (cleanup) this.cleanups.set(plugin.name, cleanup);
+    try {
+      const cleanup = plugin.install(ctx);
+      if (cleanup) this.cleanups.set(plugin.name, cleanup);
+    } catch (e) {
+      this.plugins.delete(plugin.name);
+      throw new Error(`Plugin "${plugin.name}" install failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   uninstall(name: string): void {
     const cleanup = this.cleanups.get(name);
     if (cleanup) {
-      cleanup();
+      try { cleanup(); } catch (e) {
+        console.warn(`[Hyperion] Plugin "${name}" cleanup failed:`, e);
+      }
       this.cleanups.delete(name);
     }
     this.plugins.delete(name);
@@ -53,7 +60,11 @@ export class PluginRegistry {
   }
 
   destroyAll(): void {
-    for (const cleanup of this.cleanups.values()) cleanup();
+    for (const [name, cleanup] of this.cleanups) {
+      try { cleanup(); } catch (e) {
+        console.warn(`[Hyperion] Plugin "${name}" cleanup failed:`, e);
+      }
+    }
     this.cleanups.clear();
     this.plugins.clear();
   }
