@@ -44,6 +44,7 @@ function mockRenderer(): Renderer {
       destroy: vi.fn(),
     } as any,
     selectionManager: new SelectionManager(100_000),
+    graph: { addPass: vi.fn(), removePass: vi.fn(), destroy: vi.fn() } as any,
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),
     outlinesEnabled: false,

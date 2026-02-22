@@ -3,6 +3,7 @@
 import type { GameLoop, HookFn } from './game-loop';
 import type { EventBus } from './event-bus';
 import type { Renderer } from './renderer';
+import type { RenderPass } from './render/render-pass';
 
 export interface PluginSystemsAPI {
   addPreTick(fn: HookFn): void;
@@ -20,6 +21,11 @@ export interface PluginEventAPI {
   emit(event: string, data: unknown): void;
 }
 
+export interface PluginRenderingAPI {
+  addPass(pass: RenderPass): void;
+  removePass(name: string): void;
+}
+
 export interface PluginContextDeps {
   engine: unknown;
   loop: GameLoop;
@@ -31,6 +37,7 @@ export class PluginContext {
   readonly engine: unknown;
   readonly systems: PluginSystemsAPI;
   readonly events: PluginEventAPI;
+  readonly rendering: PluginRenderingAPI | null;
 
   constructor(deps: PluginContextDeps) {
     this.engine = deps.engine;
@@ -48,5 +55,9 @@ export class PluginContext {
       once: (event, fn) => deps.eventBus.once(event, fn),
       emit: (event, data) => deps.eventBus.emit(event, data),
     };
+    this.rendering = deps.renderer ? {
+      addPass: (pass) => deps.renderer!.graph.addPass(pass),
+      removePass: (name) => deps.renderer!.graph.removePass(name),
+    } : null;
   }
 }

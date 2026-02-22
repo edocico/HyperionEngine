@@ -37,6 +37,7 @@ export interface Renderer {
   ): void;
   readonly textureManager: TextureManager;
   readonly selectionManager: SelectionManager;
+  readonly graph: RenderGraph;
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
@@ -269,6 +270,8 @@ export async function createRenderer(
   return {
     textureManager,
     selectionManager,
+
+    get graph() { return graph; },
 
     get outlinesEnabled(): boolean {
       return outlinesActive;

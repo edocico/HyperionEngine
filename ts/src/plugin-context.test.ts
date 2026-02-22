@@ -52,3 +52,10 @@ describe('PluginEventAPI', () => {
     expect(fn).toHaveBeenCalledWith({ msg: 'hello' });
   });
 });
+
+describe('PluginRenderingAPI', () => {
+  it('is null when no renderer', () => {
+    const { ctx } = createTestContext();
+    expect(ctx.rendering).toBeNull();
+  });
+});
