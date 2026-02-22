@@ -6,7 +6,7 @@ export { EntityHandle } from './entity-handle';
 export { RawAPI } from './raw-api';
 export { CameraAPI } from './camera-api';
 export { SelectionManager } from './selection';
-export type { OutlineOptions, BloomOptions } from './renderer';
+export type { OutlineOptions } from './renderer';
 export { RenderPrimitiveType } from './entity-handle';
 export { InputManager } from './input-manager';
 export type { KeyCallback, ClickCallback, PointerMoveCallback, ScrollCallback, Unsubscribe } from './input-manager';

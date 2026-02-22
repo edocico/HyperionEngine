@@ -4,6 +4,7 @@ import type { ResourcePool } from '../resource-pool';
 export interface BloomConfig {
   threshold?: number;
   intensity?: number;
+  /** Number of blur levels (currently fixed at 3; reserved for future use). */
   levels?: number;
   tonemapMode?: number;
 }

@@ -49,9 +49,6 @@ function mockRenderer(): Renderer {
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),
     outlinesEnabled: false,
-    enableBloom: vi.fn(),
-    disableBloom: vi.fn(),
-    bloomEnabled: false,
     recompileShader: vi.fn(),
     destroy: vi.fn(),
   };
@@ -328,31 +325,6 @@ describe('Hyperion', () => {
   it('disableOutlines is callable without renderer', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     expect(() => engine.disableOutlines()).not.toThrow();
-  });
-
-  it('enableBloom delegates to renderer', () => {
-    const renderer = mockRenderer();
-    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
-    const opts = { threshold: 0.5, intensity: 1.5 };
-    engine.enableBloom(opts);
-    expect(renderer.enableBloom).toHaveBeenCalledWith(opts);
-  });
-
-  it('enableBloom throws when no renderer', () => {
-    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    expect(() => engine.enableBloom()).toThrow('no renderer');
-  });
-
-  it('disableBloom delegates to renderer', () => {
-    const renderer = mockRenderer();
-    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
-    engine.disableBloom();
-    expect(renderer.disableBloom).toHaveBeenCalled();
-  });
-
-  it('disableBloom is callable without renderer', () => {
-    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    expect(() => engine.disableBloom()).not.toThrow();
   });
 
   it('recompileShader delegates to renderer', () => {

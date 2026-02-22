@@ -9,7 +9,6 @@ import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
 import jfaShaderCode from './shaders/jfa.wgsl?raw';
 import outlineCompositeShaderCode from './shaders/outline-composite.wgsl?raw';
-import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
@@ -19,8 +18,6 @@ import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
 import { OutlineCompositePass } from './render/passes/outline-composite-pass';
-import { BloomPass } from './render/passes/bloom-pass';
-import type { BloomConfig } from './render/passes/bloom-pass';
 import { SelectionManager } from './selection';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
@@ -32,13 +29,6 @@ const INDIRECT_BUFFER_SIZE = NUM_PRIM_TYPES * 5 * 4;  // 6 x 5 u32 x 4 bytes = 1
 export interface OutlineOptions {
   color: [number, number, number, number];
   width: number;
-}
-
-export interface BloomOptions {
-  threshold?: number;
-  intensity?: number;
-  levels?: number;
-  tonemapMode?: number;
 }
 
 export interface Renderer {
@@ -53,9 +43,6 @@ export interface Renderer {
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
-  enableBloom(options?: BloomOptions): void;
-  disableBloom(): void;
-  readonly bloomEnabled: boolean;
   recompileShader(passName: string, shaderCode: string): void;
   destroy(): void;
 }
@@ -160,7 +147,6 @@ export async function createRenderer(
   SelectionSeedPass.SHADER_SOURCE = selectionSeedShaderCode;
   JFAPass.SHADER_SOURCE = jfaShaderCode;
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
-  BloomPass.SHADER_SOURCE = bloomShaderCode;
 
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
@@ -185,16 +171,6 @@ export async function createRenderer(
   let jfaTextureB: GPUTexture | null = null;
   let jfaTexWidth = 0;
   let jfaTexHeight = 0;
-
-  // --- 8b. Bloom state ---
-  let bloomActive = false;
-  let bloomPass: BloomPass | null = null;
-  let bloomConfig: BloomConfig = {};
-  let bloomHalfTexture: GPUTexture | null = null;
-  let bloomQuarterTexture: GPUTexture | null = null;
-  let bloomEighthTexture: GPUTexture | null = null;
-  let bloomTexWidth = 0;
-  let bloomTexHeight = 0;
 
   /**
    * Create or recreate the JFA ping-pong textures to match the canvas size.
@@ -234,49 +210,6 @@ export async function createRenderer(
   }
 
   /**
-   * Create or recreate the bloom intermediate textures at half, quarter, eighth resolution.
-   */
-  function ensureBloomTextures(width: number, height: number): void {
-    if (bloomHalfTexture && bloomTexWidth === width && bloomTexHeight === height) return;
-    bloomHalfTexture?.destroy();
-    bloomQuarterTexture?.destroy();
-    bloomEighthTexture?.destroy();
-
-    const halfW = Math.max(1, Math.floor(width / 2));
-    const halfH = Math.max(1, Math.floor(height / 2));
-    const quarterW = Math.max(1, Math.floor(width / 4));
-    const quarterH = Math.max(1, Math.floor(height / 4));
-    const eighthW = Math.max(1, Math.floor(width / 8));
-    const eighthH = Math.max(1, Math.floor(height / 8));
-
-    const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
-    const bloomFormat: GPUTextureFormat = 'rgba16float';
-
-    bloomHalfTexture = device.createTexture({
-      size: { width: halfW, height: halfH },
-      format: bloomFormat,
-      usage,
-    });
-    bloomQuarterTexture = device.createTexture({
-      size: { width: quarterW, height: quarterH },
-      format: bloomFormat,
-      usage,
-    });
-    bloomEighthTexture = device.createTexture({
-      size: { width: eighthW, height: eighthH },
-      format: bloomFormat,
-      usage,
-    });
-
-    resources.setTextureView('bloom-half', bloomHalfTexture.createView());
-    resources.setTextureView('bloom-quarter', bloomQuarterTexture.createView());
-    resources.setTextureView('bloom-eighth', bloomEighthTexture.createView());
-
-    bloomTexWidth = width;
-    bloomTexHeight = height;
-  }
-
-  /**
    * Rebuild the render graph to include or exclude the outline pipeline.
    */
   function rebuildGraph(withOutlines: boolean, options?: OutlineOptions): void {
@@ -284,7 +217,6 @@ export async function createRenderer(
     jfaPasses = [];
     selectionSeedPass = null;
     outlineCompositePass = null;
-    bloomPass = null;
 
     // Recreate base passes
     const newCullPass = new CullPass();
@@ -327,16 +259,10 @@ export async function createRenderer(
       }
       outlineCompositePass.setup(device, resources);
       graph.addPass(outlineCompositePass);
-    } else if (bloomActive) {
-      // Bloom writes to swapchain, dead-culling FXAATonemapPass
-      ensureBloomTextures(canvas.width, canvas.height);
-      bloomPass = new BloomPass(bloomConfig);
-      bloomPass.setup(device, resources);
-      graph.addPass(bloomPass);
     }
 
-    // FXAATonemapPass is always added; when outlines or bloom are active it gets
-    // dead-pass culled because OutlineCompositePass/BloomPass writes to swapchain.
+    // FXAATonemapPass is always added; when outlines are active it gets
+    // dead-pass culled because OutlineCompositePass writes to swapchain.
     const newFxaaPass = new FXAATonemapPass();
     newFxaaPass.setup(device, resources);
     graph.addPass(newFxaaPass);
@@ -363,11 +289,6 @@ export async function createRenderer(
         outlineCompositePass.outlineWidth = options.width;
         return;
       }
-      // Mutual exclusion: bloom and outlines both write to swapchain
-      if (bloomActive) {
-        console.warn('[Hyperion] Disabling bloom to enable outlines (mutually exclusive)');
-        bloomActive = false;
-      }
       outlinesActive = true;
       rebuildGraph(true, options);
     },
@@ -375,37 +296,6 @@ export async function createRenderer(
     disableOutlines(): void {
       if (!outlinesActive) return;
       outlinesActive = false;
-      rebuildGraph(false);
-    },
-
-    get bloomEnabled(): boolean {
-      return bloomActive;
-    },
-
-    enableBloom(options?: BloomOptions): void {
-      if (bloomActive && bloomPass) {
-        // Just update parameters without rebuilding
-        if (options?.threshold !== undefined) bloomPass.threshold = options.threshold;
-        if (options?.intensity !== undefined) bloomPass.intensity = options.intensity;
-        if (options?.levels !== undefined) bloomPass.levels = options.levels;
-        if (options?.tonemapMode !== undefined) bloomPass.tonemapMode = options.tonemapMode;
-        bloomConfig = { ...bloomConfig, ...options };
-        return;
-      }
-      // Mutual exclusion: bloom and outlines both write to swapchain
-      if (outlinesActive) {
-        console.warn('[Hyperion] Disabling outlines to enable bloom (mutually exclusive)');
-        outlinesActive = false;
-      }
-      bloomActive = true;
-      bloomConfig = options ?? {};
-      rebuildGraph(false);
-    },
-
-    disableBloom(): void {
-      if (!bloomActive) return;
-      bloomActive = false;
-      bloomConfig = {};
       rebuildGraph(false);
     },
 
@@ -443,9 +333,6 @@ export async function createRenderer(
           break;
         case 'outline-composite':
           OutlineCompositePass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'bloom':
-          BloomPass.SHADER_SOURCE = shaderCode;
           break;
         default:
           console.warn(`[Hyperion] Unknown shader pass: ${passName}`);
@@ -523,11 +410,6 @@ export async function createRenderer(
           ensureJFATextures(canvas.width, canvas.height);
           updateJFATextureViews(jfaPasses.length);
         }
-
-        // Recreate bloom textures on resize
-        if (bloomActive) {
-          ensureBloomTextures(canvas.width, canvas.height);
-        }
       }
 
       // Set swapchain view for this frame
@@ -554,9 +436,6 @@ export async function createRenderer(
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();
       jfaTextureB?.destroy();
-      bloomHalfTexture?.destroy();
-      bloomQuarterTexture?.destroy();
-      bloomEighthTexture?.destroy();
       selectionManager.destroy();
       graph.destroy();
       resources.destroy();
@@ -599,9 +478,6 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/outline-composite.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('outline-composite', mod.default);
-    });
-    import.meta.hot.accept('./shaders/bloom.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('bloom', mod.default);
     });
   }
 
