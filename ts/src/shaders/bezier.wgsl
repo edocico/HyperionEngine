@@ -97,6 +97,8 @@ fn sdBezier(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
         let n = sin(v) * 1.732050808; // sqrt(3)
         let t0 = clamp(vec3f(m + m, -n - m, n - m) * z - kx, vec3f(0.0), vec3f(1.0));
 
+        // Only 2 of 3 roots need evaluation (third is provably suboptimal
+        // for this parametric formulation — matches Quilez reference).
         let qx = D + (C + B * t0.x) * t0.x;
         let qy = D + (C + B * t0.y) * t0.y;
         let dx = dot2(qx);
@@ -119,11 +121,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     // Compute unsigned distance from fragment to Bezier curve
     let d = sdBezier(in.uv, p0, p1, p2);
 
-    // Anti-aliased stroke: smoothstep from halfWidth outward
+    // Anti-aliased stroke: fwidth gives screen-space-adaptive 1px edge
     let halfWidth = width * 0.5;
-    let aa = 1.0 - smoothstep(halfWidth - 0.005, halfWidth + 0.005, d);
+    let edge = fwidth(d);
+    let aa = 1.0 - smoothstep(halfWidth - edge, halfWidth + edge, d);
 
-    if (aa < 0.001) {
+    if (aa < 0.01) {
         discard;
     }
 
