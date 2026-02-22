@@ -200,6 +200,14 @@ describe('Hyperion', () => {
     expect(engine.stats.tickCount).toBe(42);
   });
 
+  it('stats includes frame timing fields', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const s = engine.stats;
+    expect(s).toHaveProperty('frameDt');
+    expect(s).toHaveProperty('frameTimeAvg');
+    expect(s).toHaveProperty('frameTimeMax');
+  });
+
   it('stats.entityCount updates after spawn/destroy', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     const e = engine.spawn();

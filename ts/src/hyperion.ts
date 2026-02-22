@@ -222,6 +222,9 @@ export class Hyperion implements Disposable {
       mode: this.mode,
       tickCount: this.bridge.latestRenderState?.tickCount ?? 0,
       overflowCount: this.bridge.commandBuffer.pendingCount,
+      frameDt: this.loop.frameDt,
+      frameTimeAvg: this.loop.frameTimeAvg,
+      frameTimeMax: this.loop.frameTimeMax,
     };
   }
 

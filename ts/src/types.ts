@@ -36,6 +36,9 @@ export interface HyperionStats {
   mode: string;
   tickCount: number;
   overflowCount: number;
+  frameDt: number;
+  frameTimeAvg: number;
+  frameTimeMax: number;
 }
 
 /** Memory statistics (subset of stats). */
