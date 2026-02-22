@@ -242,27 +242,30 @@ describe('Hyperion', () => {
 
   it('use() installs a plugin', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
-    const plugin = { name: 'test', install: vi.fn() };
+    const installFn = vi.fn();
+    const plugin = { name: 'test', version: '1.0.0', install: installFn };
     engine.use(plugin);
     expect(engine.plugins.has('test')).toBe(true);
-    expect(plugin.install).toHaveBeenCalledWith(engine);
+    expect(installFn).toHaveBeenCalled();
   });
 
   it('unuse() removes a plugin', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
-    const plugin = { name: 'test', install: vi.fn(), cleanup: vi.fn() };
+    const cleanup = vi.fn();
+    const plugin = { name: 'test', version: '1.0.0', install: () => cleanup };
     engine.use(plugin);
     engine.unuse('test');
     expect(engine.plugins.has('test')).toBe(false);
-    expect(plugin.cleanup).toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalled();
   });
 
   it('destroy() cleans up all plugins', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
-    const plugin = { name: 'test', install: vi.fn(), cleanup: vi.fn() };
+    const cleanup = vi.fn();
+    const plugin = { name: 'test', version: '1.0.0', install: () => cleanup };
     engine.use(plugin);
     engine.destroy();
-    expect(plugin.cleanup).toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalled();
   });
 
   it('addHook/removeHook delegates to game loop', () => {

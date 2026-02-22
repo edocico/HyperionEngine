@@ -23,6 +23,7 @@ import { LeakDetector } from './leak-detector';
 import { RawAPI } from './raw-api';
 import { PluginRegistry } from './plugin';
 import type { HyperionPlugin } from './plugin';
+import type { PluginContext } from './plugin-context';
 import type { HookPhase, HookFn } from './game-loop';
 import { InputManager } from './input-manager';
 import { ImmediateState } from './immediate-state';
@@ -192,7 +193,7 @@ export class Hyperion implements Disposable {
    */
   use(plugin: HyperionPlugin): void {
     this.checkDestroyed();
-    this.pluginRegistry.install(plugin, this);
+    this.pluginRegistry.install(plugin, this as unknown as PluginContext);
   }
 
   /**

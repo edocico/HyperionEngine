@@ -1,28 +1,36 @@
 // plugin.ts — HyperionPlugin interface and PluginRegistry
 
+import type { PluginContext } from './plugin-context';
+
+export type PluginCleanup = () => void;
+
 export interface HyperionPlugin {
-  name: string;
-  install: (engine: unknown) => void;
-  cleanup?: () => void;
+  readonly name: string;
+  readonly version: string;
+  readonly dependencies?: string[];
+  install(ctx: PluginContext): PluginCleanup | void;
 }
 
 export class PluginRegistry {
   private readonly plugins = new Map<string, HyperionPlugin>();
+  private readonly cleanups = new Map<string, PluginCleanup>();
 
-  install(plugin: HyperionPlugin, engine: unknown): void {
+  install(plugin: HyperionPlugin, ctx: PluginContext): void {
     if (this.plugins.has(plugin.name)) {
       throw new Error(`Plugin "${plugin.name}" is already installed`);
     }
     this.plugins.set(plugin.name, plugin);
-    plugin.install(engine);
+    const cleanup = plugin.install(ctx);
+    if (cleanup) this.cleanups.set(plugin.name, cleanup);
   }
 
   uninstall(name: string): void {
-    const plugin = this.plugins.get(name);
-    if (plugin) {
-      plugin.cleanup?.();
-      this.plugins.delete(name);
+    const cleanup = this.cleanups.get(name);
+    if (cleanup) {
+      cleanup();
+      this.cleanups.delete(name);
     }
+    this.plugins.delete(name);
   }
 
   has(name: string): boolean {
@@ -38,9 +46,8 @@ export class PluginRegistry {
   }
 
   destroyAll(): void {
-    for (const plugin of this.plugins.values()) {
-      plugin.cleanup?.();
-    }
+    for (const cleanup of this.cleanups.values()) cleanup();
+    this.cleanups.clear();
     this.plugins.clear();
   }
 }
