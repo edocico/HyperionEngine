@@ -2463,3 +2463,205 @@ Esposto sulla facade `Hyperion` come `recompileShader(passName, shaderCode)` che
 **HyperionStats** (`ts/src/types.ts`): Esteso con `frameDt`, `frameTimeAvg`, `frameTimeMax` da GameLoop. `tickCount` wired da `GPURenderState` (proveniente da WASM).
 
 **MemoryStats** (`ts/src/types.ts`): `entityMapUtilization` — rapporto tra entita attive e capacita dell'EntityMap.
+
+---
+
+## 26. Phase 9: Advanced 2D Rendering
+
+Phase 9 aggiunge tre feature avanzate di rendering: curve Bezier SDF, bloom post-processing, e un sistema particellare GPU-only.
+
+### 26.1 Quadratic Bezier SDF (Track A)
+
+**File**: `ts/src/shaders/bezier.wgsl`, `ts/src/entity-handle.ts`
+
+#### Algoritmo (Inigo Quilez)
+
+Il rendering delle curve Bezier quadratiche utilizza la distanza SDF analitica di Inigo Quilez. Dato un punto `pos` e tre punti di controllo `a, b, c`:
+
+1. **Riduzione a cubica**: I coefficienti `A = b - a`, `B = a - 2b + c`, `C = 2A`, `D = a - pos` portano a un'equazione cubica nella variabile parametrica `t`
+2. **Discriminante**: `h = q^2 + 4p^3` distingue tra una radice reale (`h >= 0`, soluzione via Cardano) e tre radici reali (`h < 0`, soluzione trigonometrica con `acos/cos/sin`)
+3. **Clamp e distanza**: Il parametro `t` viene clampato a `[0, 1]` e la distanza euclidea dal punto piu vicino sulla curva viene calcolata
+
+#### Anti-aliasing
+
+Lo stroke e reso con `smoothstep()` basato su `fwidth()` per un bordo anti-aliasato di 1 pixel indipendente dalla risoluzione. I frammenti con alpha < 0.01 vengono scartati con `discard`.
+
+#### Coordinate UV-Space
+
+I punti di controllo sono in spazio UV `[0,1]^2` relativo al quad dell'entita. La posizione e scala dell'entita definiscono il bounding box in world-space. Questo permette curve consistenti indipendentemente dalla trasformazione.
+
+#### PrimParams Layout
+
+| Offset | Campo | Tipo |
+|--------|-------|------|
+| 0 | p0x | f32 |
+| 1 | p0y | f32 |
+| 2 | p1x | f32 |
+| 3 | p1y | f32 |
+| 4 | p2x | f32 |
+| 5 | p2y | f32 |
+| 6 | width (stroke) | f32 |
+| 7 | _pad | f32 |
+
+`EntityHandle.bezier(p0x, p0y, p1x, p1y, p2x, p2y, width)` imposta `RenderPrimitiveType.BezierPath` (3) e scrive i PrimParams via `SetPrimParams0`/`SetPrimParams1`.
+
+### 26.2 Dual Kawase Bloom (Track B)
+
+**File**: `ts/src/shaders/bloom.wgsl`, `ts/src/render/passes/bloom-pass.ts`, `ts/src/renderer.ts`
+
+#### Pipeline a 6 Step
+
+Il bloom usa la tecnica Dual Kawase con una catena interna di 6 sub-pass:
+
+1. **Extract** (`fs_extract`): Estrae pixel luminosi con soglia configurabile. Formula: `contrib = max(luminance - threshold, 0)`, scalato per preservare il rapporto cromatico
+2. **Downsample 1** (`fs_downsample`): scene-hdr (full) -> bloom-half (1/2 res). Kawase 4-tap con half-texel offset: `(center * 4 + 4 corners) / 8`
+3. **Downsample 2** (`fs_downsample`): bloom-half -> bloom-quarter (1/4 res). Stesso filtro
+4. **Upsample 1** (`fs_upsample`): bloom-quarter -> bloom-half. Kawase 9-tap tent filter: `(corners + edges*2 + center*4) / 16`
+5. **Upsample 2** (`fs_upsample`): bloom-half -> bloom-quarter (non usato, i pass intermediari sovrascrivono). Nota: la catena attuale usa 3 livelli fissi
+6. **Composite** (`fs_composite`): Combina scene (con FXAA) + bloom additivo, poi applica tonemapping
+
+#### Texture Intermedie
+
+Tre texture `rgba16float` gestite dal renderer coordinator:
+
+- `bloom-half`: `floor(w/2) x floor(h/2)`
+- `bloom-quarter`: `floor(w/4) x floor(h/4)`
+- `bloom-eighth`: `floor(w/8) x floor(h/8)`
+
+Ricreate automaticamente al resize del canvas.
+
+#### BloomParams Uniform (32 bytes)
+
+| Offset | Campo | Tipo |
+|--------|-------|------|
+| 0 | texelSize.x | f32 |
+| 4 | texelSize.y | f32 |
+| 8 | threshold | f32 |
+| 12 | intensity | f32 |
+| 16 | tonemapMode | u32 |
+| 20-28 | padding | u32 x 3 |
+
+`tonemapMode`: 0=none, 1=PBR Neutral (Khronos), 2=ACES filmic.
+
+#### Mutua Esclusivita con Outlines
+
+Bloom e outlines sono mutuamente esclusivi: entrambi scrivono su `swapchain`, causando dead-pass culling di `FXAATonemapPass`. `enableBloom()` disabilita outlines e viceversa, con warning in console. API sulla facade: `engine.enableBloom(config?)` / `engine.disableBloom()`.
+
+#### BloomConfig
+
+```typescript
+interface BloomConfig {
+  threshold?: number;   // default 0.7
+  intensity?: number;   // default 1.0
+  levels?: number;      // reserved, default 3
+  tonemapMode?: number; // 0=none, 1=PBR Neutral, 2=ACES
+}
+```
+
+### 26.3 GPU Particle System (Track C)
+
+**File**: `ts/src/shaders/particle-simulate.wgsl`, `ts/src/shaders/particle-render.wgsl`, `ts/src/particle-types.ts`, `ts/src/particle-system.ts`
+
+#### Architettura: Compute -> Render
+
+Le particelle sono interamente GPU-side, **non** entita ECS. Questo evita saturazione del ring buffer e overhead WASM per migliaia di particelle per frame.
+
+```text
+ParticleSystem.update(encoder, swapchainView, cameraVP, dt, entityPositions)
+  |
+  +-- Per ogni emitter:
+       |
+       +-- Upload config uniform (112 bytes)
+       +-- Upload camera VP (64 bytes)
+       +-- Reset counters a [0, 0]
+       |
+       +-- Compute: simulate (workgroup_size=64)
+       |     -> Avanza eta, applica gravita, interpola colore/dimensione
+       |     -> Incrementa atomicAdd(&counter[0]) per particelle vive
+       |
+       +-- Compute: spawn (workgroup_size=64)
+       |     -> Cerca slot liberi (age >= lifetime) con probing lineare
+       |     -> Inizializza posizione/velocita/colore da config con PRNG
+       |
+       +-- Render: instanced point sprites
+             -> Triangle strip (4 vertici), instanceCount = maxParticles
+             -> Dead particles clippate a z = -2.0
+             -> Circle SDF con fwidth() anti-aliasing
+             -> Alpha blending additivo (src-alpha, one-minus-src-alpha)
+```
+
+#### Particle Struct (48 bytes = 12 f32)
+
+| Campo | Tipo | Offset |
+|-------|------|--------|
+| position | vec2f | 0 |
+| velocity | vec2f | 8 |
+| color | vec4f | 16 |
+| lifetime | f32 | 32 |
+| age | f32 | 36 |
+| size | f32 | 40 |
+| _pad | f32 | 44 |
+
+#### PCG Hash PRNG
+
+```wgsl
+fn pcg_hash(input: u32) -> u32 {
+  var state = input * 747796405u + 2891336453u;
+  let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+```
+
+Il seed e derivato da `spawnIdx * 7919 + candidateSlot * 6271`, garantendo distribuzione uniforme per-frame. Non crittograficamente sicuro, ma adeguato per effetti visivi.
+
+#### Spawn Accumulator
+
+A 60fps con `emissionRate=100`, `Math.floor(100 * 0.0167) = 1` per frame, ma il valore esatto e 1.67. Senza accumulatore si perdono ~40% delle particelle.
+
+```typescript
+state.spawnAccumulator += state.config.emissionRate * dt;
+const spawnCount = Math.floor(state.spawnAccumulator);
+state.spawnAccumulator -= spawnCount;
+```
+
+Il resto frazionario viene portato al frame successivo.
+
+#### Entity Position Tracking
+
+Gli emitter possono opzionalmente seguire la posizione di un'entita ECS:
+
+```typescript
+engine.createParticleEmitter({
+  maxParticles: 200,
+  emissionRate: 80,
+  // ...
+}, entityHandle.id); // <- segue questa entita
+```
+
+In `ParticleSystem.update()`, una mappa `entityId -> [x, y]` viene costruita dai transform SoA e usata per risolvere la posizione dell'emitter.
+
+#### Rendering dopo il RenderGraph
+
+Le particelle vengono renderizzate **dopo** che il RenderGraph ha completato il pass compositing (FXAA/bloom/outlines). Il render pass usa `loadOp: 'load'` sul swapchain, disegnando sopra la scena. Questo significa che le particelle **non** sono influenzate da bloom o FXAA.
+
+#### Buffer GPU per Emitter
+
+Ogni emitter alloca 4 buffer:
+
+- **Particle storage** (`maxParticles * 48` bytes): dati particella read/write
+- **Counter** (8 bytes): `[aliveCount: atomic<u32>, spawnCounter: atomic<u32>]`
+- **Config uniform** (112 bytes): parametri emitter allineati a 16 byte
+- **Camera uniform** (64 bytes): `mat4x4f` view-projection
+
+### 26.4 Nuovi Shader e HMR
+
+Phase 9 aggiunge 4 nuovi file WGSL e 5 nuovi handler `import.meta.hot.accept()`:
+
+| Shader | Entry Points | HMR Pass Name |
+|--------|-------------|----------------|
+| `bezier.wgsl` | `vs_main`, `fs_main` | `bezier` |
+| `bloom.wgsl` | `vs_main`, `fs_extract`, `fs_downsample`, `fs_upsample`, `fs_composite` | `bloom` |
+| `particle-simulate.wgsl` | `simulate`, `spawn` | `particle-simulate` |
+| `particle-render.wgsl` | `vs_main`, `fs_main` | `particle-render` |
+
+Il totale di file WGSL con HMR sale a 15 (da 10 in Phase 8).
