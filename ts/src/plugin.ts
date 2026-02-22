@@ -19,6 +19,13 @@ export class PluginRegistry {
     if (this.plugins.has(plugin.name)) {
       throw new Error(`Plugin "${plugin.name}" is already installed`);
     }
+    if (plugin.dependencies) {
+      for (const dep of plugin.dependencies) {
+        if (!this.plugins.has(dep)) {
+          throw new Error(`Missing dependency "${dep}" required by plugin "${plugin.name}"`);
+        }
+      }
+    }
     this.plugins.set(plugin.name, plugin);
     const cleanup = plugin.install(ctx);
     if (cleanup) this.cleanups.set(plugin.name, cleanup);

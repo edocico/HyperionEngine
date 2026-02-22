@@ -62,6 +62,30 @@ describe('PluginRegistry', () => {
     ).toThrow('already installed');
   });
 
+  describe('dependency resolution', () => {
+    it('throws if dependency is missing', () => {
+      const registry = new PluginRegistry();
+      const plugin: HyperionPlugin = {
+        name: 'child', version: '1.0.0',
+        dependencies: ['parent'],
+        install: vi.fn(),
+      };
+      expect(() => registry.install(plugin, mockCtx())).toThrow('Missing dependency');
+    });
+
+    it('installs when dependencies are satisfied', () => {
+      const registry = new PluginRegistry();
+      registry.install({ name: 'parent', version: '1.0.0', install: vi.fn() }, mockCtx());
+      const child: HyperionPlugin = {
+        name: 'child', version: '1.0.0',
+        dependencies: ['parent'],
+        install: vi.fn(),
+      };
+      registry.install(child, mockCtx());
+      expect(registry.has('child')).toBe(true);
+    });
+  });
+
   it('destroyAll calls all cleanups', () => {
     const registry = new PluginRegistry();
     const c1 = vi.fn();
