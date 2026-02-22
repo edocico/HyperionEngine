@@ -30,6 +30,8 @@ import { InputManager } from './input-manager';
 import { ImmediateState } from './immediate-state';
 import { hitTestRay } from './hit-tester';
 import { AudioManager } from './audio-manager';
+import { ProfilerOverlay } from './profiler';
+import type { ProfilerConfig } from './profiler';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -60,6 +62,8 @@ export class Hyperion implements Disposable {
   private nextEntityId = 0;
   private entityCount = 0;
   private destroyed = false;
+  private profiler: ProfilerOverlay | null = null;
+  private profilerHook: ((dt: number) => void) | null = null;
 
   private constructor(
     config: ResolvedConfig,
@@ -350,6 +354,7 @@ export class Hyperion implements Disposable {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.disableProfiler();
     this.pluginRegistry.destroyAll();
     this.loop.stop();
     this.inputManager.destroy();
@@ -396,6 +401,27 @@ export class Hyperion implements Disposable {
     this.checkDestroyed();
     // For now, this is a stub that can be wired to the renderer later.
     // The FXAATonemapPass already runs in the pipeline by default with tonemapMode=0 (passthrough).
+  }
+
+  /** Show a performance profiler overlay on the canvas. */
+  enableProfiler(config?: ProfilerConfig): void {
+    this.checkDestroyed();
+    if (this.profiler) return;
+    this.profiler = new ProfilerOverlay(config);
+    this.profiler.show(this.config.canvas);
+    this.profilerHook = () => this.profiler?.update(this.stats);
+    this.loop.addHook('postTick', this.profilerHook);
+  }
+
+  /** Hide the performance profiler overlay. */
+  disableProfiler(): void {
+    if (!this.profiler) return;
+    if (this.profilerHook) {
+      this.loop.removeHook('postTick', this.profilerHook);
+      this.profilerHook = null;
+    }
+    this.profiler.destroy();
+    this.profiler = null;
   }
 
   /**

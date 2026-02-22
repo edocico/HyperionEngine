@@ -465,6 +465,33 @@ describe('Hyperion memoryStats', () => {
   });
 });
 
+describe('Hyperion profiler', () => {
+  it('enableProfiler/disableProfiler lifecycle', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    // enableProfiler should not throw even with mock canvas (no real parentElement)
+    engine.enableProfiler({ position: 'top-right' });
+    engine.disableProfiler();
+  });
+
+  it('enableProfiler is idempotent', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.enableProfiler();
+    engine.enableProfiler(); // second call is a no-op
+    engine.disableProfiler();
+  });
+
+  it('disableProfiler is safe when not enabled', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(() => engine.disableProfiler()).not.toThrow();
+  });
+
+  it('destroy cleans up profiler', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.enableProfiler();
+    engine.destroy(); // should not throw
+  });
+});
+
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
