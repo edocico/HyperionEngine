@@ -49,6 +49,7 @@ function mockRenderer(): Renderer {
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),
     outlinesEnabled: false,
+    recompileShader: vi.fn(),
     destroy: vi.fn(),
   };
 }

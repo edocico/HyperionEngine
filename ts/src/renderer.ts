@@ -42,6 +42,7 @@ export interface Renderer {
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
+  recompileShader(passName: string, shaderCode: string): void;
   destroy(): void;
 }
 
@@ -294,6 +295,49 @@ export async function createRenderer(
       if (!outlinesActive) return;
       outlinesActive = false;
       rebuildGraph(false);
+    },
+
+    recompileShader(passName: string, shaderCode: string): void {
+      switch (passName) {
+        case 'cull':
+          CullPass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'basic': case 'quad':
+          ForwardPass.SHADER_SOURCES[0] = shaderCode;
+          break;
+        case 'line':
+          ForwardPass.SHADER_SOURCES[1] = shaderCode;
+          break;
+        case 'msdf-text':
+          ForwardPass.SHADER_SOURCES[2] = shaderCode;
+          break;
+        case 'gradient':
+          ForwardPass.SHADER_SOURCES[4] = shaderCode;
+          break;
+        case 'box-shadow':
+          ForwardPass.SHADER_SOURCES[5] = shaderCode;
+          break;
+        case 'fxaa-tonemap':
+          FXAATonemapPass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'selection-seed':
+          SelectionSeedPass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'jfa':
+          JFAPass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'outline-composite':
+          OutlineCompositePass.SHADER_SOURCE = shaderCode;
+          break;
+        default:
+          console.warn(`[Hyperion] Unknown shader pass: ${passName}`);
+          return;
+      }
+      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
+        color: outlineCompositePass.outlineColor,
+        width: outlineCompositePass.outlineWidth,
+      } : undefined);
+      console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }) {
