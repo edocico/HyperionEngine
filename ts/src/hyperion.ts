@@ -428,6 +428,12 @@ export class Hyperion implements Disposable {
     this.renderer?.disableOutlines();
   }
 
+  /** Recompile a named shader pass with new WGSL source (dev tool). */
+  recompileShader(passName: string, shaderCode: string): void {
+    this.checkDestroyed();
+    this.renderer?.recompileShader(passName, shaderCode);
+  }
+
   /** Per-frame tick: advance the ECS then render if state is available. */
   private tick(dt: number): void {
     // Send camera position to WASM before tick so it can extrapolate during simulation

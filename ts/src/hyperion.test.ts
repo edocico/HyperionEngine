@@ -326,6 +326,18 @@ describe('Hyperion', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     expect(() => engine.disableOutlines()).not.toThrow();
   });
+
+  it('recompileShader delegates to renderer', () => {
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    engine.recompileShader('basic', 'new shader code');
+    expect(renderer.recompileShader).toHaveBeenCalledWith('basic', 'new shader code');
+  });
+
+  it('recompileShader is safe without renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(() => engine.recompileShader('basic', 'code')).not.toThrow();
+  });
 });
 
 describe('Hyperion input', () => {
