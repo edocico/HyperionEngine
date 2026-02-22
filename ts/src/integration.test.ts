@@ -67,6 +67,7 @@ describe("Integration: Texture Layer Index Pipeline", () => {
       listenerX: 0,
       listenerY: 0,
       listenerZ: 0,
+      tickCount: 0,
     };
     expect(state.transforms.length).toBe(16);
     expect(state.bounds.length).toBe(4);

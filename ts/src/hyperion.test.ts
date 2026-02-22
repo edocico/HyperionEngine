@@ -188,6 +188,18 @@ describe('Hyperion', () => {
     expect(typeof s.overflowCount).toBe('number');
   });
 
+  it('stats.tickCount reads from render state', () => {
+    const bridge = mockBridge();
+    bridge.latestRenderState = {
+      entityCount: 0, transforms: new Float32Array(0), bounds: new Float32Array(0),
+      renderMeta: new Uint32Array(0), texIndices: new Uint32Array(0),
+      primParams: new Float32Array(0), entityIds: new Uint32Array(0),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 42,
+    };
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    expect(engine.stats.tickCount).toBe(42);
+  });
+
   it('stats.entityCount updates after spawn/destroy', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     const e = engine.spawn();

@@ -220,7 +220,7 @@ export class Hyperion implements Disposable {
       fps: this.loop.fps,
       entityCount: this.entityCount,
       mode: this.mode,
-      tickCount: 0, // TODO: wire to WASM engine_tick_count when available
+      tickCount: this.bridge.latestRenderState?.tickCount ?? 0,
       overflowCount: this.bridge.commandBuffer.pendingCount,
     };
   }

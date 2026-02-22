@@ -21,6 +21,7 @@ export interface GPURenderState {
   listenerX: number;           // audio listener world-space X
   listenerY: number;           // audio listener world-space Y
   listenerZ: number;           // audio listener world-space Z
+  tickCount: number;           // cumulative WASM fixed-timestep tick count
 }
 
 export interface EngineBridge {
@@ -85,6 +86,7 @@ export function createWorkerBridge(
         listenerX: rs.listenerX ?? 0,
         listenerY: rs.listenerY ?? 0,
         listenerZ: rs.listenerZ ?? 0,
+        tickCount: msg.tickCount ?? 0,
       };
     }
   };
@@ -256,6 +258,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_listener_x(): number;
     engine_listener_y(): number;
     engine_listener_z(): number;
+    engine_tick_count(): bigint;
     memory: WebAssembly.Memory;
   };
 
@@ -274,6 +277,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
       }
       engine.engine_update(dt);
 
+      const tickCount = Number(engine.engine_tick_count());
       const count = engine.engine_gpu_entity_count();
       if (count > 0) {
         const tPtr = engine.engine_gpu_transforms_ptr();
@@ -301,6 +305,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerX: engine.engine_listener_x(),
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
+          tickCount,
         };
       } else {
         latestRenderState = {
@@ -314,6 +319,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerX: engine.engine_listener_x(),
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
+          tickCount,
         };
       }
     },

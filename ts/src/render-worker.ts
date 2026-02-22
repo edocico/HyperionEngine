@@ -28,6 +28,7 @@ interface RenderState {
   listenerX?: number;
   listenerY?: number;
   listenerZ?: number;
+  tickCount?: number;
 }
 
 let latestRenderState: RenderState | null = null;
@@ -86,6 +87,7 @@ function renderLoop(): void {
         listenerX: latestRenderState.listenerX ?? 0,
         listenerY: latestRenderState.listenerY ?? 0,
         listenerZ: latestRenderState.listenerZ ?? 0,
+        tickCount: latestRenderState.tickCount ?? 0,
       }, camera);
     }
 
