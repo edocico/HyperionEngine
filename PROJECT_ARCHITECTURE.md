@@ -1,6 +1,6 @@
 # Architettura Tecnica: Hyperion Engine (v0.1.0)
 
-> **Ultimo aggiornamento**: 2026-02-21 | **Versione**: 0.10.1 (Phase 0-7.5 complete) | **99 test Rust across 7 moduli + 367 test TypeScript across 37 file**
+> **Ultimo aggiornamento**: 2026-02-22 | **Versione**: 0.11.0 (Phase 0-8 complete) | **99 test Rust across 7 moduli + 409 test TypeScript across 41 file**
 
 ---
 
@@ -161,6 +161,7 @@ HyperionEngine/
 ├── CLAUDE.md                           # Istruzioni per Claude Code
 ├── PROJECT_ARCHITECTURE.md             # Questo documento
 ├── docs/
+│   ├── deployment-guide.md                                   # Deployment guide for 7 platforms
 │   └── plans/
 │       ├── hyperion-engine-design-v3.md                     # Architectural Design Document v3 (completo)
 │       ├── hyperion-engine-roadmap-unified-v3.md            # Unified roadmap v3 (all phases)
@@ -217,9 +218,9 @@ HyperionEngine/
         │                               #   addHook/removeHook, loadTexture/loadTextures, compact(),
         │                               #   resize(), enableOutlines/disableOutlines,
         │                               #   enablePostProcessing, selection, input, picking, audio
-        ├── hyperion.test.ts            # 45 test: facade lifecycle, spawn, batch, hooks, plugins,
+        ├── hyperion.test.ts            # 55 test: facade lifecycle, spawn, batch, hooks, plugins,
         │                               #   destroy, stats, compact, resize, outlines, selection,
-        │                               #   input, picking, audio, immediate-mode
+        │                               #   input, picking, audio, immediate-mode, profiler, shader
         ├── entity-handle.ts            # EntityHandle: fluent builder over BackpressuredProducer
         │                               #   with .position/.velocity/.rotation/.scale/.texture/
         │                               #   .mesh/.primitive/.parent/.unparent/.data/.line/
@@ -231,14 +232,15 @@ HyperionEngine/
         ├── entity-pool.test.ts         # 5 test: acquire/release, capacity, init reset
         ├── game-loop.ts                # GameLoop: RAF lifecycle with preTick/postTick/frameEnd
         │                               #   hook phases, FPS tracking, lastTime=-1 sentinel
-        ├── game-loop.test.ts           # 6 test: RAF lifecycle, hooks, FPS tracking
+        ├── game-loop.test.ts           # 11 test: RAF lifecycle, hooks, FPS tracking, frame timing
         ├── camera-api.ts               # CameraAPI: wrapper around Camera with zoom (min 0.01),
         │                               #   x/y position getters for audio listener tracking
         ├── camera-api.test.ts          # 3 test: zoom clamping, viewProjection delegation
         ├── raw-api.ts                  # RawAPI: low-level numeric ID entity management
         ├── raw-api.test.ts             # 4 test: spawn/despawn/setPosition/setVelocity
-        ├── plugin.ts                   # HyperionPlugin interface + PluginRegistry: install/cleanup
-        ├── plugin.test.ts              # 5 test: install, cleanup, destroyAll ordering
+        ├── plugin.ts                   # HyperionPlugin interface (v2: PluginContext) +
+        │                               #   PluginRegistry: dependency resolution, error boundaries
+        ├── plugin.test.ts              # 13 test: install, cleanup, dependencies, error boundaries
         ├── types.ts                    # Core types: HyperionConfig, ResolvedConfig, HyperionStats,
         │                               #   MemoryStats, CompactOptions, TextureHandle
         ├── types.test.ts               # 4 test: config defaults, type validation
@@ -274,6 +276,18 @@ HyperionEngine/
         │                               #   PlaybackEngine. Lazy AudioContext init. Lifecycle:
         │                               #   suspend/resume/destroy
         ├── audio-manager.test.ts       # 25 test: facade lifecycle, lazy init, spatial config
+        ├── event-bus.ts                # EventBus: typed pub/sub (on/off/once/emit/destroy)
+        ├── event-bus.test.ts           # 5 test: subscribe, emit, once, off, destroy
+        ├── plugin-context.ts           # PluginContext: 5 sub-APIs (systems, events, rendering,
+        │                               #   gpu, storage). Passed to plugin.install()
+        ├── plugin-context.test.ts      # 10 test: sub-APIs, null when headless, storage
+        ├── profiler.ts                 # ProfilerOverlay: DOM-based perf stats display.
+        │                               #   show/hide/update/destroy, configurable position
+        ├── profiler.test.ts            # 4 test: DOM management, position, update, destroy
+        ├── plugins/
+        │   ├── fps-counter.ts          # fpsCounterPlugin(): example plugin factory using
+        │   │                           #   PluginSystemsAPI + PluginEventAPI
+        │   └── fps-counter.test.ts     # 3 test: install, postTick hook, cleanup
         ├── main.ts                     # Entry point: uses Hyperion public API. Demonstrates
         │                               #   click-to-select with spatial audio, WASD camera, zoom
         ├── capabilities.ts             # detectCapabilities(), selectExecutionMode(), logCapabilities()
@@ -964,16 +978,22 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                    Browser Entry (HTML + Vite)                ║
 ║  index.html → <script type="module" src="main.ts">           ║
 +═══════════════════════════════════════════════════════════════+
-║                   Public API Layer (TS — Phase 5-7)            ║
+║                   Public API Layer (TS — Phase 5-8)            ║
 ║  hyperion.ts   → Hyperion facade (create, spawn, batch,      ║
 ║                   start/pause/resume/destroy, plugins, hooks, ║
-║                   selection, input, picking, audio, outlines) ║
+║                   selection, input, picking, audio, outlines, ║
+║                   profiler, recompileShader)                  ║
 ║  entity-handle → EntityHandle fluent builder + EntityPool     ║
-║  game-loop.ts  → GameLoop (RAF + preTick/postTick/frameEnd)  ║
+║  game-loop.ts  → GameLoop (RAF + hooks + frame time tracking)║
 ║  camera-api.ts → CameraAPI (zoom, viewProjection, x/y pos)  ║
 ║  raw-api.ts    → RawAPI (low-level numeric entity mgmt)      ║
-║  plugin.ts     → PluginRegistry (install/cleanup lifecycle)  ║
-║  types.ts      → HyperionConfig, HyperionStats, TextureHandle║
+║  plugin.ts     → PluginRegistry (v2: PluginContext, deps,    ║
+║                   error boundaries)                           ║
+║  plugin-context → PluginContext (5 sub-APIs: systems, events,║
+║                   rendering, gpu, storage)                    ║
+║  event-bus.ts  → EventBus (typed pub/sub for plugins)        ║
+║  profiler.ts   → ProfilerOverlay (DOM-based perf stats)      ║
+║  types.ts      → HyperionConfig, HyperionStats, MemoryStats ║
 ║  leak-detector → LeakDetector (FinalizationRegistry backstop)║
 ║  index.ts      → Barrel export                               ║
 +═══════════════════════════════════════════════════════════════+
@@ -1385,7 +1405,7 @@ Questo pattern aggiunge un singolo passaggio di copia (SAB → WASM linear memor
 
 ## 11. Testing
 
-### Struttura (99 test Rust across 7 moduli + 367 test TypeScript across 37 file)
+### Struttura (99 test Rust across 7 moduli + 409 test TypeScript across 41 file)
 
 Il test suite e organizzato in due livelli per linguaggio:
 
@@ -1453,16 +1473,18 @@ ts/src/
   render/passes/prefix-sum.test.ts   6 test: Blelloch scan correctness (simple, all-visible, all-invisible,
                                            single element, non-power-of-2, compacted indices)
   integration.test.ts                5 test: binary protocol, texture pipeline, GPU data format
-  hyperion.test.ts                  45 test: Hyperion facade lifecycle, spawn, batch, hooks,
+  hyperion.test.ts                  55 test: Hyperion facade lifecycle, spawn, batch, hooks,
                                            plugins, destroy, stats, compact, resize, input, picking,
-                                           audio, selection, outlines, immediate mode
+                                           audio, selection, outlines, immediate mode, profiler,
+                                           shader hot-reload, PluginContext
   entity-handle.test.ts             28 test: fluent API, dispose, data map, pool recycling,
                                            positionImmediate, clearImmediate, line, gradient, boxShadow
   entity-pool.test.ts                5 test: acquire/release, capacity limit, init reset
-  game-loop.test.ts                  6 test: RAF lifecycle, hook phases, FPS tracking
+  game-loop.test.ts                 11 test: RAF lifecycle, hook phases, FPS tracking, frame timing
   raw-api.test.ts                    4 test: spawn/despawn/setPosition/setVelocity
   camera-api.test.ts                 3 test: zoom clamping, viewProjection delegation
-  plugin.test.ts                     5 test: install, cleanup, destroyAll ordering
+  plugin.test.ts                    13 test: install, cleanup, destroyAll, dependency resolution,
+                                           error boundaries
   types.test.ts                      4 test: config defaults, type validation
   leak-detector.test.ts              2 test: registration, cleanup callback
   selection.test.ts                 10 test: select/deselect/toggle/clear, dirty tracking, GPU mask upload
@@ -1478,6 +1500,10 @@ ts/src/
                                            setListenerPosition, master volume, mute/unmute
   audio-manager.test.ts             25 test: facade lifecycle, lazy AudioContext, suspend/resume/destroy,
                                            safe no-ops before init, SpatialConfig forwarding
+  event-bus.test.ts                  5 test: subscribe, emit, once, off, destroy
+  plugin-context.test.ts            10 test: PluginContext sub-APIs, null when headless, storage
+  profiler.test.ts                   4 test: ProfilerOverlay DOM management, position, update
+  plugins/fps-counter.test.ts        3 test: install, postTick hook, cleanup
 ```
 
 ### Pattern di Test: Cross-Boundary Protocol Verification
@@ -1515,17 +1541,17 @@ cargo test -p hyperion-core command_proc              # Command processor (15 te
 cargo test -p hyperion-core systems                   # Systems (7 test)
 cargo clippy -p hyperion-core                         # Lint
 
-# TypeScript — 367 test
+# TypeScript — 409 test
 cd ts && npm test                                     # Tutti (vitest run)
 cd ts && npm run test:watch                           # Watch mode
 cd ts && npx vitest run src/ring-buffer.test.ts       # Singolo file
 cd ts && npx vitest run src/frustum.test.ts           # Frustum culling
 cd ts && npx vitest run src/texture-manager.test.ts   # Texture manager
 cd ts && npx vitest run src/render/render-graph.test.ts # RenderGraph DAG
-cd ts && npx vitest run src/hyperion.test.ts          # Hyperion facade (45 test)
+cd ts && npx vitest run src/hyperion.test.ts          # Hyperion facade (55 test)
 cd ts && npx vitest run src/entity-handle.test.ts     # EntityHandle (28 test)
-cd ts && npx vitest run src/game-loop.test.ts         # GameLoop (6 test)
-cd ts && npx vitest run src/plugin.test.ts            # PluginRegistry (5 test)
+cd ts && npx vitest run src/game-loop.test.ts         # GameLoop (11 test)
+cd ts && npx vitest run src/plugin.test.ts            # PluginRegistry (13 test)
 cd ts && npx vitest run src/selection.test.ts         # SelectionManager (10 test)
 cd ts && npx vitest run src/input-manager.test.ts     # InputManager (24 test)
 cd ts && npx vitest run src/audio-manager.test.ts     # AudioManager (25 test)
@@ -1677,17 +1703,18 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **6** | Input System | **Completata** | `ExternalId(u32)` ECS component, `entityIds` SoA buffer, `InputManager` (keyboard/pointer/scroll + callbacks), `Camera.screenToRay()` + `mat4Inverse`, `hitTestRay()` CPU ray-sphere picking, `ImmediateState` shadow position map + transform patching, `SelectionManager` CPU-side + GPU mask, `EntityHandle.positionImmediate()/clearImmediate()`, public API `engine.input`/`engine.picking.hitTest()` |
 | **7** | Audio System | **Completata** | `SoundRegistry` (URL-deduplicated buffer management, DI), `PlaybackEngine` (Web Audio node graph, 2D spatial pan + distance attenuation), `AudioManager` facade (lazy AudioContext, browser autoplay policy), branded types (`SoundHandle`/`PlaybackId`), audio listener auto-update from camera, `pause()`/`resume()`/`destroy()` lifecycle wiring, public API `engine.audio` |
 | **7.5** | Stability Bugfix | **Completata** | `OverflowChildren(Vec<u32>)` heap fallback for 33+ children (`Children.remove()` returns bool), `ImmediateState.patchBounds()` for consistent picking during drag, ring-buffer-driven audio listener via `SetListenerPosition` command (discriminant 13) with WASM velocity derivation + extrapolation, `engine_listener_x/y/z()` exports, `GPURenderState.listenerX/Y/Z`, `setTargetAtTime` smoothing in PlaybackEngine |
-| **8** | TBD | Pianificata | — |
+| **8** | Polish, DX & Production Readiness | **Completata** | Plugin System v2 (`PluginContext` with 5 sub-APIs: systems, events, rendering, GPU, storage), `EventBus` inter-plugin communication, dependency resolution + error boundaries in `PluginRegistry`. Shader hot-reload via `recompileShader()` + Vite HMR for all 10 WGSL files. `ProfilerOverlay` DOM-based perf stats (`enableProfiler`/`disableProfiler`). Stats: tickCount from WASM, frame time tracking (`frameDt`/`frameTimeAvg`/`frameTimeMax`), `MemoryStats` getter. Example `fpsCounterPlugin()`. Deployment guide for 7 platforms. Vite preview COOP/COEP headers |
+| **9** | TBD | Pianificata | — |
 
 ### Metriche Attuali
 
 | Metrica | Valore |
 | --- | --- |
 | Test Rust | 99 (tutti passanti) |
-| Test TypeScript | 367 (tutti passanti) |
+| Test TypeScript | 409 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 40+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` × 11, `vite-env.d.ts`) |
-| File test TypeScript | 37 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`) |
+| Moduli TypeScript | 45+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `plugin-context`, `event-bus`, `profiler`, `plugins/fps-counter`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` x 11, `vite-env.d.ts`) |
+| File test TypeScript | 41 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`, `event-bus`, `plugin-context`, `profiler`, `plugins/fps-counter`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
@@ -1849,22 +1876,26 @@ Per evitare pressione GC in scene con frequenti spawn/despawn, `EntityHandlePool
 
 **Sentinel `lastTime = -1`**: Il primo callback RAF riceve `performance.now()` che e il tempo dall'inizio della pagina. Senza il sentinel, il primo dt sarebbe enorme (centinaia di ms), causando uno spike di simulazione. Il sentinel forza dt=0 al primo frame.
 
-### 18.5 Plugin System
+### 18.5 Plugin System (v2 — aggiornato in Phase 8)
 
-**File**: `ts/src/plugin.ts`
+**File**: `ts/src/plugin.ts`, `ts/src/plugin-context.ts`, `ts/src/event-bus.ts`
 
 ```typescript
 interface HyperionPlugin {
     name: string;
-    install(engine: Hyperion): void;
-    cleanup?(): void;
+    version?: string;
+    dependencies?: string[];
+    install(ctx: PluginContext): PluginCleanup | void;
 }
 ```
 
+**Nota**: L'interfaccia originale (`install(engine)`) e stata sostituita in Phase 8 con `install(ctx: PluginContext)`. Vedi Section 23 per i dettagli completi del Plugin System v2 (PluginContext, 5 sub-API, dependency resolution, error boundaries, EventBus).
+
 `PluginRegistry` gestisce il lifecycle dei plugin:
-- `install(plugin, engine)` → chiama `plugin.install(engine)`, registra per cleanup
-- `uninstall(plugin)` → chiama `plugin.cleanup()` se presente, deregistra
-- `destroyAll()` → cleanup di tutti i plugin in ordine inverso di installazione
+
+- `install(plugin, ctx)` → verifica dipendenze, chiama `plugin.install(ctx)` con error boundary, registra cleanup
+- `uninstall(plugin)` → chiama cleanup function se presente, deregistra
+- `destroyAll()` → cleanup di tutti i plugin in ordine inverso di installazione con error boundary
 
 **Ordine inverso**: I plugin installati per ultimi vengono distrutti per primi (LIFO), come in uno stack di middleware.
 
@@ -2309,3 +2340,126 @@ Tutti e tre i layer audio usano dependency injection per testare in Node.js senz
 | `AudioManager` | `contextFactory: () => AudioContext` |
 
 67 test audio totali (3 types + 13 registry + 26 playback + 25 manager).
+
+---
+
+## 23. Plugin System v2 (Phase 8)
+
+### 23.1 Panoramica
+
+Phase 8 sostituisce l'interfaccia plugin semplice (`install(engine)`) con un sistema v2 basato su `PluginContext` — un oggetto strutturato con 5 sotto-API che controllano l'accesso del plugin alle risorse dell'engine. Questo elimina il pattern "god object" dove i plugin ricevevano l'intera istanza `Hyperion`.
+
+### 23.2 PluginContext Architecture
+
+**File**: `ts/src/plugin-context.ts`
+
+```typescript
+interface HyperionPlugin {
+    name: string;
+    version?: string;
+    dependencies?: string[];
+    install(ctx: PluginContext): PluginCleanup | void;
+}
+
+type PluginCleanup = () => void;
+```
+
+`PluginContext` espone 5 sotto-API:
+
+| Sub-API | Classe | Scopo | Null quando headless? |
+| --- | --- | --- | --- |
+| `ctx.systems` | `PluginSystemsAPI` | `addPreTick`/`removePreTick`, `addPostTick`/`removePostTick`, `addFrameEnd`/`removeFrameEnd` | No |
+| `ctx.events` | `PluginEventAPI` | `on`/`off`/`once`/`emit` — delega all'EventBus condiviso | No |
+| `ctx.rendering` | `PluginRenderingAPI` | `addPass`/`removePass` — gestione pass nel RenderGraph | Si |
+| `ctx.gpu` | `PluginGpuAPI` | `device`, `createBuffer`/`createTexture`/`destroyTracked` — risorse GPU tracciate | Si |
+| `ctx.storage` | `PluginStorageAPI` | `createMap<T>`/`getMap<T>`/`destroyAll` — side-table per entity data | No |
+
+### 23.3 Dependency Resolution
+
+**File**: `ts/src/plugin.ts` — `PluginRegistry`
+
+`PluginRegistry.install()` verifica che tutti i plugin elencati in `dependencies[]` siano gia installati prima di procedere. L'algoritmo e una semplice verifica lineare:
+
+1. Per ogni nome in `plugin.dependencies`, controlla se e presente nella mappa dei plugin installati
+2. Se manca una dipendenza, lancia un errore descrittivo con il nome del plugin e della dipendenza mancante
+3. I plugin senza `dependencies` vengono installati senza controlli
+
+### 23.4 Error Boundaries
+
+`PluginRegistry` isola i fallimenti dei plugin:
+
+- **Install**: `try/catch` intorno a `plugin.install(ctx)`. Se fallisce, il plugin viene rimosso dalla mappa e l'errore viene wrappato con il nome del plugin e re-lanciato
+- **Cleanup**: `try/catch` intorno alla cleanup function. Se fallisce, logga un warning ma continua con i plugin successivi (non blocca il teardown)
+- **destroyAll()**: itera tutti i plugin in ordine LIFO, chiamando cleanup con error boundary su ognuno
+
+### 23.5 EventBus
+
+**File**: `ts/src/event-bus.ts`
+
+`EventBus` implementa un pub/sub tipizzato minimale:
+
+- `on(event, listener)` — registra listener, ritorna `Unsubscribe`
+- `off(event, listener)` — rimuove listener
+- `once(event, listener)` — registra listener che si auto-rimuove dopo la prima invocazione
+- `emit(event, ...args)` — notifica tutti i listener. Itera su una copia spread dell'array per sicurezza durante `once()` self-removal
+- `destroy()` — pulisce tutte le registrazioni
+
+L'`EventBus` e condiviso tra tutti i `PluginContext` tramite la `PluginEventAPI`, permettendo comunicazione inter-plugin senza accoppiamento diretto.
+
+---
+
+## 24. Shader Hot-Reload (Phase 8)
+
+### 24.1 Meccanismo
+
+**File**: `ts/src/renderer.ts` — `recompileShader(passName, shaderCode)`
+
+Il flusso di hot-reload:
+
+1. L'utente (o Vite HMR) chiama `recompileShader(passName, newWgslSource)`
+2. Il renderer aggiorna la sorgente statica nello store interno (es. `ForwardPass.SHADER_SOURCES[type] = newSource`)
+3. Chiama `rebuildGraph()` che distrugge tutti i pass esistenti e li ricrea con le nuove sorgenti
+4. Il frame successivo usa le pipeline ricompilate
+
+**Non incrementale**: `rebuildGraph()` distrugge e ricrea l'intero grafo di rendering. Questo e accettabile per uno strumento di sviluppo (la ricompilazione avviene solo durante l'editing), ma non per modifiche runtime in produzione.
+
+### 24.2 Vite HMR Integration
+
+Tutti i 10 file WGSL in `ts/src/shaders/` hanno handler `import.meta.hot.accept()` che:
+
+1. Ricevono il nuovo modulo quando Vite rileva una modifica al file
+2. Chiamano `renderer.recompileShader(passName, newSource)` con il nome del pass corrispondente
+3. Il rendering si aggiorna istantaneamente senza refresh della pagina
+
+Esposto sulla facade `Hyperion` come `recompileShader(passName, shaderCode)` che delega al renderer.
+
+---
+
+## 25. Performance Profiler (Phase 8)
+
+### 25.1 ProfilerOverlay
+
+**File**: `ts/src/profiler.ts`
+
+`ProfilerOverlay` e un overlay DOM-based per visualizzare statistiche di performance in tempo reale:
+
+- **`show(canvas)`** — crea un `<div>` posizionato assolutamente sopra il canvas (richiede `canvas.parentElement` con `position: relative`)
+- **`hide()`** — rimuove l'overlay dal DOM
+- **`update(stats: HyperionStats)`** — aggiorna il contenuto con FPS, entity count, frame timing, mode
+- **`destroy()`** — pulisce e rimuove
+
+**Stile**: monospace, verde su nero semi-trasparente, `pointerEvents: none` per non intercettare click.
+
+**Posizionamento configurabile**: `ProfilerConfig.position` accetta `'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'`.
+
+### 25.2 Integrazione con Hyperion
+
+`Hyperion.enableProfiler(config?)` registra un hook `postTick` che chiama `overlay.update(this.stats)` ogni frame. `disableProfiler()` rimuove l'hook e distrugge l'overlay.
+
+### 25.3 Stats e Metriche (Phase 8)
+
+**GameLoop frame timing** (`ts/src/game-loop.ts`): `frameDt` (delta time dell'ultimo frame in secondi), `frameTimeAvg` (media mobile), `frameTimeMax` (massimo registrato, resettabile).
+
+**HyperionStats** (`ts/src/types.ts`): Esteso con `frameDt`, `frameTimeAvg`, `frameTimeMax` da GameLoop. `tickCount` wired da `GPURenderState` (proveniente da WASM).
+
+**MemoryStats** (`ts/src/types.ts`): `entityMapUtilization` — rapporto tra entita attive e capacita dell'EntityMap.
