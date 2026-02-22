@@ -21,3 +21,12 @@ export { AudioManager } from './audio-manager';
 export type { AudioManagerOptions } from './audio-manager';
 export type { SoundHandle, PlaybackId, PlaybackOptions, SpatialConfig } from './audio-types';
 export { DEFAULT_PLAYBACK_OPTIONS, DEFAULT_SPATIAL_CONFIG } from './audio-types';
+
+// Plugin system v2
+export type { PluginCleanup } from './plugin';
+export { PluginContext } from './plugin-context';
+export type { PluginSystemsAPI, PluginRenderingAPI, PluginGpuAPI, PluginStorageAPI, PluginEventAPI } from './plugin-context';
+export { EventBus } from './event-bus';
+
+// Example plugins
+export { fpsCounterPlugin } from './plugins/fps-counter';
