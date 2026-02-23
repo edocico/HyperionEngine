@@ -180,136 +180,180 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ### TypeScript: ts/src/
 
+#### Core & Public API
+
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` class — public API facade with `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines()/disableOutlines()`, `enableBloom(config?)`/`disableBloom()` (Dual Kawase bloom, mutually exclusive with outlines), `enablePostProcessing()`, `createParticleEmitter(config, entityId?)`/`destroyParticleEmitter(handle)` (GPU particle system), `input` (InputManager), `picking` (hitTest API), `audio` (AudioManager), `enableProfiler(config?)`/`disableProfiler()` (DOM profiler overlay via postTick hook), `recompileShader(passName, shaderCode)` (delegates to renderer), `EventBus` for inter-plugin communication, immediate-mode transform + bounds patching, ring-buffer-driven audio listener. `fromParts()` test factory |
-| `entity-handle.ts` | `EntityHandle` — fluent builder over `BackpressuredProducer` with `.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`. `RenderPrimitiveType` enum (now includes `BezierPath=3`). Implements `Disposable` |
-| `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling via `init()` |
-| `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hook phases, FPS tracking, `frameDt`/`frameTimeAvg`/`frameTimeMax` getters for frame time tracking |
-| `camera-api.ts` | `CameraAPI` — wrapper around Camera with zoom support (clamped to min 0.01), `x`/`y` position getters for audio listener tracking |
+| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `enableProfiler/disableProfiler`, `recompileShader`. `fromParts()` test factory |
+| `entity-handle.ts` | `EntityHandle` — fluent builder (`.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`). `RenderPrimitiveType` enum. Implements `Disposable` |
+| `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
-| `plugin.ts` | `HyperionPlugin` interface (upgraded: `install(ctx: PluginContext): PluginCleanup \| void`, `version`, `dependencies?`) + `PluginRegistry` — dependency resolution, error boundaries (install catches + wraps, cleanup catches + warns), `destroyAll()` for shutdown |
-| `types.ts` | Core types: `HyperionConfig`, `ResolvedConfig`, `HyperionStats` (with `frameDt`/`frameTimeAvg`/`frameTimeMax`), `MemoryStats` (with `entityMapUtilization`), `CompactOptions`, `TextureHandle` |
+| `types.ts` | `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
+| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`) |
+
+#### Engine Runtime
+
+| Module | Role |
+|---|---|
+| `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hooks, FPS/frame-time tracking |
+| `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` |
+| `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
+| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
-| `index.ts` | Barrel export for public API surface (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`) |
-| `capabilities.ts` | Detects browser features, selects ExecutionMode A/B/C |
+| `main.ts` | Demo entry point: click-to-select, spatial audio, WASD camera, scroll-zoom, particles, bloom, bezier |
+
+#### Bridge & Workers
+
+| Module | Role |
+|---|---|
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
-| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (Modes A/B) or `createDirectBridge()` (Mode C). Uses `BackpressuredProducer` for command buffering and `WorkerSupervisor` for heartbeat monitoring (Modes A/B). `GPURenderState` includes `entityIds: Uint32Array` and `listenerX/Y/Z: number` |
-| `engine-worker.ts` | Web Worker that loads WASM, calls `engine_init`/`engine_update` per frame. Increments heartbeat counter after each tick for supervisor monitoring |
-| `main.ts` | Entry point: uses Hyperion public API (`Hyperion.create()`, `spawn()`, `start()`). Demonstrates click-to-select with spatial audio, WASD camera, scroll-zoom, Bezier curves, bloom post-processing, click-to-spawn GPU particle emitters |
-| `renderer.ts` | RenderGraph-based coordinator: creates shared GPU buffers in `ResourcePool`, wires `CullPass` + `ForwardPass` + `FXAATonemapPass`, delegates rendering via `graph.render()`. Accepts SoA `GPURenderState`. Multi-primitive pipeline with per-type shaders (6 types including BezierPath). Optional JFA selection outline pipeline (`SelectionSeedPass` → `JFAPass×N` → `OutlineCompositePass`). Optional `BloomPass` (Dual Kawase bloom, mutually exclusive with outlines). `ParticleSystem` integration (compute simulate+spawn, instanced render after RenderGraph). `SelectionManager` integration + `enableOutlines`/`disableOutlines` + `enableBloom`/`disableBloom` API. `recompileShader(passName, shaderCode)` updates static shader sources then `rebuildGraph()`. Vite HMR wiring: `import.meta.hot.accept()` for 14 WGSL files (prefix-sum.wgsl excluded — CPU reference only). `onDeviceLost` callback + `device.lost` listener |
-| `texture-manager.ts` | `TextureManager` — multi-tier Texture2DArray with lazy allocation + exponential growth (0→16→32→64→128→256 layers), `createImageBitmap` loading pipeline, concurrency limiter. Added `retainBitmaps` option for device-lost recovery |
-| `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` (pixel → world-space `Ray`). Forward-compatible with perspective cameras |
-| `render-worker.ts` | Mode A render worker: OffscreenCanvas + `createRenderer()`. Converts ArrayBuffer render state to typed arrays for `GPURenderState` |
-| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — priority-based command queuing with automatic overflow handling. `BackpressuredProducer` wraps `RingBufferProducer` with convenience methods (spawnEntity, setPosition, setListenerPosition, etc.) |
-| `supervisor.ts` | `WorkerSupervisor` — Worker heartbeat monitoring + timeout detection with configurable intervals |
-| `render/render-pass.ts` | `RenderPass` interface + `FrameState` type — modular rendering pipeline abstraction with reads/writes resource declarations |
-| `render/resource-pool.ts` | `ResourcePool` — named registry for GPU resources (GPUBuffer, GPUTexture, GPUTextureView, GPUSampler) |
-| `render/render-graph.ts` | `RenderGraph` — DAG-based pass scheduling with Kahn's topological sort + dead-pass culling |
-| `render/passes/cull-pass.ts` | `CullPass` — GPU frustum culling compute pass with per-primitive-type grouping (6 types). `prepare()` uploads frustum planes + resets 6 × DrawIndirectArgs. `execute()` dispatches compute workgroups |
-| `render/passes/forward-pass.ts` | `ForwardPass` — Multi-pipeline forward pass. `SHADER_SOURCES: Record<number, string>` maps primitive type → WGSL source. Per-type `drawIndexedIndirect` at offset `primType * 20`. Shared bind group layout (camera, transforms, visibleIndices, texIndices, renderMeta, primParams). Renders to `scene-hdr` |
-| `render/passes/fxaa-tonemap-pass.ts` | `FXAATonemapPass` — Full-screen triangle post-process. Reads `scene-hdr`, writes `swapchain`. Configurable tonemap mode (none/PBR-neutral/ACES). Optional pass |
-| `render/passes/selection-seed-pass.ts` | `SelectionSeedPass` — Renders selected entities as JFA seeds. Reads `selection-mask` buffer, writes `selection-seed` texture. Optional pass |
-| `render/passes/jfa-pass.ts` | `JFAPass` — Single JFA iteration. Ping-pong between textures. Constructor takes iteration index, `iterationsForDimension()` helper. Each iteration has unique resource name (`jfa-iter-N`). Optional pass |
-| `render/passes/outline-composite-pass.ts` | `OutlineCompositePass` — Reads `scene-hdr` + JFA result, writes `swapchain`. SDF distance outline with configurable color/width. Includes built-in FXAA. Dead-pass culls `FXAATonemapPass` when active |
-| `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference implementation of Blelloch exclusive scan |
-| `render/passes/bloom-pass.ts` | `BloomPass` — Dual Kawase bloom post-process pass. Internal 6-step chain: extract bright -> 2x downsample -> 2x upsample -> composite. Reads `scene-hdr`, writes `swapchain`. Includes PBR Neutral tonemap + FXAA. Dead-culls `FXAATonemapPass` when active. Mutually exclusive with outline pipeline |
-| `particle-types.ts` | `ParticleHandle` branded type, `ParticleEmitterConfig` interface, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
-| `particle-system.ts` | `ParticleSystem` — GPU-only particle management. Per-emitter storage/counter/config buffers, compute simulation (simulate + spawn dispatches), instanced point-sprite rendering after RenderGraph with `loadOp: 'load'`. Entity position tracking for follower emitters. Spawn accumulator for accurate fractional emission |
-| `input-manager.ts` | `InputManager` — keyboard (`isKeyDown`), pointer (`pointerX/Y`, `isButtonDown`), scroll (`scrollDeltaX/Y`) state tracking + callback registration (`onKey`/`onClick`/`onPointerMove`/`onScroll` with unsubscribe). DOM `attach`/`detach`/`destroy` lifecycle |
-| `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection against SoA bounds buffer. Returns closest hit entityId (smallest positive t) or null. `Ray` interface. 2.5D/3D-ready |
-| `immediate-state.ts` | `ImmediateState` — Shadow position map (`Map<entityId, [x,y,z]>`) for zero-latency rendering. `patchTransforms()` patches SoA transform column 3 before GPU upload. `patchBounds()` patches SoA bounds xyz (stride 4, preserves radius) for consistent picking |
-| `selection.ts` | `SelectionManager` — CPU-side `Set<number>` with dirty tracking + GPU mask upload. `select()/deselect()/toggle()/clear()`, `uploadMask()` |
-| `audio-types.ts` | Branded types `SoundHandle`, `PlaybackId` (zero runtime overhead), `PlaybackOptions`, `SpatialConfig` interfaces, `DEFAULT_PLAYBACK_OPTIONS`, `DEFAULT_SPATIAL_CONFIG` |
-| `sound-registry.ts` | `SoundRegistry` — URL-deduplicated audio buffer management with DI (`AudioDecoder`, `AudioFetcher`). `load()`/`loadAll()`/`unload()`/`destroy()`. O(1) bidirectional handle↔URL mapping |
-| `playback-engine.ts` | `PlaybackEngine` — Web Audio node graph (`source → gain → panner → masterGain → destination`). `play()`/`stop()`/`setVolume()`/`setPitch()`/`setSoundPosition()`/`setListenerPosition()`. 2D spatial: `pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`. Spatial updates use `setTargetAtTime` smoothing (15ms TAU) to avoid zipper artifacts. Master volume + mute/unmute |
-| `audio-manager.ts` | `AudioManager` — Public facade wrapping `SoundRegistry` + `PlaybackEngine`. Lazy `AudioContext` init (respects browser autoplay policy). All control methods are safe no-ops before init (optional chaining). `suspend()`/`resume()`/`destroy()` lifecycle. Configurable `SpatialConfig` |
-| `event-bus.ts` | `EventBus` — simple typed pub/sub (`on`/`off`/`once`/`emit`/`destroy`). Shared between PluginContexts for inter-plugin communication |
-| `plugin-context.ts` | `PluginContext` — passed to `plugin.install()` with 5 sub-APIs: `systems` (hook registration), `events` (EventBus delegate), `rendering` (RenderGraph pass management, null when headless), `gpu` (tracked GPUBuffer/GPUTexture creation, null when headless), `storage` (entity side-tables via `Map<number, T>`) |
-| `profiler.ts` | `ProfilerOverlay` — DOM-based performance stats display. `show(canvas)`/`hide()`/`update(stats)`/`destroy()`. Configurable position (4 corners). `pointerEvents: none` overlay with monospace green-on-black styling |
-| `plugins/fps-counter.ts` | `fpsCounterPlugin()` — Example plugin factory. Uses `PluginSystemsAPI.addPostTick` + `PluginEventAPI.emit('fps-counter:update')`. Returns cleanup function |
-| `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics` types, `parseFontAtlas()`, `loadFontAtlas()` for MSDF atlas JSON loading |
-| `text/text-layout.ts` | `layoutText()` — Positions glyphs using atlas metrics, returns `LayoutGlyph[]` |
-| `text/text-manager.ts` | `TextManager` — Loads and caches font atlases for MSDF text rendering |
-| `shaders/basic.wgsl` | Quad render shader with SoA `transforms: array<mat4x4f>`, visibility indirection, renderMeta + primParams bindings, multi-tier Texture2DArray sampling |
-| `shaders/line.wgsl` | Line render shader with screen-space quad expansion from primParams, SDF dash pattern, anti-aliased edges |
-| `shaders/gradient.wgsl` | 2-stop gradient shader (linear, radial, conic). PrimParams: type, angle, stop positions + colors |
-| `shaders/box-shadow.wgsl` | SDF box shadow shader (Evan Wallace erf approximation). PrimParams: rect size, corner radius, blur, color |
-| `shaders/msdf-text.wgsl` | MSDF text shader with median(r,g,b) signed distance + screen-pixel-range anti-aliasing |
-| `shaders/fxaa-tonemap.wgsl` | Combined FXAA (Lottes) + PBR Neutral/ACES tonemapping post-process |
-| `shaders/selection-seed.wgsl` | Selection seed pass: renders selected entity pixels with UV-encoded seed positions for JFA |
-| `shaders/jfa.wgsl` | Jump Flood Algorithm iteration: samples 9 neighbors at ±step, propagates nearest seed |
-| `shaders/outline-composite.wgsl` | Outline composite: SDF distance outline from JFA result + scene, built-in FXAA |
-| `shaders/cull.wgsl` | WGSL compute shader: sphere-frustum culling with per-primitive-type grouping, 6 DrawIndirectArgs, SoA bindings |
-| `shaders/prefix-sum.wgsl` | WGSL Blelloch prefix sum compute shader (workgroup-level, 512 elements per workgroup) |
-| `shaders/bezier.wgsl` | Quadratic Bezier SDF shader (Inigo Quilez analytical distance), anti-aliased stroke with `fwidth()`, UV-space control points via PrimParams |
-| `shaders/bloom.wgsl` | Dual Kawase bloom with 5 entry points (vs_main, fs_extract, fs_downsample, fs_upsample, fs_composite). PBR Neutral + ACES tonemap, FXAA |
-| `shaders/particle-simulate.wgsl` | GPU particle compute simulation (simulate + spawn entry points). PCG hash PRNG, gravity, color/size interpolation. 48 bytes/particle |
-| `shaders/particle-render.wgsl` | Instanced point-sprite particle rendering with circle SDF + `fwidth()` anti-aliasing. Dead particle clipping |
-| `vite-env.d.ts` | Type declarations for WGSL ?raw imports and Vite client |
+| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing |
+| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (A/B) or `createDirectBridge()` (C). `GPURenderState` type |
+| `engine-worker.ts` | Web Worker: loads WASM, calls `engine_init`/`engine_update`, heartbeat counter |
+| `render-worker.ts` | Mode A: OffscreenCanvas + `createRenderer()` |
+| `supervisor.ts` | `WorkerSupervisor` — heartbeat monitoring + timeout detection |
+
+#### Rendering Pipeline
+
+| Module | Role |
+|---|---|
+| `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (14 WGSL files), device-lost recovery |
+| `texture-manager.ts` | Multi-tier Texture2DArray, lazy allocation (0→16→32→64→128→256), `createImageBitmap` pipeline |
+| `render/render-pass.ts` | `RenderPass` interface + `FrameState` type |
+| `render/resource-pool.ts` | `ResourcePool` — named GPU resource registry |
+| `render/render-graph.ts` | `RenderGraph` — DAG scheduling with Kahn's topological sort + dead-pass culling |
+| `render/passes/cull-pass.ts` | GPU frustum culling compute, 6 primitive types, per-type DrawIndirectArgs |
+| `render/passes/forward-pass.ts` | Multi-pipeline forward pass, `SHADER_SOURCES` per RenderPrimitiveType, renders to `scene-hdr` |
+| `render/passes/fxaa-tonemap-pass.ts` | Full-screen FXAA + tonemap (none/PBR-neutral/ACES), reads `scene-hdr` → `swapchain` |
+| `render/passes/selection-seed-pass.ts` | Renders selected entities as JFA seeds |
+| `render/passes/jfa-pass.ts` | Single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
+| `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
+| `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
+| `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan |
+| `particle-types.ts` | `ParticleHandle`, `ParticleEmitterConfig`, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
+| `particle-system.ts` | GPU particle system: per-emitter buffers, compute simulate+spawn, instanced point-sprite render, entity tracking, spawn accumulator |
+
+#### Input & Picking
+
+| Module | Role |
+|---|---|
+| `input-manager.ts` | Keyboard/pointer/scroll state + callbacks (`onKey`/`onClick`/`onPointerMove`/`onScroll`), DOM lifecycle |
+| `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection, returns closest entityId or null |
+| `immediate-state.ts` | Shadow position map for zero-latency rendering, `patchTransforms()` + `patchBounds()` |
+| `selection.ts` | `SelectionManager` — CPU `Set<number>` with dirty tracking + GPU mask upload |
+
+#### Audio
+
+| Module | Role |
+|---|---|
+| `audio-types.ts` | Branded types `SoundHandle`/`PlaybackId`, `PlaybackOptions`, `SpatialConfig` |
+| `sound-registry.ts` | URL-deduplicated audio buffer management with DI, bidirectional handle-URL maps |
+| `playback-engine.ts` | Web Audio node graph, 2D spatial (StereoPanner + distance attenuation), `setTargetAtTime` smoothing |
+| `audio-manager.ts` | Public facade: lazy AudioContext, safe no-ops before init, suspend/resume/destroy lifecycle |
+
+#### Plugins
+
+| Module | Role |
+|---|---|
+| `plugin.ts` | `HyperionPlugin` interface + `PluginRegistry` — dependency resolution, error boundaries |
+| `plugin-context.ts` | `PluginContext` with 5 sub-APIs: systems, events, rendering (nullable), gpu (nullable), storage |
+| `event-bus.ts` | Typed pub/sub (`on`/`off`/`once`/`emit`/`destroy`), shared between PluginContexts |
+| `profiler.ts` | `ProfilerOverlay` — DOM performance stats (4 corner positions) |
+| `plugins/fps-counter.ts` | Example plugin: postTick hook + EventBus emit |
+
+#### Text
+
+| Module | Role |
+|---|---|
+| `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics`, `parseFontAtlas()`, `loadFontAtlas()` |
+| `text/text-layout.ts` | `layoutText()` — glyph positioning from atlas metrics |
+| `text/text-manager.ts` | `TextManager` — font atlas cache for MSDF text rendering |
+
+#### Shaders (`ts/src/shaders/`, loaded via Vite `?raw`)
+
+| Shader | Role |
+|---|---|
+| `basic.wgsl` | Quad render: SoA transforms, visibility indirection, multi-tier Texture2DArray |
+| `line.wgsl` | Screen-space quad expansion, SDF dash pattern |
+| `gradient.wgsl` | 2-stop gradient (linear/radial/conic) |
+| `box-shadow.wgsl` | SDF box shadow (Evan Wallace erf) |
+| `bezier.wgsl` | Quadratic Bezier SDF (Inigo Quilez), `fwidth()` anti-aliased stroke |
+| `msdf-text.wgsl` | MSDF median(r,g,b) signed distance + screen-pixel-range AA |
+| `cull.wgsl` | Compute: sphere-frustum culling, 6 DrawIndirectArgs |
+| `fxaa-tonemap.wgsl` | FXAA (Lottes) + PBR Neutral/ACES tonemap |
+| `selection-seed.wgsl` | Selected entity UV-encoded seeds for JFA |
+| `jfa.wgsl` | Jump Flood: 9-neighbor sampling at ±step |
+| `outline-composite.wgsl` | SDF distance outline + FXAA |
+| `bloom.wgsl` | Dual Kawase bloom (5 entry points), tonemap + FXAA |
+| `particle-simulate.wgsl` | Compute: PCG hash PRNG, gravity, color/size interpolation (48 B/particle) |
+| `particle-render.wgsl` | Instanced point-sprite circles, dead particle clipping |
+| `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) |
+
+`vite-env.d.ts` — Type declarations for WGSL `?raw` imports and Vite client.
 
 ## Gotchas
+
+### Critical — will cause bugs or errors if ignored
 
 - **hecs 0.11 `query_mut`** returns component tuples directly, NOT `(Entity, components)`. Use `for (pos, vel) in world.query_mut::<(&mut Position, &Velocity)>()`.
 - **Rust `u64` → JS `BigInt`** via wasm-bindgen. Wrap with `Number()` on TS side (safe for values < 2^53).
 - **`wasm-bindgen` can't export `unsafe fn`** — use `#[allow(clippy::not_unsafe_ptr_arg_deref)]` for functions taking raw pointers.
 - **TS `const enum` has no reverse mapping** — `CommandType[value]` fails (TS2476). Log numeric values directly.
-- **Public types with parameterless `new()`** must also impl `Default` (Clippy `new_without_default`).
-- **`wasm-pack --out-dir`** is relative to the crate directory, not the workspace root.
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
-- **Frustum extraction lives in `camera.ts`** — `CullPass` imports `extractFrustumPlanes` from `camera.ts`. The old `extractFrustumPlanesInternal` in `renderer.ts` has been removed.
-- **WebGPU can't be tested in headless browsers** — Playwright/Puppeteer headless mode has no GPU adapter. `requestAdapter()` returns null. Visual WebGPU testing requires a real browser with GPU acceleration (e.g., `npm run dev` → open Chrome).
-- **Depth texture lazy recreation** — `ForwardPass.ensureDepthTexture()` creates/recreates the depth texture when canvas dimensions change. `resize()` invalidates the dimension tracking, triggering recreation on the next `execute()`. This fixes the old bug where `renderer.ts` created the depth texture only once at initialization.
-- **No rendering fallback without WebGPU** — When WebGPU is unavailable, the engine runs the ECS/WASM simulation but rendering is completely disabled (`renderer` stays `null`). A future phase should add a WebGL 2 fallback renderer (CPU-side culling, GLSL shaders) implementing the same `Renderer` interface. Canvas 2D is an option for debug/wireframe only.
-- **Full entity buffer re-upload every frame** — `renderer.ts` uploads all SoA buffers via `writeBuffer` each frame, even if most entities haven't moved. Future optimizations: (1) use `DirtyTracker` (now in Rust) for partial upload when `transform_dirty_ratio < 0.3`, (2) stable entity slots in GPU buffer via `EntityMap` free-list, (3) double-buffering with `mapAsync` to eliminate `writeBuffer` internal copies, (4) CPU-side frustum pre-culling to skip off-screen entities before upload.
-- **`createImageBitmap` not available in Workers on all browsers** — Firefox and Chrome support it. Safari has partial support. The `TextureManager` should only be instantiated where `createImageBitmap` is available.
-- **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. The `TextureManager` allocates 256 layers per tier. On devices with fewer layers, loading will fail. Future: query `device.limits.maxTextureArrayLayers`.
-- **TextureManager lazy allocation** — Tiers are now lazily allocated (no GPU textures created until first use). Growth follows exponential steps: 0→16→32→64→128→256 layers per tier. `getTierView()` creates a minimal 1-layer placeholder for bind group validity. Resize copies existing layers via `copyTextureToTexture`.
-- **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. The fragment shader uses a `switch` on the tier value. Adding new tiers requires updating the shader.
-- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must be indexed by the same entity index. All are populated in the same `collect_gpu()` loop in Rust, ensuring alignment. The `ResourcePool` stores them under `entity-transforms`, `entity-bounds`, `tex-indices`. Entity IDs are CPU-only (used for picking/immediate-mode, not uploaded to GPU).
-- **ResourcePool buffer naming convention** — CullPass reads `entity-transforms` + `entity-bounds` + `render-meta`, writes `visible-indices` + `indirect-args`. ForwardPass reads `entity-transforms` + `visible-indices` + `tex-indices` + `indirect-args` + `render-meta` + `prim-params`, writes `scene-hdr`. FXAATonemapPass reads `scene-hdr`, writes `swapchain`. BloomPass reads `scene-hdr`, writes `swapchain` (uses `bloom-half`/`bloom-quarter`/`bloom-eighth` intermediate textures internally). Texture views: `tier0`-`tier3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`. Swapchain view: `swapchain` (set per-frame by coordinator).
-- **BackpressuredProducer wraps RingBufferProducer** — All three bridge factories (`createWorkerBridge`, `createFullIsolationBridge`, `createDirectBridge`) use `BackpressuredProducer` instead of raw `RingBufferProducer`. `flush()` is called at the start of every `tick()`.
-- **Worker heartbeat via ring buffer header** — Engine-worker increments `Atomics.add(header, HEARTBEAT_W1_OFFSET, 1)` after each tick. `WorkerSupervisor` checks heartbeat counters every 1s via `setInterval`. Currently logs warnings only; escalation is TODO(Phase 5).
-- **`EntityHandle.data()` cleared on `init()`** — When EntityHandles are recycled from the pool, `init()` resets the data map. Plugins that store data via `.data(key, value)` must handle the case where data disappears after pool reuse.
-- **`Hyperion.fromParts()` vs `Hyperion.create()`** — `fromParts()` is the test factory that accepts pre-built components (bridge, renderer, etc.) for unit testing without real WASM/WebGPU. `create()` is the production factory that performs capability detection, bridge creation, and renderer initialization.
-- **Plugin teardown order** — `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()`. This ensures plugins can still access engine resources during their cleanup phase.
-- **`GameLoop` first-frame sentinel** — `GameLoop` uses `lastTime = -1` sentinel to detect the first RAF callback and set dt=0, avoiding a massive first-frame dt spike (which would be `performance.now()` milliseconds).
-- **Scene graph `SetParent` uses `0xFFFFFFFF` for unparent** — The `SetParent` command payload is a `u32` parent entity ID. The special value `0xFFFFFFFF` means "remove parent" (unparent). This allows the same command type for both parenting and unparenting.
-- **`Children` component uses fixed 32-slot inline array with `OverflowChildren` heap fallback** — No heap allocation for child lists up to 32. When the 33rd child is added, an `OverflowChildren(Vec<u32>)` component is attached as a heap-backed fallback. `Children.remove()` returns `bool`; if `false`, the `SetParent` handler checks `OverflowChildren`. Empty `OverflowChildren` is removed automatically.
-- **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders (quad, line, MSDF, bezier, gradient, box shadow) MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler). Unused bindings must still be declared for bind group compatibility when switching pipelines within the same render pass.
-- **ForwardPass.SHADER_SOURCES keyed by RenderPrimitiveType** — `Record<number, string>` where keys are `RenderPrimitiveType` values (0=Quad, 1=Line, 2=SDFGlyph, 3=BezierPath, 4=Gradient, 5=BoxShadow). All 6 slots are now populated. Adding a new primitive type requires: (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES`, (3) optionally extend `EntityHandle` with a convenience method.
-- **Per-type indirect draw at offset `primType * 20`** — CullPass writes 6 consecutive `DrawIndirectArgs` (5 u32 each = 20 bytes). ForwardPass issues `drawIndexedIndirect(buffer, primType * 20)` for each registered type.
-- **JFA iteration count = ceil(log₂(max(width, height)))** — For 1080p, ~11 iterations. Each iteration is a separate `JFAPass` node in the RenderGraph with a unique resource name (`jfa-iter-N`). The renderer maps these logical resources to two physical ping-pong textures in the ResourcePool.
-- **RenderGraph dead-pass culling enables pipeline switching** — When outlines are enabled, `OutlineCompositePass` writes to `swapchain`, which dead-pass culls `FXAATonemapPass`. When outlines are disabled, the outline passes are removed from the graph and `FXAATonemapPass` is restored automatically.
-- **PrimitiveParams is 8 floats per entity** — Split across two ring buffer commands (`SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8]) due to the 16-byte payload limit of the ring buffer protocol.
-- **MSDF text requires external atlas** — `loadFontAtlas(jsonUrl, textureUrl)` loads msdf-atlas-gen JSON metadata + texture. The atlas must be generated externally using msdf-atlas-gen. Glyph UV rectangles are passed via PrimitiveParams.
-- **Immediate-mode patches both transforms and bounds** — `ImmediateState.patchTransforms()` patches SoA transform column 3, and `patchBounds()` patches SoA bounds xyz (stride 4, preserving radius). Both are called in `Hyperion.tick()`. Picking during immediate-mode drag now uses the patched position, not the WASM-reported position (1-2 frame stale).
-- **InputManager.resetFrame() called per tick** — Scroll deltas accumulate within a frame and reset at the end of each tick. Read `scrollDeltaX/Y` in `preTick` hooks, not `frameEnd`.
-- **ExternalId is immutable** — Set once on SpawnEntity, never updated. If entity recycling via free list changes the external ID, a new ExternalId is spawned with the new entity.
-- **Duplicate Ray interface** — `Ray` is defined in both `camera.ts` and `hit-tester.ts` with identical shape `{ origin: [n,n,n], direction: [n,n,n] }`. TypeScript structural typing makes them interchangeable. Future: consolidate to single definition.
-- **mat4Inverse uses general cofactor expansion** — NOT an orthographic-specific shortcut. ~50 lines but forward-compatible with perspective cameras. Returns `null` for singular matrices.
-- **AudioContext requires user gesture** — Browsers block `AudioContext` creation/resumption without a user gesture. `AudioManager` lazily creates the context on first `load()` or `play()`, which is typically triggered by a click. If audio doesn't play, ensure the first audio call happens inside a user-initiated event handler.
-- **AudioManager.destroy() nullifies before await** — `destroy()` nullifies `ctx`/`engine`/`registry` references before `await ctx.close()` to prevent concurrent callers from touching dead objects during the async teardown.
-- **StereoPannerNode browser support** — `StereoPannerNode` is supported in all modern browsers (Chrome 42+, Firefox 52+, Safari 14.1+). Older Safari versions may need a polyfill.
-- **SoundRegistry uses bidirectional maps** — `urlToHandle` + `handleToUrl` for O(1) both directions. Both maps must stay in sync during `load()`/`unload()`/`destroy()`.
-- **PlaybackEngine accepts optional SpatialConfig** — Constructor takes `(ctx: AudioContext, spatial?: SpatialConfig)`. `AudioManager` forwards its merged config. Default: `panSpread=20, rolloff=10, maxDistance=100`.
-- **Audio listener is ring-buffer driven with WASM extrapolation** — In `Hyperion.tick()`, camera position is sent to WASM via `SetListenerPosition` ring buffer command. WASM derives velocity from position delta and extrapolates during fixed ticks. The extrapolated position is read back from `GPURenderState.listenerX/Y/Z` and forwarded to `PlaybackEngine.setListenerPosition()`. This keeps spatial audio in sync with the WASM simulation clock, not the JS render clock.
-- **`source.onended` auto-cleans finished playbacks** — `PlaybackEngine` registers an `onended` handler on each `AudioBufferSourceNode` that calls `cleanup()`. Non-looping sounds are automatically removed from the active map when they finish. No explicit `stop()` needed for fire-and-forget sounds.
-- **`SetListenerPosition` uses entity_id=0 as sentinel** — The `SetListenerPosition` command (discriminant 13) carries 12-byte payload (x, y, z as f32). The entity_id field is always 0 because this is engine-level state, not entity-specific. WASM intercepts it in `process_commands()` before entity lookup.
-- **Plugin install returns cleanup function (not property)** — React useEffect pattern: `install(ctx)` may return `() => void`. PluginRegistry stores and calls it on uninstall/destroyAll.
-- **PluginRenderingAPI and PluginGpuAPI are null when headless** — When `renderer` is null (no WebGPU), `ctx.rendering` and `ctx.gpu` are null. Plugins must null-check before using GPU/rendering APIs.
-- **PluginGpuAPI tracks resources** — `createBuffer()`/`createTexture()` return real GPU resources but track them. `destroyTracked()` destroys all tracked resources. Plugin authors should use `ctx.gpu` instead of raw `device` to ensure cleanup.
-- **Shader hot-reload rebuilds entire render graph** — `recompileShader()` calls `rebuildGraph()`, destroying and recreating all passes. Not incremental — acceptable for dev tooling, not production runtime.
-- **ProfilerOverlay requires canvas with parentElement** — `show(canvas)` early-returns if `canvas.parentElement` is null. The parent should have `position: relative` for absolute positioning to work correctly.
-- **EventBus emit iterates spread copy** — `emit()` spreads the listener array before iterating, so `once()` self-removal during emit is safe.
-- **Bloom and outlines are mutually exclusive** — Both write to `swapchain`, dead-culling `FXAATonemapPass`. `enableBloom()` disables outlines; `enableOutlines()` disables bloom. Console warning issued.
-- **Bloom intermediate textures at 3 fixed mip levels** — bloom-half (1/2 res), bloom-quarter (1/4 res), bloom-eighth (1/8 res). All `rgba16float`. Managed by renderer coordinator. Must be recreated on resize.
-- **GPU particles are NOT ECS entities** — Particles live in GPU storage buffers, simulated by compute shader, rendered outside the RenderGraph. This avoids ring buffer saturation. Emitters optionally follow an ECS entity's position via entity ID tracking.
-- **Particle spawn uses PCG hash PRNG** — `pcg_hash()` in WGSL. Not cryptographically secure. Seed derived from spawn index + free slot counter for deterministic-per-frame results.
-- **Particle render uses `loadOp: 'load'` on swapchain** — Particles drawn on top of the scene after RenderGraph completes. NOT affected by bloom or FXAA.
-- **Bezier control points in PrimParams are UV-space** — Quadratic Bezier SDF expects control points in [0,1] range relative to entity's bounding quad. Entity position+scale define world-space bounding box.
-- **Particle spawnAccumulator preserves fractional spawns** — At 60fps with emissionRate=100, raw `Math.floor(rate * dt)` loses ~40% of particles. The accumulator carries the fractional remainder across frames.
+- **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler). Unused bindings must still be declared.
+- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must use the same entity index. Populated in `collect_gpu()` in Rust. Entity IDs are CPU-only (not uploaded to GPU).
+- **PrimitiveParams split across two commands** — `SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8], due to 16-byte ring buffer payload limit.
+- **`SetParent` uses `0xFFFFFFFF` for unparent** — Special value meaning "remove parent". Same command type for parenting and unparenting.
+- **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. Adding new tiers requires updating the shader `switch`.
+- **AudioContext requires user gesture** — Browsers block creation/resumption without user gesture. `AudioManager` lazily creates context on first `load()` or `play()`.
+- **Bloom and outlines are mutually exclusive** — Both write to `swapchain`, dead-culling `FXAATonemapPass`. `enableBloom()` disables outlines and vice versa. Console warning issued.
+- **WebGPU can't be tested in headless browsers** — `requestAdapter()` returns null. Visual testing requires a real browser (`npm run dev` → Chrome).
+- **`EntityHandle.data()` cleared on pool `init()`** — Recycled handles reset their data map. Plugins storing data via `.data(key, value)` must handle this.
+- **Adding a new primitive type requires 3 steps** — (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES[RenderPrimitiveType]`, (3) optionally extend `EntityHandle`. Types: 0=Quad, 1=Line, 2=SDFGlyph, 3=BezierPath, 4=Gradient, 5=BoxShadow.
+- **`createImageBitmap` not available in Workers on all browsers** — Safari has partial support. `TextureManager` should only be instantiated where available.
+- **Bezier control points in PrimParams are UV-space** — [0,1] range relative to entity's bounding quad. Entity position+scale define world-space bounding box.
+- **GPU particles are NOT ECS entities** — Particles live in GPU storage buffers, rendered outside the RenderGraph. Avoids ring buffer saturation.
+
+### Implementation Notes — design decisions and internal details
+
+- **Public types with parameterless `new()`** must also impl `Default` (Clippy `new_without_default`).
+- **`wasm-pack --out-dir`** is relative to the crate directory, not the workspace root.
+- **Frustum extraction lives in `camera.ts`** — `CullPass` imports `extractFrustumPlanes` from `camera.ts`.
+- **Depth texture lazy recreation** — `ForwardPass.ensureDepthTexture()` recreates when canvas dimensions change. `resize()` invalidates dimension tracking.
+- **No rendering fallback without WebGPU** — Engine runs ECS/WASM simulation but rendering is disabled (`renderer` stays `null`). Future: WebGL 2 fallback.
+- **Full entity buffer re-upload every frame** — Future optimizations: DirtyTracker partial upload, stable entity slots, double-buffering with `mapAsync`, CPU-side frustum pre-culling.
+- **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. Future: query `device.limits.maxTextureArrayLayers`.
+- **TextureManager lazy allocation** — Growth: 0→16→32→64→128→256 layers per tier. `getTierView()` creates 1-layer placeholder for bind group validity.
+- **ResourcePool buffer naming** — CullPass: reads `entity-transforms`/`entity-bounds`/`render-meta`, writes `visible-indices`/`indirect-args`. ForwardPass: reads those + `tex-indices`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`.
+- **BackpressuredProducer wraps RingBufferProducer** — All bridge factories use it. `flush()` called at start of every `tick()`.
+- **Worker heartbeat via ring buffer header** — Engine-worker increments atomic counter after each tick. `WorkerSupervisor` checks every 1s. Currently logs warnings only.
+- **`Hyperion.fromParts()` vs `Hyperion.create()`** — `fromParts()` is the test factory; `create()` is production (capability detection + bridge + renderer init).
+- **Plugin teardown order** — `pluginRegistry.destroyAll()` runs before bridge/renderer destroy. Plugins can still access engine resources during cleanup.
+- **`GameLoop` first-frame sentinel** — `lastTime = -1` to detect first RAF callback, sets dt=0 to avoid massive first-frame spike.
+- **`Children` 32-slot inline array + `OverflowChildren` heap fallback** — `Children.remove()` returns `bool`; if `false`, handler checks `OverflowChildren`. Empty overflow removed automatically.
+- **Per-type indirect draw at offset `primType * 20`** — 6 consecutive `DrawIndirectArgs` (5 u32 each = 20 bytes).
+- **JFA iteration count = ceil(log2(max(width, height)))** — ~11 for 1080p. Each iteration is a separate `JFAPass` node with unique resource name.
+- **RenderGraph dead-pass culling** — `OutlineCompositePass` writing to `swapchain` culls `FXAATonemapPass`. Removing outline passes restores it.
+- **MSDF text requires external atlas** — Generated by msdf-atlas-gen. Glyph UV rectangles passed via PrimitiveParams.
+- **Immediate-mode patches both transforms and bounds** — `patchTransforms()` patches SoA column 3, `patchBounds()` patches bounds xyz (stride 4). Both called in `tick()`.
+- **InputManager.resetFrame() called per tick** — Read `scrollDeltaX/Y` in `preTick` hooks, not `frameEnd`.
+- **ExternalId is immutable** — Set once on SpawnEntity, never updated.
+- **Duplicate Ray interface** — Defined in both `camera.ts` and `hit-tester.ts` with identical shape. Structural typing makes them interchangeable.
+- **mat4Inverse uses general cofactor expansion** — Forward-compatible with perspective cameras. Returns `null` for singular matrices.
+- **AudioManager.destroy() nullifies before await** — Prevents concurrent callers from touching dead objects during async teardown.
+- **SoundRegistry uses bidirectional maps** — `urlToHandle` + `handleToUrl`. Both must stay in sync.
+- **Audio listener is ring-buffer driven** — Camera position → WASM via `SetListenerPosition` → velocity derivation + extrapolation → read back via `GPURenderState.listenerX/Y/Z`.
+- **`source.onended` auto-cleans finished playbacks** — Non-looping sounds automatically removed from active map.
+- **`SetListenerPosition` uses entity_id=0 as sentinel** — Engine-level state, not entity-specific. WASM intercepts before entity lookup.
+- **Plugin install returns cleanup function** — React useEffect pattern: `install(ctx)` may return `() => void`.
+- **PluginRenderingAPI and PluginGpuAPI are null when headless** — Plugins must null-check before using GPU/rendering APIs.
+- **PluginGpuAPI tracks resources** — `destroyTracked()` cleans up. Use `ctx.gpu` instead of raw `device`.
+- **Shader hot-reload rebuilds entire render graph** — Not incremental. Acceptable for dev, not production.
+- **EventBus emit iterates spread copy** — `once()` self-removal during emit is safe.
+- **Bloom intermediate textures at 3 fixed mip levels** — bloom-half (1/2), bloom-quarter (1/4), bloom-eighth (1/8). All `rgba16float`. Recreate on resize.
+- **Particle render uses `loadOp: 'load'`** — Drawn on top of scene. NOT affected by bloom or FXAA.
+- **Particle spawnAccumulator preserves fractional spawns** — Raw `Math.floor(rate * dt)` loses ~40% at 60fps. Accumulator carries remainder across frames.
 
 ## Conventions
 
@@ -323,20 +367,23 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-Phases 0-5.5, Phase 4.5 (Stabilization & Architecture Foundations), Post-Plan Integration, Phase 6 (Input System), Phase 7 (Audio System), Phase 7.5 (Stability Bugfix), and Phase 8 (Polish, DX & Production Readiness) are complete. Phase 5.5 (Rendering Primitives) extended the engine from quad-only to multi-primitive rendering: `PrimitiveParams([f32;8])` component on Rust side with `SetPrimParams0/1` ring buffer commands, multi-type CullPass (6 primitive types with per-type indirect draw args), multi-pipeline ForwardPass (`SHADER_SOURCES: Record<number, string>`), line rendering (screen-space expansion + SDF dash), MSDF text rendering (FontAtlas + text layout + median SDF shader), gradient rendering (linear/radial/conic), box shadow rendering (Evan Wallace erf technique), FXAA + tonemapping post-processing (PBR Neutral/ACES), and JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass with dead-pass culling). Phase 6 (Input System) added: `ExternalId(u32)` ECS component for SoA entity ID tracking, `entityIds` buffer plumbed through WASM exports and all three bridge modes, `InputManager` (keyboard/pointer/scroll state + callback registration with DOM lifecycle), `Camera.screenToRay()` with general `mat4Inverse` (forward-compatible with perspective cameras), `hitTestRay()` CPU ray-sphere picking (2.5D depth ordering), `ImmediateState` shadow position map with transform patching for zero-latency rendering, `EntityHandle.positionImmediate()`/`clearImmediate()`. Public API: `engine.input`, `engine.picking.hitTest()`. Demo updated with click-to-select, WASD camera, scroll-zoom. Phase 7 (Audio System) added: Web Audio API integration with three-layer architecture (`SoundRegistry` for buffer management, `PlaybackEngine` for node graph + spatial audio, `AudioManager` as public facade). Branded types (`SoundHandle`, `PlaybackId`) for type safety. Lazy `AudioContext` initialization respecting browser autoplay policy. 2D spatial audio with `StereoPannerNode` (`pan = clamp(dx/panSpread, -1, 1)`, distance attenuation `gain = baseVolume / (1 + distance/rolloff)`). Full lifecycle wiring: `pause()` suspends, `resume()` resumes, `destroy()` tears down audio. DI-based testability (AudioDecoder, AudioFetcher, contextFactory). Public API: `engine.audio`. Phase 7.5 (Stability Bugfix) fixed three real defects: (1) `OverflowChildren(Vec<u32>)` heap fallback for entities with 33+ children (Children.remove() now returns bool), (2) `ImmediateState.patchBounds()` patches SoA bounds buffer for consistent picking during drag, (3) ring-buffer-driven audio listener via `SetListenerPosition` command (discriminant 13) with WASM-side velocity derivation and extrapolation, `engine_listener_x/y/z()` exports, `setTargetAtTime` smoothing in PlaybackEngine. Phase 8 (Polish, DX & Production Readiness) added: Plugin System v2 with `PluginContext` and 5 extension APIs (systems, events, rendering, GPU, storage), `EventBus` for inter-plugin communication, dependency resolution and error boundaries in `PluginRegistry`. Shader hot-reload via `recompileShader()` + Vite HMR wiring for all 10 WGSL files. Performance profiler overlay (`enableProfiler`/`disableProfiler`). Stats wiring: tickCount from WASM, frame time tracking in GameLoop, MemoryStats getter. Deployment guide for 7 platforms. Example fps-counter plugin. Phase 9 (Advanced 2D Rendering) added: (1) Quadratic Bezier SDF curves — `bezier.wgsl` shader (Inigo Quilez analytical distance), `EntityHandle.bezier()` fluent method, ForwardPass slot 3 now populated; (2) Dual Kawase Bloom — `bloom.wgsl` + `BloomPass` (6-step internal chain: extract bright -> 2x downsample -> 2x upsample -> composite), `enableBloom(config?)`/`disableBloom()` on Hyperion facade, mutually exclusive with outlines, 3 intermediate `rgba16float` textures at 1/2, 1/4, 1/8 resolution; (3) GPU Particle System — `particle-simulate.wgsl` (PCG hash PRNG, gravity, color/size interpolation) + `particle-render.wgsl` (instanced point-sprite circles), `ParticleSystem` class with per-emitter GPU buffers (storage/counter/config), compute simulate+spawn dispatches, `createParticleEmitter()`/`destroyParticleEmitter()` on facade, entity position tracking for follower emitters, spawn accumulator for fractional emission accuracy. 15 new WGSL shader HMR entries. **Next: Phase 10.**
+**Current: Phase 9 complete. Next: Phase 10.**
+
+| Phase | Name | Key Additions |
+|-------|------|---------------|
+| 0–3 | Core + GPU Pipeline | ECS/WASM, ring buffer, fixed timestep, compute culling, indirect draw |
+| 4.5 | Stabilization | Scene graph, BackpressuredProducer, WorkerSupervisor, EntityHandlePool |
+| 5.5 | Rendering Primitives | 6 primitive types (quad/line/MSDF/bezier/gradient/box-shadow), FXAA+tonemap, JFA outlines |
+| 6 | Input System | InputManager, CPU ray-sphere picking, ImmediateState, ExternalId |
+| 7 | Audio System | SoundRegistry + PlaybackEngine + AudioManager, 2D spatial audio, branded types |
+| 7.5 | Stability Bugfix | OverflowChildren, patchBounds, ring-buffer-driven audio listener |
+| 8 | Polish & DX | Plugin System v2 (PluginContext + 5 APIs), EventBus, shader HMR, profiler overlay |
+| 9 | Advanced 2D | Bézier SDF curves, Dual Kawase bloom, GPU particle system |
 
 ## Documentation
 
-- `PROJECT_ARCHITECTURE.md` — Deep technical architecture doc (algorithms, data structures, protocol details, design rationale). Reference for onboarding and implementation decisions.
+- `PROJECT_ARCHITECTURE.md` — Deep technical architecture doc. Reference for onboarding and implementation decisions.
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
-- `docs/plans/2026-02-17-hyperion-engine-phase0-phase1.md` — Phase 0-1 implementation plan (completed). Shows task-by-task build sequence.
-- `docs/plans/2026-02-17-hyperion-engine-phase3.md` — Phase 3 implementation plan (completed). GPU-driven pipeline with compute culling.
-- `docs/plans/2026-02-18-phase-4.5-stabilization-arch-foundations.md` — Phase 4.5 implementation plan (completed). 15 tasks for stabilization and architecture foundations.
-- `docs/plans/2026-02-20-phase-5.5-rendering-primitives.md` — Phase 5.5 implementation plan (completed). 45 tasks for multi-primitive rendering, post-processing, and selection outlines.
-- `docs/plans/2026-02-21-phase-6-input-system.md` — Phase 6 implementation plan (completed). 24 tasks for input system, CPU picking, and immediate mode.
-- `docs/plans/2026-02-21-phase-7-audio-system.md` — Phase 7 implementation plan (completed). 22 tasks for Web Audio API integration, spatial audio, and engine lifecycle wiring.
-- `docs/plans/2026-02-21-phase-7.5-stability-bugfix-design.md` — Phase 7.5 design doc. Three defect analyses with fix strategies.
-- `docs/plans/2026-02-21-phase-7.5-stability-bugfix.md` — Phase 7.5 implementation plan (completed). 24 tasks for OverflowChildren, immediate-mode bounds patching, and ring-buffer-driven audio listener.
-- `docs/plans/2026-02-22-phase-9-advanced-2d-rendering.md` — Phase 9 implementation plan (completed). 24 tasks for Bézier curves, bloom post-processing, and GPU particle system.
-- `docs/deployment-guide.md` — Deployment guide for 7 platforms (Vercel, Netlify, Cloudflare Pages, GitHub Pages, Electron, Tauri, Nginx/Apache) with COOP/COEP header configs and WASM caching.
+- `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9). Historical reference for implementation decisions.
