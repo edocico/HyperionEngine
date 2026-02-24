@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (429 tests)
+cd ts && npm test                            # All vitest tests (475 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -58,10 +58,10 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (17 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
-cd ts && npx vitest run src/capabilities.test.ts              # Capability detection (4 tests)
+cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format (8 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
-cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager (16 tests)
+cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager + KTX2/compressed (36 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (18 tests)
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
@@ -73,7 +73,7 @@ cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # Selectio
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (58 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (59 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (30 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (8 tests)
@@ -99,6 +99,8 @@ cd ts && npx vitest run src/plugins/fps-counter.test.ts       # Example FPS coun
 cd ts && npx vitest run src/render/passes/bloom-pass.test.ts   # BloomPass (7 tests)
 cd ts && npx vitest run src/particle-types.test.ts              # Particle types (3 tests)
 cd ts && npx vitest run src/particle-system.test.ts             # ParticleSystem (5 tests)
+cd ts && npx vitest run src/ktx2-parser.test.ts                # KTX2 container parser (10 tests)
+cd ts && npx vitest run src/basis-transcoder.test.ts            # Basis Universal transcoder (11 tests)
 ```
 
 ### Development Workflow
@@ -184,12 +186,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `enableProfiler/disableProfiler`, `recompileShader`. `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`. `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder (`.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`). `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
 | `types.ts` | `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
-| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`) |
+| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`, `KTX2Container`, `BasisTranscoder`, `detectCompressedFormat`) |
 
 #### Engine Runtime
 
@@ -198,7 +200,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hooks, FPS/frame-time tracking |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` |
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
-| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C |
+| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
 | `main.ts` | Demo entry point: click-to-select, spatial audio, WASD camera, scroll-zoom, particles, bloom, bezier |
 
@@ -217,8 +219,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (14 WGSL files), device-lost recovery |
-| `texture-manager.ts` | Multi-tier Texture2DArray, lazy allocation (0→16→32→64→128→256), `createImageBitmap` pipeline |
+| `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (14 WGSL files), device-lost recovery, compressed texture format detection + overflow views |
+| `texture-manager.ts` | Multi-tier Texture2DArray with compressed format support (BC7/ASTC), overflow tiers for mixed-mode, lazy allocation (0→16→32→64→128→256), KTX2 load path, `createImageBitmap` pipeline |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type |
 | `render/resource-pool.ts` | `ResourcePool` — named GPU resource registry |
 | `render/render-graph.ts` | `RenderGraph` — DAG scheduling with Kahn's topological sort + dead-pass culling |
@@ -232,6 +234,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan |
 | `particle-types.ts` | `ParticleHandle`, `ParticleEmitterConfig`, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
 | `particle-system.ts` | GPU particle system: per-emitter buffers, compute simulate+spawn, instanced point-sprite render, entity tracking, spawn accumulator |
+| `ktx2-parser.ts` | Custom KTX2 container parser: magic validation, header/level reading, `isKTX2()` detection, `VK_FORMAT` constants |
+| `basis-transcoder.ts` | Singleton Basis Universal WASM transcoder wrapper, lazy-loaded, `transcode()` with BC7/ASTC/RGBA8 targets |
 
 #### Input & Picking
 
@@ -289,7 +293,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `particle-render.wgsl` | Instanced point-sprite circles, dead particle clipping |
 | `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) |
 
-`vite-env.d.ts` — Type declarations for WGSL `?raw` imports and Vite client.
+`vite-env.d.ts` — Type declarations for WGSL `?raw` imports, Vite client, and vendored Basis Universal WASM module.
 
 ## Gotchas
 
@@ -301,7 +305,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **TS `const enum` has no reverse mapping** — `CommandType[value]` fails (TS2476). Log numeric values directly.
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
-- **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler). Unused bindings must still be declared.
+- **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler + ovf0-ovf3 overflow arrays). Unused bindings must still be declared.
 - **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must use the same entity index. Populated in `collect_gpu()` in Rust. Entity IDs are CPU-only (not uploaded to GPU).
 - **PrimitiveParams split across two commands** — `SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8], due to 16-byte ring buffer payload limit.
 - **`SetParent` uses `0xFFFFFFFF` for unparent** — Special value meaning "remove parent". Same command type for parenting and unparenting.
@@ -314,6 +318,10 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`createImageBitmap` not available in Workers on all browsers** — Safari has partial support. `TextureManager` should only be instantiated where available.
 - **Bezier control points in PrimParams are UV-space** — [0,1] range relative to entity's bounding quad. Entity position+scale define world-space bounding box.
 - **GPU particles are NOT ECS entities** — Particles live in GPU storage buffers, rendered outside the RenderGraph. Avoids ring buffer saturation.
+- **KTX2 files must have block-aligned dimensions** — BC7/ASTC 4x4 require width/height divisible by 4. Tier sizes (64-512) satisfy this.
+- **Basis Universal WASM loaded lazily** — Only fetched on first KTX2 texture with BasisLZ/UASTC supercompression. Pre-compressed KTX2 (scheme=0) bypasses the transcoder entirely.
+- **`KTX2File.close()` AND `.delete()` both required** — Missing `.delete()` leaks WASM heap memory.
+- **Compressed texture tier growth needs standard WebGPU** — `copyTextureToTexture` for compressed formats is disallowed in compatibility mode. Falls back to rgba8unorm.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -325,7 +333,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Full entity buffer re-upload every frame** — Future optimizations: DirtyTracker partial upload, stable entity slots, double-buffering with `mapAsync`, CPU-side frustum pre-culling.
 - **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. Future: query `device.limits.maxTextureArrayLayers`.
 - **TextureManager lazy allocation** — Growth: 0→16→32→64→128→256 layers per tier. `getTierView()` creates 1-layer placeholder for bind group validity.
-- **ResourcePool buffer naming** — CullPass: reads `entity-transforms`/`entity-bounds`/`render-meta`, writes `visible-indices`/`indirect-args`. ForwardPass: reads those + `tex-indices`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`.
+- **ResourcePool buffer naming** — CullPass: reads `entity-transforms`/`entity-bounds`/`render-meta`, writes `visible-indices`/`indirect-args`. ForwardPass: reads those + `tex-indices`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `ovf0`-`ovf3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`.
 - **BackpressuredProducer wraps RingBufferProducer** — All bridge factories use it. `flush()` called at start of every `tick()`.
 - **Worker heartbeat via ring buffer header** — Engine-worker increments atomic counter after each tick. `WorkerSupervisor` checks every 1s. Currently logs warnings only.
 - **`Hyperion.fromParts()` vs `Hyperion.create()`** — `fromParts()` is the test factory; `create()` is production (capability detection + bridge + renderer init).
@@ -354,6 +362,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Bloom intermediate textures at 3 fixed mip levels** — bloom-half (1/2), bloom-quarter (1/4), bloom-eighth (1/8). All `rgba16float`. Recreate on resize.
 - **Particle render uses `loadOp: 'load'`** — Drawn on top of scene. NOT affected by bloom or FXAA.
 - **Particle spawnAccumulator preserves fractional spawns** — Raw `Math.floor(rate * dt)` loses ~40% at 60fps. Accumulator carries remainder across frames.
+- **Overflow tiers are dev-mode only** — In production (all KTX2), overflow arrays never allocate. PNG/JPEG on compression-capable devices go to lazy rgba8unorm overflow tiers.
+- **Packed texture index overflow flag** — bit 31 = overflow (0=primary compressed, 1=rgba8 overflow), bits 18-16 = tier (3 bits), bits 15-0 = layer. Backward compatible with old encoding.
+- **KTX2 direct upload fast path** — When vkFormat matches device (e.g., BC7 file on BC7 device), no transcoder WASM loaded. Raw level data uploaded via `writeTexture`.
+- **ResourcePool overflow views** — `ovf0`-`ovf3` registered alongside `tier0`-`tier3`. ForwardPass bind group reads all 9 texture views.
+- **BasisTranscoder singleton race protection** — `initPromise` caches the entire init flow, not just the module load. Prevents concurrent `getInstance()` from double-initializing.
 
 ## Conventions
 
@@ -367,7 +380,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 9 complete. Next: Phase 10.**
+**Current: Phase 10 complete. Next: Phase 11.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -379,6 +392,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 7.5 | Stability Bugfix | OverflowChildren, patchBounds, ring-buffer-driven audio listener |
 | 8 | Polish & DX | Plugin System v2 (PluginContext + 5 APIs), EventBus, shader HMR, profiler overlay |
 | 9 | Advanced 2D | Bézier SDF curves, Dual Kawase bloom, GPU particle system |
+| 10 | Asset Pipeline | KTX2/Basis Universal compressed textures (BC7/ASTC), overflow tiers, `compressionFormat` API |
 
 ## Documentation
 
@@ -386,4 +400,4 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10). Historical reference for implementation decisions.

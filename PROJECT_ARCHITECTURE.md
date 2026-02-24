@@ -1267,7 +1267,7 @@ Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scrit
 
 **Algoritmo di selezione tier**: `selectTier(width, height)` sceglie il tier piu piccolo che contiene `max(width, height)`. Immagini > 512px vengono clamped al tier 3.
 
-**Indice packed (u32)**: `(tier << 16) | layer`. Il tier seleziona quale Texture2DArray usare; il layer seleziona la slice. Questo encoding e lo stesso usato da `TextureLayerIndex` in Rust.
+**Indice packed (u32)**: bit 31 = overflow flag (0=primary/compressed, 1=rgba8 overflow), bits 18-16 = tier (3 bits), bits 15-0 = layer. Backward compatible: pre-Phase 10 values (bit 31=0) decode identically.
 
 **Pipeline di caricamento texture**:
 
@@ -1283,6 +1283,42 @@ Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scrit
 - **URL caching**: deduplicazione — stessa URL → stesso packed index
 - **Progress callback**: `onProgress(loaded, total)` per loading bars
 - **Tier override manuale**: per forzare la risoluzione
+
+#### Phase 10: Compressed Texture Support (BC7/ASTC)
+
+Phase 10 adds GPU-compressed texture support via KTX2/Basis Universal, reducing GPU memory 4-5x.
+
+**Compressed Format Detection** (`capabilities.ts`):
+
+```text
+adapter.features.has('texture-compression-bc')   → 'bc7-rgba-unorm'
+adapter.features.has('texture-compression-astc')  → 'astc-4x4-unorm'
+neither                                           → null (rgba8unorm fallback)
+```
+
+Priority: BC7 > ASTC > null. Device requested with compression feature enabled.
+
+**Dual Load Paths**:
+
+- **KTX2 fast path**: Pre-compressed files with matching vkFormat → direct `writeTexture`, no transcoder WASM loaded
+- **KTX2 transcoding path**: BasisLZ/UASTC files → lazy-load Basis Universal WASM (~200KB gzipped) → transcode to device format
+- **PNG/JPEG path**: On compression-capable devices, uploads to lazy-allocated rgba8unorm overflow tiers
+
+**Overflow Tiers**: Each tier has an optional rgba8unorm overflow array for mixing PNG/JPEG with compressed textures during development. In production (all KTX2), overflow arrays never allocate.
+
+**KTX2 Parser** (`ktx2-parser.ts`): Custom 60-line header reader via DataView. Validates 12-byte magic, reads level index.
+
+**Basis Transcoder** (`basis-transcoder.ts`): Singleton wrapper for vendored Basis Universal WASM. Lazy-loaded on first use. Uses `KTX2File` API with mandatory `.close()` + `.delete()` cleanup.
+
+**Memory Savings** (BC7 compression):
+
+| Tier | RGBA8 (256 layers) | BC7 (4:1) | ASTC 4x4 (5.33:1) |
+|------|-------------------|-----------|-------------------|
+| 64px | 4 MB | 1 MB | 0.75 MB |
+| 128px | 16 MB | 4 MB | 3 MB |
+| 256px | 67 MB | 16.7 MB | 12.5 MB |
+| 512px | 268 MB | 67 MB | 50 MB |
+| **Total** | **355 MB** | **88.7 MB** | **66.25 MB** |
 
 ### RenderState: Ponte Rust → TypeScript per i Dati GPU
 
@@ -2665,3 +2701,63 @@ Phase 9 aggiunge 4 nuovi file WGSL e 5 nuovi handler `import.meta.hot.accept()`:
 | `particle-render.wgsl` | `vs_main`, `fs_main` | `particle-render` |
 
 Total WGSL files with HMR: 14 (up from 10 in Phase 8). `prefix-sum.wgsl` is excluded (CPU reference only).
+
+## 27. Phase 10: Asset Pipeline (KTX2/Basis Universal)
+
+Phase 10 aggiunge il supporto per texture GPU-compresse tramite KTX2/Basis Universal, riducendo la memoria GPU di 4-5x (BC7/ASTC) mantenendo la compatibilita con PNG/JPEG.
+
+### 27.1 Architettura
+
+```text
+loadTexture(url) →
+  isKTX2? (12-byte magic check)
+    YES → parseKTX2 →
+      scheme=0 && vkFormat matches device? → direct writeTexture (fast path)
+      else → BasisTranscoder.transcode(target) → writeTexture
+    NO → (PNG/JPEG)
+      device has compressed format?
+        YES → overflow tier (rgba8unorm, lazy)
+        NO  → primary tier (rgba8unorm)
+```
+
+### 27.2 File Aggiunti/Modificati
+
+| Azione | File | Descrizione |
+|--------|------|-------------|
+| Creato | `ts/src/ktx2-parser.ts` | Parser KTX2: magic validation, header, level index |
+| Creato | `ts/src/ktx2-parser.test.ts` | 10 test unitari |
+| Creato | `ts/src/basis-transcoder.ts` | Wrapper singleton WASM Basis Universal |
+| Creato | `ts/src/basis-transcoder.test.ts` | 11 test (singleton, transcode, cleanup) |
+| Creato | `ts/vendor/basis_transcoder.js` | Vendored Basis JS wrapper (~50KB) |
+| Creato | `ts/vendor/basis_transcoder.wasm` | Vendored Basis WASM binary (~960KB) |
+| Modificato | `ts/src/texture-manager.ts` | Formato compresso, overflow tiers, load path KTX2 |
+| Modificato | `ts/src/capabilities.ts` | `detectCompressedFormat()` BC7/ASTC |
+| Modificato | `ts/src/renderer.ts` | Device request con feature, overflow views in ResourcePool |
+| Modificato | `ts/src/hyperion.ts` | Getter `compressionFormat` |
+| Modificato | `ts/src/index.ts` | Barrel exports per KTX2/transcoder |
+| Modificato | 6 WGSL shaders | Overflow bindings (group 1, binding 5-8) |
+| Modificato | `ts/src/render/passes/forward-pass.ts` | Bind group layout 5→9 entries |
+
+### 27.3 Bind Group Layout (Group 1)
+
+```wgsl
+@group(1) @binding(0) var tier0Tex: texture_2d_array<f32>;  // Primary compressed/rgba8
+@group(1) @binding(1) var tier1Tex: texture_2d_array<f32>;
+@group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;
+@group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;
+@group(1) @binding(4) var texSampler: sampler;
+@group(1) @binding(5) var ovf0Tex: texture_2d_array<f32>;   // Overflow rgba8unorm
+@group(1) @binding(6) var ovf1Tex: texture_2d_array<f32>;
+@group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
+@group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
+```
+
+Tutti i 6 shader dichiarano lo stesso layout identico. `texture_2d_array<f32>` funziona per tutti i formati (rgba8unorm, bc7-rgba-unorm, astc-4x4-unorm) — la GPU gestisce la decompressione trasparentemente nel sample.
+
+### 27.4 Scenario Matrix
+
+| Scenario | Primary tiers | Overflow tiers | Note |
+|----------|--------------|----------------|------|
+| All PNG (dev, no compression) | rgba8unorm | mai allocati | Identico a pre-Phase 10 |
+| All KTX2 (production) | bc7/astc | mai allocati | 4-5x memory savings |
+| Mixed (dev prototyping) | bc7/astc | rgba8unorm (lazy) | Dev convenience |
