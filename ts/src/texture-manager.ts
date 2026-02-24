@@ -19,23 +19,25 @@ export function selectTier(width: number, height: number): number {
 }
 
 /**
- * Pack a tier index and layer index into a single u32.
- * Layout: [tier: upper 16 bits][layer: lower 16 bits]
+ * Pack a tier index, layer index, and overflow flag into a single u32.
+ * Layout: [overflow: bit 31][tier: bits 18-16][layer: bits 15-0]
  */
-export function packTextureIndex(tier: number, layer: number): number {
-  return ((tier & 0xffff) << 16) | (layer & 0xffff);
+export function packTextureIndex(tier: number, layer: number, overflow = false): number {
+  return (overflow ? 0x80000000 : 0) | ((tier & 0x7) << 16) | (layer & 0xFFFF);
 }
 
 /**
- * Unpack a tier index and layer index from a packed u32.
+ * Unpack tier index, layer index, and overflow flag from a packed u32.
  */
 export function unpackTextureIndex(packed: number): {
   tier: number;
   layer: number;
+  overflow: boolean;
 } {
   return {
-    tier: (packed >>> 16) & 0xffff,
-    layer: packed & 0xffff,
+    overflow: (packed & 0x80000000) !== 0,
+    tier: (packed >>> 16) & 0x7,
+    layer: packed & 0xFFFF,
   };
 }
 

@@ -92,6 +92,57 @@ describe("Texture index packing", () => {
   });
 });
 
+describe("Texture index packing (v2 — overflow flag)", () => {
+  it("packs without overflow (bit 31 = 0)", () => {
+    const packed = packTextureIndex(2, 10);
+    expect(packed).toBe((2 << 16) | 10);
+    expect(packed & 0x80000000).toBe(0);
+  });
+
+  it("packs with overflow (bit 31 = 1)", () => {
+    const packed = packTextureIndex(1, 5, true);
+    expect(packed).toBe(0x80000000 | (1 << 16) | 5);
+  });
+
+  it("unpacks overflow flag correctly", () => {
+    const packed = packTextureIndex(3, 42, true);
+    const result = unpackTextureIndex(packed);
+    expect(result.tier).toBe(3);
+    expect(result.layer).toBe(42);
+    expect(result.overflow).toBe(true);
+  });
+
+  it("unpacks non-overflow correctly", () => {
+    const packed = packTextureIndex(0, 100);
+    const result = unpackTextureIndex(packed);
+    expect(result.tier).toBe(0);
+    expect(result.layer).toBe(100);
+    expect(result.overflow).toBe(false);
+  });
+
+  it("backward compatible with old encoding", () => {
+    const oldPacked = (2 << 16) | 10;
+    const result = unpackTextureIndex(oldPacked);
+    expect(result.tier).toBe(2);
+    expect(result.layer).toBe(10);
+    expect(result.overflow).toBe(false);
+  });
+
+  it("round-trips all tiers with overflow flag", () => {
+    for (let tier = 0; tier < 4; tier++) {
+      for (const layer of [0, 1, 100, 255]) {
+        for (const overflow of [false, true]) {
+          const packed = packTextureIndex(tier, layer, overflow);
+          const result = unpackTextureIndex(packed);
+          expect(result.tier).toBe(tier);
+          expect(result.layer).toBe(layer);
+          expect(result.overflow).toBe(overflow);
+        }
+      }
+    }
+  });
+});
+
 describe("TIER_SIZES", () => {
   it("has 4 tiers with correct dimensions", () => {
     expect(TIER_SIZES).toEqual([64, 128, 256, 512]);
