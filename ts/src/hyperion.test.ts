@@ -347,6 +347,11 @@ describe('Hyperion', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     expect(() => engine.recompileShader('basic', 'code')).not.toThrow();
   });
+
+  it('compressionFormat returns null when no renderer', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(engine.compressionFormat).toBeNull();
+  });
 });
 
 describe('Hyperion input', () => {

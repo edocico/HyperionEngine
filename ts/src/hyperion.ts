@@ -435,6 +435,11 @@ export class Hyperion implements Disposable {
     return this.renderer?.selectionManager ?? null;
   }
 
+  /** GPU-compressed texture format in use, or null if unsupported. */
+  get compressionFormat(): GPUTextureFormat | null {
+    return this.renderer?.textureManager.compressedFormat ?? null;
+  }
+
   /**
    * Enable selection outlines around selected entities.
    * Uses the JFA (Jump Flood Algorithm) for GPU-based outline rendering.
