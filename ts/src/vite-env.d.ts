@@ -6,7 +6,7 @@ declare module "*.wgsl?raw" {
   export default content;
 }
 
-// Vendored Basis Universal WASM transcoder (added by Task 12).
+// Vendored Basis Universal WASM transcoder (added in Phase 10).
 // Relative module declarations resolve from the importing file's directory.
 // This declaration must be co-located with the importer or use a wildcard.
 declare module "*/vendor/basis_transcoder.js" {

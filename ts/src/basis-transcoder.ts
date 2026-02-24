@@ -58,7 +58,7 @@ interface BasisKTX2File {
 
 export class BasisTranscoder {
   private static instance: BasisTranscoder | null = null;
-  private static modulePromise: Promise<BasisModule> | null = null;
+  private static initPromise: Promise<BasisTranscoder> | null = null;
   private module: BasisModule;
 
   private constructor(module: BasisModule) {
@@ -68,28 +68,27 @@ export class BasisTranscoder {
   /**
    * Get or create the singleton transcoder instance.
    * Lazily loads the Basis Universal WASM module on first call.
+   * The entire init flow is cached in a single promise to prevent
+   * concurrent callers from duplicating initialization.
    */
   static async getInstance(): Promise<BasisTranscoder> {
     if (BasisTranscoder.instance) return BasisTranscoder.instance;
 
-    if (!BasisTranscoder.modulePromise) {
-      BasisTranscoder.modulePromise = BasisTranscoder.loadModule();
+    if (!BasisTranscoder.initPromise) {
+      BasisTranscoder.initPromise = BasisTranscoder.loadAndInit();
     }
 
-    const module = await BasisTranscoder.modulePromise;
-    module.initializeBasis();
-    BasisTranscoder.instance = new BasisTranscoder(module);
-    return BasisTranscoder.instance;
+    return BasisTranscoder.initPromise;
   }
 
-  private static async loadModule(): Promise<BasisModule> {
-    // Dynamic import of the vendored Basis Universal WASM module.
-    // The module is expected at '../vendor/basis_transcoder.js' (relative to this file).
-    // It self-initializes and returns the Module object.
+  private static async loadAndInit(): Promise<BasisTranscoder> {
     const { default: createModule } = await import(
       '../vendor/basis_transcoder.js'
     );
-    return createModule() as Promise<BasisModule>;
+    const module = await (createModule() as Promise<BasisModule>);
+    module.initializeBasis();
+    BasisTranscoder.instance = new BasisTranscoder(module);
+    return BasisTranscoder.instance;
   }
 
   /**
