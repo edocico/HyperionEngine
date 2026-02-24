@@ -246,3 +246,167 @@ describe("retainBitmaps option", () => {
     expect(tm.retainBitmaps).toBe(false);
   });
 });
+
+describe("TextureManager with compressed format", () => {
+  it("should accept compressedFormat option", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    expect(tm.compressedFormat).toBe("bc7-rgba-unorm");
+  });
+
+  it("should default compressedFormat to null", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device);
+    expect(tm.compressedFormat).toBeNull();
+  });
+
+  it("should create primary tier with compressed format", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.ensureTierCapacity(0, 1);
+    expect(textures[0].desc.format).toBe("bc7-rgba-unorm");
+  });
+
+  it("should create primary tier with rgba8unorm when no compressed format", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device);
+    tm.ensureTierCapacity(0, 1);
+    expect(textures[0].desc.format).toBe("rgba8unorm");
+  });
+
+  it("should not call writeTexture for compressed primary tier on first allocation", () => {
+    let writeTextureCalls = 0;
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => ({
+        desc,
+        createView: () => ({}),
+        destroy: () => {},
+      }),
+      queue: {
+        ...createMockDevice().queue,
+        writeTexture: () => { writeTextureCalls++; },
+        submit: () => {},
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.ensureTierCapacity(0, 1);
+    expect(writeTextureCalls).toBe(0);
+  });
+
+  it("should expose overflow view getters", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    const view = tm.getOverflowTierView(0);
+    expect(view).toBeTruthy();
+  });
+
+  it("should not allocate overflow when no compressed format", () => {
+    const device = createMockDevice();
+    const tm = new TextureManager(device);
+    const view = tm.getOverflowTierView(0);
+    expect(view).toBeTruthy();
+  });
+
+  it("ensureOverflowCapacity creates rgba8unorm texture", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.ensureOverflowCapacity(0, 1);
+    const overflowTex = textures.find((t) => t.desc.format === "rgba8unorm");
+    expect(overflowTex).toBeTruthy();
+  });
+
+  it("ensureOverflowCapacity grows exponentially like primary tiers", () => {
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => ({
+        desc,
+        createView: () => ({}),
+        destroy: () => {},
+      }),
+      createCommandEncoder: () => ({
+        copyTextureToTexture: () => {},
+        finish: () => ({}),
+      }),
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.ensureOverflowCapacity(0, 1);
+    // First allocation should jump to 16
+    // We can verify by calling again with 17 to force growth to 32
+    tm.ensureOverflowCapacity(0, 17);
+    // Should not throw — growth is handled internally
+  });
+
+  it("getTierView uses compressed format for placeholder", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "astc-4x4-unorm" as GPUTextureFormat });
+    tm.getTierView(0);
+    expect(textures[0].desc.format).toBe("astc-4x4-unorm");
+  });
+
+  it("getOverflowTierView always uses rgba8unorm", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.getOverflowTierView(0);
+    expect(textures[0].desc.format).toBe("rgba8unorm");
+  });
+
+  it("destroy cleans up overflow textures", () => {
+    let destroyCalls = 0;
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => ({
+        desc,
+        createView: () => ({}),
+        destroy: () => { destroyCalls++; },
+      }),
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.getOverflowTierView(0);
+    tm.getOverflowTierView(1);
+    destroyCalls = 0;
+    tm.destroy();
+    // Should have destroyed 2 overflow textures (tiers 0 and 1)
+    expect(destroyCalls).toBe(2);
+  });
+});

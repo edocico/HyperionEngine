@@ -53,10 +53,16 @@ interface FetchJob {
 /** Per-tier state for lazy allocation. */
 interface TierState {
   size: number;
+  format: GPUTextureFormat;
   texture: GPUTexture | null;
   view: GPUTextureView | null;
   allocatedLayers: number;
   nextFreeLayer: number;
+  // Overflow (rgba8unorm for PNG/JPEG on compressed-primary devices)
+  overflowTexture: GPUTexture | null;
+  overflowView: GPUTextureView | null;
+  overflowAllocatedLayers: number;
+  overflowNextFreeLayer: number;
 }
 
 /**
@@ -87,9 +93,13 @@ export class TextureManager {
   /** When true, ImageBitmaps are kept in memory after upload for device-lost re-upload. */
   readonly retainBitmaps: boolean;
 
-  constructor(device: GPUDevice, opts?: { retainBitmaps?: boolean }) {
+  /** The compressed texture format for primary tiers, or null for rgba8unorm. */
+  readonly compressedFormat: GPUTextureFormat | null;
+
+  constructor(device: GPUDevice, opts?: { retainBitmaps?: boolean; compressedFormat?: GPUTextureFormat | null }) {
     this.device = device;
     this.retainBitmaps = opts?.retainBitmaps ?? false;
+    this.compressedFormat = opts?.compressedFormat ?? null;
     this._sampler = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
@@ -101,10 +111,15 @@ export class TextureManager {
     for (let tier = 0; tier < NUM_TIERS; tier++) {
       this.tiers.push({
         size: TIER_SIZES[tier],
+        format: this.compressedFormat ?? "rgba8unorm",
         texture: null,
         view: null,
         allocatedLayers: 0,
         nextFreeLayer: 0,
+        overflowTexture: null,
+        overflowView: null,
+        overflowAllocatedLayers: 0,
+        overflowNextFreeLayer: 0,
       });
     }
   }
@@ -125,22 +140,24 @@ export class TextureManager {
           height: size,
           depthOrArrayLayers: 1,
         },
-        format: "rgba8unorm",
+        format: state.format,
         usage:
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.COPY_DST |
           GPUTextureUsage.COPY_SRC |
           GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      // Fill the placeholder layer with solid white
-      const white = new Uint8Array(size * size * 4);
-      white.fill(255);
-      this.device.queue.writeTexture(
-        { texture: state.texture, origin: { x: 0, y: 0, z: 0 } },
-        white,
-        { bytesPerRow: size * 4, rowsPerImage: size },
-        { width: size, height: size, depthOrArrayLayers: 1 },
-      );
+      // Only fill with white for rgba8unorm (compressed formats can't use writeTexture with raw pixels)
+      if (state.format === "rgba8unorm") {
+        const white = new Uint8Array(size * size * 4);
+        white.fill(255);
+        this.device.queue.writeTexture(
+          { texture: state.texture, origin: { x: 0, y: 0, z: 0 } },
+          white,
+          { bytesPerRow: size * 4, rowsPerImage: size },
+          { width: size, height: size, depthOrArrayLayers: 1 },
+        );
+      }
       state.view = state.texture.createView({ dimension: "2d-array" });
       // allocatedLayers stays 0 — this is just a placeholder
       // nextFreeLayer stays 0 — layer 0 default will be set up on first real allocation
@@ -161,6 +178,126 @@ export class TextureManager {
   /** Returns the current allocated layer capacity for a tier (0 if not yet allocated). */
   getAllocatedLayers(tierIdx: number): number {
     return this.tiers[tierIdx].allocatedLayers;
+  }
+
+  /**
+   * Returns the overflow Texture2DArray view for a given tier (for bind group creation).
+   * Overflow tiers are always rgba8unorm, used for PNG/JPEG on compressed-primary devices.
+   * If the overflow tier has not been allocated yet, lazily creates a minimal 1-layer
+   * placeholder texture so that bind groups are always valid.
+   */
+  getOverflowTierView(tier: number): GPUTextureView {
+    const state = this.tiers[tier];
+    if (state.overflowView === null) {
+      const size = state.size;
+      state.overflowTexture = this.device.createTexture({
+        size: { width: size, height: size, depthOrArrayLayers: 1 },
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.COPY_SRC |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      const white = new Uint8Array(size * size * 4);
+      white.fill(255);
+      this.device.queue.writeTexture(
+        { texture: state.overflowTexture, origin: { x: 0, y: 0, z: 0 } },
+        white,
+        { bytesPerRow: size * 4, rowsPerImage: size },
+        { width: size, height: size, depthOrArrayLayers: 1 },
+      );
+      state.overflowView = state.overflowTexture.createView({
+        dimension: "2d-array",
+      });
+    }
+    return state.overflowView;
+  }
+
+  /**
+   * Ensures the overflow tier has at least `neededLayers` allocated.
+   * Growth follows the same exponential steps as primary tiers.
+   * Overflow tiers are always rgba8unorm (for PNG/JPEG on compressed-primary devices).
+   * On first allocation, layer 0 is filled with solid white.
+   */
+  ensureOverflowCapacity(tierIdx: number, neededLayers: number): void {
+    const state = this.tiers[tierIdx];
+    if (neededLayers <= state.overflowAllocatedLayers) return;
+
+    // Determine new allocation size via exponential growth steps
+    let newAllocation = state.overflowAllocatedLayers;
+    for (const step of GROWTH_STEPS) {
+      if (step > newAllocation && step >= neededLayers) {
+        newAllocation = step;
+        break;
+      }
+      if (step > newAllocation) {
+        newAllocation = step;
+      }
+    }
+    // Clamp to MAX_LAYERS_PER_TIER
+    if (newAllocation > MAX_LAYERS_PER_TIER) {
+      newAllocation = MAX_LAYERS_PER_TIER;
+    }
+
+    const size = state.size;
+    const isFirstAllocation = state.overflowAllocatedLayers === 0;
+    const oldTexture = state.overflowTexture;
+    const oldAllocatedLayers = state.overflowAllocatedLayers;
+
+    // Create the new, larger overflow texture (always rgba8unorm)
+    const newTexture = this.device.createTexture({
+      size: {
+        width: size,
+        height: size,
+        depthOrArrayLayers: newAllocation,
+      },
+      format: "rgba8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    if (isFirstAllocation) {
+      // Fill layer 0 with solid white as the default texture
+      const white = new Uint8Array(size * size * 4);
+      white.fill(255);
+      this.device.queue.writeTexture(
+        { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
+        white,
+        { bytesPerRow: size * 4, rowsPerImage: size },
+        { width: size, height: size, depthOrArrayLayers: 1 },
+      );
+      // Reserve layer 0 for default white
+      if (state.overflowNextFreeLayer === 0) {
+        state.overflowNextFreeLayer = 1;
+      }
+    } else if (oldTexture !== null && oldAllocatedLayers > 0) {
+      // Copy existing layers from old overflow texture to new
+      const encoder = this.device.createCommandEncoder();
+      encoder.copyTextureToTexture(
+        { texture: oldTexture, origin: { x: 0, y: 0, z: 0 } },
+        { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
+        {
+          width: size,
+          height: size,
+          depthOrArrayLayers: oldAllocatedLayers,
+        },
+      );
+      this.device.queue.submit([encoder.finish()]);
+    }
+
+    // Destroy old overflow texture (including placeholder)
+    if (oldTexture !== null) {
+      oldTexture.destroy();
+    }
+
+    // Update overflow state
+    state.overflowTexture = newTexture;
+    state.overflowView = newTexture.createView({ dimension: "2d-array" });
+    state.overflowAllocatedLayers = newAllocation;
   }
 
   /**
@@ -202,7 +339,7 @@ export class TextureManager {
         height: size,
         depthOrArrayLayers: newAllocation,
       },
-      format: "rgba8unorm",
+      format: state.format,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -211,16 +348,19 @@ export class TextureManager {
     });
 
     if (isFirstAllocation) {
-      // Fill layer 0 with solid white as the default texture
-      const white = new Uint8Array(size * size * 4);
-      white.fill(255);
-      this.device.queue.writeTexture(
-        { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
-        white,
-        { bytesPerRow: size * 4, rowsPerImage: size },
-        { width: size, height: size, depthOrArrayLayers: 1 },
-      );
-      // Reserve layer 0 for default white
+      // Only fill layer 0 with solid white for rgba8unorm
+      // (compressed formats receive pre-transcoded data and can't use writeTexture with raw pixels)
+      if (state.format === "rgba8unorm") {
+        const white = new Uint8Array(size * size * 4);
+        white.fill(255);
+        this.device.queue.writeTexture(
+          { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
+          white,
+          { bytesPerRow: size * 4, rowsPerImage: size },
+          { width: size, height: size, depthOrArrayLayers: 1 },
+        );
+      }
+      // Reserve layer 0 for default
       if (state.nextFreeLayer === 0) {
         state.nextFreeLayer = 1;
       }
@@ -367,6 +507,11 @@ export class TextureManager {
         state.texture.destroy();
         state.texture = null;
         state.view = null;
+      }
+      if (state.overflowTexture !== null) {
+        state.overflowTexture.destroy();
+        state.overflowTexture = null;
+        state.overflowView = null;
       }
     }
     for (const bm of this.bitmapCache.values()) bm.close();
