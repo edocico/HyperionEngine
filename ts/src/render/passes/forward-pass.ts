@@ -121,6 +121,11 @@ export class ForwardPass implements RenderPass {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        // Overflow tiers (rgba8unorm)
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
+        { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
       ],
     });
 
@@ -165,8 +170,13 @@ export class ForwardPass implements RenderPass {
     const tier2View = resources.getTextureView('tier2');
     const tier3View = resources.getTextureView('tier3');
     const sampler = resources.getSampler('texSampler');
+    const ovf0View = resources.getTextureView('ovf0');
+    const ovf1View = resources.getTextureView('ovf1');
+    const ovf2View = resources.getTextureView('ovf2');
+    const ovf3View = resources.getTextureView('ovf3');
 
-    if (tier0View && tier1View && tier2View && tier3View && sampler) {
+    if (tier0View && tier1View && tier2View && tier3View && sampler &&
+        ovf0View && ovf1View && ovf2View && ovf3View) {
       this.bindGroup1 = device.createBindGroup({
         layout: bindGroupLayout1,
         entries: [
@@ -175,6 +185,10 @@ export class ForwardPass implements RenderPass {
           { binding: 2, resource: tier2View },
           { binding: 3, resource: tier3View },
           { binding: 4, resource: sampler },
+          { binding: 5, resource: ovf0View },
+          { binding: 6, resource: ovf1View },
+          { binding: 7, resource: ovf2View },
+          { binding: 8, resource: ovf3View },
         ],
       });
     }
