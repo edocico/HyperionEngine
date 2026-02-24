@@ -11,6 +11,8 @@ async function main() {
 
   const engine = await Hyperion.create({ canvas });
 
+  console.log('Compression format:', engine.compressionFormat ?? 'none');
+
   // Resize handler
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
