@@ -180,6 +180,16 @@ export class TextureManager {
     return this.tiers[tierIdx].allocatedLayers;
   }
 
+  /** Returns the number of layers used in a tier's overflow array (including the default layer 0). */
+  getOverflowLayerCount(tier: number): number {
+    return this.tiers[tier].overflowNextFreeLayer;
+  }
+
+  /** Returns the current allocated layer capacity for a tier's overflow array (0 if not yet allocated). */
+  getOverflowAllocatedLayers(tierIdx: number): number {
+    return this.tiers[tierIdx].overflowAllocatedLayers;
+  }
+
   /**
    * Returns the overflow Texture2DArray view for a given tier (for bind group creation).
    * Overflow tiers are always rgba8unorm, used for PNG/JPEG on compressed-primary devices.

@@ -341,24 +341,32 @@ describe("TextureManager with compressed format", () => {
   });
 
   it("ensureOverflowCapacity grows exponentially like primary tiers", () => {
-    const device = {
-      ...createMockDevice(),
+    const mockDevice = {
+      createSampler: () => ({}),
       createTexture: (desc: any) => ({
-        desc,
-        createView: () => ({}),
-        destroy: () => {},
+        desc, createView: () => ({}), destroy: () => {},
       }),
+      queue: {
+        writeTexture: () => {},
+        submit: () => {},
+      },
       createCommandEncoder: () => ({
         copyTextureToTexture: () => {},
         finish: () => ({}),
       }),
     } as unknown as GPUDevice;
-    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+
+    const tm = new TextureManager(mockDevice, { compressedFormat: 'bc7-rgba-unorm' });
     tm.ensureOverflowCapacity(0, 1);
-    // First allocation should jump to 16
-    // We can verify by calling again with 17 to force growth to 32
+    expect(tm.getOverflowAllocatedLayers(0)).toBe(16);
     tm.ensureOverflowCapacity(0, 17);
-    // Should not throw — growth is handled internally
+    expect(tm.getOverflowAllocatedLayers(0)).toBe(32);
+    tm.ensureOverflowCapacity(0, 33);
+    expect(tm.getOverflowAllocatedLayers(0)).toBe(64);
+    tm.ensureOverflowCapacity(0, 65);
+    expect(tm.getOverflowAllocatedLayers(0)).toBe(128);
+    tm.ensureOverflowCapacity(0, 129);
+    expect(tm.getOverflowAllocatedLayers(0)).toBe(256);
   });
 
   it("getTierView uses compressed format for placeholder", () => {
