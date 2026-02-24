@@ -51,6 +51,11 @@ export function parseKTX2(buffer: ArrayBuffer): KTX2Container {
   const levelCount = view.getUint32(40, true);
   const supercompressionScheme = view.getUint32(44, true);
 
+  const requiredSize = HEADER_SIZE + levelCount * LEVEL_INDEX_ENTRY_SIZE;
+  if (buffer.byteLength < requiredSize) {
+    throw new Error('Invalid KTX2: buffer too small for level index');
+  }
+
   const levels: Array<{ offset: number; length: number }> = [];
   for (let i = 0; i < levelCount; i++) {
     const base = HEADER_SIZE + i * LEVEL_INDEX_ENTRY_SIZE;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseKTX2, KTX2_MAGIC } from './ktx2-parser';
+import { parseKTX2, KTX2_MAGIC, isKTX2 } from './ktx2-parser';
 
 /** Build a minimal valid KTX2 buffer with given header fields. */
 function buildKTX2Buffer(opts: {
@@ -132,5 +132,22 @@ describe('parseKTX2', () => {
     expect(result.levels).toHaveLength(2);
     expect(result.levels[0].length).toBe(256);
     expect(result.levels[1].length).toBe(64);
+  });
+});
+
+describe('isKTX2', () => {
+  it('returns true for a valid KTX2 buffer', () => {
+    const buf = buildKTX2Buffer();
+    expect(isKTX2(buf)).toBe(true);
+  });
+
+  it('returns false for a buffer shorter than 12 bytes', () => {
+    const buf = new ArrayBuffer(8);
+    expect(isKTX2(buf)).toBe(false);
+  });
+
+  it('returns false for wrong magic bytes', () => {
+    const buf = new ArrayBuffer(128);
+    expect(isKTX2(buf)).toBe(false);
   });
 });
