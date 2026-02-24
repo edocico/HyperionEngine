@@ -21,6 +21,11 @@ struct CameraUniform {
 @group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;
 @group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;
 @group(1) @binding(4) var texSampler: sampler;
+// Overflow tiers (rgba8unorm, for mixed-mode dev)
+@group(1) @binding(5) var ovf0Tex: texture_2d_array<f32>;
+@group(1) @binding(6) var ovf1Tex: texture_2d_array<f32>;
+@group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
+@group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
@@ -28,6 +33,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) entityIdx: u32,
     @location(2) @interpolate(flat) texTier: u32,
     @location(3) @interpolate(flat) texLayer: u32,
+    @location(4) @interpolate(flat) isOverflow: u32,
 };
 
 fn median3(r: f32, g: f32, b: f32) -> f32 {
@@ -54,7 +60,8 @@ fn vs_main(
 
     // Decode texture tier and layer from packed u32
     let packed = texLayerIndices[entityIdx];
-    let tier = packed >> 16u;
+    let isOverflow = (packed >> 31u) & 1u;
+    let tier = (packed >> 16u) & 0x7u;
     let layer = packed & 0xFFFFu;
 
     var out: VertexOutput;
@@ -66,6 +73,7 @@ fn vs_main(
     out.entityIdx = entityIdx;
     out.texTier = tier;
     out.texLayer = layer;
+    out.isOverflow = isOverflow;
 
     return out;
 }
@@ -78,15 +86,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let colorG = primParams[base + 6u];
     let colorB = primParams[base + 7u];
 
-    // Sample MSDF texture from the correct tier
-    let packed = texLayerIndices[in.entityIdx];
-    let layer = packed & 0xFFFFu;
+    // Sample MSDF texture from the correct tier (with overflow support)
     var msdf: vec4f;
-    switch in.texTier {
-        case 1u: { msdf = textureSample(tier1Tex, texSampler, in.uv, layer); }
-        case 2u: { msdf = textureSample(tier2Tex, texSampler, in.uv, layer); }
-        case 3u: { msdf = textureSample(tier3Tex, texSampler, in.uv, layer); }
-        default: { msdf = textureSample(tier0Tex, texSampler, in.uv, layer); }
+    if (in.isOverflow == 0u) {
+        switch in.texTier {
+            case 1u: { msdf = textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
+            case 2u: { msdf = textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
+            case 3u: { msdf = textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
+            default: { msdf = textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
+        }
+    } else {
+        switch in.texTier {
+            case 1u: { msdf = textureSample(ovf1Tex, texSampler, in.uv, in.texLayer); }
+            case 2u: { msdf = textureSample(ovf2Tex, texSampler, in.uv, in.texLayer); }
+            case 3u: { msdf = textureSample(ovf3Tex, texSampler, in.uv, in.texLayer); }
+            default: { msdf = textureSample(ovf0Tex, texSampler, in.uv, in.texLayer); }
+        }
     }
 
     let sd = median3(msdf.r, msdf.g, msdf.b);

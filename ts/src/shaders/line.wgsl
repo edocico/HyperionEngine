@@ -19,6 +19,11 @@ struct CameraUniform {
 @group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;
 @group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;
 @group(1) @binding(4) var texSampler: sampler;
+// Overflow tiers (rgba8unorm, for mixed-mode dev)
+@group(1) @binding(5) var ovf0Tex: texture_2d_array<f32>;
+@group(1) @binding(6) var ovf1Tex: texture_2d_array<f32>;
+@group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
+@group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
@@ -26,6 +31,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) entityIdx: u32,
     @location(2) @interpolate(flat) texTier: u32,
     @location(3) @interpolate(flat) texLayer: u32,
+    @location(4) @interpolate(flat) isOverflow: u32,
 };
 
 @vertex
@@ -60,12 +66,19 @@ fn vs_main(
         + d * along * len
         + perp * across * width;
 
+    // Decode texture tier and layer from packed u32
+    let packed = texLayerIndices[entityIdx];
+    let isOverflow = (packed >> 31u) & 1u;
+    let tier = (packed >> 16u) & 0x7u;
+    let layer = packed & 0xFFFFu;
+
     var out: VertexOutput;
     out.clipPosition = camera.viewProjection * model * vec4f(worldPos, 0.0, 1.0);
     out.uv = vec2f(along, across + 0.5);
     out.entityIdx = entityIdx;
-    out.texTier = 0u;
-    out.texLayer = 0u;
+    out.texTier = tier;
+    out.texLayer = layer;
+    out.isOverflow = isOverflow;
 
     return out;
 }
@@ -78,16 +91,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let dashLen = primParams[base + 5u];
     let gapLen = primParams[base + 6u];
 
-    // Read color from texture (layer 0, tier 0 = solid white default)
-    let packed = texLayerIndices[in.entityIdx];
-    let tier = packed >> 16u;
-    let layer = packed & 0xFFFFu;
+    // Read color from texture (with overflow support)
     var color: vec4f;
-    switch tier {
-        case 1u: { color = textureSample(tier1Tex, texSampler, in.uv, layer); }
-        case 2u: { color = textureSample(tier2Tex, texSampler, in.uv, layer); }
-        case 3u: { color = textureSample(tier3Tex, texSampler, in.uv, layer); }
-        default: { color = textureSample(tier0Tex, texSampler, in.uv, layer); }
+    if (in.isOverflow == 0u) {
+        switch in.texTier {
+            case 1u: { color = textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
+            case 2u: { color = textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
+            case 3u: { color = textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
+            default: { color = textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
+        }
+    } else {
+        switch in.texTier {
+            case 1u: { color = textureSample(ovf1Tex, texSampler, in.uv, in.texLayer); }
+            case 2u: { color = textureSample(ovf2Tex, texSampler, in.uv, in.texLayer); }
+            case 3u: { color = textureSample(ovf3Tex, texSampler, in.uv, in.texLayer); }
+            default: { color = textureSample(ovf0Tex, texSampler, in.uv, in.texLayer); }
+        }
     }
 
     // SDF dash pattern (if dashLen > 0)
