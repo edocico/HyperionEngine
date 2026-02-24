@@ -421,6 +421,33 @@ describe("TextureManager with compressed format", () => {
 });
 
 describe("TextureManager KTX2 routing", () => {
+  it("rejects direct-upload KTX2 with mismatched vkFormat", async () => {
+    const headerSize = 80;
+    const buf = new ArrayBuffer(headerSize + 24 + 64);
+    const bytes = new Uint8Array(buf);
+    const view = new DataView(buf);
+    bytes.set(KTX2_MAGIC, 0);
+    view.setUint32(12, 157, true); // VK_FORMAT_ASTC_4x4_UNORM — but device is BC7
+    view.setUint32(20, 64, true);
+    view.setUint32(24, 64, true);
+    view.setUint32(40, 1, true);
+    view.setUint32(44, 0, true); // supercompressionScheme = 0 (direct upload path)
+    view.setBigUint64(headerSize, BigInt(headerSize + 24), true);
+    view.setBigUint64(headerSize + 8, BigInt(64), true);
+    view.setBigUint64(headerSize + 16, BigInt(64), true);
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(buf),
+    });
+    globalThis.fetch = mockFetch as any;
+
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { compressedFormat: 'bc7-rgba-unorm' });
+
+    await expect(tm.loadTexture('test.ktx2')).rejects.toThrow(/does not match/);
+  });
+
   it("detects KTX2 by magic bytes in response", async () => {
     const headerSize = 80;
     const buf = new ArrayBuffer(headerSize + 24 + 64);

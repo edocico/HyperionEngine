@@ -565,7 +565,6 @@ export class TextureManager {
       ? selectTier(container.pixelWidth, container.pixelHeight)
       : tierOverride;
     const state = this.tiers[actualTier];
-    const targetSize = state.size;
 
     // Determine if we need transcoding or can do direct upload
     const needsTranscoding = container.supercompressionScheme !== 0 ||
@@ -587,12 +586,12 @@ export class TextureManager {
       }
       state.nextFreeLayer++;
 
-      const bytesPerRow = BasisTranscoder.blockBytesPerRow(targetSize, target);
+      const bytesPerRow = BasisTranscoder.blockBytesPerRow(result.width, target);
       this.device.queue.writeTexture(
         { texture: state.texture!, origin: { x: 0, y: 0, z: layer } },
         result.data as Uint8Array<ArrayBuffer>,
-        { bytesPerRow, rowsPerImage: targetSize },
-        { width: targetSize, height: targetSize, depthOrArrayLayers: 1 },
+        { bytesPerRow, rowsPerImage: result.height },
+        { width: result.width, height: result.height, depthOrArrayLayers: 1 },
       );
 
       const packed = packTextureIndex(actualTier, layer);
@@ -602,7 +601,20 @@ export class TextureManager {
       resolve(packed);
     } else {
       // Direct upload — fast path for pre-compressed KTX2
-      // The vkFormat tells us what GPU format the data is already in
+      // Validate that the KTX2's native format matches the device's tier format
+      const isBC7 = container.vkFormat === VK_FORMAT.BC7_UNORM_BLOCK || container.vkFormat === VK_FORMAT.BC7_SRGB_BLOCK;
+      const isASTC = container.vkFormat === VK_FORMAT.ASTC_4x4_UNORM_BLOCK || container.vkFormat === VK_FORMAT.ASTC_4x4_SRGB_BLOCK;
+      const formatMatchesTier =
+        (state.format === 'bc7-rgba-unorm' && isBC7) ||
+        (state.format === 'astc-4x4-unorm' && isASTC) ||
+        (state.format === 'rgba8unorm');
+
+      if (!formatMatchesTier) {
+        throw new Error(
+          `KTX2 vkFormat ${container.vkFormat} does not match tier format ${state.format}`
+        );
+      }
+
       this.ensureTierCapacity(actualTier, state.nextFreeLayer + 1);
       const layer = state.nextFreeLayer;
       if (layer >= MAX_LAYERS_PER_TIER) {
@@ -617,13 +629,13 @@ export class TextureManager {
       const target = this.compressedFormat === 'bc7-rgba-unorm' ? 'bc7' as const
         : this.compressedFormat === 'astc-4x4-unorm' ? 'astc' as const
         : 'rgba8' as const;
-      const bytesPerRow = BasisTranscoder.blockBytesPerRow(targetSize, target);
+      const bytesPerRow = BasisTranscoder.blockBytesPerRow(container.pixelWidth, target);
 
       this.device.queue.writeTexture(
         { texture: state.texture!, origin: { x: 0, y: 0, z: layer } },
         levelData as Uint8Array<ArrayBuffer>,
-        { bytesPerRow, rowsPerImage: targetSize },
-        { width: targetSize, height: targetSize, depthOrArrayLayers: 1 },
+        { bytesPerRow, rowsPerImage: container.pixelHeight },
+        { width: container.pixelWidth, height: container.pixelHeight, depthOrArrayLayers: 1 },
       );
 
       const packed = packTextureIndex(actualTier, layer);
