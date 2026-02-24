@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex, TextureManager } from "./texture-manager";
+import { KTX2_MAGIC } from './ktx2-parser';
 
 // Polyfill GPUTextureUsage for Node/vitest environment (browser global)
 beforeAll(() => {
@@ -416,5 +417,47 @@ describe("TextureManager with compressed format", () => {
     tm.destroy();
     // Should have destroyed 2 overflow textures (tiers 0 and 1)
     expect(destroyCalls).toBe(2);
+  });
+});
+
+describe("TextureManager KTX2 routing", () => {
+  it("detects KTX2 by magic bytes in response", async () => {
+    const headerSize = 80;
+    const buf = new ArrayBuffer(headerSize + 24 + 64);
+    const bytes = new Uint8Array(buf);
+    const view = new DataView(buf);
+    // Set KTX2 magic bytes
+    bytes.set(KTX2_MAGIC, 0);
+    // vkFormat = 0 (UNDEFINED — requires transcoding)
+    view.setUint32(12, 0, true);
+    // pixelWidth = 8, pixelHeight = 8
+    view.setUint32(20, 8, true);
+    view.setUint32(24, 8, true);
+    // levelCount = 1
+    view.setUint32(40, 1, true);
+    // supercompressionScheme = 1 (BasisLZ — requires transcoding)
+    view.setUint32(44, 1, true);
+    // Level index: offset, length, uncompressedLength (3 x u64)
+    view.setBigUint64(headerSize, BigInt(headerSize + 24), true);
+    view.setBigUint64(headerSize + 8, BigInt(64), true);
+    view.setBigUint64(headerSize + 16, BigInt(64), true);
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(buf),
+      blob: () => Promise.resolve(new Blob()),
+    });
+    globalThis.fetch = mockFetch as any;
+
+    const device = createMockDevice();
+    const tm = new TextureManager(device, { compressedFormat: 'bc7-rgba-unorm' });
+
+    const createImageBitmapSpy = vi.fn();
+    globalThis.createImageBitmap = createImageBitmapSpy as any;
+
+    // KTX2 path will try to load BasisTranscoder WASM, which will fail in test env
+    await expect(tm.loadTexture('test.ktx2')).rejects.toThrow();
+    // Crucially, createImageBitmap was NOT called — proving KTX2 routing worked
+    expect(createImageBitmapSpy).not.toHaveBeenCalled();
   });
 });

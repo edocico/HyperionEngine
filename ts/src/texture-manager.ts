@@ -1,3 +1,6 @@
+import { isKTX2, parseKTX2, VK_FORMAT } from './ktx2-parser';
+import { BasisTranscoder } from './basis-transcoder';
+
 /** Texture2DArray size tiers (pixels). */
 export const TIER_SIZES = [64, 128, 256, 512] as const;
 export const NUM_TIERS = TIER_SIZES.length;
@@ -443,37 +446,85 @@ export class TextureManager {
       const response = await fetch(url);
       if (!response.ok)
         throw new Error(`Failed to fetch ${url}: ${response.status}`);
-      const blob = await response.blob();
 
-      let actualTier: number;
-      let bitmap: ImageBitmap;
+      const arrayBuffer = await response.arrayBuffer();
 
-      if (tier === -1) {
-        // Auto-detect tier from original image dimensions
-        const origBitmap = await createImageBitmap(blob);
-        actualTier = selectTier(origBitmap.width, origBitmap.height);
-        origBitmap.close();
-        const targetSize = TIER_SIZES[actualTier];
-        bitmap = await createImageBitmap(blob, {
-          resizeWidth: targetSize,
-          resizeHeight: targetSize,
-          resizeQuality: "high",
-        });
+      if (isKTX2(arrayBuffer)) {
+        // KTX2 path
+        await this.handleKTX2(arrayBuffer, tier, url, resolve);
       } else {
-        actualTier = tier;
-        const targetSize = TIER_SIZES[actualTier];
-        bitmap = await createImageBitmap(blob, {
-          resizeWidth: targetSize,
-          resizeHeight: targetSize,
-          resizeQuality: "high",
-        });
+        // PNG/JPEG path (existing logic, adapted to use ArrayBuffer -> Blob)
+        await this.handleImageBitmap(arrayBuffer, tier, url, resolve);
       }
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      this.activeFetches--;
+      this.drainFetchQueue();
+    }
+  }
 
-      const state = this.tiers[actualTier];
+  private async handleImageBitmap(
+    arrayBuffer: ArrayBuffer,
+    tierOverride: number,
+    url: string,
+    resolve: (packed: number) => void,
+  ): Promise<void> {
+    const blob = new Blob([arrayBuffer]);
 
-      // Ensure the tier has enough capacity for the next layer
+    let actualTier: number;
+    let bitmap: ImageBitmap;
+
+    if (tierOverride === -1) {
+      const origBitmap = await createImageBitmap(blob);
+      actualTier = selectTier(origBitmap.width, origBitmap.height);
+      origBitmap.close();
+      const targetSize = TIER_SIZES[actualTier];
+      bitmap = await createImageBitmap(blob, {
+        resizeWidth: targetSize,
+        resizeHeight: targetSize,
+        resizeQuality: "high",
+      });
+    } else {
+      actualTier = tierOverride;
+      const targetSize = TIER_SIZES[actualTier];
+      bitmap = await createImageBitmap(blob, {
+        resizeWidth: targetSize,
+        resizeHeight: targetSize,
+        resizeQuality: "high",
+      });
+    }
+
+    const state = this.tiers[actualTier];
+
+    // If primary tiers use a compressed format, PNG/JPEG goes to overflow
+    if (this.compressedFormat !== null) {
+      // Upload to overflow tier (rgba8unorm)
+      this.ensureOverflowCapacity(actualTier, state.overflowNextFreeLayer + 1);
+      const layer = state.overflowNextFreeLayer;
+      if (layer >= MAX_LAYERS_PER_TIER) {
+        bitmap.close();
+        throw new Error(`Overflow tier ${actualTier} (${TIER_SIZES[actualTier]}px) is full`);
+      }
+      state.overflowNextFreeLayer++;
+      this.device.queue.copyExternalImageToTexture(
+        { source: bitmap },
+        { texture: state.overflowTexture!, origin: { x: 0, y: 0, z: layer } },
+        { width: bitmap.width, height: bitmap.height },
+      );
+      if (this.retainBitmaps) {
+        this.bitmapCache.set(url, bitmap);
+      } else {
+        bitmap.close();
+      }
+      const packed = packTextureIndex(actualTier, layer, true); // overflow=true
+      this.cache.set(url, packed);
+      this.loaded++;
+      this.onProgress?.(this.loaded, this.total);
+      resolve(packed);
+    } else {
+      // No compressed format — upload to primary tier (rgba8unorm) as before
       this.ensureTierCapacity(actualTier, state.nextFreeLayer + 1);
-
       const layer = state.nextFreeLayer;
       if (layer >= MAX_LAYERS_PER_TIER) {
         bitmap.close();
@@ -482,7 +533,6 @@ export class TextureManager {
         );
       }
       state.nextFreeLayer++;
-
       this.device.queue.copyExternalImageToTexture(
         { source: bitmap },
         {
@@ -496,17 +546,91 @@ export class TextureManager {
       } else {
         bitmap.close();
       }
+      const packed = packTextureIndex(actualTier, layer);
+      this.cache.set(url, packed);
+      this.loaded++;
+      this.onProgress?.(this.loaded, this.total);
+      resolve(packed);
+    }
+  }
+
+  private async handleKTX2(
+    arrayBuffer: ArrayBuffer,
+    tierOverride: number,
+    url: string,
+    resolve: (packed: number) => void,
+  ): Promise<void> {
+    const container = parseKTX2(arrayBuffer);
+    const actualTier = tierOverride === -1
+      ? selectTier(container.pixelWidth, container.pixelHeight)
+      : tierOverride;
+    const state = this.tiers[actualTier];
+    const targetSize = state.size;
+
+    // Determine if we need transcoding or can do direct upload
+    const needsTranscoding = container.supercompressionScheme !== 0 ||
+      container.vkFormat === VK_FORMAT.UNDEFINED;
+
+    if (needsTranscoding) {
+      // Lazy-load transcoder and transcode
+      const target = this.compressedFormat === 'bc7-rgba-unorm' ? 'bc7' as const
+        : this.compressedFormat === 'astc-4x4-unorm' ? 'astc' as const
+        : 'rgba8' as const;
+      const transcoder = await BasisTranscoder.getInstance();
+      const result = transcoder.transcode(new Uint8Array(arrayBuffer), target);
+
+      // Upload transcoded data
+      this.ensureTierCapacity(actualTier, state.nextFreeLayer + 1);
+      const layer = state.nextFreeLayer;
+      if (layer >= MAX_LAYERS_PER_TIER) {
+        throw new Error(`Tier ${actualTier} (${TIER_SIZES[actualTier]}px) is full`);
+      }
+      state.nextFreeLayer++;
+
+      const bytesPerRow = BasisTranscoder.blockBytesPerRow(targetSize, target);
+      this.device.queue.writeTexture(
+        { texture: state.texture!, origin: { x: 0, y: 0, z: layer } },
+        result.data as Uint8Array<ArrayBuffer>,
+        { bytesPerRow, rowsPerImage: targetSize },
+        { width: targetSize, height: targetSize, depthOrArrayLayers: 1 },
+      );
 
       const packed = packTextureIndex(actualTier, layer);
       this.cache.set(url, packed);
       this.loaded++;
       this.onProgress?.(this.loaded, this.total);
       resolve(packed);
-    } catch (err) {
-      reject(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      this.activeFetches--;
-      this.drainFetchQueue();
+    } else {
+      // Direct upload — fast path for pre-compressed KTX2
+      // The vkFormat tells us what GPU format the data is already in
+      this.ensureTierCapacity(actualTier, state.nextFreeLayer + 1);
+      const layer = state.nextFreeLayer;
+      if (layer >= MAX_LAYERS_PER_TIER) {
+        throw new Error(`Tier ${actualTier} (${TIER_SIZES[actualTier]}px) is full`);
+      }
+      state.nextFreeLayer++;
+
+      const level = container.levels[0];
+      const levelData = new Uint8Array(arrayBuffer, level.offset, level.length);
+
+      // Determine target for bytesPerRow calculation
+      const target = this.compressedFormat === 'bc7-rgba-unorm' ? 'bc7' as const
+        : this.compressedFormat === 'astc-4x4-unorm' ? 'astc' as const
+        : 'rgba8' as const;
+      const bytesPerRow = BasisTranscoder.blockBytesPerRow(targetSize, target);
+
+      this.device.queue.writeTexture(
+        { texture: state.texture!, origin: { x: 0, y: 0, z: layer } },
+        levelData as Uint8Array<ArrayBuffer>,
+        { bytesPerRow, rowsPerImage: targetSize },
+        { width: targetSize, height: targetSize, depthOrArrayLayers: 1 },
+      );
+
+      const packed = packTextureIndex(actualTier, layer);
+      this.cache.set(url, packed);
+      this.loaded++;
+      this.onProgress?.(this.loaded, this.total);
+      resolve(packed);
     }
   }
 
