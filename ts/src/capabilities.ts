@@ -74,3 +74,15 @@ export function logCapabilities(caps: Capabilities, mode: ExecutionMode): void {
 
   console.groupEnd();
 }
+
+/**
+ * Detect the best GPU-compressed texture format from adapter features.
+ * Priority: BC7 (desktop) > ASTC 4x4 (mobile) > null (no compression).
+ */
+export function detectCompressedFormat(
+  adapterFeatures: ReadonlySet<string>,
+): GPUTextureFormat | null {
+  if (adapterFeatures.has('texture-compression-bc')) return 'bc7-rgba-unorm';
+  if (adapterFeatures.has('texture-compression-astc')) return 'astc-4x4-unorm';
+  return null;
+}
