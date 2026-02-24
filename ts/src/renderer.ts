@@ -24,6 +24,7 @@ import { OutlineCompositePass } from './render/passes/outline-composite-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { SelectionManager } from './selection';
+import { detectCompressedFormat } from './capabilities';
 import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
@@ -65,7 +66,18 @@ export async function createRenderer(
   // --- 1. Initialize WebGPU ---
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
-  const device = await adapter.requestDevice();
+
+  // Detect compression support from adapter
+  const compressedFormat = detectCompressedFormat(adapter.features);
+
+  // Request device with compression feature if available
+  const requiredFeatures: GPUFeatureName[] = [];
+  if (compressedFormat === 'bc7-rgba-unorm') requiredFeatures.push('texture-compression-bc');
+  else if (compressedFormat === 'astc-4x4-unorm') requiredFeatures.push('texture-compression-astc');
+
+  const device = await adapter.requestDevice({
+    requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
+  });
 
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);
@@ -79,7 +91,7 @@ export async function createRenderer(
   context.configure({ device, format, alphaMode: "opaque" });
 
   // --- 2. Create TextureManager + SelectionManager ---
-  const textureManager = new TextureManager(device);
+  const textureManager = new TextureManager(device, { compressedFormat });
   const selectionManager = new SelectionManager(MAX_ENTITIES);
 
   // --- 3. Create shared GPU buffers in ResourcePool ---
@@ -132,6 +144,10 @@ export async function createRenderer(
   resources.setTextureView('tier1', textureManager.getTierView(1));
   resources.setTextureView('tier2', textureManager.getTierView(2));
   resources.setTextureView('tier3', textureManager.getTierView(3));
+  resources.setTextureView('ovf0', textureManager.getOverflowTierView(0));
+  resources.setTextureView('ovf1', textureManager.getOverflowTierView(1));
+  resources.setTextureView('ovf2', textureManager.getOverflowTierView(2));
+  resources.setTextureView('ovf3', textureManager.getOverflowTierView(3));
   resources.setSampler('texSampler', textureManager.getSampler());
 
   // --- 5. Create intermediate scene-hdr texture for post-processing ---
