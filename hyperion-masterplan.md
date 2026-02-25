@@ -1,9 +1,9 @@
 # Hyperion Engine — Piano di Sviluppo Completo
 
-> **Versione**: 1.0 — Documento Unificato  
-> **Data**: 25 Febbraio 2026  
-> **Stato progetto**: v0.11.0 — Phase 0–8 completate, Phase 9 in corso  
-> **Test**: 99 test Rust (7 moduli) + 409 test TypeScript (41 file)  
+> **Versione**: 1.1 — Documento Unificato
+> **Data**: 25 Febbraio 2026
+> **Stato progetto**: v0.12.0 — Phase 0–9 + Phase 4b completate, Phase 10 DX prossima
+> **Test**: 99 test Rust (7 moduli) + 475 test TypeScript (46 file)
 > **Scope**: Dalla visione fondativa all'ultimo dettaglio implementativo — passato, presente e futuro
 
 ---
@@ -369,11 +369,11 @@ Sostituisce l'interfaccia plugin semplice (`install(engine)`) con un sistema bas
 
 ---
 
-## PARTE III — IN CORSO
+## PARTE III — COMPLETATE (RECENTI)
 
 ---
 
-## 12. Phase 9: Advanced 2D Rendering (🔄 In Corso)
+## 12. Phase 9: Advanced 2D Rendering (✅ Completata)
 
 Phase 9 aggiunge tre feature avanzate di rendering suddivise in tre track paralleli.
 
@@ -432,6 +432,52 @@ ParticleSystem.update(encoder, swapchainView, cameraVP, dt, entityPositions)
 
 Totale file WGSL con HMR: 14 (da 10 in Phase 8).
 
+### Validazione Phase 9
+
+- [x] Bézier quadratiche SDF con AA via fwidth() + smoothstep()
+- [x] Dual Kawase Bloom 6-pass (extract, 2× downsample, 2× upsample, composite)
+- [x] Bloom/outlines mutua esclusività con warning console
+- [x] GPU Particle System con spawn accumulator (preserva frazioni)
+- [x] Entity position tracking per emitter particelle
+- [x] 14 file WGSL con HMR
+- [x] Demo interattiva con Bézier + Bloom + particelle click-to-spawn
+
+---
+
+## 12b. Phase 4b: Asset Pipeline — KTX2/Basis Universal (✅ Completata)
+
+Phase parallela a Phase 5 (come da roadmap), implementata e mergiata dopo Phase 9 come "Phase 10" nel codebase (commit `b9c31a0`).
+
+### Deliverable
+
+- **KTX2 Parser** (`ktx2-parser.ts`) — custom header reader ~60 righe, magic validation, `VK_FORMAT` constants (BC7, ASTC)
+- **Basis Universal Transcoder** (`basis-transcoder.ts`) — singleton WASM wrapper (~200KB gzipped), lazy-loaded, BC7/ASTC/RGBA8 targets
+- **Compressed Format Detection** (`capabilities.ts`) — `detectCompressedFormat()` probes BC7 (desktop) / ASTC (mobile)
+- **Overflow Tiers** — per-tier rgba8unorm fallback per mixing PNG/JPEG con texture compresse
+- **Packed Index Overflow Bit** — bit 31 = overflow flag, bits 18-16 = tier, bits 15-0 = layer. Backward compatible
+- **9-Binding Shader Layout** — tutti i 6 shader WGSL + ForwardPass aggiornati con ovf0-ovf3
+- **Renderer Integration** — device requested con compression feature, overflow views in ResourcePool
+- **`compressionFormat` API** — public getter su Hyperion facade
+
+### Nuovi File
+
+| File | Ruolo | Test |
+|------|-------|------|
+| `ts/src/ktx2-parser.ts` | KTX2 container parser | 10 test |
+| `ts/src/basis-transcoder.ts` | Basis Universal WASM transcoder | 11 test |
+| `ts/wasm-vendor/basis_transcoder.*` | Vendored Basis WASM module | — |
+
+### Validazione Phase 4b
+
+- [x] KTX2 parsing con magic validation e corrupt data handling
+- [x] Basis transcoder singleton con race protection
+- [x] BC7/ASTC probing su adapter features
+- [x] Overflow tiers con lazy allocation e pack/unpack index
+- [x] 9-binding layout in tutti i 6 shader primitiva
+- [x] Backward compatibility packed index (bit 31 = 0 per non-overflow)
+- [x] `compressionFormat` getter funzionale
+- [x] Demo mostra formato compressione attivo
+
 ---
 
 ## PARTE IV — SVILUPPO FUTURO
@@ -440,10 +486,10 @@ Totale file WGSL con HMR: 14 (da 10 in Phase 8).
 
 ## 13. Phase 10: Developer Experience (DX)
 
-**Stato**: Pianificata — da sviluppare dopo Phase 9  
+**Stato**: ⏳ Non iniziata — prossima fase da sviluppare
 **Priorità ordinata**:
 
-### 13.1 Prefabs & Declarative Scene Composition (1–2 giorni)
+### 13.1 Prefabs & Declarative Scene Composition (1–2 giorni) — ⏳ Non iniziata
 
 **Problema**: L'API fluente è eccellente per entità singole, ma quando un "Nemico" è composto da 5 entità gerarchiche, l'istanziazione via codice diventa verbosa.
 
@@ -465,7 +511,7 @@ orc.destroyAll();  // Despawn root + tutti i children
 
 **Sinergie**: Prefab JSON serializzabili → editor livelli. CRDT + prefab = editing collaborativo. Asset Pipeline + prefab = type safety.
 
-### 13.2 Debug Camera Plugin (Poche ore)
+### 13.2 Debug Camera Plugin (Poche ore) — ⏳ Non iniziata
 
 Plugin ufficiale `@hyperion/debug-camera` con WASD + Pan/Zoom. Toggle F1. Aggancio a `PluginInputAPI`.
 
@@ -473,15 +519,15 @@ Plugin ufficiale `@hyperion/debug-camera` con WASD + Pan/Zoom. Toggle F1. Agganc
 engine.use(debugCameraPlugin({ moveSpeed: 300, zoomSpeed: 0.1, enableKey: 'F1' }));
 ```
 
-### 13.3 Debug Bounds Visualizer (2–3 giorni)
+### 13.3 Debug Bounds Visualizer (2–3 giorni) — ⏳ Non iniziata
 
 Wireframe delle bounding sphere/box delle entità e dei collider. Dipende da LinePass (Phase 5.5). Integrato nell'engine (`engine.debug.*`).
 
-### 13.4 ECS Inspector Visivo (1–2 settimane)
+### 13.4 ECS Inspector Visivo (1–2 settimane) — ⏳ Non iniziata
 
 Pannello HTML overlay per interrogare lo stato ECS in tempo reale. Richiede export WASM per debug query. Selezione entità click, highlight bounds, view componenti. Plugin ufficiale `@hyperion-plugin/devtools`.
 
-### 13.5 Asset Pipeline Tipizzata (1 settimana)
+### 13.5 Asset Pipeline Tipizzata (1 settimana) — ⏳ Non iniziata
 
 Build-time scanning delle texture → generazione di costanti type-safe. Due package: `@hyperion-plugin/assets` + `vite-plugin-hyperion-assets`.
 
@@ -495,11 +541,13 @@ const Assets = {
 } as const;
 ```
 
-### 13.6 Integrazione Fisica Zero-Config (3–4 settimane)
+### 13.6 Integrazione Fisica Zero-Config (3–4 settimane) — ⏳ Non iniziata
 
 Vedi Phase dedicata alla fisica (sezione 16).
 
-### 13.7 TypeScript Systems con SoA Access (1–2 settimane)
+### 13.7 TypeScript Systems con SoA Access (1–2 settimane) — 🟡 Parziale
+
+> **Stato attuale**: PluginSystemsAPI con `addPreTick/addPostTick/addFrameEnd` esiste (Phase 8), ma gli hook ricevono solo `dt: number`, non le viste SoA. Manca il parametro `views` con TypedArray read-only.
 
 Sistemi custom TS che leggono le viste SoA (posizioni, velocità) come TypedArray read-only per logica gameplay complessa.
 
@@ -512,7 +560,7 @@ engine.systems.addPreTick('my-ai', (views) => {
 });
 ```
 
-### 13.8 Time-Travel Debugging — Livello 1: Replay (1 settimana)
+### 13.8 Time-Travel Debugging — Livello 1: Replay (1 settimana) — ⏳ Non iniziata
 
 Registrazione di tutti i comandi ring buffer in un "command tape". Replay deterministico dal tick 0 per riprodurre bug frame-by-frame.
 
@@ -525,7 +573,7 @@ engine.debug.replayFromTick(0, tape); // replay deterministico
 
 **Sinergia**: Combinato con ECS Inspector (#4) = debug chirurgico frame-by-frame.
 
-### 13.9 HMR State di Gioco (2+ settimane)
+### 13.9 HMR State di Gioco (2+ settimane) — ⏳ Non iniziata
 
 Pattern e helper per preservare lo stato di gioco durante Hot Module Replacement. `createHotSystem()` che registra hook HMR e ripristina stato automaticamente.
 
@@ -536,7 +584,7 @@ const { state, system } = createHotSystem('enemy-ai', import.meta.hot, {
 });
 ```
 
-### 13.10 Time-Travel Debugging — Livello 2: Rewind (3+ settimane)
+### 13.10 Time-Travel Debugging — Livello 2: Rewind (3+ settimane) — ⏳ Non iniziata
 
 Step-backward senza replay dall'inizio. Snapshot periodici (ogni 300 tick = 5s) dello stato WASM completo + replay incrementale dal keyframe più vicino.
 
@@ -567,7 +615,7 @@ Tutte le feature dev-only devono avere costo zero in produzione:
 
 ---
 
-## 14. Plugin System — Design Completo
+## 14. Plugin System — Design Completo (✅ Implementato in Phase 8)
 
 ### 14.1 Il Boundary Fondamentale: Rust Chiuso, TypeScript Aperto
 
@@ -625,9 +673,9 @@ interface HyperionPlugin {
 
 ---
 
-## 15. Integrazione Tecnologie 2026
+## 15. Integrazione Tecnologie 2026 — ⏳ Non iniziate
 
-### 15.1 WebGPU Subgroups (🔴 Critica — Phase 5.5)
+### 15.1 WebGPU Subgroups (🔴 Critica — Phase 5.5) — ⏳ Non iniziata
 
 **Stato**: Implementato come dual shader variant con feature detection runtime.
 
@@ -660,7 +708,7 @@ fn main(@builtin(subgroup_id) sg_id: u32,
 
 **Target**: Cull time 100k entità da ~0.8ms a < 0.4ms (2× improvement).
 
-### 15.2 Sized Binding Arrays (🟡 Media — Phase 11+)
+### 15.2 Sized Binding Arrays (🟡 Media — Phase 11+) — ⏳ Non iniziata
 
 Stepping stone verso bindless. `bindingArraySize` su `GPUBindGroupLayoutEntry`, hardware ubiquo. Eliminerebbe il size-tiering Texture2DArray attuale.
 
@@ -670,7 +718,7 @@ Stepping stone verso bindless. `bindingArraySize` su `GPUBindGroupLayoutEntry`, 
 
 **Timeline**: Dipende da Chrome stable. Se non disponibile in H2 2026, il sistema di tiering resta. Zero rischio architetturale.
 
-### 15.3 CRDT Multiplayer con Loro (🟢 Strategica — Phase 11+)
+### 15.3 CRDT Multiplayer con Loro (🟢 Strategica — Phase 11+) — ⏳ Non iniziata
 
 Differenziatore di mercato. Loro CRDT compilato a WASM con lazy loading separato.
 
@@ -685,13 +733,13 @@ Differenziatore di mercato. Loro CRDT compilato a WASM con lazy loading separato
 
 **Metrica sync**: < 5KB/s per peer in editing attivo. < 1ms latenza merge per 100 operazioni.
 
-### 15.4 Wasm Memory64 (⚪ Monitoraggio — Post-Phase 11)
+### 15.4 Wasm Memory64 (⚪ Monitoraggio — Post-Phase 11) — ⏳ Differita
 
 Standard dal 17 settembre 2025 (Wasm 3.0). Chrome 133 e Firefox 134 stabili. Safari dietro flag.
 
 **Caveat critico**: Penalty performance 10–100% rispetto a wasm32 (benchmark Emscripten). Hyperion non ne beneficia fino a scenari > 4GB (CAD/BIM). L'integrazione resta post-Phase 11 per ragioni di performance.
 
-### 15.5 WebNN Neural Rendering (⚪ Plugin Demo — Post-Phase 11)
+### 15.5 WebNN Neural Rendering (⚪ Plugin Demo — Post-Phase 11) — ⏳ Non iniziata
 
 Plugin demo `@hyperion-plugin/neural-upscale` per validare PluginContext e PluginGpuAPI. Rendering a risoluzione ridotta (50%) + upscale neural in tempo reale.
 
@@ -704,7 +752,7 @@ Plugin demo `@hyperion-plugin/neural-upscale` per validare PluginContext e Plugi
 
 ---
 
-## 16. Integrazione Fisica — Design Completo
+## 16. Integrazione Fisica — Design Completo — ⏳ Non iniziata
 
 ### 16.1 Strategia: Maximum Performance
 
@@ -795,7 +843,7 @@ engine.physics.raycast(origin, direction, maxToi, (hit) => { /* ... */ });
 
 ---
 
-## 17. Strategia di Ottimizzazione
+## 17. Strategia di Ottimizzazione — 🟡 Solo LTO configurato
 
 ### 17.1 Tier 1: Quick Wins (1–3 giorni ciascuno)
 
@@ -847,7 +895,7 @@ engine.physics.raycast(origin, direction, maxToi, (hit) => { /* ... */ });
 
 ---
 
-## 18. Tech Demo — Showcase Completo
+## 18. Tech Demo — Showcase Completo — ⏳ Solo demo educativa
 
 Quattro demo in un'unica applicazione con tabs/scene switch e counter FPS/entity count sempre visibile.
 
@@ -881,7 +929,7 @@ Scena modulare dove ogni modulo è un plugin: particelle, meteo con shader custo
 
 ---
 
-## 19. Capacità Future — Post Phase 11
+## 19. Capacità Future — Post Phase 11 — ⏳ Non iniziate
 
 | Capacità | Complessità | Motivazione | Fase Suggerita |
 |----------|------------|-------------|----------------|
@@ -1003,24 +1051,24 @@ Integrazioni con framework web (React, Svelte, Vue, Solid), template Electron/Ta
 ## A. Dipendenze tra Fasi
 
 ```
-Phase 0-4  ──→ Phase 4.5    (fondamenta)
-Phase 4.5  ──→ Phase 5      (API dipende da supervisor + SoA + RenderGraph)
-Phase 4.5  ──→ Phase 4b     (lazy allocation abilita compressione)
-Phase 4.5  ──→ Phase 5.5    (SoA, RenderPrimitive, prefix sum, RenderGraph prerequisiti)
-Phase 5    ──→ Phase 5.5    (API pubblica, scene graph, entity handles)
-Phase 5    ──→ Phase 6      (input API dipende da entity handles + scene graph)
-Phase 5.5  ──→ Phase 6      (JFA outlines + picking = unità coerente con input)
-Phase 5    ──→ Phase 7      (profiler dipende da metriche API)
-Phase 5.5  ──→ Phase 7      (FXAA/tonemapping prerequisiti production readiness)
-Phase 7    ──→ Phase 8      (profiler + shader hot-reload → plugin system)
-Phase 8    ──→ Phase 9      (PluginContext → particle system come validazione)
-Phase 9    ──→ Phase 10     (feature complete → DX polish)
-Phase 10   ──→ Phase 11+    (DX → tecnologie avanzate + tech demo)
+Phase 0-4  ──→ Phase 4.5    (fondamenta)                         ✅
+Phase 4.5  ──→ Phase 5      (API dipende da supervisor + SoA)    ✅
+Phase 4.5  ──→ Phase 4b     (lazy allocation abilita compr.)     ✅
+Phase 4.5  ──→ Phase 5.5    (SoA, RenderPrimitive, prefix sum)   ✅
+Phase 5    ──→ Phase 5.5    (API pubblica, scene graph)           ✅
+Phase 5    ──→ Phase 6      (input API dipende da entity handles) ✅
+Phase 5.5  ──→ Phase 6      (JFA outlines + picking)             ✅
+Phase 5    ──→ Phase 7      (profiler dipende da metriche API)   ✅
+Phase 5.5  ──→ Phase 7      (FXAA/tonemapping prerequisiti)      ✅
+Phase 7    ──→ Phase 8      (profiler → plugin system)           ✅
+Phase 8    ──→ Phase 9      (PluginContext → particle system)    ✅
+Phase 9    ──→ Phase 10 DX  (feature complete → DX polish)       ⏳ PROSSIMA
+Phase 10   ──→ Phase 11+    (DX → tecnologie avanzate + demo)   ⏳
 
 Parallele:
-Phase 4b (KTX2/Basis Universal) — parallelo a Phase 5
-Physics Spatial Grid — integrato in Phase 4.5
-Physics Rapier Full — integrato in Phase 10 (DX)
+Phase 4b (KTX2/Basis Universal) — parallelo a Phase 5            ✅ Completata
+Physics Spatial Grid — previsto in Phase 10 DX (§13.6)           ⏳
+Physics Rapier Full — previsto in Phase 10 DX (§13.6)            ⏳
 ```
 
 ## B. Dipendenze tra Feature DX
@@ -1054,7 +1102,7 @@ Sinergie:
 | Line rendering — instanced screen-space expansion | Quad expansion in vertex shader | Phase 5.5 | ✅ |
 | Line rendering — SDF | distance_to_segment per fragment | Futuro | Pianificato |
 | MSDF text | median(r,g,b) + screen-pixel-range | Phase 5.5 | ✅ |
-| Bézier quadratiche — SDF Inigo Quilez | Distanza analitica + Cardano/trig | Phase 9 | 🔄 |
+| Bézier quadratiche — SDF Inigo Quilez | Distanza analitica + Cardano/trig | Phase 9 | ✅ |
 | Bézier cubiche — Loop-Blinn | Classification + canonical coordinates | Phase 11+ | Pianificato |
 | Gradienti — 1D LUT | Linear/radial/conic via texture sample | Phase 5.5 | ✅ |
 | Box shadows — Evan Wallace SDF | erf() approximation, O(1)/pixel | Phase 5.5 | ✅ |
@@ -1067,7 +1115,7 @@ Sinergie:
 |---------|--------|------|-------|
 | Compute frustum culling | WGSL compute shader | Phase 4 | ✅ |
 | Prefix sum — Blelloch | Shared memory scan | Phase 4.5 | ✅ |
-| Prefix sum — Subgroups | `subgroupExclusiveAdd` hardware | Phase 5.5 | ✅ |
+| Prefix sum — Subgroups | `subgroupExclusiveAdd` hardware | Phase 11+ | ⏳ |
 | Stream compaction | Prefix sum → compact output | Phase 4.5 | ✅ |
 | Indirect draw single buffer | Pack all args in one GPUBuffer | Phase 4.5 | ✅ |
 | Material sort keys | 64-bit key per draw call | Phase 10+ | Pianificato |
@@ -1081,7 +1129,7 @@ Sinergie:
 | PBR Neutral tonemapping | Khronos standard | Phase 5.5 | ✅ |
 | ACES filmic tonemapping | Filmic curve | Phase 5.5 | ✅ |
 | JFA selection outlines | Jump Flood Algorithm ×10 pass | Phase 5.5 | ✅ |
-| Dual Kawase Bloom | Downsample/upsample chain | Phase 9 | 🔄 |
+| Dual Kawase Bloom | Downsample/upsample chain | Phase 9 | ✅ |
 | TAA | Halton jitter + variance clipping | Phase 12+ | Pianificato |
 | SSAO/GTAO | Visibility bitmask | Phase 12+ | Pianificato |
 
@@ -1131,4 +1179,5 @@ Le lezioni chiave applicate a Hyperion:
 
 > **Questo documento è il riferimento unico per l'intero progetto Hyperion Engine.** Ogni decisione tecnica, architetturale e di prioritizzazione viene ricondotta a queste pagine. Quando c'è dubbio, si torna qui.
 >
-> **Prossimo aggiornamento**: Al completamento di Phase 9, con risultati dei benchmark bloom/particle e decisioni su quali tech demo implementare per prime.
+> **Ultimo aggiornamento**: 25 Febbraio 2026 — Phase 9 + Phase 4b completate. Aggiornati stati di tutte le sezioni.
+> **Prossimo aggiornamento**: Al completamento di Phase 10 DX (o subset selezionato).
