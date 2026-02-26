@@ -1,6 +1,7 @@
 // ts/src/game-loop.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GameLoop } from './game-loop.js';
+import type { SystemViews } from './system-views.js';
 
 describe('GameLoop', () => {
   let rafCallbacks: ((time: number) => void)[];
@@ -102,6 +103,85 @@ describe('GameLoop', () => {
       const loop = new GameLoop(vi.fn());
       expect(loop.frameTimeAvg).toBe(0);
       expect(loop.frameTimeMax).toBe(0);
+    });
+  });
+
+  describe('SystemViews passing', () => {
+    const makeViews = (): SystemViews => ({
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array(4),
+      texIndices: new Uint32Array(1),
+      renderMeta: new Uint32Array(2),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array(1),
+    });
+
+    it('passes SystemViews as second argument to all hook phases', () => {
+      const views = makeViews();
+      const receivedPre: (SystemViews | undefined)[] = [];
+      const receivedPost: (SystemViews | undefined)[] = [];
+      const receivedEnd: (SystemViews | undefined)[] = [];
+
+      const loop = new GameLoop(vi.fn());
+      loop.addHook('preTick', (_dt, v) => receivedPre.push(v));
+      loop.addHook('postTick', (_dt, v) => receivedPost.push(v));
+      loop.addHook('frameEnd', (_dt, v) => receivedEnd.push(v));
+      loop.setSystemViews(views);
+      loop.start();
+      rafCallbacks[0](16.67);
+
+      expect(receivedPre[0]).toBe(views);
+      expect(receivedPost[0]).toBe(views);
+      expect(receivedEnd[0]).toBe(views);
+    });
+
+    it('passes undefined when no SystemViews are set', () => {
+      let received: SystemViews | undefined = {} as SystemViews;
+      const loop = new GameLoop(vi.fn());
+      loop.addHook('preTick', (_dt, v) => { received = v; });
+      loop.start();
+      rafCallbacks[0](16.67);
+
+      expect(received).toBeUndefined();
+    });
+
+    it('reflects updated SystemViews on subsequent frames', () => {
+      const views1 = makeViews();
+      const views2 = makeViews();
+      views2.transforms[0] = 42;
+
+      const received: (SystemViews | undefined)[] = [];
+      const loop = new GameLoop(vi.fn());
+      loop.addHook('postTick', (_dt, v) => received.push(v));
+      loop.setSystemViews(views1);
+      loop.start();
+
+      // First frame
+      rafCallbacks.shift()!(16.67);
+      // Update views
+      loop.setSystemViews(views2);
+      // Second frame
+      rafCallbacks.shift()!(33.34);
+
+      expect(received[0]).toBe(views1);
+      expect(received[1]).toBe(views2);
+    });
+
+    it('passes undefined after clearing SystemViews with null', () => {
+      const views = makeViews();
+      const received: (SystemViews | undefined)[] = [];
+      const loop = new GameLoop(vi.fn());
+      loop.addHook('preTick', (_dt, v) => received.push(v));
+      loop.setSystemViews(views);
+      loop.start();
+
+      rafCallbacks.shift()!(16.67);
+      loop.setSystemViews(null);
+      rafCallbacks.shift()!(33.34);
+
+      expect(received[0]).toBe(views);
+      expect(received[1]).toBeUndefined();
     });
   });
 });

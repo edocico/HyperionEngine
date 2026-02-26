@@ -1,7 +1,9 @@
 // ts/src/game-loop.ts
 
+import type { SystemViews } from './system-views.js';
+
 export type HookPhase = 'preTick' | 'postTick' | 'frameEnd';
-export type HookFn = (dt: number) => void;
+export type HookFn = (dt: number, views?: SystemViews) => void;
 export type TickFn = (dt: number) => void;
 
 const DEFAULT_DT = 1 / 60;
@@ -26,6 +28,7 @@ export class GameLoop {
   private _frameTimeMax = 0;
   private dtSum = 0;
   private dtMax = 0;
+  private _systemViews: SystemViews | null = null;
 
   constructor(tickFn: TickFn) {
     this.tickFn = tickFn;
@@ -85,6 +88,10 @@ export class GameLoop {
     this._paused = false;
   }
 
+  setSystemViews(views: SystemViews | null): void {
+    this._systemViews = views;
+  }
+
   addHook(phase: HookPhase, fn: HookFn): void {
     this.hooks[phase].push(fn);
   }
@@ -123,10 +130,11 @@ export class GameLoop {
     }
 
     if (!this._paused) {
-      for (const fn of this.hooks.preTick) fn(dt);
+      const v = this._systemViews ?? undefined;
+      for (const fn of this.hooks.preTick) fn(dt, v);
       this.tickFn(dt);
-      for (const fn of this.hooks.postTick) fn(dt);
-      for (const fn of this.hooks.frameEnd) fn(dt);
+      for (const fn of this.hooks.postTick) fn(dt, v);
+      for (const fn of this.hooks.frameEnd) fn(dt, v);
     }
 
     this.rafId = requestAnimationFrame((t) => this.frame(t));
