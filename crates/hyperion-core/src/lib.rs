@@ -333,3 +333,52 @@ pub fn engine_listener_z() -> f32 {
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
+
+// ── Dev-tools WASM exports ──────────────────────────────────────
+
+/// Returns the number of active entities (dev-tools only).
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+pub fn engine_debug_entity_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.debug_entity_count())
+    }
+}
+
+/// Write mapped external entity IDs into a caller-provided buffer.
+/// `flags`: bit 0 = active_only. Returns the number of IDs written.
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn engine_debug_list_entities(out_ptr: *mut u32, out_len: u32, flags: u32) -> u32 {
+    // SAFETY: wasm32 is single-threaded; pointer valid by caller contract.
+    unsafe {
+        let engine = match &mut *addr_of_mut!(ENGINE) {
+            Some(e) => e,
+            None => return 0,
+        };
+        let out = std::slice::from_raw_parts_mut(out_ptr, out_len as usize);
+        let active_only = (flags & 1) != 0;
+        engine.debug_list_entities(out, active_only)
+    }
+}
+
+/// Serialize all components of the given entity into TLV format.
+/// Returns the number of bytes written into `out_ptr`.
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn engine_debug_get_components(entity_id: u32, out_ptr: *mut u8, out_len: u32) -> u32 {
+    // SAFETY: wasm32 is single-threaded; pointer valid by caller contract.
+    unsafe {
+        let engine = match &mut *addr_of_mut!(ENGINE) {
+            Some(e) => e,
+            None => return 0,
+        };
+        let out = std::slice::from_raw_parts_mut(out_ptr, out_len as usize);
+        engine.debug_get_components(entity_id, out)
+    }
+}
