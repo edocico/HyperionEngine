@@ -101,6 +101,12 @@ cd ts && npx vitest run src/particle-types.test.ts              # Particle types
 cd ts && npx vitest run src/particle-system.test.ts             # ParticleSystem (5 tests)
 cd ts && npx vitest run src/ktx2-parser.test.ts                # KTX2 container parser (10 tests)
 cd ts && npx vitest run src/basis-transcoder.test.ts            # Basis Universal transcoder (11 tests)
+cd ts && npx vitest run src/debug/tlv-parser.test.ts            # TLV binary parser (4 tests)
+cd ts && npx vitest run src/debug/ecs-inspector.test.ts         # ECS Inspector plugin (3 tests)
+cd ts && npx vitest run src/debug/debug-camera.test.ts          # Debug Camera plugin (3 tests)
+
+# Debug/dev-tools (requires feature flag)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests
 ```
 
 ### Development Workflow
@@ -273,6 +279,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `text/text-layout.ts` | `layoutText()` — glyph positioning from atlas metrics |
 | `text/text-manager.ts` | `TextManager` — font atlas cache for MSDF text rendering |
 
+#### Debug (`ts/src/debug/`, dev-tools only)
+
+| Module | Role |
+|---|---|
+| `debug/debug-camera.ts` | `debugCameraPlugin` — WASD movement + scroll zoom, F1 toggle |
+| `debug/tlv-parser.ts` | `parseTLV()` — decodes TLV binary from `engine_debug_get_components()`. 15 component types |
+| `debug/ecs-inspector.ts` | `ecsInspectorPlugin` — HTML overlay panel, F12 toggle, dual data channels (SystemViews fast + WASM slow) |
+
 #### Shaders (`ts/src/shaders/`, loaded via Vite `?raw`)
 
 | Shader | Role |
@@ -322,6 +336,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Basis Universal WASM loaded lazily** — Only fetched on first KTX2 texture with BasisLZ/UASTC supercompression. Pre-compressed KTX2 (scheme=0) bypasses the transcoder entirely.
 - **`KTX2File.close()` AND `.delete()` both required** — Missing `.delete()` leaks WASM heap memory.
 - **Compressed texture tier growth needs standard WebGPU** — `copyTextureToTexture` for compressed formats is disallowed in compatibility mode. Falls back to rgba8unorm.
+- **`tsc --noEmit` reports TS2307 for WASM imports** — `../wasm/hyperion_core.js` errors are expected when WASM isn't compiled. These are pre-existing and safe to ignore. Filter: `npx tsc --noEmit 2>&1 | grep -v "wasm/hyperion_core"`.
+- **`export { X } from './mod'` doesn't use a top-level import** — A re-export statement is self-contained. Adding `import { X } from './mod'` alongside it causes TS6133 (unused import). Use only the re-export.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -393,6 +409,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 8 | Polish & DX | Plugin System v2 (PluginContext + 5 APIs), EventBus, shader HMR, profiler overlay |
 | 9 | Advanced 2D | Bézier SDF curves, Dual Kawase bloom, GPU particle system |
 | 10 | Asset Pipeline | KTX2/Basis Universal compressed textures (BC7/ASTC), overflow tiers, `compressionFormat` API |
+| 10-DX | Developer Experience | SystemViews, debug camera, ECS inspector (TLV + panel), WASM debug exports (`dev-tools` feature) |
 
 ## Documentation
 
