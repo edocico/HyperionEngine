@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hyperion } from './hyperion';
 import type { EngineBridge } from './worker-bridge';
 import type { Renderer } from './renderer';
@@ -526,6 +526,143 @@ describe('Hyperion particles', () => {
   it('createParticleEmitter throws when headless (no renderer)', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     expect(() => engine.createParticleEmitter({})).toThrow('no renderer');
+  });
+});
+
+describe('Hyperion SystemViews', () => {
+  let rafCallbacks: ((time: number) => void)[];
+  let originalRAF: typeof globalThis.requestAnimationFrame;
+  let originalCAF: typeof globalThis.cancelAnimationFrame;
+
+  beforeEach(() => {
+    rafCallbacks = [];
+    originalRAF = globalThis.requestAnimationFrame;
+    originalCAF = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = vi.fn((cb) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    }) as unknown as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = vi.fn();
+  });
+
+  afterEach(() => {
+    globalThis.requestAnimationFrame = originalRAF;
+    globalThis.cancelAnimationFrame = originalCAF;
+  });
+
+  it('sets SystemViews on GameLoop from GPURenderState after tick', () => {
+    const bridge = mockBridge();
+    const fakeState = {
+      entityCount: 3,
+      transforms: new Float32Array(48),
+      bounds: new Float32Array(12),
+      renderMeta: new Uint32Array(6),
+      texIndices: new Uint32Array(3),
+      primParams: new Float32Array(24),
+      entityIds: new Uint32Array([10, 20, 30]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    // Simulate bridge.tick populating latestRenderState (like real Mode C bridge)
+    let renderState: any = null;
+    (bridge.tick as any).mockImplementation(() => { renderState = fakeState; });
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => renderState });
+
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, null);
+    const receivedViews: any[] = [];
+    engine.addHook('postTick', (_dt, views) => { receivedViews.push(views); });
+
+    engine.start();
+    // Frame 1: tickFn sets SystemViews from fakeState.
+    // GameLoop captures views BEFORE tickFn, so postTick sees undefined this frame.
+    rafCallbacks.shift()!(16.67);
+    expect(receivedViews[0]).toBeUndefined();
+
+    // Frame 2: views set in frame 1 are now visible to all hooks.
+    rafCallbacks.shift()!(33.34);
+    expect(receivedViews.length).toBe(2);
+    const v = receivedViews[1];
+    expect(v).toBeDefined();
+    expect(v.entityCount).toBe(3);
+    expect(v.transforms).toBe(fakeState.transforms);
+    expect(v.bounds).toBe(fakeState.bounds);
+    expect(v.texIndices).toBe(fakeState.texIndices);
+    expect(v.renderMeta).toBe(fakeState.renderMeta);
+    expect(v.primParams).toBe(fakeState.primParams);
+    expect(v.entityIds).toBe(fakeState.entityIds);
+    engine.destroy();
+  });
+
+  it('hooks see previous frame views (one-frame delay)', () => {
+    const bridge = mockBridge();
+    const state1 = {
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array(4),
+      renderMeta: new Uint32Array(2),
+      texIndices: new Uint32Array(1),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array([1]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    const state2 = {
+      entityCount: 2,
+      transforms: new Float32Array(32),
+      bounds: new Float32Array(8),
+      renderMeta: new Uint32Array(4),
+      texIndices: new Uint32Array(2),
+      primParams: new Float32Array(16),
+      entityIds: new Uint32Array([1, 2]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 2,
+    };
+
+    let callCount = 0;
+    let renderState: any = null;
+    (bridge.tick as any).mockImplementation(() => {
+      callCount++;
+      renderState = callCount === 1 ? state1 : state2;
+    });
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => renderState });
+
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, null);
+    const preViews: any[] = [];
+    const postViews: any[] = [];
+    engine.addHook('preTick', (_dt, v) => preViews.push(v));
+    engine.addHook('postTick', (_dt, v) => postViews.push(v));
+
+    engine.start();
+
+    // Frame 1: tick sets state1. But views captured before tickFn, so both see undefined.
+    rafCallbacks.shift()!(16.67);
+    expect(preViews[0]).toBeUndefined();
+    expect(postViews[0]).toBeUndefined();
+
+    // Frame 2: tick sets state2. Views captured = state1 (from frame 1).
+    // Both preTick and postTick see state1.
+    rafCallbacks.shift()!(33.34);
+    expect(preViews[1]?.entityCount).toBe(1);
+    expect(postViews[1]?.entityCount).toBe(1);
+
+    // Frame 3: Views captured = state2 (from frame 2).
+    rafCallbacks.shift()!(50.01);
+    expect(preViews[2]?.entityCount).toBe(2);
+    expect(postViews[2]?.entityCount).toBe(2);
+
+    engine.destroy();
+  });
+
+  it('does not set SystemViews when latestRenderState is null', () => {
+    const bridge = mockBridge();
+    // latestRenderState stays null (default from mockBridge)
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, null);
+    const receivedViews: any[] = [];
+    engine.addHook('postTick', (_dt, views) => { receivedViews.push(views); });
+
+    engine.start();
+    rafCallbacks.shift()!(16.67);
+
+    expect(receivedViews.length).toBe(1);
+    expect(receivedViews[0]).toBeUndefined();
+    engine.destroy();
   });
 });
 

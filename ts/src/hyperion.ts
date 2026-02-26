@@ -522,6 +522,22 @@ export class Hyperion implements Disposable {
 
     this.bridge.tick(dt);
     const state = this.bridge.latestRenderState;
+
+    // Update SystemViews for plugin hooks.
+    // preTick hooks see the *previous* frame's views (already set before tickFn runs),
+    // postTick/frameEnd hooks see the *current* frame's views (set here).
+    if (state) {
+      this.loop.setSystemViews({
+        entityCount: state.entityCount,
+        transforms: state.transforms,
+        bounds: state.bounds,
+        texIndices: state.texIndices,
+        renderMeta: state.renderMeta,
+        primParams: state.primParams,
+        entityIds: state.entityIds,
+      });
+    }
+
     if (state && state.entityIds && this.immediateState.count > 0) {
       this.immediateState.patchTransforms(state.transforms, state.entityIds, state.entityCount);
       this.immediateState.patchBounds(state.bounds, state.entityIds, state.entityCount);
