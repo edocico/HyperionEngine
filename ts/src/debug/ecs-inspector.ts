@@ -13,8 +13,6 @@ import type { HyperionPlugin, PluginCleanup } from '../plugin';
 import type { PluginContext } from '../plugin-context';
 import type { HookFn } from '../game-loop';
 import type { SystemViews } from '../system-views';
-import { parseTLV } from './tlv-parser';
-
 export interface EcsInspectorOptions {
   toggleKey?: string;
   pollIntervalMs?: number;
