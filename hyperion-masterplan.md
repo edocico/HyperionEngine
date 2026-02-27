@@ -1,9 +1,9 @@
 # Hyperion Engine — Piano di Sviluppo Completo
 
-> **Versione**: 1.1 — Documento Unificato
-> **Data**: 25 Febbraio 2026
-> **Stato progetto**: v0.12.0 — Phase 0–9 + Phase 4b completate, Phase 10 DX prossima
-> **Test**: 99 test Rust (7 moduli) + 475 test TypeScript (46 file)
+> **Versione**: 1.2 — Documento Unificato
+> **Data**: 27 Febbraio 2026
+> **Stato progetto**: v0.14.0 — Phase 0–9 + Phase 4b + Phase 10a + Phase 10b completate, Phase 10c prossima
+> **Test**: 102 test Rust (7 moduli, con dev-tools) + 493 test TypeScript (50 file)
 > **Scope**: Dalla visione fondativa all'ultimo dettaglio implementativo — passato, presente e futuro
 
 ---
@@ -486,10 +486,11 @@ Phase parallela a Phase 5 (come da roadmap), implementata e mergiata dopo Phase 
 
 ## 13. Phase 10: Developer Experience (DX)
 
-**Stato**: ⏳ Non iniziata — prossima fase da sviluppare
+**Stato**: 🟡 In corso — Sub-phase 10a e 10b completate, 10c prossima
+**Piano di implementazione**: `docs/plans/2026-02-26-phase10-dx-plan.md` (30 task, 3 sub-fasi)
 **Priorità ordinata**:
 
-### 13.1 Prefabs & Declarative Scene Composition (1–2 giorni) — ⏳ Non iniziata
+### 13.1 Prefabs & Declarative Scene Composition (1–2 giorni) — ✅ Completata (Phase 10b, 2026-02-27)
 
 **Problema**: L'API fluente è eccellente per entità singole, ma quando un "Nemico" è composto da 5 entità gerarchiche, l'istanziazione via codice diventa verbosa.
 
@@ -511,23 +512,23 @@ orc.destroyAll();  // Despawn root + tutti i children
 
 **Sinergie**: Prefab JSON serializzabili → editor livelli. CRDT + prefab = editing collaborativo. Asset Pipeline + prefab = type safety.
 
-### 13.2 Debug Camera Plugin (Poche ore) — ⏳ Non iniziata
+### 13.2 Debug Camera Plugin (Poche ore) — ✅ Completata (Phase 10a)
 
-Plugin ufficiale `@hyperion/debug-camera` con WASD + Pan/Zoom. Toggle F1. Aggancio a `PluginInputAPI`.
+Plugin `debugCameraPlugin` in `ts/src/debug/debug-camera.ts` con WASD + scroll zoom, F1 toggle. Test in `debug-camera.test.ts`.
 
 ```typescript
 engine.use(debugCameraPlugin({ moveSpeed: 300, zoomSpeed: 0.1, enableKey: 'F1' }));
 ```
 
-### 13.3 Debug Bounds Visualizer (2–3 giorni) — ⏳ Non iniziata
+### 13.3 Debug Bounds Visualizer (2–3 giorni) — ✅ Completata (Phase 10b, 2026-02-27)
 
 Wireframe delle bounding sphere/box delle entità e dei collider. Dipende da LinePass (Phase 5.5). Integrato nell'engine (`engine.debug.*`).
 
-### 13.4 ECS Inspector Visivo (1–2 settimane) — ⏳ Non iniziata
+### 13.4 ECS Inspector Visivo (1–2 settimane) — ✅ Completata (Phase 10a)
 
-Pannello HTML overlay per interrogare lo stato ECS in tempo reale. Richiede export WASM per debug query. Selezione entità click, highlight bounds, view componenti. Plugin ufficiale `@hyperion-plugin/devtools`.
+Pannello HTML overlay (`ts/src/debug/ecs-inspector.ts`) con F12 toggle, dual data channels (SystemViews fast path + WASM TLV slow path). Export WASM `engine_debug_get_components()` dietro feature flag `dev-tools`. TLV parser per 15 tipi di componenti (`ts/src/debug/tlv-parser.ts`). Test in `ecs-inspector.test.ts` e `tlv-parser.test.ts`.
 
-### 13.5 Asset Pipeline Tipizzata (1 settimana) — ⏳ Non iniziata
+### 13.5 Asset Pipeline Tipizzata (1 settimana) — ✅ Completata (Phase 10b, 2026-02-27)
 
 Build-time scanning delle texture → generazione di costanti type-safe. Due package: `@hyperion-plugin/assets` + `vite-plugin-hyperion-assets`.
 
@@ -545,14 +546,13 @@ const Assets = {
 
 Vedi Phase dedicata alla fisica (sezione 16).
 
-### 13.7 TypeScript Systems con SoA Access (1–2 settimane) — 🟡 Parziale
+### 13.7 TypeScript Systems con SoA Access (1–2 settimane) — ✅ Completata (Phase 10a)
 
-> **Stato attuale**: PluginSystemsAPI con `addPreTick/addPostTick/addFrameEnd` esiste (Phase 8), ma gli hook ricevono solo `dt: number`, non le viste SoA. Manca il parametro `views` con TypedArray read-only.
-
-Sistemi custom TS che leggono le viste SoA (posizioni, velocità) come TypedArray read-only per logica gameplay complessa.
+Interfaccia `SystemViews` (`ts/src/system-views.ts`) con 7 campi read-only: `entityCount`, `transforms`, `bounds`, `texIndices`, `renderMeta`, `primParams`, `entityIds`. Hook `HookFn` esteso a `(dt: number, views?: SystemViews)`. GameLoop wira le views da GPURenderState a tutti i preTick/postTick/frameEnd hook. Test in `system-views.test.ts`.
 
 ```typescript
-engine.systems.addPreTick('my-ai', (views) => {
+engine.systems.addPreTick('my-ai', (dt, views) => {
+  if (!views) return;
   const positions = views.transforms; // Float32Array read-only
   for (let i = 0; i < views.entityCount; i++) {
     // accesso diretto ai dati SoA
@@ -592,19 +592,26 @@ Richiede nuovi export WASM: `snapshot_create() → Vec<u8>` e `snapshot_restore(
 
 **Budget memoria**: ~1MB per snapshot (10k entità × 100B), 60 keyframes per 5 minuti = ~60MB. Accettabile per dev mode.
 
+### Sub-phase 10a — Completata (27 Feb 2026)
+
+Foundations & Introspection: feature flag `dev-tools`, SystemViews SoA, Debug Camera plugin, ECS Inspector (WASM exports + TLV parser + HTML panel). 10 task, 3 test Rust aggiuntivi, 18 test TS aggiuntivi.
+
+File aggiunti: `ts/src/system-views.ts`, `ts/src/debug/debug-camera.ts`, `ts/src/debug/tlv-parser.ts`, `ts/src/debug/ecs-inspector.ts` + relativi test.
+
 ### Distribuzione DX Features
 
-| Feature | Package | Note |
-|---|---|---|
-| Prefabs | Core engine | Troppo fondamentale per plugin separato |
-| Debug Camera | `@hyperion-plugin/debug-camera` | Primo plugin ufficiale |
-| Bounds Viz | Core engine (`engine.debug.*`) | Integrato |
-| ECS Inspector | `@hyperion-plugin/devtools` | Plugin complesso |
-| Asset Pipeline | `@hyperion-plugin/assets` + `vite-plugin-hyperion-assets` | Due package |
-| Physics | Core engine (feature flag) | Troppo integrato per plugin |
-| TS Systems | Core engine | Estensione API |
-| Time-Travel | `@hyperion-plugin/replay` | Plugin ufficiale |
-| HMR State | Core engine + docs | Pattern documentato + helper |
+| Feature | Package | Stato | Note |
+| --- | --- | --- | --- |
+| Debug Camera | `ts/src/debug/debug-camera.ts` | ✅ 10a | Plugin con WASD + F1 toggle |
+| ECS Inspector | `ts/src/debug/ecs-inspector.ts` | ✅ 10a | HTML overlay + TLV + WASM exports |
+| TS Systems (SoA) | Core engine (`system-views.ts`) | ✅ 10a | SystemViews in hook |
+| Prefabs | Core engine | ✅ 10b | Troppo fondamentale per plugin separato |
+| Asset Pipeline | `@hyperion-plugin/assets` + `vite-plugin-hyperion-assets` | ✅ 10b | Due package |
+| Bounds Viz | Core engine (`engine.debug.*`) | ✅ 10b | Integrato |
+| Time-Travel L1 | `@hyperion-plugin/replay` | ⏳ 10c | Command tape + replay |
+| Time-Travel L2 | `@hyperion-plugin/replay` | ⏳ 10c | Snapshot + rewind |
+| HMR State | Core engine + docs | ⏳ 10c | Pattern documentato + helper |
+| Physics | Core engine (feature flag) | ⏳ Differita | Vedi §16 |
 
 ### Principio Trasversale: Don't Pay For What You Don't Use
 

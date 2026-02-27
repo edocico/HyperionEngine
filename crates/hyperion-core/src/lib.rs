@@ -382,3 +382,21 @@ pub fn engine_debug_get_components(entity_id: u32, out_ptr: *mut u8, out_len: u3
         engine.debug_get_components(entity_id, out)
     }
 }
+
+/// Generate wireframe line vertices for bounding sphere visualization.
+/// Returns the number of vertices written.
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn engine_debug_generate_lines(vert_ptr: *mut f32, color_ptr: *mut f32, max_verts: u32) -> u32 {
+    // SAFETY: wasm32 is single-threaded; pointers valid by caller contract.
+    unsafe {
+        let engine = match &*addr_of_mut!(ENGINE) {
+            Some(e) => e,
+            None => return 0,
+        };
+        let verts = std::slice::from_raw_parts_mut(vert_ptr, (max_verts * 3) as usize);
+        let colors = std::slice::from_raw_parts_mut(color_ptr, (max_verts * 4) as usize);
+        engine.debug_generate_lines(verts, colors, max_verts)
+    }
+}
