@@ -27,16 +27,12 @@ async function main() {
 
   console.log('Compression format:', engine.compressionFormat ?? 'none');
 
-  // Resize handler
+  // Resize handler — engine.resize() manages canvas dimensions internally
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
     const width = Math.floor(canvas.clientWidth * dpr);
     const height = Math.floor(canvas.clientHeight * dpr);
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-      engine.resize(width, height);
-    }
+    engine.resize(width, height);
   }
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
@@ -268,8 +264,9 @@ async function main() {
 
   // =============================================
   // Canvas2D fallback when WebGPU is unavailable
+  // (Skip in Mode A — canvas is owned by render worker)
   // =============================================
-  const ctx2d = canvas.getContext('2d');
+  const ctx2d = engine.mode !== 'A' ? canvas.getContext('2d') : null;
   const useCanvas2D = ctx2d !== null; // null means WebGPU already claimed the canvas
   if (useCanvas2D) {
     console.log('[Hyperion] No WebGPU renderer — using Canvas2D fallback');

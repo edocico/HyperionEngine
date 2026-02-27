@@ -62,20 +62,22 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     var texColor: vec4f;
 
-    // Sample from the correct tier's Texture2DArray (with overflow support)
+    // Sample from the correct tier's Texture2DArray (with overflow support).
+    // textureSampleLevel with explicit LOD 0 avoids the uniform-control-flow
+    // requirement of textureSample (texTier/isOverflow vary per-instance).
     if (in.isOverflow == 0u) {
         switch in.texTier {
-            case 1u: { texColor = textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { texColor = textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { texColor = textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
-            default: { texColor = textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { texColor = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { texColor = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { texColor = textureSampleLevel(tier3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { texColor = textureSampleLevel(tier0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     } else {
         switch in.texTier {
-            case 1u: { texColor = textureSample(ovf1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { texColor = textureSample(ovf2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { texColor = textureSample(ovf3Tex, texSampler, in.uv, in.texLayer); }
-            default: { texColor = textureSample(ovf0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { texColor = textureSampleLevel(ovf1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { texColor = textureSampleLevel(ovf2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { texColor = textureSampleLevel(ovf3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { texColor = textureSampleLevel(ovf0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     }
 

@@ -523,9 +523,9 @@ describe('Hyperion particles', () => {
     expect(renderer.particleSystem.destroyEmitter).toHaveBeenCalledWith(handle);
   });
 
-  it('createParticleEmitter throws when headless (no renderer)', () => {
+  it('createParticleEmitter returns null when headless (no renderer)', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    expect(() => engine.createParticleEmitter({})).toThrow('no renderer');
+    expect(engine.createParticleEmitter({})).toBeNull();
   });
 });
 

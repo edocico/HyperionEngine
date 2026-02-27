@@ -137,6 +137,7 @@ export class TextureManager {
     if (state.view === null) {
       // Create a minimal 1-layer placeholder (not counted in allocatedLayers)
       const size = state.size;
+      const isCompressed = state.format !== "rgba8unorm";
       state.texture = this.device.createTexture({
         size: {
           width: size,
@@ -148,7 +149,7 @@ export class TextureManager {
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.COPY_DST |
           GPUTextureUsage.COPY_SRC |
-          GPUTextureUsage.RENDER_ATTACHMENT,
+          (isCompressed ? 0 : GPUTextureUsage.RENDER_ATTACHMENT),
       });
       // Only fill with white for rgba8unorm (compressed formats can't use writeTexture with raw pixels)
       if (state.format === "rgba8unorm") {
@@ -345,7 +346,8 @@ export class TextureManager {
     const oldTexture = state.texture;
     const oldAllocatedLayers = state.allocatedLayers;
 
-    // Create the new, larger texture
+    // Create the new, larger texture (compressed formats can't have RENDER_ATTACHMENT)
+    const isCompressed = state.format !== "rgba8unorm";
     const newTexture = this.device.createTexture({
       size: {
         width: size,
@@ -357,7 +359,7 @@ export class TextureManager {
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
         GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.RENDER_ATTACHMENT,
+        (isCompressed ? 0 : GPUTextureUsage.RENDER_ATTACHMENT),
     });
 
     if (isFirstAllocation) {

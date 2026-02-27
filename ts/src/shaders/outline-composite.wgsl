@@ -41,11 +41,11 @@ fn fxaaLuma(color: vec3f) -> f32 {
 
 // Simplified FXAA pass
 fn applyFXAA(uv: vec2f, ts: vec2f) -> vec3f {
-    let rgbM  = textureSample(sceneTex, inputSampler, uv).rgb;
-    let rgbNW = textureSample(sceneTex, inputSampler, uv + vec2f(-ts.x, -ts.y)).rgb;
-    let rgbNE = textureSample(sceneTex, inputSampler, uv + vec2f( ts.x, -ts.y)).rgb;
-    let rgbSW = textureSample(sceneTex, inputSampler, uv + vec2f(-ts.x,  ts.y)).rgb;
-    let rgbSE = textureSample(sceneTex, inputSampler, uv + vec2f( ts.x,  ts.y)).rgb;
+    let rgbM  = textureSampleLevel(sceneTex, inputSampler, uv, 0.0).rgb;
+    let rgbNW = textureSampleLevel(sceneTex, inputSampler, uv + vec2f(-ts.x, -ts.y), 0.0).rgb;
+    let rgbNE = textureSampleLevel(sceneTex, inputSampler, uv + vec2f( ts.x, -ts.y), 0.0).rgb;
+    let rgbSW = textureSampleLevel(sceneTex, inputSampler, uv + vec2f(-ts.x,  ts.y), 0.0).rgb;
+    let rgbSE = textureSampleLevel(sceneTex, inputSampler, uv + vec2f( ts.x,  ts.y), 0.0).rgb;
 
     let lumaM  = fxaaLuma(rgbM);
     let lumaNW = fxaaLuma(rgbNW);
@@ -69,12 +69,12 @@ fn applyFXAA(uv: vec2f, ts: vec2f) -> vec3f {
     let d = clamp(dir * rcpDirMin, vec2f(-8.0), vec2f(8.0)) * ts;
 
     let rgbA = 0.5 * (
-        textureSample(sceneTex, inputSampler, uv + d * (1.0/3.0 - 0.5)).rgb +
-        textureSample(sceneTex, inputSampler, uv + d * (2.0/3.0 - 0.5)).rgb
+        textureSampleLevel(sceneTex, inputSampler, uv + d * (1.0/3.0 - 0.5), 0.0).rgb +
+        textureSampleLevel(sceneTex, inputSampler, uv + d * (2.0/3.0 - 0.5), 0.0).rgb
     );
     let rgbB = rgbA * 0.5 + 0.25 * (
-        textureSample(sceneTex, inputSampler, uv + d * -0.5).rgb +
-        textureSample(sceneTex, inputSampler, uv + d *  0.5).rgb
+        textureSampleLevel(sceneTex, inputSampler, uv + d * -0.5, 0.0).rgb +
+        textureSampleLevel(sceneTex, inputSampler, uv + d *  0.5, 0.0).rgb
     );
 
     let lumaB = fxaaLuma(rgbB);
@@ -92,7 +92,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let scene = vec4f(applyFXAA(in.uv, ts), 1.0);
 
     // Read JFA result
-    let jfa = textureSample(jfaTex, inputSampler, in.uv);
+    let jfa = textureSampleLevel(jfaTex, inputSampler, in.uv, 0.0);
 
     // If no seed was propagated here, return scene as-is
     if (jfa.b < 0.5) {
@@ -104,7 +104,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     // Check if current pixel is part of the selected entity itself
     // (distance very small = on-surface seed)
-    let seedSample = textureSample(jfaTex, inputSampler, in.uv);
+    let seedSample = textureSampleLevel(jfaTex, inputSampler, in.uv, 0.0);
     let selfDist = length((in.uv - seedSample.rg) / ts);
     if (selfDist < 1.0 && seedSample.b > 0.5) {
         // On the selected entity surface -- don't draw outline

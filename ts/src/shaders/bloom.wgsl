@@ -48,7 +48,7 @@ fn luminance(c: vec3f) -> f32 {
 
 @fragment
 fn fs_extract(in: VertexOutput) -> @location(0) vec4f {
-  let color = textureSample(inputTex, samp, in.uv);
+  let color = textureSampleLevel(inputTex, samp, in.uv, 0.0);
   let lum = luminance(color.rgb);
   let contrib = max(lum - params.threshold, 0.0);
   let scale = contrib / max(lum, 0.001);
@@ -59,11 +59,11 @@ fn fs_extract(in: VertexOutput) -> @location(0) vec4f {
 @fragment
 fn fs_downsample(in: VertexOutput) -> @location(0) vec4f {
   let o = params.texelSize * 0.5;
-  var color = textureSample(inputTex, samp, in.uv) * 4.0;
-  color += textureSample(inputTex, samp, in.uv + vec2f(-o.x, -o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f( o.x, -o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f(-o.x,  o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f( o.x,  o.y));
+  var color = textureSampleLevel(inputTex, samp, in.uv, 0.0) * 4.0;
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f(-o.x, -o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( o.x, -o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f(-o.x,  o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( o.x,  o.y), 0.0);
   return color / 8.0;
 }
 
@@ -71,15 +71,15 @@ fn fs_downsample(in: VertexOutput) -> @location(0) vec4f {
 @fragment
 fn fs_upsample(in: VertexOutput) -> @location(0) vec4f {
   let o = params.texelSize;
-  var color = textureSample(inputTex, samp, in.uv + vec2f(-o.x, -o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f( 0.0, -o.y)) * 2.0;
-  color += textureSample(inputTex, samp, in.uv + vec2f( o.x, -o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f(-o.x,  0.0)) * 2.0;
-  color += textureSample(inputTex, samp, in.uv) * 4.0;
-  color += textureSample(inputTex, samp, in.uv + vec2f( o.x,  0.0)) * 2.0;
-  color += textureSample(inputTex, samp, in.uv + vec2f(-o.x,  o.y));
-  color += textureSample(inputTex, samp, in.uv + vec2f( 0.0,  o.y)) * 2.0;
-  color += textureSample(inputTex, samp, in.uv + vec2f( o.x,  o.y));
+  var color = textureSampleLevel(inputTex, samp, in.uv + vec2f(-o.x, -o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( 0.0, -o.y), 0.0) * 2.0;
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( o.x, -o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f(-o.x,  0.0), 0.0) * 2.0;
+  color += textureSampleLevel(inputTex, samp, in.uv, 0.0) * 4.0;
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( o.x,  0.0), 0.0) * 2.0;
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f(-o.x,  o.y), 0.0);
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( 0.0,  o.y), 0.0) * 2.0;
+  color += textureSampleLevel(inputTex, samp, in.uv + vec2f( o.x,  o.y), 0.0);
   return color / 16.0;
 }
 
@@ -107,18 +107,18 @@ fn acesTonemap(color: vec3f) -> vec3f {
 
 // --- FXAA (Lottes) ---
 fn fxaaTexel(tex: texture_2d<f32>, s: sampler, uv: vec2f, ts: vec2f) -> vec4f {
-  let lumaS = luminance(textureSample(tex, s, uv + vec2f(0.0, ts.y)).rgb);
-  let lumaN = luminance(textureSample(tex, s, uv - vec2f(0.0, ts.y)).rgb);
-  let lumaE = luminance(textureSample(tex, s, uv + vec2f(ts.x, 0.0)).rgb);
-  let lumaW = luminance(textureSample(tex, s, uv - vec2f(ts.x, 0.0)).rgb);
-  let lumaM = luminance(textureSample(tex, s, uv).rgb);
+  let lumaS = luminance(textureSampleLevel(tex, s, uv + vec2f(0.0, ts.y), 0.0).rgb);
+  let lumaN = luminance(textureSampleLevel(tex, s, uv - vec2f(0.0, ts.y), 0.0).rgb);
+  let lumaE = luminance(textureSampleLevel(tex, s, uv + vec2f(ts.x, 0.0), 0.0).rgb);
+  let lumaW = luminance(textureSampleLevel(tex, s, uv - vec2f(ts.x, 0.0), 0.0).rgb);
+  let lumaM = luminance(textureSampleLevel(tex, s, uv, 0.0).rgb);
 
   let rangeMin = min(lumaM, min(min(lumaS, lumaN), min(lumaE, lumaW)));
   let rangeMax = max(lumaM, max(max(lumaS, lumaN), max(lumaE, lumaW)));
   let range = rangeMax - rangeMin;
 
   if (range < max(0.0312, rangeMax * 0.125)) {
-    return textureSample(tex, s, uv);
+    return textureSampleLevel(tex, s, uv, 0.0);
   }
 
   let dir = vec2f(
@@ -129,11 +129,11 @@ fn fxaaTexel(tex: texture_2d<f32>, s: sampler, uv: vec2f, ts: vec2f) -> vec4f {
   let rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
   let d = clamp(dir * rcpDirMin, vec2f(-8.0), vec2f(8.0)) * ts;
 
-  let a = textureSample(tex, s, uv + d * (1.0 / 3.0 - 0.5));
-  let b = textureSample(tex, s, uv + d * (2.0 / 3.0 - 0.5));
+  let a = textureSampleLevel(tex, s, uv + d * (1.0 / 3.0 - 0.5), 0.0);
+  let b = textureSampleLevel(tex, s, uv + d * (2.0 / 3.0 - 0.5), 0.0);
   let rgbA = (a + b) * 0.5;
-  let c = textureSample(tex, s, uv + d * -0.5);
-  let dd = textureSample(tex, s, uv + d * 0.5);
+  let c = textureSampleLevel(tex, s, uv + d * -0.5, 0.0);
+  let dd = textureSampleLevel(tex, s, uv + d * 0.5, 0.0);
   let rgbB = rgbA * 0.5 + (c + dd) * 0.25;
 
   let lumaB = luminance(rgbB.rgb);
@@ -149,7 +149,7 @@ fn fs_composite(in: VertexOutput) -> @location(0) vec4f {
   // Scene color (FXAA applied to scene)
   let scene = fxaaTexel(inputTex, samp, in.uv, params.texelSize);
   // Bloom contribution
-  let bloom = textureSample(bloomTex, samp, in.uv);
+  let bloom = textureSampleLevel(bloomTex, samp, in.uv, 0.0);
   // Additive blend
   var hdr = scene.rgb + bloom.rgb * params.intensity;
 

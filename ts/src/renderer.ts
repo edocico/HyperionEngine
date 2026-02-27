@@ -84,9 +84,7 @@ export async function createRenderer(
     onDeviceLost?.(info.message);
   });
 
-  const context = canvas instanceof HTMLCanvasElement
-    ? canvas.getContext("webgpu")!
-    : (canvas as OffscreenCanvas).getContext("webgpu")!;
+  const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
 

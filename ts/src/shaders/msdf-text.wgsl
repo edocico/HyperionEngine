@@ -86,21 +86,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let colorG = primParams[base + 6u];
     let colorB = primParams[base + 7u];
 
-    // Sample MSDF texture from the correct tier (with overflow support)
+    // Sample MSDF texture from the correct tier (with overflow support).
+    // textureSampleLevel avoids uniform-control-flow requirement.
     var msdf: vec4f;
     if (in.isOverflow == 0u) {
         switch in.texTier {
-            case 1u: { msdf = textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { msdf = textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { msdf = textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
-            default: { msdf = textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { msdf = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { msdf = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { msdf = textureSampleLevel(tier3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { msdf = textureSampleLevel(tier0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     } else {
         switch in.texTier {
-            case 1u: { msdf = textureSample(ovf1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { msdf = textureSample(ovf2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { msdf = textureSample(ovf3Tex, texSampler, in.uv, in.texLayer); }
-            default: { msdf = textureSample(ovf0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { msdf = textureSampleLevel(ovf1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { msdf = textureSampleLevel(ovf2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { msdf = textureSampleLevel(ovf3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { msdf = textureSampleLevel(ovf0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     }
 

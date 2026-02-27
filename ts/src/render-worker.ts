@@ -48,7 +48,7 @@ self.onmessage = async (event: MessageEvent) => {
       renderer = await createRenderer(offscreenCanvas);
 
       const aspect = width / height;
-      camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
+      camera.setOrthographic(20 * aspect, 20, -1, 1000);
 
       msg.ecsPort.onmessage = (e: MessageEvent) => {
         if (e.data.renderState) {
@@ -69,7 +69,7 @@ self.onmessage = async (event: MessageEvent) => {
       offscreenCanvas.height = height;
     }
     const aspect = width / height;
-    camera.setOrthographic(20 * aspect, 20, 0.1, 1000);
+    camera.setOrthographic(20 * aspect, 20, -1, 1000);
   }
 };
 

@@ -70,11 +70,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let ts = params.texelSize;
 
     // --- FXAA (Lottes, simplified) ---
-    let rgbM  = textureSample(inputTex, inputSampler, uv).rgb;
-    let rgbNW = textureSample(inputTex, inputSampler, uv + vec2f(-ts.x, -ts.y)).rgb;
-    let rgbNE = textureSample(inputTex, inputSampler, uv + vec2f( ts.x, -ts.y)).rgb;
-    let rgbSW = textureSample(inputTex, inputSampler, uv + vec2f(-ts.x,  ts.y)).rgb;
-    let rgbSE = textureSample(inputTex, inputSampler, uv + vec2f( ts.x,  ts.y)).rgb;
+    let rgbM  = textureSampleLevel(inputTex, inputSampler, uv, 0.0).rgb;
+    let rgbNW = textureSampleLevel(inputTex, inputSampler, uv + vec2f(-ts.x, -ts.y), 0.0).rgb;
+    let rgbNE = textureSampleLevel(inputTex, inputSampler, uv + vec2f( ts.x, -ts.y), 0.0).rgb;
+    let rgbSW = textureSampleLevel(inputTex, inputSampler, uv + vec2f(-ts.x,  ts.y), 0.0).rgb;
+    let rgbSE = textureSampleLevel(inputTex, inputSampler, uv + vec2f( ts.x,  ts.y), 0.0).rgb;
 
     let lumaM  = fxaaLuma(rgbM);
     let lumaNW = fxaaLuma(rgbNW);
@@ -106,12 +106,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let d = clamp(dir * rcpDirMin, vec2f(-8.0), vec2f(8.0)) * ts;
 
     let rgbA = 0.5 * (
-        textureSample(inputTex, inputSampler, uv + d * (1.0/3.0 - 0.5)).rgb +
-        textureSample(inputTex, inputSampler, uv + d * (2.0/3.0 - 0.5)).rgb
+        textureSampleLevel(inputTex, inputSampler, uv + d * (1.0/3.0 - 0.5), 0.0).rgb +
+        textureSampleLevel(inputTex, inputSampler, uv + d * (2.0/3.0 - 0.5), 0.0).rgb
     );
     let rgbB = rgbA * 0.5 + 0.25 * (
-        textureSample(inputTex, inputSampler, uv + d * -0.5).rgb +
-        textureSample(inputTex, inputSampler, uv + d *  0.5).rgb
+        textureSampleLevel(inputTex, inputSampler, uv + d * -0.5, 0.0).rgb +
+        textureSampleLevel(inputTex, inputSampler, uv + d *  0.5, 0.0).rgb
     );
 
     let lumaB = fxaaLuma(rgbB);

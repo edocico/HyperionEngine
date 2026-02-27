@@ -35,6 +35,8 @@ export interface EngineBridge {
   destroy(): void;
   /** Get the latest render state (SoA: transforms, bounds, renderMeta, texIndices). */
   latestRenderState: GPURenderState | null;
+  /** Resize the rendering surface. Only needed for Mode A (render worker). */
+  resize?(width: number, height: number): void;
 }
 
 /**
@@ -159,6 +161,8 @@ export function createFullIsolationBridge(
     if (ecsReady && renderReady) readyResolve();
   }
 
+  let latestRenderState: GPURenderState | null = null;
+
   ecsWorker.onmessage = (event) => {
     const msg = event.data;
     if (msg.type === "ready") {
@@ -168,12 +172,30 @@ export function createFullIsolationBridge(
       console.error("ECS Worker error:", msg.error);
       readyReject(new Error(`ECS Worker failed: ${msg.error}`));
     } else if (msg.type === "tick-done" && msg.renderState && msg.renderState.entityCount > 0) {
-      // Forward render state to Render Worker (only when there are entities to render).
-      const transferables = [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices];
-      if (msg.renderState.primParams) transferables.push(msg.renderState.primParams);
-      if (msg.renderState.entityIds) transferables.push(msg.renderState.entityIds);
+      const rs = msg.renderState;
+
+      // Copy lightweight data for main-thread picking + audio before
+      // transferring the full ArrayBuffers to the render worker.
+      latestRenderState = {
+        entityCount: rs.entityCount,
+        transforms: new Float32Array(0),
+        bounds: rs.bounds ? new Float32Array(new Float32Array(rs.bounds)) : new Float32Array(0),
+        renderMeta: new Uint32Array(0),
+        texIndices: new Uint32Array(0),
+        primParams: new Float32Array(0),
+        entityIds: rs.entityIds ? new Uint32Array(new Uint32Array(rs.entityIds)) : new Uint32Array(0),
+        listenerX: rs.listenerX ?? 0,
+        listenerY: rs.listenerY ?? 0,
+        listenerZ: rs.listenerZ ?? 0,
+        tickCount: msg.tickCount ?? 0,
+      };
+
+      // Forward full render state to Render Worker.
+      const transferables = [rs.transforms, rs.bounds, rs.renderMeta, rs.texIndices];
+      if (rs.primParams) transferables.push(rs.primParams);
+      if (rs.entityIds) transferables.push(rs.entityIds);
       channel.port1.postMessage(
-        { renderState: msg.renderState },
+        { renderState: rs },
         transferables,
       );
     }
@@ -220,8 +242,10 @@ export function createFullIsolationBridge(
       renderWorker.terminate();
     },
     get latestRenderState() {
-      // In Mode A, rendering is in the Render Worker. Main thread has no state.
-      return null;
+      return latestRenderState;
+    },
+    resize(width: number, height: number) {
+      renderWorker.postMessage({ type: "resize", width, height });
     },
   };
 }

@@ -35,7 +35,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let step = params.stepSize * params.texelSize;
-    var bestSeed = textureSample(inputTex, inputSampler, in.uv);
+    var bestSeed = textureSampleLevel(inputTex, inputSampler, in.uv, 0.0);
     var bestDist = 1e10;
 
     if (bestSeed.b > 0.5) {
@@ -55,7 +55,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
                 continue;
             }
 
-            let s = textureSample(inputTex, inputSampler, sampleUV);
+            let s = textureSampleLevel(inputTex, inputSampler, sampleUV, 0.0);
             if (s.b > 0.5) {
                 let dist = length(in.uv - s.rg);
                 if (dist < bestDist) {

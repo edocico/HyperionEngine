@@ -91,21 +91,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let dashLen = primParams[base + 5u];
     let gapLen = primParams[base + 6u];
 
-    // Read color from texture (with overflow support)
+    // Read color from texture (with overflow support).
+    // textureSampleLevel avoids uniform-control-flow requirement.
     var color: vec4f;
     if (in.isOverflow == 0u) {
         switch in.texTier {
-            case 1u: { color = textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { color = textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { color = textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
-            default: { color = textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { color = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { color = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { color = textureSampleLevel(tier3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { color = textureSampleLevel(tier0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     } else {
         switch in.texTier {
-            case 1u: { color = textureSample(ovf1Tex, texSampler, in.uv, in.texLayer); }
-            case 2u: { color = textureSample(ovf2Tex, texSampler, in.uv, in.texLayer); }
-            case 3u: { color = textureSample(ovf3Tex, texSampler, in.uv, in.texLayer); }
-            default: { color = textureSample(ovf0Tex, texSampler, in.uv, in.texLayer); }
+            case 1u: { color = textureSampleLevel(ovf1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { color = textureSampleLevel(ovf2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { color = textureSampleLevel(ovf3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { color = textureSampleLevel(ovf0Tex, texSampler, in.uv, in.texLayer, 0.0); }
         }
     }
 

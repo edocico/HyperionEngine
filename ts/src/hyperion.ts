@@ -391,6 +391,14 @@ export class Hyperion implements Disposable {
     this.checkDestroyed();
     const aspect = width / height;
     this.cameraApi.setOrthographic(20 * aspect, 20);
+    // In Mode A the canvas is owned by the render worker — forward resize there.
+    // In Mode B/C the main thread owns the canvas — set dimensions directly.
+    if (this.bridge.resize) {
+      this.bridge.resize(width, height);
+    } else {
+      this.config.canvas.width = width;
+      this.config.canvas.height = height;
+    }
   }
 
   /**
@@ -539,12 +547,11 @@ export class Hyperion implements Disposable {
    *
    * @param config - Partial config merged with DEFAULT_PARTICLE_CONFIG
    * @param entityId - Optional external entity ID to track position from
-   * @returns ParticleHandle for later destruction
-   * @throws If no renderer is available (headless mode)
+   * @returns ParticleHandle for later destruction, or null if no renderer (Mode A)
    */
-  createParticleEmitter(config: Partial<ParticleEmitterConfig>, entityId?: number): ParticleHandle {
+  createParticleEmitter(config: Partial<ParticleEmitterConfig>, entityId?: number): ParticleHandle | null {
     this.checkDestroyed();
-    if (!this.renderer) throw new Error('Cannot create particle emitter: no renderer available');
+    if (!this.renderer) return null;
     const merged = { ...DEFAULT_PARTICLE_CONFIG, ...config };
     return this.renderer.particleSystem.createEmitter(merged, entityId);
   }
@@ -553,9 +560,9 @@ export class Hyperion implements Disposable {
    * Destroy a GPU particle emitter and release its GPU resources.
    * Safe to call even without a renderer (no-op).
    */
-  destroyParticleEmitter(handle: ParticleHandle): void {
+  destroyParticleEmitter(handle: ParticleHandle | null): void {
     this.checkDestroyed();
-    this.renderer?.particleSystem.destroyEmitter(handle);
+    if (handle !== null) this.renderer?.particleSystem.destroyEmitter(handle);
   }
 
   /** Per-frame tick: advance the ECS then render if state is available. */

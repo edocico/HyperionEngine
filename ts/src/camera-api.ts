@@ -32,7 +32,7 @@ export class CameraAPI {
     this.cam.setPosition(x, y, z);
   }
 
-  setOrthographic(width: number, height: number, near = 0.1, far = 1000): void {
+  setOrthographic(width: number, height: number, near = -1, far = 1000): void {
     this._width = width;
     this._height = height;
     this.applyProjection(near, far);
@@ -47,7 +47,7 @@ export class CameraAPI {
     return this.cam.viewProjection;
   }
 
-  private applyProjection(near = 0.1, far = 1000): void {
+  private applyProjection(near = -1, far = 1000): void {
     if (this._width === 0 || this._height === 0) return;
     const w = this._width / this._zoom;
     const h = this._height / this._zoom;
