@@ -63,9 +63,14 @@ export class PrioritizedCommandQueue {
 export class BackpressuredProducer {
   private readonly inner: RingBufferProducer;
   private readonly queue = new PrioritizedCommandQueue();
+  private recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
 
   constructor(inner: RingBufferProducer) {
     this.inner = inner;
+  }
+
+  setRecordingTap(tap: ((type: number, entityId: number, payload: Uint8Array) => void) | null): void {
+    this.recordingTap = tap;
   }
 
   get pendingCount(): number {
@@ -84,6 +89,13 @@ export class BackpressuredProducer {
     const ok = this.inner.writeCommand(cmd, entityId, payload);
     if (!ok) {
       this.queue.enqueue(cmd, entityId, payload);
+    }
+    // Fire recording tap for every command (whether written directly or queued)
+    if (this.recordingTap) {
+      const bytes = payload
+        ? new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+        : new Uint8Array(0);
+      this.recordingTap(cmd, entityId, bytes);
     }
     return ok;
   }

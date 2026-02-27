@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PrioritizedCommandQueue, BackpressuredProducer } from './backpressure';
 import { RingBufferProducer, CommandType, extractUnread } from './ring-buffer';
 
@@ -139,6 +139,52 @@ describe('BackpressuredProducer', () => {
     expect(bp.freeSpace).toBeGreaterThan(0);
     bp.spawnEntity(1);
     expect(bp.freeSpace).toBeLessThan(64);
+  });
+
+  describe('recording tap', () => {
+    let producer: BackpressuredProducer;
+
+    beforeEach(() => {
+      const sab = new SharedArrayBuffer(HEADER_SIZE + 1024);
+      producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    });
+
+    it('invokes tap on successful direct write', () => {
+      const tap = vi.fn();
+      producer.setRecordingTap(tap);
+      producer.spawnEntity(1);
+      expect(tap).toHaveBeenCalledTimes(1);
+      expect(tap).toHaveBeenCalledWith(
+        1,  // CommandType.SpawnEntity
+        1,  // entityId
+        expect.any(Uint8Array),
+      );
+    });
+
+    it('invokes tap on queued command flush', () => {
+      const tap = vi.fn();
+      producer.setRecordingTap(tap);
+      producer.setPosition(5, 1.0, 2.0, 3.0);
+      expect(tap).toHaveBeenCalledWith(
+        3,  // CommandType.SetPosition
+        5,
+        expect.any(Uint8Array),
+      );
+    });
+
+    it('does not invoke tap when tap is null', () => {
+      producer.setRecordingTap(null);
+      producer.spawnEntity(1);
+      // No error thrown, no tap called
+    });
+
+    it('tap payload has correct byte length', () => {
+      const tap = vi.fn();
+      producer.setRecordingTap(tap);
+      producer.setPosition(0, 1.0, 2.0, 3.0);
+      const payload: Uint8Array = tap.mock.calls[0][2];
+      expect(payload.byteLength).toBe(12); // 3 x f32
+    });
   });
 });
 
