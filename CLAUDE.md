@@ -73,7 +73,7 @@ cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # Selectio
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (59 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (62 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (30 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (8 tests)
@@ -104,6 +104,16 @@ cd ts && npx vitest run src/basis-transcoder.test.ts            # Basis Universa
 cd ts && npx vitest run src/debug/tlv-parser.test.ts            # TLV binary parser (4 tests)
 cd ts && npx vitest run src/debug/ecs-inspector.test.ts         # ECS Inspector plugin (3 tests)
 cd ts && npx vitest run src/debug/debug-camera.test.ts          # Debug Camera plugin (3 tests)
+cd ts && npx vitest run src/debug/bounds-visualizer.test.ts    # Bounds visualizer plugin (6 tests)
+cd ts && npx vitest run src/prim-params-schema.test.ts         # Prim params schema (9 tests)
+cd ts && npx vitest run src/prefab/types.test.ts               # Prefab types + validation (6 tests)
+cd ts && npx vitest run src/prefab/instance.test.ts            # PrefabInstance (8 tests)
+cd ts && npx vitest run src/prefab/registry.test.ts            # PrefabRegistry (15 tests)
+cd ts && npx vitest run src/prefab/integration.test.ts         # Prefab facade integration (3 tests)
+cd ts && npx vitest run src/asset-pipeline/ktx2-node.test.ts   # Node.js KTX2 parser (4 tests)
+cd ts && npx vitest run src/asset-pipeline/scanner.test.ts     # Texture scanner (5 tests)
+cd ts && npx vitest run src/asset-pipeline/codegen.test.ts     # Code generator (3 tests)
+cd ts && npx vitest run src/asset-pipeline/vite-plugin.test.ts # Vite plugin (4 tests)
 
 # Debug/dev-tools (requires feature flag)
 cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests
@@ -192,12 +202,30 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`. `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `prefabs`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`. `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder (`.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`). `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
 | `types.ts` | `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
-| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`, `KTX2Container`, `BasisTranscoder`, `detectCompressedFormat`) |
+| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`, `KTX2Container`, `BasisTranscoder`, `detectCompressedFormat`, `PrefabRegistry`, `boundsVisualizerPlugin`) |
+| `prim-params-schema.ts` | `PRIM_PARAMS_SCHEMA` + `resolvePrimParams()` — shared parameter name → f32[8] slot registry |
+
+#### Prefabs (`ts/src/prefab/`)
+
+| Module | Role |
+|---|---|
+| `prefab/types.ts` | `PrefabTemplate`, `PrefabNode`, `SpawnOverrides`, `validateTemplate()` |
+| `prefab/instance.ts` | `PrefabInstance` — spawned prefab handle with `moveTo()`, `destroyAll()` |
+| `prefab/registry.ts` | `PrefabRegistry` — register/spawn/unregister prefab templates |
+
+#### Asset Pipeline (`ts/src/asset-pipeline/`, build-time only)
+
+| Module | Role |
+|---|---|
+| `asset-pipeline/ktx2-node.ts` | `parseKTX2Header()` — Node.js build-time KTX2 header parser |
+| `asset-pipeline/scanner.ts` | `scanTextures()` — directory scanner with PascalCase naming |
+| `asset-pipeline/codegen.ts` | `generateAssetCode()` — TypeScript constant file generator |
+| `asset-pipeline/vite-plugin.ts` | `hyperionAssets()` — Vite plugin with watch mode |
 
 #### Engine Runtime
 
@@ -286,6 +314,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `debug/debug-camera.ts` | `debugCameraPlugin` — WASD movement + scroll zoom, F1 toggle |
 | `debug/tlv-parser.ts` | `parseTLV()` — decodes TLV binary from `engine_debug_get_components()`. 15 component types |
 | `debug/ecs-inspector.ts` | `ecsInspectorPlugin` — HTML overlay panel, F12 toggle, dual data channels (SystemViews fast + WASM slow) |
+| `debug/bounds-visualizer.ts` | `boundsVisualizerPlugin` — wireframe bounding sphere visualization, F2 toggle |
 
 #### Shaders (`ts/src/shaders/`, loaded via Vite `?raw`)
 
@@ -396,7 +425,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 10 complete. Next: Phase 11.**
+**Current: Phase 10b-DX complete. Next: Phase 10c-DX (Time-Travel Debug).**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -409,7 +438,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 8 | Polish & DX | Plugin System v2 (PluginContext + 5 APIs), EventBus, shader HMR, profiler overlay |
 | 9 | Advanced 2D | Bézier SDF curves, Dual Kawase bloom, GPU particle system |
 | 10 | Asset Pipeline | KTX2/Basis Universal compressed textures (BC7/ASTC), overflow tiers, `compressionFormat` API |
-| 10-DX | Developer Experience | SystemViews, debug camera, ECS inspector (TLV + panel), WASM debug exports (`dev-tools` feature) |
+| 10a-DX | DX Foundations | SystemViews, debug camera, ECS inspector (TLV + panel), WASM debug exports (`dev-tools` feature) |
+| 10b-DX | DX Features | Prefabs (PrefabRegistry/Instance), build-time Asset Pipeline (Vite plugin), bounds visualizer, PRIM_PARAMS_SCHEMA |
 
 ## Documentation
 
