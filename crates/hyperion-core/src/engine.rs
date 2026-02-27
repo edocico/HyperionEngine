@@ -139,6 +139,309 @@ impl Engine {
 // ── Dev-tools debug methods ──────────────────────────────────────
 #[cfg(feature = "dev-tools")]
 impl Engine {
+    /// Reset the engine to its initial state, clearing all entities,
+    /// mappings, render state, and counters.
+    pub fn reset(&mut self) {
+        self.world = World::new();
+        self.entity_map = EntityMap::new();
+        self.render_state = RenderState::new();
+        self.accumulator = 0.0;
+        self.tick_count = 0;
+        self.listener_pos = [0.0; 3];
+        self.listener_prev_pos = [0.0; 3];
+        self.listener_vel = [0.0; 3];
+    }
+
+    /// Serialize the entire engine state into a binary snapshot.
+    ///
+    /// Format:
+    /// ```text
+    /// [magic: 4B "HSNP"][version: u32][tick: u64][entity_count: u32]
+    /// [entity_map_len: u32][entity_map: (ext_id: u32, hecs_id: u64) x N]
+    /// [per entity: hecs_id: u64, component_mask: u16, component_data...]
+    /// ```
+    pub fn snapshot_create(&self) -> Vec<u8> {
+        use crate::components::*;
+
+        let mut buf = Vec::with_capacity(4096);
+
+        // Header
+        buf.extend_from_slice(b"HSNP");
+        buf.extend_from_slice(&1u32.to_le_bytes()); // version
+        buf.extend_from_slice(&self.tick_count.to_le_bytes());
+
+        // Entity count — we'll come back and patch this
+        let entity_count_offset = buf.len();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder
+
+        // Entity map: length + entries
+        let mapped: Vec<(u32, hecs::Entity)> = self.entity_map.iter_mapped().collect();
+        buf.extend_from_slice(&(mapped.len() as u32).to_le_bytes());
+        for &(ext_id, entity) in &mapped {
+            buf.extend_from_slice(&ext_id.to_le_bytes());
+            buf.extend_from_slice(&entity.to_bits().get().to_le_bytes());
+        }
+
+        // Per-entity component data
+        let mut entity_count = 0u32;
+        for entity in self.world.iter() {
+            let e = entity.entity();
+            entity_count += 1;
+
+            buf.extend_from_slice(&e.to_bits().get().to_le_bytes());
+
+            let mask_offset = buf.len();
+            buf.extend_from_slice(&0u16.to_le_bytes()); // placeholder mask
+            let mut mask: u16 = 0;
+
+            // bit 0: Position (12 bytes)
+            if let Ok(v) = self.world.get::<&Position>(e) {
+                mask |= 1 << 0;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 1: Velocity (12 bytes)
+            if let Ok(v) = self.world.get::<&Velocity>(e) {
+                mask |= 1 << 1;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 2: Rotation (16 bytes)
+            if let Ok(v) = self.world.get::<&Rotation>(e) {
+                mask |= 1 << 2;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 3: Scale (12 bytes)
+            if let Ok(v) = self.world.get::<&Scale>(e) {
+                mask |= 1 << 3;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 4: ModelMatrix (64 bytes)
+            if let Ok(v) = self.world.get::<&ModelMatrix>(e) {
+                mask |= 1 << 4;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 5: BoundingRadius (4 bytes)
+            if let Ok(v) = self.world.get::<&BoundingRadius>(e) {
+                mask |= 1 << 5;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 6: TextureLayerIndex (4 bytes)
+            if let Ok(v) = self.world.get::<&TextureLayerIndex>(e) {
+                mask |= 1 << 6;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 7: MeshHandle (4 bytes)
+            if let Ok(v) = self.world.get::<&MeshHandle>(e) {
+                mask |= 1 << 7;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 8: RenderPrimitive (1 byte)
+            if let Ok(v) = self.world.get::<&RenderPrimitive>(e) {
+                mask |= 1 << 8;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 9: Parent (4 bytes, manual)
+            if let Ok(v) = self.world.get::<&Parent>(e) {
+                mask |= 1 << 9;
+                buf.extend_from_slice(&v.0.to_le_bytes());
+            }
+            // bit 10: Active (0 bytes, marker)
+            if self.world.get::<&Active>(e).is_ok() {
+                mask |= 1 << 10;
+            }
+            // bit 11: ExternalId (4 bytes)
+            if let Ok(v) = self.world.get::<&ExternalId>(e) {
+                mask |= 1 << 11;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 12: PrimitiveParams (32 bytes)
+            if let Ok(v) = self.world.get::<&PrimitiveParams>(e) {
+                mask |= 1 << 12;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 13: LocalMatrix (64 bytes, cast_slice)
+            if let Ok(v) = self.world.get::<&LocalMatrix>(e) {
+                mask |= 1 << 13;
+                let bytes: &[u8] = bytemuck::cast_slice(&v.0);
+                buf.extend_from_slice(bytes);
+            }
+            // bit 14: Children (1 byte count + count*4 bytes)
+            if let Ok(v) = self.world.get::<&Children>(e) {
+                mask |= 1 << 14;
+                buf.push(v.count);
+                for i in 0..v.count as usize {
+                    buf.extend_from_slice(&v.slots[i].to_le_bytes());
+                }
+            }
+
+            // Patch mask
+            buf[mask_offset..mask_offset + 2].copy_from_slice(&mask.to_le_bytes());
+        }
+
+        // Patch entity count
+        buf[entity_count_offset..entity_count_offset + 4]
+            .copy_from_slice(&entity_count.to_le_bytes());
+
+        buf
+    }
+
+    /// Restore engine state from a binary snapshot produced by `snapshot_create`.
+    /// Returns `true` on success, `false` on invalid data.
+    pub fn snapshot_restore(&mut self, data: &[u8]) -> bool {
+        use crate::components::*;
+
+        // Minimum header: magic(4) + version(4) + tick(8) + entity_count(4) + map_len(4) = 24
+        if data.len() < 24 {
+            return false;
+        }
+
+        // Validate magic
+        if &data[0..4] != b"HSNP" {
+            return false;
+        }
+
+        let mut cursor = 4;
+
+        macro_rules! read_pod {
+            ($t:ty) => {{
+                let size = std::mem::size_of::<$t>();
+                if cursor + size > data.len() { return false; }
+                let val: $t = bytemuck::pod_read_unaligned(&data[cursor..cursor + size]);
+                cursor += size;
+                val
+            }};
+        }
+
+        let version = read_pod!(u32);
+        if version != 1 {
+            return false;
+        }
+
+        let tick = read_pod!(u64);
+        let entity_count = read_pod!(u32);
+
+        // Entity map
+        let map_len = read_pod!(u32);
+        let mut ext_to_old_hecs: Vec<(u32, u64)> = Vec::with_capacity(map_len as usize);
+        for _ in 0..map_len {
+            let ext_id = read_pod!(u32);
+            let hecs_bits = read_pod!(u64);
+            ext_to_old_hecs.push((ext_id, hecs_bits));
+        }
+
+        // Rebuild world and entity map
+        let mut new_world = World::new();
+        let mut new_entity_map = EntityMap::new();
+
+        // Map old hecs ID → new hecs Entity so we can fix up entity_map
+        let mut old_to_new: std::collections::HashMap<u64, hecs::Entity> =
+            std::collections::HashMap::new();
+
+        for _ in 0..entity_count {
+            let old_hecs_bits = read_pod!(u64);
+            let mask = read_pod!(u16);
+
+            // Read component data
+            let position = if mask & (1 << 0) != 0 { read_pod!(Position) } else { Position::default() };
+            let velocity = if mask & (1 << 1) != 0 { read_pod!(Velocity) } else { Velocity::default() };
+            let rotation = if mask & (1 << 2) != 0 { read_pod!(Rotation) } else { Rotation::default() };
+            let scale = if mask & (1 << 3) != 0 { read_pod!(Scale) } else { Scale::default() };
+            let model_matrix = if mask & (1 << 4) != 0 { read_pod!(ModelMatrix) } else { ModelMatrix::default() };
+            let bounding_radius = if mask & (1 << 5) != 0 { read_pod!(BoundingRadius) } else { BoundingRadius::default() };
+            let texture_layer = if mask & (1 << 6) != 0 { read_pod!(TextureLayerIndex) } else { TextureLayerIndex::default() };
+            let mesh_handle = if mask & (1 << 7) != 0 { read_pod!(MeshHandle) } else { MeshHandle::default() };
+            let render_prim = if mask & (1 << 8) != 0 { read_pod!(RenderPrimitive) } else { RenderPrimitive::default() };
+
+            let parent = if mask & (1 << 9) != 0 {
+                Parent(read_pod!(u32))
+            } else {
+                Parent::default()
+            };
+
+            let is_active = mask & (1 << 10) != 0;
+
+            let external_id = if mask & (1 << 11) != 0 { read_pod!(ExternalId) } else { ExternalId(0) };
+
+            let prim_params = if mask & (1 << 12) != 0 { read_pod!(PrimitiveParams) } else { PrimitiveParams::default() };
+
+            let local_matrix = if mask & (1 << 13) != 0 {
+                if cursor + 64 > data.len() { return false; }
+                let floats: &[f32] = bytemuck::cast_slice(&data[cursor..cursor + 64]);
+                let mut arr = [0.0f32; 16];
+                arr.copy_from_slice(floats);
+                cursor += 64;
+                Some(LocalMatrix(arr))
+            } else {
+                None
+            };
+
+            let children = if mask & (1 << 14) != 0 {
+                if cursor >= data.len() { return false; }
+                let count = data[cursor];
+                cursor += 1;
+                let needed = count as usize * 4;
+                if cursor + needed > data.len() { return false; }
+                let mut slots = [0u32; Children::MAX_CHILDREN];
+                for i in 0..count as usize {
+                    slots[i] = u32::from_le_bytes(
+                        data[cursor + i * 4..cursor + i * 4 + 4].try_into().unwrap(),
+                    );
+                }
+                cursor += needed;
+                Some(Children { slots, count })
+            } else {
+                None
+            };
+
+            // Spawn entity with baseline components
+            let new_entity = new_world.spawn((
+                position,
+                velocity,
+                rotation,
+                scale,
+                model_matrix,
+                bounding_radius,
+                texture_layer,
+                mesh_handle,
+                render_prim,
+                prim_params,
+                external_id,
+                parent,
+                children.unwrap_or_default(),
+            ));
+
+            // Optionally add Active
+            if is_active {
+                let _ = new_world.insert_one(new_entity, Active);
+            }
+
+            // Optionally add LocalMatrix
+            if let Some(lm) = local_matrix {
+                let _ = new_world.insert_one(new_entity, lm);
+            }
+
+            old_to_new.insert(old_hecs_bits, new_entity);
+        }
+
+        // Rebuild entity map with new hecs entities
+        for (ext_id, old_bits) in ext_to_old_hecs {
+            if let Some(&new_entity) = old_to_new.get(&old_bits) {
+                new_entity_map.insert(ext_id, new_entity);
+            }
+        }
+
+        // Replace engine state
+        self.world = new_world;
+        self.entity_map = new_entity_map;
+        self.render_state = RenderState::new();
+        self.accumulator = 0.0;
+        self.tick_count = tick;
+        self.listener_pos = [0.0; 3];
+        self.listener_prev_pos = [0.0; 3];
+        self.listener_vel = [0.0; 3];
+
+        true
+    }
+
     /// Returns the number of active entities in the ECS world.
     pub fn debug_entity_count(&self) -> u32 {
         crate::systems::count_active(&self.world) as u32
@@ -597,5 +900,68 @@ mod tests {
         let mut colors = vec![0.0f32; 128];
         let count = engine.debug_generate_lines(&mut verts, &mut colors, 32);
         assert_eq!(count, 0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn reset_clears_world_and_tick_count() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0), spawn_cmd(1), spawn_cmd(2)]);
+        engine.update(1.0 / 60.0);
+        assert!(engine.tick_count() > 0);
+        assert!(engine.entity_map.get(0).is_some());
+        engine.reset();
+        assert_eq!(engine.tick_count(), 0);
+        assert!(engine.entity_map.get(0).is_none());
+        assert_eq!(crate::systems::count_active(&engine.world), 0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_create_produces_valid_bytes() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0), make_position_cmd(0, 5.0, 10.0, 0.0)]);
+        engine.update(1.0 / 60.0);
+        let snapshot = engine.snapshot_create();
+        assert!(!snapshot.is_empty());
+        assert_eq!(&snapshot[0..4], b"HSNP");
+        let version = u32::from_le_bytes(snapshot[4..8].try_into().unwrap());
+        assert_eq!(version, 1);
+        let tick = u64::from_le_bytes(snapshot[8..16].try_into().unwrap());
+        assert!(tick > 0);
+        let entity_count = u32::from_le_bytes(snapshot[16..20].try_into().unwrap());
+        assert_eq!(entity_count, 1);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_roundtrip_preserves_state() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_cmd(0),
+            make_position_cmd(0, 5.0, 10.0, 0.0),
+            spawn_cmd(1),
+            make_position_cmd(1, 20.0, 30.0, 0.0),
+        ]);
+        engine.update(1.0 / 60.0);
+        let snapshot = engine.snapshot_create();
+        engine.process_commands(&[make_position_cmd(0, 999.0, 999.0, 0.0)]);
+        engine.update(1.0 / 60.0);
+        assert!(engine.snapshot_restore(&snapshot));
+        let e0 = engine.entity_map.get(0).unwrap();
+        let pos0 = engine.world.get::<&crate::components::Position>(e0).unwrap();
+        assert!((pos0.0.x - 5.0).abs() < 0.5);
+        let e1 = engine.entity_map.get(1).unwrap();
+        let pos1 = engine.world.get::<&crate::components::Position>(e1).unwrap();
+        assert!((pos1.0.x - 20.0).abs() < 0.5);
+        assert_eq!(engine.tick_count(), 1);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_restore_rejects_invalid_magic() {
+        let mut engine = Engine::new();
+        let bad_data = b"BADDxxxxxxxxxxxxxxxxxxxxxxxx";
+        assert!(!engine.snapshot_restore(bad_data));
     }
 }

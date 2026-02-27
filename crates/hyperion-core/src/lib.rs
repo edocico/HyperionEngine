@@ -408,3 +408,42 @@ pub fn engine_debug_generate_lines(vert_ptr: *mut f32, color_ptr: *mut f32, max_
         engine.debug_generate_lines(verts, colors, max_verts)
     }
 }
+
+/// Reset the engine to its initial state (dev-tools only).
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+pub fn engine_reset() {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut e) = *addr_of_mut!(ENGINE) {
+            e.reset();
+        }
+    }
+}
+
+/// Create a binary snapshot of the current engine state (dev-tools only).
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+pub fn engine_snapshot_create() -> Vec<u8> {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or_else(Vec::new, |e| e.snapshot_create())
+    }
+}
+
+/// Restore engine state from a binary snapshot (dev-tools only).
+/// Returns true on success, false on invalid data.
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+pub fn engine_snapshot_restore(data: &[u8]) -> bool {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut e) = *addr_of_mut!(ENGINE) {
+            e.snapshot_restore(data)
+        } else {
+            false
+        }
+    }
+}
