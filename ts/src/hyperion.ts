@@ -117,23 +117,58 @@ export class Hyperion implements Disposable {
       B: ExecutionMode.PartialIsolation,
       C: ExecutionMode.SingleThread,
     };
-    const mode = config.preferredMode === 'auto'
+    const preferredMode = config.preferredMode === 'auto'
       ? selectExecutionMode(caps)
       : modeMap[config.preferredMode] ?? selectExecutionMode(caps);
 
-    let bridge: EngineBridge;
-    let rendererOnMain = true;
-
-    if (mode === ExecutionMode.FullIsolation) {
-      bridge = createFullIsolationBridge(config.canvas);
-      rendererOnMain = false;
-    } else if (mode === ExecutionMode.PartialIsolation) {
-      bridge = createWorkerBridge(mode);
+    // Build the fallback chain: try preferred mode, then degrade gracefully
+    const fallbackChain: ExecutionMode[] = [];
+    if (preferredMode === ExecutionMode.FullIsolation) {
+      fallbackChain.push(ExecutionMode.FullIsolation, ExecutionMode.PartialIsolation, ExecutionMode.SingleThread);
+    } else if (preferredMode === ExecutionMode.PartialIsolation) {
+      fallbackChain.push(ExecutionMode.PartialIsolation, ExecutionMode.SingleThread);
     } else {
-      bridge = await createDirectBridge();
+      fallbackChain.push(ExecutionMode.SingleThread);
     }
 
-    await bridge.ready();
+    let bridge: EngineBridge | null = null;
+    let rendererOnMain = true;
+
+    for (const mode of fallbackChain) {
+      try {
+        if (mode === ExecutionMode.FullIsolation) {
+          // Quick adapter check — transferControlToOffscreen is irreversible,
+          // so verify WebGPU works before committing the canvas to a worker.
+          const adapter = await navigator.gpu?.requestAdapter();
+          if (!adapter) {
+            console.warn('[Hyperion] No WebGPU adapter on main thread, skipping Mode A');
+            continue;
+          }
+          bridge = createFullIsolationBridge(config.canvas);
+          rendererOnMain = false;
+        } else if (mode === ExecutionMode.PartialIsolation && caps.sharedArrayBuffer) {
+          bridge = createWorkerBridge(mode);
+          rendererOnMain = true;
+        } else {
+          bridge = await createDirectBridge();
+          rendererOnMain = true;
+        }
+        await bridge.ready();
+        break;
+      } catch (err) {
+        console.warn(`[Hyperion] Mode ${mode} failed, trying next fallback:`, err);
+        bridge?.destroy();
+        bridge = null;
+        rendererOnMain = true;
+      }
+    }
+
+    if (!bridge) {
+      // Last resort: Mode C should always work
+      bridge = await createDirectBridge();
+      await bridge.ready();
+      rendererOnMain = true;
+    }
 
     let renderer: Renderer | null = null;
     if (rendererOnMain && caps.webgpu) {

@@ -36,7 +36,7 @@ interface WasmEngine {
   engine_listener_x(): number;
   engine_listener_y(): number;
   engine_listener_z(): number;
-  memory: WebAssembly.Memory;
+  engine_memory(): WebAssembly.Memory;
 }
 
 let wasm: WasmEngine | null = null;
@@ -115,26 +115,26 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
 
         // Copy from WASM memory into transferable buffers
         const transforms = new Float32Array(tLen);
-        if (tPtr) transforms.set(new Float32Array(wasm.memory.buffer, tPtr, tLen));
+        if (tPtr) transforms.set(new Float32Array(wasm.engine_memory().buffer, tPtr, tLen));
 
         const bounds = new Float32Array(bLen);
-        if (bPtr) bounds.set(new Float32Array(wasm.memory.buffer, bPtr, bLen));
+        if (bPtr) bounds.set(new Float32Array(wasm.engine_memory().buffer, bPtr, bLen));
 
         const renderMeta = new Uint32Array(mLen);
-        if (mPtr) renderMeta.set(new Uint32Array(wasm.memory.buffer, mPtr, mLen));
+        if (mPtr) renderMeta.set(new Uint32Array(wasm.engine_memory().buffer, mPtr, mLen));
 
         const texIndices = new Uint32Array(texLen);
-        if (texPtr) texIndices.set(new Uint32Array(wasm.memory.buffer, texPtr, texLen));
+        if (texPtr) texIndices.set(new Uint32Array(wasm.engine_memory().buffer, texPtr, texLen));
 
         const ppPtr = wasm.engine_gpu_prim_params_ptr();
         const ppLen = wasm.engine_gpu_prim_params_f32_len();
         const primParams = new Float32Array(ppLen);
-        if (ppPtr) primParams.set(new Float32Array(wasm.memory.buffer, ppPtr, ppLen));
+        if (ppPtr) primParams.set(new Float32Array(wasm.engine_memory().buffer, ppPtr, ppLen));
 
         const eidPtr = wasm.engine_gpu_entity_ids_ptr();
         const eidLen = wasm.engine_gpu_entity_ids_len();
         const entityIds = new Uint32Array(eidLen);
-        if (eidPtr) entityIds.set(new Uint32Array(wasm.memory.buffer, eidPtr, eidLen));
+        if (eidPtr) entityIds.set(new Uint32Array(wasm.engine_memory().buffer, eidPtr, eidLen));
 
         renderState = {
           entityCount: count,

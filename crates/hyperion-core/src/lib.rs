@@ -328,6 +328,14 @@ pub fn engine_listener_z() -> f32 {
     }
 }
 
+/// Expose WASM linear memory to JavaScript.
+/// wasm-bindgen does not auto-export `WebAssembly.Memory`; callers need
+/// it to create typed array views over SoA GPU buffers (transforms, bounds, etc.).
+#[wasm_bindgen]
+pub fn engine_memory() -> JsValue {
+    wasm_bindgen::memory()
+}
+
 /// Smoke test.
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {

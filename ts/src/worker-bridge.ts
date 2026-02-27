@@ -147,8 +147,10 @@ export function createFullIsolationBridge(
   const channel = new MessageChannel();
 
   let readyResolve: () => void;
-  const readyPromise = new Promise<void>((resolve) => {
+  let readyReject: (err: Error) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => {
     readyResolve = resolve;
+    readyReject = reject;
   });
 
   let ecsReady = false;
@@ -164,6 +166,7 @@ export function createFullIsolationBridge(
       checkBothReady();
     } else if (msg.type === "error") {
       console.error("ECS Worker error:", msg.error);
+      readyReject(new Error(`ECS Worker failed: ${msg.error}`));
     } else if (msg.type === "tick-done" && msg.renderState && msg.renderState.entityCount > 0) {
       // Forward render state to Render Worker (only when there are entities to render).
       const transferables = [msg.renderState.transforms, msg.renderState.bounds, msg.renderState.renderMeta, msg.renderState.texIndices];
@@ -183,6 +186,7 @@ export function createFullIsolationBridge(
       checkBothReady();
     } else if (msg.type === "error") {
       console.error("Render Worker error:", msg.error);
+      readyReject(new Error(`Render Worker failed: ${msg.error}`));
     }
   };
 
@@ -259,7 +263,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_listener_y(): number;
     engine_listener_z(): number;
     engine_tick_count(): bigint;
-    memory: WebAssembly.Memory;
+    engine_memory(): WebAssembly.Memory;
   };
 
   engine.engine_init();
@@ -296,12 +300,12 @@ export async function createDirectBridge(): Promise<EngineBridge> {
         // Copy from WASM memory — live views become stale after next engine_update().
         latestRenderState = {
           entityCount: count,
-          transforms: tPtr ? new Float32Array(new Float32Array(engine.memory.buffer, tPtr, tLen)) : new Float32Array(0),
-          bounds: bPtr ? new Float32Array(new Float32Array(engine.memory.buffer, bPtr, bLen)) : new Float32Array(0),
-          renderMeta: mPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, mPtr, mLen)) : new Uint32Array(0),
-          texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, texPtr, texLen)) : new Uint32Array(0),
-          primParams: ppPtr ? new Float32Array(new Float32Array(engine.memory.buffer, ppPtr, ppLen)) : new Float32Array(0),
-          entityIds: eidPtr ? new Uint32Array(new Uint32Array(engine.memory.buffer, eidPtr, eidLen)) : new Uint32Array(0),
+          transforms: tPtr ? new Float32Array(new Float32Array(engine.engine_memory().buffer, tPtr, tLen)) : new Float32Array(0),
+          bounds: bPtr ? new Float32Array(new Float32Array(engine.engine_memory().buffer, bPtr, bLen)) : new Float32Array(0),
+          renderMeta: mPtr ? new Uint32Array(new Uint32Array(engine.engine_memory().buffer, mPtr, mLen)) : new Uint32Array(0),
+          texIndices: texPtr ? new Uint32Array(new Uint32Array(engine.engine_memory().buffer, texPtr, texLen)) : new Uint32Array(0),
+          primParams: ppPtr ? new Float32Array(new Float32Array(engine.engine_memory().buffer, ppPtr, ppLen)) : new Float32Array(0),
+          entityIds: eidPtr ? new Uint32Array(new Uint32Array(engine.engine_memory().buffer, eidPtr, eidLen)) : new Uint32Array(0),
           listenerX: engine.engine_listener_x(),
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
