@@ -393,6 +393,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Mode A: main thread has no renderer** — `createParticleEmitter()` returns `null` (not throw). `renderer` stays `null` on main thread; rendering happens in Render Worker.
 - **Mode A: ArrayBuffers transferred, not copied** — After `postMessage` with transferables to Render Worker, the original ArrayBuffers are neutered (zero-length). Main-thread bridge copies bounds + entityIds before transfer for picking/audio.
 - **Snapshot binary uses `pod_read_unaligned`** — Snapshot byte buffers have no alignment guarantees. `bytemuck::from_bytes` panics on unaligned data; always use `pod_read_unaligned` for reading Pod types from snapshot data.
+- **Bridge tick count is on `latestRenderState`** — Use `bridge.latestRenderState?.tickCount ?? 0`, NOT `bridge.tickCount()`. The bridge interface has no direct `tickCount()` method.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -481,4 +482,4 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c). Historical reference for implementation decisions.
