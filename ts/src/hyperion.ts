@@ -36,6 +36,8 @@ import type { ProfilerConfig } from './profiler';
 import { DEFAULT_PARTICLE_CONFIG } from './particle-types';
 import type { ParticleEmitterConfig, ParticleHandle } from './particle-types';
 import { PrefabRegistry } from './prefab/registry';
+import { CommandTapeRecorder } from './replay/command-tape';
+import type { CommandTape } from './replay/command-tape';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -69,6 +71,7 @@ export class Hyperion implements Disposable {
   private destroyed = false;
   private profiler: ProfilerOverlay | null = null;
   private profilerHook: ((dt: number) => void) | null = null;
+  private recorder: CommandTapeRecorder | null = null;
 
   private constructor(
     config: ResolvedConfig,
@@ -217,6 +220,40 @@ export class Hyperion implements Disposable {
   /** Audio manager for loading and playing sounds with 2D spatial audio. */
   get audio(): AudioManager {
     return this.audioManager;
+  }
+
+  /**
+   * Debug API for time-travel recording controls.
+   * Start/stop command recording to produce a CommandTape snapshot.
+   */
+  get debug() {
+    const self = this;
+    return {
+      get isRecording(): boolean {
+        return self.recorder !== null;
+      },
+      startRecording(config?: { maxEntries?: number }): void {
+        if (self.recorder) return;
+        self.recorder = new CommandTapeRecorder(config);
+        self.bridge.commandBuffer.setRecordingTap((type, entityId, payload) => {
+          const tick = self.bridge.latestRenderState?.tickCount ?? 0;
+          self.recorder?.record({
+            tick,
+            timestamp: performance.now(),
+            type,
+            entityId,
+            payload: new Uint8Array(payload),
+          });
+        });
+      },
+      stopRecording(): CommandTape | null {
+        if (!self.recorder) return null;
+        const tape = self.recorder.stop();
+        self.recorder = null;
+        self.bridge.commandBuffer.setRecordingTap(null);
+        return tape;
+      },
+    };
   }
 
   /**

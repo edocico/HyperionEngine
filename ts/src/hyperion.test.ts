@@ -8,10 +8,14 @@ import { SelectionManager } from './selection';
 import { AudioManager } from './audio-manager';
 
 function mockBridge(): EngineBridge {
+  let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
   return {
     mode: ExecutionMode.SingleThread,
     commandBuffer: {
-      spawnEntity: vi.fn(() => true),
+      spawnEntity: vi.fn((id: number) => {
+        if (recordingTap) recordingTap(1 /* SpawnEntity */, id, new Uint8Array(0));
+        return true;
+      }),
       despawnEntity: vi.fn(() => true),
       setPosition: vi.fn(() => true),
       setVelocity: vi.fn(() => true),
@@ -24,6 +28,7 @@ function mockBridge(): EngineBridge {
       setListenerPosition: vi.fn(() => true),
       writeCommand: vi.fn(() => true),
       flush: vi.fn(),
+      setRecordingTap: vi.fn((tap: any) => { recordingTap = tap; }),
       pendingCount: 0,
       freeSpace: 1000,
     } as any,
@@ -669,5 +674,34 @@ describe('Hyperion SystemViews', () => {
 describe('Hyperion.create', () => {
   it('is an async static factory', () => {
     expect(typeof Hyperion.create).toBe('function');
+  });
+});
+
+describe('debug API', () => {
+  it('startRecording / stopRecording returns a CommandTape', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    engine.debug.startRecording();
+    engine.spawn();
+    const tape = engine.debug.stopRecording();
+    expect(tape).toBeDefined();
+    expect(tape!.version).toBe(1);
+    expect(tape!.entries.length).toBeGreaterThanOrEqual(1);
+    engine.destroy();
+  });
+
+  it('stopRecording returns null when not recording', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(engine.debug.stopRecording()).toBeNull();
+    engine.destroy();
+  });
+
+  it('isRecording reflects state', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    expect(engine.debug.isRecording).toBe(false);
+    engine.debug.startRecording();
+    expect(engine.debug.isRecording).toBe(true);
+    engine.debug.stopRecording();
+    expect(engine.debug.isRecording).toBe(false);
+    engine.destroy();
   });
 });
