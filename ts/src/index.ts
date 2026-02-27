@@ -59,3 +59,15 @@ export { fpsCounterPlugin } from './plugins/fps-counter';
 // Debug tools
 export { boundsVisualizerPlugin } from './debug/bounds-visualizer';
 export type { BoundsVisualizerOptions } from './debug/bounds-visualizer';
+
+// Replay / Time-Travel (Phase 10c)
+export { CommandTapeRecorder } from './replay/command-tape';
+export type { CommandTape, TapeEntry } from './replay/command-tape';
+export { ReplayPlayer } from './replay/replay-player';
+export type { ReplayCallbacks } from './replay/replay-player';
+export { SnapshotManager } from './replay/snapshot-manager';
+export type { SnapshotEntry, SnapshotManagerConfig } from './replay/snapshot-manager';
+
+// HMR State Preservation (Phase 10c)
+export { createHotSystem } from './hmr/hot-system';
+export type { HotSystemConfig } from './hmr/hot-system';
