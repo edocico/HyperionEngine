@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (475 tests)
+cd ts && npm test                            # All vitest tests (559 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -76,14 +76,15 @@ cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix 
 cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (62 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (30 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
-cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (8 tests)
+cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (12 tests)
 cd ts && npx vitest run src/raw-api.test.ts                   # RawAPI numeric interface (4 tests)
 cd ts && npx vitest run src/camera-api.test.ts                # CameraAPI zoom (3 tests)
+cd ts && npx vitest run src/system-views.test.ts              # SystemViews typed views (1 test)
 cd ts && npx vitest run src/plugin.test.ts                    # PluginRegistry + dependency resolution (13 tests)
 cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector backstop (2 tests)
 cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
 cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
-cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (24 tests)
+cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (27 tests)
 cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing (8 tests)
 cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state + bounds patching (10 tests)
 cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
@@ -231,6 +232,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
+| `system-views.ts` | `SystemViews` — read-only typed views into GPU SoA buffers (transforms/bounds/entityIds/renderMeta). Updated once per tick cycle |
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hooks, FPS/frame-time tracking |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` |
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
@@ -244,7 +246,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 |---|---|
 | `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
 | `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing |
-| `worker-bridge.ts` | `EngineBridge` interface — `createWorkerBridge()` (A/B) or `createDirectBridge()` (C). `GPURenderState` type |
+| `worker-bridge.ts` | `EngineBridge` interface — `createFullIsolationBridge(canvas)` (A), `createWorkerBridge()` (B), `createDirectBridge()` (C). `GPURenderState` type |
 | `engine-worker.ts` | Web Worker: loads WASM, calls `engine_init`/`engine_update`, heartbeat counter |
 | `render-worker.ts` | Mode A: OffscreenCanvas + `createRenderer()` |
 | `supervisor.ts` | `WorkerSupervisor` — heartbeat monitoring + timeout detection |
@@ -367,6 +369,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Compressed texture tier growth needs standard WebGPU** — `copyTextureToTexture` for compressed formats is disallowed in compatibility mode. Falls back to rgba8unorm.
 - **`tsc --noEmit` reports TS2307 for WASM imports** — `../wasm/hyperion_core.js` errors are expected when WASM isn't compiled. These are pre-existing and safe to ignore. Filter: `npx tsc --noEmit 2>&1 | grep -v "wasm/hyperion_core"`.
 - **`export { X } from './mod'` doesn't use a top-level import** — A re-export statement is self-contained. Adding `import { X } from './mod'` alongside it causes TS6133 (unused import). Use only the re-export.
+- **macOS/Metal requires `textureSampleLevel` in non-fragment stages** — `textureSample` is fragment-only per spec. Metal enforces this strictly; Vulkan/Linux tolerates it. All WGSL shaders must use `textureSampleLevel(tex, sampler, uv, 0.0)` in vertex/compute stages.
+- **Compressed textures cannot have RENDER_ATTACHMENT usage** — BC7/ASTC textures fail `createTexture` on Metal if `RENDER_ATTACHMENT` is included. Only use `TEXTURE_BINDING | COPY_DST`.
+- **Orthographic near plane must be negative for z=0 entities** — WebGPU clip volume is z ∈ [0, w]. With `near=0.1`, entities at z=0 map to z_clip ≈ -0.0001, outside valid range. macOS/Metal clips strictly; Linux/Vulkan has guard bands. Default `near=-1` places the near plane behind z=0.
+- **Mode A: main thread has no renderer** — `createParticleEmitter()` returns `null` (not throw). `renderer` stays `null` on main thread; rendering happens in Render Worker.
+- **Mode A: ArrayBuffers transferred, not copied** — After `postMessage` with transferables to Render Worker, the original ArrayBuffers are neutered (zero-length). Main-thread bridge copies bounds + entityIds before transfer for picking/audio.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -412,6 +419,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **KTX2 direct upload fast path** — When vkFormat matches device (e.g., BC7 file on BC7 device), no transcoder WASM loaded. Raw level data uploaded via `writeTexture`.
 - **ResourcePool overflow views** — `ovf0`-`ovf3` registered alongside `tier0`-`tier3`. ForwardPass bind group reads all 9 texture views.
 - **BasisTranscoder singleton race protection** — `initPromise` caches the entire init flow, not just the module load. Prevents concurrent `getInstance()` from double-initializing.
+- **Mode A Render Worker has its own Camera** — `render-worker.ts` creates a separate `Camera` instance. Main-thread `CameraAPI` changes (zoom, position) do NOT propagate to Mode A rendering. Camera sync requires a message protocol (not yet implemented).
 
 ## Conventions
 
