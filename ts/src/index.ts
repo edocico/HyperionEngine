@@ -55,3 +55,7 @@ export { PRIM_PARAMS_SCHEMA, resolvePrimParams } from './prim-params-schema';
 
 // Example plugins
 export { fpsCounterPlugin } from './plugins/fps-counter';
+
+// Debug tools
+export { boundsVisualizerPlugin } from './debug/bounds-visualizer';
+export type { BoundsVisualizerOptions } from './debug/bounds-visualizer';
