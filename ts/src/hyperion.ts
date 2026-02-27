@@ -35,6 +35,7 @@ import { ProfilerOverlay } from './profiler';
 import type { ProfilerConfig } from './profiler';
 import { DEFAULT_PARTICLE_CONFIG } from './particle-types';
 import type { ParticleEmitterConfig, ParticleHandle } from './particle-types';
+import { PrefabRegistry } from './prefab/registry';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -61,6 +62,7 @@ export class Hyperion implements Disposable {
   private readonly immediateState: ImmediateState;
   private readonly audioManager: AudioManager;
   private readonly eventBus: EventBus;
+  private readonly prefabRegistry: PrefabRegistry;
 
   private nextEntityId = 0;
   private entityCount = 0;
@@ -86,6 +88,7 @@ export class Hyperion implements Disposable {
     this.immediateState = new ImmediateState();
     this.audioManager = new AudioManager();
     this.eventBus = new EventBus();
+    this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
 
@@ -164,6 +167,11 @@ export class Hyperion implements Disposable {
   /** Installed plugin registry. */
   get plugins(): PluginRegistry {
     return this.pluginRegistry;
+  }
+
+  /** Prefab registry for declarative entity composition. */
+  get prefabs(): PrefabRegistry {
+    return this.prefabRegistry;
   }
 
   /** Input manager for keyboard, pointer, and scroll state. */

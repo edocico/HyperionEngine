@@ -47,5 +47,11 @@ export { BasisTranscoder } from './basis-transcoder';
 export type { TranscodeTarget, TranscodeResult } from './basis-transcoder';
 export { detectCompressedFormat } from './capabilities';
 
+// Prefabs
+export type { PrefabTemplate, PrefabNode, SpawnOverrides } from './prefab/types';
+export { PrefabInstance } from './prefab/instance';
+export { PrefabRegistry } from './prefab/registry';
+export { PRIM_PARAMS_SCHEMA, resolvePrimParams } from './prim-params-schema';
+
 // Example plugins
 export { fpsCounterPlugin } from './plugins/fps-counter';
