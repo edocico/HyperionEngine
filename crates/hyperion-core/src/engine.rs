@@ -161,6 +161,88 @@ impl Engine {
         written as u32
     }
 
+    /// Generate wireframe line vertices for bounding sphere visualization.
+    /// Each entity produces a 16-segment circle approximation (32 vertices = 16 line pairs).
+    /// Returns the number of vertices written.
+    ///
+    /// `vert_out`: 3 f32 per vertex (x, y, z)
+    /// `color_out`: 4 f32 per vertex (r, g, b, a)
+    /// `max_verts`: maximum number of vertices to write
+    pub fn debug_generate_lines(
+        &self,
+        vert_out: &mut [f32],
+        color_out: &mut [f32],
+        max_verts: u32,
+    ) -> u32 {
+        use crate::components::{Active, BoundingRadius, Position};
+        use std::f32::consts::TAU;
+
+        const SEGMENTS: usize = 16;
+        const VERTS_PER_ENTITY: usize = SEGMENTS * 2; // 2 endpoints per line segment
+
+        let max = max_verts as usize;
+        let mut written = 0usize;
+
+        for (entity, pos, radius) in self.world.query::<(hecs::Entity, &Position, &BoundingRadius)>().iter() {
+            if written + VERTS_PER_ENTITY > max {
+                break;
+            }
+
+            // Check if vert_out and color_out have space
+            let v_end = (written + VERTS_PER_ENTITY) * 3;
+            let c_end = (written + VERTS_PER_ENTITY) * 4;
+            if v_end > vert_out.len() || c_end > color_out.len() {
+                break;
+            }
+
+            let cx = pos.0.x;
+            let cy = pos.0.y;
+            let cz = pos.0.z;
+            let r = radius.0;
+
+            // Color: green for active, yellow for inactive
+            let is_active = self.world.get::<&Active>(entity).is_ok();
+            let (cr, cg, cb, ca) = if is_active {
+                (0.0, 1.0, 0.0, 0.8)
+            } else {
+                (1.0, 1.0, 0.0, 0.6)
+            };
+
+            // Generate circle line segments
+            for seg in 0..SEGMENTS {
+                let a0 = TAU * (seg as f32) / (SEGMENTS as f32);
+                let a1 = TAU * ((seg + 1) as f32) / (SEGMENTS as f32);
+
+                let vi = (written + seg * 2) * 3;
+                let ci = (written + seg * 2) * 4;
+
+                // Start point
+                vert_out[vi] = cx + r * a0.cos();
+                vert_out[vi + 1] = cy + r * a0.sin();
+                vert_out[vi + 2] = cz;
+
+                color_out[ci] = cr;
+                color_out[ci + 1] = cg;
+                color_out[ci + 2] = cb;
+                color_out[ci + 3] = ca;
+
+                // End point
+                vert_out[vi + 3] = cx + r * a1.cos();
+                vert_out[vi + 4] = cy + r * a1.sin();
+                vert_out[vi + 5] = cz;
+
+                color_out[ci + 4] = cr;
+                color_out[ci + 5] = cg;
+                color_out[ci + 6] = cb;
+                color_out[ci + 7] = ca;
+            }
+
+            written += VERTS_PER_ENTITY;
+        }
+
+        written as u32
+    }
+
     /// Serialize all components of the entity with the given external ID into
     /// TLV (Type-Length-Value) format. Returns the number of bytes written.
     ///
@@ -477,5 +559,43 @@ mod tests {
         let data_len = u16::from_le_bytes([out[1], out[2]]) as usize;
         assert!(comp_type >= 1 && comp_type <= 15);
         assert!(data_len > 0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn debug_generate_lines_produces_circle_vertices() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0), make_position_cmd(0, 10.0, 20.0, 0.0)]);
+        engine.update(1.0 / 60.0);
+        let mut verts = vec![0.0f32; 16 * 2 * 3]; // 16 segments * 2 endpoints * 3 floats
+        let mut colors = vec![0.0f32; 16 * 2 * 4]; // 16 segments * 2 endpoints * 4 RGBA
+        let count = engine.debug_generate_lines(&mut verts, &mut colors, 16 * 2);
+        assert!(count > 0, "should produce at least some line vertices");
+        assert_eq!(count % 2, 0, "line vertices come in pairs");
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn debug_generate_lines_respects_max_verts() {
+        let mut engine = Engine::new();
+        for i in 0..100 {
+            engine.process_commands(&[spawn_cmd(i)]);
+        }
+        engine.update(1.0 / 60.0);
+        let max = 64; // much less than 100 entities * 32 verts
+        let mut verts = vec![0.0f32; max * 3];
+        let mut colors = vec![0.0f32; max * 4];
+        let count = engine.debug_generate_lines(&mut verts, &mut colors, max as u32);
+        assert!(count <= max as u32);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn debug_generate_lines_empty_world() {
+        let engine = Engine::new();
+        let mut verts = vec![0.0f32; 96];
+        let mut colors = vec![0.0f32; 128];
+        let count = engine.debug_generate_lines(&mut verts, &mut colors, 32);
+        assert_eq!(count, 0);
     }
 }
