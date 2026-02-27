@@ -277,4 +277,81 @@ describe('InputManager', () => {
       expect(fn).not.toHaveBeenCalled();
     });
   });
+
+  describe('HTMLElement focus handling', () => {
+    it('sets tabindex and focuses HTMLElement targets', () => {
+      const im = new InputManager();
+      // Simulate an HTMLElement with the properties attach() uses
+      const el: EventTarget & {
+        hasAttribute(name: string): boolean;
+        setAttribute(name: string, value: string): void;
+        getAttribute(name: string): string | null;
+        style: Record<string, string>;
+        focus(): void;
+      } = Object.assign(new EventTarget(), {
+        _attrs: {} as Record<string, string>,
+        hasAttribute(name: string) { return name in this._attrs; },
+        setAttribute(name: string, value: string) { this._attrs[name] = value; },
+        getAttribute(name: string) { return this._attrs[name] ?? null; },
+        style: {} as Record<string, string>,
+        focus: vi.fn(),
+      });
+      // Make instanceof HTMLElement pass in Node.js by shimming the global
+      const origHTML = globalThis.HTMLElement;
+      globalThis.HTMLElement = EventTarget as unknown as typeof HTMLElement;
+      try {
+        im.attach(el);
+        expect(el.getAttribute('tabindex')).toBe('0');
+        expect(el.style.outline).toBe('none');
+        expect(el.focus).toHaveBeenCalled();
+      } finally {
+        globalThis.HTMLElement = origHTML;
+      }
+    });
+
+    it('does not overwrite existing tabindex', () => {
+      const im = new InputManager();
+      const el = Object.assign(new EventTarget(), {
+        _attrs: { tabindex: '-1' } as Record<string, string>,
+        hasAttribute(name: string) { return name in this._attrs; },
+        setAttribute(name: string, value: string) { this._attrs[name] = value; },
+        getAttribute(name: string) { return this._attrs[name] ?? null; },
+        style: {} as Record<string, string>,
+        focus: vi.fn(),
+      });
+      const origHTML = globalThis.HTMLElement;
+      globalThis.HTMLElement = EventTarget as unknown as typeof HTMLElement;
+      try {
+        im.attach(el);
+        expect(el.getAttribute('tabindex')).toBe('-1');
+      } finally {
+        globalThis.HTMLElement = origHTML;
+      }
+    });
+
+    it('re-focuses target on pointerdown', () => {
+      const im = new InputManager();
+      const focusFn = vi.fn();
+      const el = Object.assign(new EventTarget(), {
+        _attrs: {} as Record<string, string>,
+        hasAttribute(name: string) { return name in this._attrs; },
+        setAttribute(name: string, value: string) { this._attrs[name] = value; },
+        getAttribute(name: string) { return this._attrs[name] ?? null; },
+        style: {} as Record<string, string>,
+        focus: focusFn,
+      });
+      const origHTML = globalThis.HTMLElement;
+      globalThis.HTMLElement = EventTarget as unknown as typeof HTMLElement;
+      try {
+        im.attach(el);
+        focusFn.mockClear();
+
+        const event = Object.assign(new Event('pointerdown'), { button: 0, offsetX: 10, offsetY: 10 });
+        el.dispatchEvent(event);
+        expect(focusFn).toHaveBeenCalled();
+      } finally {
+        globalThis.HTMLElement = origHTML;
+      }
+    });
+  });
 });

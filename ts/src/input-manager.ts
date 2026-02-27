@@ -191,6 +191,17 @@ export class InputManager {
       this.detach();
     }
     this.attachedTarget = target;
+
+    // Ensure the target is focusable so it receives keyboard events.
+    // Elements like <canvas> are not focusable by default.
+    if (typeof HTMLElement !== 'undefined' && target instanceof HTMLElement) {
+      if (!target.hasAttribute('tabindex')) {
+        target.setAttribute('tabindex', '0');
+      }
+      target.style.outline = 'none';
+      target.focus();
+    }
+
     target.addEventListener('keydown', this.boundHandlers.keydown);
     target.addEventListener('keyup', this.boundHandlers.keyup);
     target.addEventListener('pointermove', this.boundHandlers.pointermove);
@@ -244,6 +255,10 @@ export class InputManager {
   private onDomPointerDown(e: Event): void {
     const pe = e as PointerEvent;
     this.handlePointerDown(pe.button, pe.offsetX, pe.offsetY);
+    // Re-focus so keyboard events keep working after clicking away and back
+    if (typeof HTMLElement !== 'undefined' && this.attachedTarget instanceof HTMLElement) {
+      this.attachedTarget.focus();
+    }
   }
 
   private onDomPointerUp(e: Event): void {
