@@ -176,7 +176,7 @@ export class Hyperion implements Disposable {
     let renderer: Renderer | null = null;
     if (rendererOnMain && caps.webgpu) {
       try {
-        renderer = await createRenderer(config.canvas, config.onDeviceLost);
+        renderer = await createRenderer(config.canvas, config.onDeviceLost, config.scatterThreshold);
       } catch {
         renderer = null;
       }

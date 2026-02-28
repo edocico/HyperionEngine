@@ -22,6 +22,11 @@ export interface GPURenderState {
   listenerY: number;           // audio listener world-space Y
   listenerZ: number;           // audio listener world-space Z
   tickCount: number;           // cumulative WASM fixed-timestep tick count
+  // Dirty staging data (for scatter upload path)
+  dirtyCount: number;
+  dirtyRatio: number;
+  stagingData: Uint32Array | null;    // 32 u32 per dirty entity
+  dirtyIndices: Uint32Array | null;   // slot index per dirty entity
 }
 
 export interface EngineBridge {
@@ -89,6 +94,10 @@ export function createWorkerBridge(
         listenerY: rs.listenerY ?? 0,
         listenerZ: rs.listenerZ ?? 0,
         tickCount: msg.tickCount ?? 0,
+        dirtyCount: rs.dirtyCount ?? 0,
+        dirtyRatio: rs.dirtyRatio ?? 0,
+        stagingData: rs.stagingData ? new Uint32Array(rs.stagingData) : null,
+        dirtyIndices: rs.dirtyIndices ? new Uint32Array(rs.dirtyIndices) : null,
       };
     }
   };
@@ -188,6 +197,10 @@ export function createFullIsolationBridge(
         listenerY: rs.listenerY ?? 0,
         listenerZ: rs.listenerZ ?? 0,
         tickCount: msg.tickCount ?? 0,
+        dirtyCount: rs.dirtyCount ?? 0,
+        dirtyRatio: rs.dirtyRatio ?? 0,
+        stagingData: rs.stagingData ? new Uint32Array(new Uint32Array(rs.stagingData)) : null,
+        dirtyIndices: rs.dirtyIndices ? new Uint32Array(new Uint32Array(rs.dirtyIndices)) : null,
       };
 
       // Forward full render state to Render Worker.
@@ -288,6 +301,13 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_listener_z(): number;
     engine_tick_count(): bigint;
     engine_memory(): WebAssembly.Memory;
+    // Dirty staging exports
+    engine_dirty_count(): number;
+    engine_dirty_ratio(): number;
+    engine_staging_ptr(): number;
+    engine_staging_u32_len(): number;
+    engine_staging_indices_ptr(): number;
+    engine_staging_indices_len(): number;
   };
 
   engine.engine_init();
@@ -307,6 +327,29 @@ export async function createDirectBridge(): Promise<EngineBridge> {
 
       const tickCount = Number(engine.engine_tick_count());
       const count = engine.engine_gpu_entity_count();
+
+      // Read dirty staging data from WASM
+      const dirtyCount = engine.engine_dirty_count();
+      const dirtyRatio = engine.engine_dirty_ratio();
+      let stagingData: Uint32Array | null = null;
+      let dirtyIndicesArr: Uint32Array | null = null;
+
+      if (dirtyCount > 0) {
+        const stagingPtr = engine.engine_staging_ptr();
+        const stagingLen = engine.engine_staging_u32_len();
+        const indicesPtr = engine.engine_staging_indices_ptr();
+        const indicesLen = engine.engine_staging_indices_len();
+
+        // Copy from WASM memory (same pattern as SoA data — views become stale after next engine_update)
+        const mem = engine.engine_memory();
+        stagingData = stagingPtr
+          ? new Uint32Array(new Uint32Array(mem.buffer, stagingPtr, stagingLen))
+          : null;
+        dirtyIndicesArr = indicesPtr
+          ? new Uint32Array(new Uint32Array(mem.buffer, indicesPtr, indicesLen))
+          : null;
+      }
+
       if (count > 0) {
         const tPtr = engine.engine_gpu_transforms_ptr();
         const tLen = engine.engine_gpu_transforms_f32_len();
@@ -334,6 +377,10 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
           tickCount,
+          dirtyCount,
+          dirtyRatio,
+          stagingData,
+          dirtyIndices: dirtyIndicesArr,
         };
       } else {
         latestRenderState = {
@@ -348,6 +395,10 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
           tickCount,
+          dirtyCount: 0,
+          dirtyRatio: 0,
+          stagingData: null,
+          dirtyIndices: null,
         };
       }
     },

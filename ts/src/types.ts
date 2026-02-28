@@ -14,6 +14,8 @@ export interface HyperionConfig {
   onModeChange?: (from: string, to: string, reason: string) => void;
   onOverflow?: (dropped: number) => void;
   onDeviceLost?: (reason: string) => void;
+  /** Dirty ratio threshold for scatter upload vs full upload. Default 0.3 */
+  scatterThreshold?: number;
 }
 
 /** Resolved config with all defaults applied. */
@@ -27,6 +29,7 @@ export interface ResolvedConfig {
   onModeChange?: (from: string, to: string, reason: string) => void;
   onOverflow?: (dropped: number) => void;
   onDeviceLost?: (reason: string) => void;
+  scatterThreshold: number;
 }
 
 /** Live engine statistics. */
@@ -75,5 +78,6 @@ export function validateConfig(config: HyperionConfig): ResolvedConfig {
     onModeChange: config.onModeChange,
     onOverflow: config.onOverflow,
     onDeviceLost: config.onDeviceLost,
+    scatterThreshold: config.scatterThreshold ?? 0.3,
   };
 }

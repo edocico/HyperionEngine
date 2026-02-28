@@ -12,6 +12,7 @@ import outlineCompositeShaderCode from './shaders/outline-composite.wgsl?raw';
 import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
+import scatterShaderCode from './shaders/scatter.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
@@ -23,6 +24,7 @@ import { JFAPass } from './render/passes/jfa-pass';
 import { OutlineCompositePass } from './render/passes/outline-composite-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
+import { ScatterPass } from './render/passes/scatter-pass';
 import { SelectionManager } from './selection';
 import { detectCompressedFormat } from './capabilities';
 import { ParticleSystem } from './particle-system';
@@ -62,6 +64,7 @@ export interface Renderer {
 export async function createRenderer(
   canvas: HTMLCanvasElement | OffscreenCanvas,
   onDeviceLost?: (reason: string) => void,
+  scatterThreshold?: number,
 ): Promise<Renderer> {
   // --- 1. Initialize WebGPU ---
   const adapter = await navigator.gpu.requestAdapter();
@@ -180,8 +183,15 @@ export async function createRenderer(
   forwardPass.setup(device, resources);
   fxaaPass.setup(device, resources);
 
+  // --- 6b. Create ScatterPass for partial GPU upload ---
+  ScatterPass.SHADER_SOURCE = scatterShaderCode;
+  let scatterPass: ScatterPass | null = new ScatterPass();
+  scatterPass.setup(device, resources);
+  const resolvedScatterThreshold = scatterThreshold ?? 0.3;
+
   // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
   let graph = new RenderGraph();
+  if (scatterPass) graph.addPass(scatterPass);
   graph.addPass(cullPass);
   graph.addPass(forwardPass);
   graph.addPass(fxaaPass);
@@ -308,7 +318,12 @@ export async function createRenderer(
     newCullPass.setup(device, resources);
     newForwardPass.setup(device, resources);
 
+    // Recreate ScatterPass
+    scatterPass = new ScatterPass();
+    scatterPass.setup(device, resources);
+
     graph = new RenderGraph();
+    if (scatterPass) graph.addPass(scatterPass);
     graph.addPass(newCullPass);
     graph.addPass(newForwardPass);
 
@@ -462,6 +477,9 @@ export async function createRenderer(
         case 'bloom':
           BloomPass.SHADER_SOURCE = shaderCode;
           break;
+        case 'scatter':
+          ScatterPass.SHADER_SOURCE = shaderCode;
+          break;
         case 'particle-simulate':
           currentParticleSimSrc = shaderCode;
           particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
@@ -486,44 +504,66 @@ export async function createRenderer(
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
       if (state.entityCount === 0) return;
 
-      // Upload SoA buffers
-      const transformBuf = resources.getBuffer('entity-transforms')!;
-      device.queue.writeBuffer(
-        transformBuf, 0,
-        state.transforms as Float32Array<ArrayBuffer>, 0,
-        state.entityCount * 16,
-      );
+      // Scatter/full upload branching:
+      // When dirty ratio is below threshold and scatter pass is available,
+      // upload only dirty entities via GPU compute scatter. Otherwise, fall
+      // back to full writeBuffer uploads for all SoA buffers.
+      const useScatter = state.dirtyCount > 0
+        && state.dirtyRatio <= resolvedScatterThreshold
+        && scatterPass
+        && state.stagingData
+        && state.dirtyIndices;
 
-      const boundsBuf = resources.getBuffer('entity-bounds')!;
-      device.queue.writeBuffer(
-        boundsBuf, 0,
-        state.bounds as Float32Array<ArrayBuffer>, 0,
-        state.entityCount * 4,
-      );
-
-      const texBuf = resources.getBuffer('tex-indices')!;
-      device.queue.writeBuffer(
-        texBuf, 0,
-        state.texIndices as Uint32Array<ArrayBuffer>, 0,
-        state.entityCount,
-      );
-
-      // Upload render meta
-      const renderMetaBuf = resources.getBuffer('render-meta')!;
-      device.queue.writeBuffer(
-        renderMetaBuf, 0,
-        state.renderMeta as Uint32Array<ArrayBuffer>, 0,
-        state.entityCount * 2,
-      );
-
-      // Upload prim params
-      if (state.primParams && state.primParams.length > 0) {
-        const primParamsBuf = resources.getBuffer('prim-params')!;
-        device.queue.writeBuffer(
-          primParamsBuf, 0,
-          state.primParams as Float32Array<ArrayBuffer>, 0,
-          state.entityCount * 8,
+      if (useScatter) {
+        // Scatter path: upload only dirty data via GPU compute
+        scatterPass!.prepareDirtyData(
+          device,
+          resources,
+          state.stagingData!,
+          state.dirtyIndices!,
+          state.dirtyCount,
         );
+        // ScatterPass.execute() will be called by RenderGraph
+      } else {
+        // Full upload path: write entire SoA buffers to GPU
+        const transformBuf = resources.getBuffer('entity-transforms')!;
+        device.queue.writeBuffer(
+          transformBuf, 0,
+          state.transforms as Float32Array<ArrayBuffer>, 0,
+          state.entityCount * 16,
+        );
+
+        const boundsBuf = resources.getBuffer('entity-bounds')!;
+        device.queue.writeBuffer(
+          boundsBuf, 0,
+          state.bounds as Float32Array<ArrayBuffer>, 0,
+          state.entityCount * 4,
+        );
+
+        const texBuf = resources.getBuffer('tex-indices')!;
+        device.queue.writeBuffer(
+          texBuf, 0,
+          state.texIndices as Uint32Array<ArrayBuffer>, 0,
+          state.entityCount,
+        );
+
+        // Upload render meta
+        const renderMetaBuf = resources.getBuffer('render-meta')!;
+        device.queue.writeBuffer(
+          renderMetaBuf, 0,
+          state.renderMeta as Uint32Array<ArrayBuffer>, 0,
+          state.entityCount * 2,
+        );
+
+        // Upload prim params
+        if (state.primParams && state.primParams.length > 0) {
+          const primParamsBuf = resources.getBuffer('prim-params')!;
+          device.queue.writeBuffer(
+            primParamsBuf, 0,
+            state.primParams as Float32Array<ArrayBuffer>, 0,
+            state.entityCount * 8,
+          );
+        }
       }
 
       // Upload selection mask if dirty
@@ -656,6 +696,9 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/bloom.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('bloom', mod.default);
+    });
+    import.meta.hot.accept('./shaders/scatter.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('scatter', mod.default);
     });
     import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('particle-simulate', mod.default);

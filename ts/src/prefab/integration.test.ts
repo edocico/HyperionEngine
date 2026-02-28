@@ -72,6 +72,7 @@ function defaultConfig(): ResolvedConfig {
     backpressure: 'retry-queue',
     fixedTimestep: 1 / 60,
     preferredMode: 'auto',
+    scatterThreshold: 0.3,
   };
 }
 
