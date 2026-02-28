@@ -480,6 +480,83 @@ impl RenderState {
         slot
     }
 
+    /// Process all pending despawns via batch swap-remove.
+    /// Must be called once per frame before collect_gpu_dirty.
+    /// Processes in descending slot order to maintain the invariant that
+    /// `last` always points to a live entity.
+    pub fn flush_pending_despawns(&mut self) {
+        if self.pending_despawns.is_empty() {
+            return;
+        }
+
+        let mut despawn_slots: Vec<u32> = self
+            .pending_despawns
+            .drain(..)
+            .filter_map(|e| {
+                let eid = e.id() as usize;
+                if eid >= self.entity_to_slot.len() {
+                    return None;
+                }
+                let slot = self.entity_to_slot[eid];
+                if slot == u32::MAX { None } else { Some(slot) }
+            })
+            .collect();
+
+        // Sort descending so highest-numbered slots are removed first.
+        // This guarantees that when we swap the "last" entity into the dead slot,
+        // "last" is always a live entity (not one pending removal).
+        despawn_slots.sort_unstable_by(|a, b| b.cmp(a));
+
+        for slot in despawn_slots {
+            let last = self.gpu_count - 1;
+            let dead_entity = self.slot_to_entity[slot as usize];
+
+            if slot != last {
+                // Swap last entity's data into the dead slot
+                self.copy_soa_slot(last, slot);
+                let moved_entity = self.slot_to_entity[last as usize];
+                self.slot_to_entity[slot as usize] = moved_entity;
+                self.entity_to_slot[moved_entity.id() as usize] = slot;
+                self.dirty_tracker.mark_transform_dirty(slot as usize);
+                self.dirty_tracker.mark_bounds_dirty(slot as usize);
+                self.dirty_tracker.mark_meta_dirty(slot as usize);
+            }
+
+            // Remove the dead entity from the mapping
+            self.entity_to_slot[dead_entity.id() as usize] = u32::MAX;
+            self.gpu_count -= 1;
+        }
+    }
+
+    /// Copy all SoA buffer data from slot `src` to slot `dst`.
+    /// Must stay in sync with any new SoA buffers added in the future.
+    fn copy_soa_slot(&mut self, src: u32, dst: u32) {
+        let s = src as usize;
+        let d = dst as usize;
+
+        // transforms: 16 f32 per slot
+        let (ts, td) = (s * 16, d * 16);
+        self.gpu_transforms.copy_within(ts..ts + 16, td);
+
+        // bounds: 4 f32 per slot
+        let (bs, bd) = (s * 4, d * 4);
+        self.gpu_bounds.copy_within(bs..bs + 4, bd);
+
+        // render_meta: 2 u32 per slot
+        let (ms, md) = (s * 2, d * 2);
+        self.gpu_render_meta.copy_within(ms..ms + 2, md);
+
+        // tex_indices: 1 u32 per slot
+        self.gpu_tex_indices[d] = self.gpu_tex_indices[s];
+
+        // prim_params: 8 f32 per slot
+        let (ps, pd) = (s * 8, d * 8);
+        self.gpu_prim_params.copy_within(ps..ps + 8, pd);
+
+        // entity_ids: 1 u32 per slot
+        self.gpu_entity_ids[d] = self.gpu_entity_ids[s];
+    }
+
     /// Look up the GPU slot for an entity. Returns None if not assigned.
     pub fn get_slot(&self, entity: hecs::Entity) -> Option<u32> {
         let eid = entity.id() as usize;
@@ -1054,5 +1131,73 @@ mod tests {
         rs.assign_slot(e1);
         assert_eq!(rs.get_slot(e0), Some(0));
         assert_eq!(rs.get_slot(e1), Some(1));
+    }
+
+    #[test]
+    fn swap_remove_single_despawn() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e0 = world.spawn((Position::default(), Active));
+        let e1 = world.spawn((Position::default(), Active));
+        let e2 = world.spawn((Position::default(), Active));
+        rs.assign_slot(e0);
+        rs.assign_slot(e1);
+        rs.assign_slot(e2);
+
+        // Write known data to slot 1 (entity e1) bounds
+        let s1 = 1usize;
+        rs.gpu_bounds[s1 * 4] = 99.0;
+
+        // Write known data to slot 2 (entity e2) bounds
+        let s2 = 2usize;
+        rs.gpu_bounds[s2 * 4] = 77.0;
+
+        // Despawn e1 (slot 1) — e2 (slot 2, last) should swap into slot 1
+        rs.pending_despawns.push(e1);
+        rs.flush_pending_despawns();
+
+        assert_eq!(rs.gpu_entity_count(), 2);
+        assert_eq!(rs.get_slot(e0), Some(0));
+        assert_eq!(rs.get_slot(e2), Some(1)); // e2 moved to slot 1
+        assert_eq!(rs.get_slot(e1), None);    // e1 gone
+        // e2's data now at slot 1
+        assert_eq!(rs.gpu_bounds[1 * 4], 77.0);
+    }
+
+    #[test]
+    fn swap_remove_batch_descending() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let entities: Vec<_> = (0..5).map(|_| world.spawn((Position::default(), Active))).collect();
+        for &e in &entities {
+            rs.assign_slot(e);
+        }
+        // Despawn slots 1 and 3 — descending order should handle correctly
+        rs.pending_despawns.push(entities[1]);
+        rs.pending_despawns.push(entities[3]);
+        rs.flush_pending_despawns();
+
+        assert_eq!(rs.gpu_entity_count(), 3);
+        assert_eq!(rs.get_slot(entities[0]), Some(0));
+        assert_eq!(rs.get_slot(entities[1]), None);
+        assert_eq!(rs.get_slot(entities[3]), None);
+    }
+
+    #[test]
+    fn swap_remove_last_slot() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e0 = world.spawn((Position::default(), Active));
+        let e1 = world.spawn((Position::default(), Active));
+        rs.assign_slot(e0);
+        rs.assign_slot(e1);
+
+        // Despawn last slot — no swap needed, just shrink
+        rs.pending_despawns.push(e1);
+        rs.flush_pending_despawns();
+
+        assert_eq!(rs.gpu_entity_count(), 1);
+        assert_eq!(rs.get_slot(e0), Some(0));
+        assert_eq!(rs.get_slot(e1), None);
     }
 }
