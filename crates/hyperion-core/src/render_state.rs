@@ -183,6 +183,11 @@ pub struct RenderState {
 
     /// Per-buffer dirty tracking for partial upload optimization.
     pub dirty_tracker: DirtyTracker,
+
+    // Stable slot mapping (Phase 12: retained-mode GPU buffers)
+    slot_to_entity: Vec<hecs::Entity>,
+    entity_to_slot: Vec<u32>,         // indexed by entity.id(), u32::MAX = unassigned
+    pub(crate) pending_despawns: Vec<hecs::Entity>,
 }
 
 impl RenderState {
@@ -197,6 +202,9 @@ impl RenderState {
             gpu_entity_ids: Vec::new(),
             gpu_count: 0,
             dirty_tracker: DirtyTracker::new(0),
+            slot_to_entity: Vec::new(),
+            entity_to_slot: Vec::new(),
+            pending_despawns: Vec::new(),
         }
     }
 
