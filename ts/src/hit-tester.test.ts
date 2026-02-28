@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Ray, hitTestRay } from './hit-tester';
+import { SpatialGrid } from './spatial-grid';
 
 describe('hitTestRay', () => {
   // Helper: orthographic ray straight down -Z at (x, y)
@@ -73,5 +74,42 @@ describe('hitTestRay', () => {
       entityIds[i] = i;
     }
     expect(hitTestRay(orthoRay(5000, 0), bounds, entityIds)).toBe(500);
+  });
+
+  it('grid-accelerated path matches brute-force for 1000 entities (20 rays)', () => {
+    // Seed a deterministic PRNG (simple LCG)
+    let seed = 12345;
+    function rand(): number {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    }
+
+    const count = 1000;
+    const bounds = new Float32Array(count * 4);
+    const entityIds = new Uint32Array(count);
+
+    // Scatter entities randomly across a 200x200 world
+    for (let i = 0; i < count; i++) {
+      bounds[i * 4] = rand() * 200 - 100;     // x in [-100, 100]
+      bounds[i * 4 + 1] = rand() * 200 - 100; // y in [-100, 100]
+      bounds[i * 4 + 2] = 0;                   // z = 0
+      bounds[i * 4 + 3] = 1 + rand() * 3;     // radius in [1, 4]
+      entityIds[i] = 1000 + i;
+    }
+
+    const grid = new SpatialGrid(count);
+    grid.rebuild(bounds, count);
+
+    // Cast 20 random rays and compare results
+    for (let r = 0; r < 20; r++) {
+      const rx = rand() * 200 - 100;
+      const ry = rand() * 200 - 100;
+      const ray = orthoRay(rx, ry);
+
+      const bruteResult = hitTestRay(ray, bounds, entityIds);
+      const gridResult = hitTestRay(ray, bounds, entityIds, grid);
+
+      expect(gridResult).toBe(bruteResult);
+    }
   });
 });
