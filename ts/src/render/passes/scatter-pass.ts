@@ -19,7 +19,7 @@ import type { ResourcePool } from '../resource-pool';
  */
 export class ScatterPass implements RenderPass {
   readonly name = 'scatter';
-  readonly reads = ['entity-transforms', 'entity-bounds', 'render-meta', 'tex-indices', 'prim-params'];
+  readonly reads: string[] = [];
   readonly writes = ['entity-transforms', 'entity-bounds', 'render-meta', 'tex-indices', 'prim-params'];
   readonly optional = true;
 

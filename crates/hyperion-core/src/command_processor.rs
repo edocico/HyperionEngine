@@ -379,6 +379,7 @@ fn process_single_command(
                 }
                 if let Some(slot) = render_state.get_slot(child_entity) {
                     render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                 }
             }
         }

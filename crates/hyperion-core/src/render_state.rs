@@ -354,9 +354,9 @@ impl RenderState {
         }
     }
 
-    /// Number of f32 values in the transforms buffer.
+    /// Number of f32 values in the transforms buffer (16 per entity).
     pub fn gpu_transforms_f32_len(&self) -> u32 {
-        self.gpu_transforms.len() as u32
+        self.gpu_count * 16
     }
 
     // --- SoA buffer accessors: bounds ---
@@ -375,9 +375,9 @@ impl RenderState {
         }
     }
 
-    /// Number of f32 values in the bounds buffer.
+    /// Number of f32 values in the bounds buffer (4 per entity).
     pub fn gpu_bounds_f32_len(&self) -> u32 {
-        self.gpu_bounds.len() as u32
+        self.gpu_count * 4
     }
 
     // --- SoA buffer accessors: render meta ---
@@ -396,9 +396,9 @@ impl RenderState {
         }
     }
 
-    /// Number of u32 values in the render meta buffer.
+    /// Number of u32 values in the render meta buffer (2 per entity).
     pub fn gpu_render_meta_len(&self) -> u32 {
-        self.gpu_render_meta.len() as u32
+        self.gpu_count * 2
     }
 
     // --- SoA buffer accessors: texture indices ---
@@ -419,7 +419,7 @@ impl RenderState {
 
     /// Number of texture layer indices (same as gpu_entity_count).
     pub fn gpu_tex_indices_len(&self) -> u32 {
-        self.gpu_tex_indices.len() as u32
+        self.gpu_count
     }
 
     // --- SoA buffer accessors: primitive params ---
@@ -438,9 +438,9 @@ impl RenderState {
         }
     }
 
-    /// Number of f32 values in the primitive params buffer.
+    /// Number of f32 values in the primitive params buffer (8 per entity).
     pub fn gpu_prim_params_f32_len(&self) -> u32 {
-        self.gpu_prim_params.len() as u32
+        self.gpu_count * 8
     }
 
     // --- SoA buffer accessors: entity IDs ---
@@ -462,7 +462,7 @@ impl RenderState {
 
     /// Number of entity IDs (same as gpu_entity_count).
     pub fn gpu_entity_ids_len(&self) -> u32 {
-        self.gpu_entity_ids.len() as u32
+        self.gpu_count
     }
 
     /// Assign a stable GPU slot to an entity. Returns the slot index.

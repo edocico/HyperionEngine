@@ -4,6 +4,7 @@
 use hecs::World;
 
 use crate::command_processor::{process_commands, EntityMap};
+use crate::components::{Active, Parent, Velocity};
 use crate::render_state::RenderState;
 use crate::ring_buffer::{Command, CommandType};
 use crate::systems::{propagate_transforms, transform_system, velocity_system};
@@ -94,14 +95,53 @@ impl Engine {
             propagate_transforms(&mut self.world, &ext_to_entity);
         }
 
-        // 3. Collect render state for GPU upload.
+        // 2c. Mark velocity-driven and hierarchy-propagated entities as dirty.
+        // Systems (velocity_system, transform_system, propagate_transforms) modify
+        // ECS components directly, bypassing command_processor dirty marking.
+        self.mark_post_system_dirty();
+
+        // 3. Collect legacy render state (flat matrix buffer).
         self.render_state.collect(&self.world);
 
-        // 4. Collect dirty staging data for scatter upload.
+        // 4. Flush despawns, sync dirty SoA slots, and build staging cache.
+        // This replaces the legacy collect_gpu() — the retained slot mapping
+        // keeps SoA buffers up-to-date incrementally via write_slot().
         self.render_state.collect_and_cache_dirty(&self.world);
+    }
 
-        // 5. Legacy full collect for backward compatibility (Modes A/B).
-        self.render_state.collect_gpu(&self.world);
+    /// Mark entities whose SoA data changed due to systems (not commands).
+    ///
+    /// - Entities with non-zero velocity: velocity_system moved their Position,
+    ///   transform_system recomputed their ModelMatrix.
+    /// - Children of dirty parents: propagate_transforms updated their ModelMatrix.
+    fn mark_post_system_dirty(&mut self) {
+        // Pass 1: velocity-driven entities
+        for (entity, vel, _active) in
+            self.world.query::<(hecs::Entity, &Velocity, &Active)>().iter()
+        {
+            if vel.0 != glam::Vec3::ZERO
+                && let Some(slot) = self.render_state.get_slot(entity)
+            {
+                self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+            }
+        }
+
+        // Pass 2: children whose parent's transform is dirty
+        // (single level — matches propagate_transforms depth)
+        for (entity, parent, _active) in
+            self.world.query::<(hecs::Entity, &Parent, &Active)>().iter()
+        {
+            if parent.0 != u32::MAX
+                && let Some(parent_entity) = self.entity_map.get(parent.0)
+                && let Some(parent_slot) = self.render_state.get_slot(parent_entity)
+                && self.render_state.dirty_tracker.is_transform_dirty(parent_slot as usize)
+                && let Some(slot) = self.render_state.get_slot(entity)
+            {
+                self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+            }
+        }
     }
 
     /// A single fixed-timestep tick.

@@ -5,11 +5,8 @@ describe('ScatterPass', () => {
   it('declares correct read/write resources', () => {
     const pass = new ScatterPass();
     expect(pass.name).toBe('scatter');
-    expect(pass.reads).toContain('entity-transforms');
-    expect(pass.reads).toContain('entity-bounds');
-    expect(pass.reads).toContain('render-meta');
-    expect(pass.reads).toContain('tex-indices');
-    expect(pass.reads).toContain('prim-params');
+    // ScatterPass reads from its own staging buffer, not from pool resources
+    expect(pass.reads).toHaveLength(0);
     expect(pass.writes).toContain('entity-transforms');
     expect(pass.writes).toContain('entity-bounds');
     expect(pass.writes).toContain('render-meta');
