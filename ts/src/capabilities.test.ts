@@ -3,6 +3,7 @@ import {
   selectExecutionMode,
   ExecutionMode,
   detectCompressedFormat,
+  detectSubgroupSupport,
   type Capabilities,
 } from "./capabilities";
 
@@ -60,5 +61,22 @@ describe("detectCompressedFormat", () => {
   it("returns null when neither is available", () => {
     const features = new Set<string>();
     expect(detectCompressedFormat(features)).toBeNull();
+  });
+});
+
+describe("detectSubgroupSupport", () => {
+  it("returns supported=false when feature not present", () => {
+    const features = new Set<string>();
+    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+  });
+
+  it("returns supported=true when subgroups feature present", () => {
+    const features = new Set<string>(["subgroups"]);
+    expect(detectSubgroupSupport(features)).toEqual({ supported: true });
+  });
+
+  it("returns supported=false for subgroups-f16-only (not what we need)", () => {
+    const features = new Set<string>(["subgroups-f16"]);
+    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
   });
 });

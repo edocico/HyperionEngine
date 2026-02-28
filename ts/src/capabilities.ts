@@ -86,3 +86,23 @@ export function detectCompressedFormat(
   if (adapterFeatures.has('texture-compression-astc')) return 'astc-4x4-unorm';
   return null;
 }
+
+/**
+ * Result of subgroup feature detection.
+ */
+export interface SubgroupSupport {
+  supported: boolean;
+}
+
+/**
+ * Detect whether the GPU adapter supports the `subgroups` WebGPU feature.
+ * This enables `subgroupExclusiveAdd()`, `subgroupAdd()`, etc. in compute shaders.
+ *
+ * Note: At `requestDevice()` time, the caller must add `'subgroups'` to
+ * `requiredFeatures` if detection returns `supported: true`.
+ */
+export function detectSubgroupSupport(
+  adapterFeatures: ReadonlySet<string>,
+): SubgroupSupport {
+  return { supported: adapterFeatures.has('subgroups') };
+}
