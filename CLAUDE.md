@@ -159,6 +159,7 @@ cd ts && npm install
 # Required global tools
 # - wasm-pack: cargo install wasm-pack
 # - Rust with wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown
+# - wasm-opt: cargo install wasm-opt (used by build:wasm:opt for --strip-debug --enable-simd)
 ```
 
 ## Architecture
@@ -426,6 +427,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **SpatialGrid `query()` returns aliased buffer** — The returned `indices` Int32Array is an internal buffer reused across calls. Copy with `.slice()` if you need to retain results.
 - **Cull shader `enable subgroups;` must be prepended at pipeline creation** — The directive is NOT in `cull.wgsl`. Adding it would fail WGSL validation on non-subgroup devices. `prepareShaderSource()` handles this.
 - **Subgroup `requestDevice` requires `'subgroups'` in `requiredFeatures`** — Detection via `detectSubgroupSupport()` checks `adapter.features`, but the feature must also be requested at device creation. Use retry-without fallback if request fails.
+- **`subgroupBroadcastFirst` always broadcasts from thread 0** — In compute shaders, ALL invocations are active. `subgroupBroadcastFirst(x)` returns thread 0's value, NOT the first thread where `x != 0`. Use `subgroupElect()` to gate the writer so thread 0 is always the one with the result.
+- **SpatialGrid `cellEntities` may realloc on oversized entities** — Default 4x buffer covers typical cases. Entities with radius >> cellSize can span O((r/cellSize)^2) cells, exceeding the buffer. The grid auto-reallocs but this breaks zero-alloc-per-frame for that one frame.
 
 ### Implementation Notes — design decisions and internal details
 
