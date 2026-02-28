@@ -401,7 +401,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`@webgpu/types` Float32Array strictness** — `writeBuffer` requires `Float32Array<ArrayBuffer>` cast when the source might be `Float32Array<ArrayBufferLike>`.
 - **Indirect draw buffer needs STORAGE | INDIRECT | COPY_DST** — compute shader writes instanceCount (STORAGE), render pass reads it (INDIRECT), CPU resets it each frame (COPY_DST).
 - **Multi-pipeline ForwardPass shared bind group layout** — All primitive type shaders MUST declare identical bind group layouts (group 0: camera, transforms, visibleIndices, texIndices, renderMeta, primParams; group 1: tier0-tier3 texture arrays + sampler + ovf0-ovf3 overflow arrays). Unused bindings must still be declared.
-- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must use the same entity index. Populated in `collect_gpu()` in Rust. Entity IDs are CPU-only (not uploaded to GPU).
+- **SoA buffers parallel indexed** — All SoA buffers (transforms, bounds, texIndices, entityIds) must use the same entity index. Populated via retained `write_slot()` in Rust (or legacy `collect_gpu()`). Entity IDs are CPU-only (not uploaded to GPU).
 - **PrimitiveParams split across two commands** — `SetPrimParams0` for f32[0..4], `SetPrimParams1` for f32[4..8], due to 16-byte ring buffer payload limit.
 - **`SetParent` uses `0xFFFFFFFF` for unparent** — Special value meaning "remove parent". Same command type for parenting and unparenting.
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. Adding new tiers requires updating the shader `switch`.
@@ -438,6 +438,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Compressed transforms use format flag at staging[31]** — `0` = compressed 2D (pos+rot+scale, root entities), `1` = pre-computed mat4x4 (child entities). Scatter shader reconstructs mat4x4 from 6 f32 for format=0.
 - **2-bucket cull: 12 indirect args entries** — 6 primitive types × 2 buckets (tier0 vs other). Indirect args buffer is 240 bytes. `firstInstance` encodes visible-indices region offset.
 - **`process_commands` takes `&mut RenderState` as 4th parameter** — All callers (engine.rs, tests) must provide it. Dirty marking happens at command level, not system level.
+- **`collect_gpu()` destroys retained slot mapping** — Never call `collect_gpu()` in the retained-slot path. It rebuilds SoA in hecs iteration order (arbitrary), overwriting `write_slot()` slot assignments. The update flow is: `mark_post_system_dirty()` → `collect()` → `collect_and_cache_dirty()`. `collect_gpu()` is legacy-only.
+- **Systems bypass command_processor dirty marking** — `velocity_system`, `transform_system`, and `propagate_transforms` modify components directly. Call `mark_post_system_dirty()` after systems run to mark velocity-driven entities and children of dirty parents.
+- **SoA length accessors use `gpu_count * stride`, not `vec.len()`** — Retained-slot Vecs grow via `assign_slot()` but never shrink (except `shrink_to_fit()`). `vec.len()` may include stale trailing data. All 6 WASM exports (`gpu_transforms_f32_len`, etc.) use `gpu_count * stride`.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -446,7 +449,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Frustum extraction lives in `camera.ts`** — `CullPass` imports `extractFrustumPlanes` from `camera.ts`.
 - **Depth texture lazy recreation** — `ForwardPass.ensureDepthTexture()` recreates when canvas dimensions change. `resize()` invalidates dimension tracking.
 - **No rendering fallback without WebGPU** — Engine runs ECS/WASM simulation but rendering is disabled (`renderer` stays `null`). Future: WebGL 2 fallback.
-- **Full entity buffer re-upload every frame** — Future optimizations: DirtyTracker partial upload, stable entity slots, double-buffering with `mapAsync`, CPU-side frustum pre-culling.
+- **Retained-slot partial upload (Phase 12)** — DirtyTracker + stable slots + scatter shader replace full re-upload. Remaining future optimizations: double-buffering with `mapAsync`, CPU-side frustum pre-culling.
 - **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. Future: query `device.limits.maxTextureArrayLayers`.
 - **TextureManager lazy allocation** — Growth: 0→16→32→64→128→256 layers per tier. `getTierView()` creates 1-layer placeholder for bind group validity.
 - **ResourcePool buffer naming** — CullPass: reads `entity-transforms`/`entity-bounds`/`render-meta`, writes `visible-indices`/`indirect-args`. ForwardPass: reads those + `tex-indices`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `ovf0`-`ovf3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`.
@@ -501,6 +504,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **DirtyTracker 3 BitSets: transforms, bounds, meta** — Union of all 3 determines scatter upload set. Individual BitSets kept for profiling.
 - **Scatter staging buffer: 32 u32 per entity (128 bytes)** — Cache-line aligned. Layout: transforms[16] + bounds[4] + meta[2] + tex[1] + params[8] + format[1].
 - **ScatterPass grow-only buffers** — Staging and indices GPU buffers never shrink. Destroyed and recreated only when larger size needed.
+- **`mark_post_system_dirty()` two-pass approach** — Pass 1: entities with non-zero `Velocity` get transform+bounds dirty. Pass 2: children whose parent's transform is dirty get transform+bounds dirty. Single-level propagation matches `propagate_transforms` (which is also single-level).
 - **Batch spawn auto-detection in `process_commands`** — Consecutive `SpawnEntity` commands are batched via `hecs::World::spawn_batch()`. Threshold: 2+ consecutive.
 - **TexturePriorityQueue is standalone** — Min-heap with `urlToIndex` map for O(log n) update. Integrated into TextureManager alongside FIFO `fetchQueue`.
 - **Progressive KTX2 is a TODO** — Priority queue is implemented; HTTP Range-based progressive loading deferred to future work.
