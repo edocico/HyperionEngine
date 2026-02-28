@@ -71,11 +71,15 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
             let subOffset = subgroupExclusiveAdd(vote);
             let subTotal = subgroupAdd(vote);
 
+            // Thread 0 of the subgroup (subgroupElect) does the batched atomic.
+            // subgroupBroadcastFirst broadcasts from thread 0, so they match.
             var baseSlot = 0u;
-            if (subOffset == 0u && vote == 1u) {
-                baseSlot = atomicAdd(&drawArgs[p].instanceCount, subTotal);
+            if (subTotal > 0u) {
+                if (subgroupElect()) {
+                    baseSlot = atomicAdd(&drawArgs[p].instanceCount, subTotal);
+                }
+                baseSlot = subgroupBroadcastFirst(baseSlot);
             }
-            baseSlot = subgroupBroadcastFirst(baseSlot);
 
             if (vote == 1u) {
                 let offset = p * cull.maxEntitiesPerType;
