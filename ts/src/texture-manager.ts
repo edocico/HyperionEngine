@@ -44,11 +44,102 @@ export function unpackTextureIndex(packed: number): {
   };
 }
 
+/**
+ * Min-heap priority queue for texture loading prioritization.
+ * Lower priority value = higher urgency (closer to camera = load first).
+ */
+export class TexturePriorityQueue {
+  private heap: { url: string; priority: number }[] = [];
+  private urlToIndex: Map<string, number> = new Map();
+
+  get size(): number {
+    return this.heap.length;
+  }
+
+  /** Add a URL with a given priority. If the URL already exists, updates its priority. */
+  enqueue(url: string, priority: number): void {
+    if (this.urlToIndex.has(url)) {
+      this.updatePriority(url, priority);
+      return;
+    }
+    const idx = this.heap.length;
+    this.heap.push({ url, priority });
+    this.urlToIndex.set(url, idx);
+    this._bubbleUp(idx);
+  }
+
+  /** Remove and return the URL with the lowest priority value (highest urgency). */
+  dequeue(): string | null {
+    if (this.heap.length === 0) return null;
+    const top = this.heap[0];
+    const last = this.heap.pop()!;
+    this.urlToIndex.delete(top.url);
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.urlToIndex.set(last.url, 0);
+      this._sinkDown(0);
+    }
+    return top.url;
+  }
+
+  /** Return the URL with the lowest priority value without removing it. */
+  peek(): string | null {
+    if (this.heap.length === 0) return null;
+    return this.heap[0].url;
+  }
+
+  /** Update the priority for an existing URL. No-op if URL is not in the queue. */
+  updatePriority(url: string, priority: number): void {
+    const idx = this.urlToIndex.get(url);
+    if (idx === undefined) return;
+    const old = this.heap[idx].priority;
+    this.heap[idx].priority = priority;
+    if (priority < old) this._bubbleUp(idx);
+    else this._sinkDown(idx);
+  }
+
+  /** Remove all entries from the queue. */
+  clear(): void {
+    this.heap.length = 0;
+    this.urlToIndex.clear();
+  }
+
+  private _bubbleUp(idx: number): void {
+    while (idx > 0) {
+      const parent = (idx - 1) >> 1;
+      if (this.heap[parent].priority <= this.heap[idx].priority) break;
+      this._swap(parent, idx);
+      idx = parent;
+    }
+  }
+
+  private _sinkDown(idx: number): void {
+    const len = this.heap.length;
+    while (true) {
+      let smallest = idx;
+      const left = 2 * idx + 1;
+      const right = 2 * idx + 2;
+      if (left < len && this.heap[left].priority < this.heap[smallest].priority) smallest = left;
+      if (right < len && this.heap[right].priority < this.heap[smallest].priority) smallest = right;
+      if (smallest === idx) break;
+      this._swap(smallest, idx);
+      idx = smallest;
+    }
+  }
+
+  private _swap(a: number, b: number): void {
+    [this.heap[a], this.heap[b]] = [this.heap[b], this.heap[a]];
+    this.urlToIndex.set(this.heap[a].url, a);
+    this.urlToIndex.set(this.heap[b].url, b);
+  }
+}
+
 const MAX_CONCURRENT_FETCHES = 6;
 
 interface FetchJob {
   url: string;
   tier: number;
+  priority: number;
   resolve: (packed: number) => void;
   reject: (err: Error) => void;
 }
@@ -87,6 +178,8 @@ export class TextureManager {
   private readonly _sampler: GPUSampler;
   private activeFetches = 0;
   private readonly fetchQueue: FetchJob[] = [];
+  private readonly priorityQueue = new TexturePriorityQueue();
+  private readonly jobByUrl = new Map<string, FetchJob>();
   private readonly cache = new Map<string, number>();
   private readonly bitmapCache = new Map<string, ImageBitmap>();
   private loaded = 0;
@@ -422,19 +515,82 @@ export class TextureManager {
         return;
       }
       const tier = tierOverride !== undefined ? tierOverride : -1;
-      this.fetchQueue.push({ url, tier, resolve, reject });
+      this.fetchQueue.push({ url, tier, priority: Infinity, resolve, reject });
       this.drainFetchQueue();
     });
   }
 
+  /**
+   * Load a texture with an explicit priority (lower value = loaded first).
+   * Priority typically represents distance to camera — closer textures load first.
+   * If the URL has already been loaded, returns the cached index immediately.
+   */
+  async loadTextureWithPriority(url: string, priority: number, tierOverride?: number): Promise<number> {
+    const cached = this.cache.get(url);
+    if (cached !== undefined) return cached;
+    this.total++;
+    return new Promise<number>((resolve, reject) => {
+      if (tierOverride !== undefined && (tierOverride < 0 || tierOverride >= NUM_TIERS)) {
+        reject(new Error(`Invalid tier override: ${tierOverride}, must be 0-${NUM_TIERS - 1}`));
+        return;
+      }
+      const tier = tierOverride !== undefined ? tierOverride : -1;
+      const job: FetchJob = { url, tier, priority, resolve, reject };
+      this.priorityQueue.enqueue(url, priority);
+      this.jobByUrl.set(url, job);
+      this.drainFetchQueue();
+    });
+  }
+
+  /**
+   * Update load priorities based on camera position and known texture positions.
+   * Textures closer to the camera get lower priority values (loaded first).
+   * Only affects textures that are still queued (not yet fetching or loaded).
+   * Call this on significant camera movement, not every frame.
+   */
+  updatePriorities(
+    cameraX: number,
+    cameraY: number,
+    texturePositions: Map<string, { x: number; y: number }>,
+  ): void {
+    for (const [url, pos] of texturePositions) {
+      const dx = pos.x - cameraX;
+      const dy = pos.y - cameraY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      this.priorityQueue.updatePriority(url, dist);
+    }
+  }
+
+  /** Number of textures waiting in the priority queue. */
+  get pendingPriorityCount(): number {
+    return this.priorityQueue.size;
+  }
+
   private drainFetchQueue(): void {
-    while (
-      this.activeFetches < MAX_CONCURRENT_FETCHES &&
-      this.fetchQueue.length > 0
-    ) {
-      const job = this.fetchQueue.shift()!;
-      this.activeFetches++;
-      this.executeFetch(job.url, job.tier, job.resolve, job.reject);
+    while (this.activeFetches < MAX_CONCURRENT_FETCHES) {
+      // Priority queue takes precedence over FIFO queue
+      const nextPriorityUrl = this.priorityQueue.peek();
+      if (nextPriorityUrl !== null) {
+        this.priorityQueue.dequeue();
+        const job = this.jobByUrl.get(nextPriorityUrl);
+        this.jobByUrl.delete(nextPriorityUrl);
+        if (job) {
+          this.activeFetches++;
+          this.executeFetch(job.url, job.tier, job.resolve, job.reject);
+          continue;
+        }
+      }
+
+      // Fall back to FIFO queue (for loadTexture() calls without priority)
+      if (this.fetchQueue.length > 0) {
+        const job = this.fetchQueue.shift()!;
+        this.activeFetches++;
+        this.executeFetch(job.url, job.tier, job.resolve, job.reject);
+        continue;
+      }
+
+      // Both queues empty
+      break;
     }
   }
 
@@ -647,6 +803,33 @@ export class TextureManager {
       resolve(packed);
     }
   }
+
+  /**
+   * TODO: Progressive KTX2 loading via HTTP Range requests.
+   *
+   * Strategy:
+   * 1. Fetch bytes 0-127 with `Range: bytes=0-127` to get KTX2 header (80 bytes)
+   *    and the beginning of the level index.
+   * 2. If server responds with 206 (Partial Content):
+   *    a. Parse header to get levelCount, then fetch full level index
+   *       (80 + levelCount * 24 bytes).
+   *    b. Fetch the smallest mip (last level entry) as a low-res placeholder.
+   *    c. Upload placeholder to the tier layer immediately.
+   *    d. Fetch the full file in background and swap level 0 data.
+   * 3. If server responds with 200 (no Range support):
+   *    a. Fall back to full-file load via loadTexture().
+   *
+   * Considerations:
+   * - KTX2 levels are ordered largest-first (level 0 = full res, last = smallest mip).
+   * - Supercompressed KTX2 (BasisLZ/UASTC) needs transcoder for each mip independently.
+   * - Pre-compressed KTX2 (supercompressionScheme=0) can upload raw level data directly.
+   * - Placeholder mip will be visibly low-res; swap must update the same tier layer.
+   * - Multiple Range requests add latency on high-RTT connections; consider a
+   *   two-request approach (header+smallest mip in one, full file in two).
+   */
+  // async loadKTX2Progressive(url: string, tierOverride?: number): Promise<number> {
+  //   return this.loadTexture(url, tierOverride);
+  // }
 
   /** Destroy all GPU textures and release retained bitmaps. */
   destroy(): void {
