@@ -4,6 +4,34 @@ import { extractFrustumPlanes } from '../../camera';
 
 const WORKGROUP_SIZE = 256;
 const NUM_PRIM_TYPES = 6;
+const MAX_SUBGROUPS_PER_WG = 8;
+
+/**
+ * Compute the optimal workgroup size for the cull shader.
+ *
+ * When subgroups are available, the workgroup is sized to contain at most
+ * `MAX_SUBGROUPS_PER_WG` subgroups, capped at 256.  This keeps
+ * inter-subgroup coordination efficient while maximising occupancy.
+ *
+ * Without subgroups the default workgroup size (256) is returned.
+ */
+export function computeWorkgroupSize(useSubgroups: boolean, subgroupSize: number): number {
+  if (!useSubgroups) return 256;
+  return Math.min(256, subgroupSize * MAX_SUBGROUPS_PER_WG);
+}
+
+/**
+ * Conditionally prepend the `enable subgroups;` WGSL directive.
+ *
+ * The directive MUST NOT appear in the shader source when the device does
+ * not support subgroups — WGSL validation would reject it.  This helper
+ * keeps the raw shader file free of the directive and adds it at pipeline
+ * creation time when the capability is confirmed.
+ */
+export function prepareShaderSource(baseSource: string, useSubgroups: boolean): string {
+  if (!useSubgroups) return baseSource;
+  return 'enable subgroups;\n' + baseSource;
+}
 
 /**
  * GPU frustum-culling compute pass.
