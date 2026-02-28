@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:wasm": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm",
+    "build:wasm:opt": "test -f wasm/hyperion_core_bg.wasm && wasm-opt -O3 --strip-debug --enable-simd wasm/hyperion_core_bg.wasm -o wasm/hyperion_core_bg.wasm || echo 'ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.'",
+    "build:wasm:release": "npm run build:wasm && npm run build:wasm:opt",
+    "check:wasm-size": "node -e \"const fs=require('fs');const s=fs.statSync('wasm/hyperion_core_bg.wasm').size;const z=require('zlib').gzipSync(fs.readFileSync('wasm/hyperion_core_bg.wasm')).length;console.log('Raw:',s,'('+Math.round(s/1024)+'KB)');console.log('Gzipped:',z,'('+Math.round(z/1024)+'KB)');if(z>200*1024){console.error('FAIL: >200KB');process.exit(1)}console.log('PASS')\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },
