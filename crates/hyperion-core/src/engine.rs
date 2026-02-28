@@ -97,7 +97,10 @@ impl Engine {
         // 3. Collect render state for GPU upload.
         self.render_state.collect(&self.world);
 
-        // 4. Collect GPU-driven pipeline data.
+        // 4. Collect dirty staging data for scatter upload.
+        self.render_state.collect_and_cache_dirty(&self.world);
+
+        // 5. Legacy full collect for backward compatibility (Modes A/B).
         self.render_state.collect_gpu(&self.world);
     }
 

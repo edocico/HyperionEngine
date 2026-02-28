@@ -188,6 +188,12 @@ pub struct RenderState {
     slot_to_entity: Vec<hecs::Entity>,
     entity_to_slot: Vec<u32>,         // indexed by entity.id(), u32::MAX = unassigned
     pub(crate) pending_despawns: Vec<hecs::Entity>,
+
+    // Dirty staging cache (populated by collect_and_cache_dirty)
+    staging_cache: Vec<u32>,
+    staging_indices_cache: Vec<u32>,
+    staging_dirty_count: u32,
+    staging_dirty_ratio: f32,
 }
 
 /// Result of collect_dirty_staging: compact staging buffer + indices for GPU scatter.
@@ -217,6 +223,10 @@ impl RenderState {
             slot_to_entity: Vec::new(),
             entity_to_slot: Vec::new(),
             pending_despawns: Vec::new(),
+            staging_cache: Vec::new(),
+            staging_indices_cache: Vec::new(),
+            staging_dirty_count: 0,
+            staging_dirty_ratio: 0.0,
         }
     }
 
@@ -691,6 +701,47 @@ impl RenderState {
             dirty_count,
             dirty_ratio,
         }
+    }
+
+    /// Flush pending despawns and collect dirty staging data into internal cache.
+    /// Call this once per frame after systems run but before GPU data is read.
+    pub fn collect_and_cache_dirty(&mut self, world: &World) {
+        self.flush_pending_despawns();
+        let result = self.collect_dirty_staging(world);
+        self.staging_cache = result.staging;
+        self.staging_indices_cache = result.dirty_indices;
+        self.staging_dirty_count = result.dirty_count;
+        self.staging_dirty_ratio = result.dirty_ratio;
+    }
+
+    /// Pointer to the staging cache buffer for WASM export.
+    pub fn staging_ptr(&self) -> *const u32 {
+        self.staging_cache.as_ptr()
+    }
+
+    /// Number of u32 values in the staging cache buffer.
+    pub fn staging_u32_len(&self) -> u32 {
+        self.staging_cache.len() as u32
+    }
+
+    /// Pointer to the dirty indices cache buffer for WASM export.
+    pub fn staging_indices_ptr(&self) -> *const u32 {
+        self.staging_indices_cache.as_ptr()
+    }
+
+    /// Number of u32 values in the dirty indices cache buffer.
+    pub fn staging_indices_len(&self) -> u32 {
+        self.staging_indices_cache.len() as u32
+    }
+
+    /// Number of dirty entities in the last staging collection.
+    pub fn dirty_count(&self) -> u32 {
+        self.staging_dirty_count
+    }
+
+    /// Ratio of dirty entities to total entities in the last staging collection.
+    pub fn dirty_ratio(&self) -> f32 {
+        self.staging_dirty_ratio
     }
 
     /// Release excess heap memory from all internal buffers.

@@ -262,6 +262,74 @@ pub fn engine_gpu_entity_ids_len() -> u32 {
     }
 }
 
+// ── Dirty staging WASM exports ──────────────────────────────────
+
+/// Returns the number of dirty entities from the last staging collection.
+#[wasm_bindgen]
+pub fn engine_dirty_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.dirty_count())
+    }
+}
+
+/// Returns the dirty ratio (dirty / total) from the last staging collection.
+#[wasm_bindgen]
+pub fn engine_dirty_ratio() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.render_state.dirty_ratio())
+    }
+}
+
+/// Pointer to the staging buffer (32 u32 per dirty entity).
+#[wasm_bindgen]
+pub fn engine_staging_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.staging_ptr())
+    }
+}
+
+/// Number of u32 values in the staging buffer.
+#[wasm_bindgen]
+pub fn engine_staging_u32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.staging_u32_len())
+    }
+}
+
+/// Pointer to the dirty indices buffer (one u32 per dirty entity: destination slot).
+#[wasm_bindgen]
+pub fn engine_staging_indices_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.staging_indices_ptr())
+    }
+}
+
+/// Number of u32 values in the dirty indices buffer.
+#[wasm_bindgen]
+pub fn engine_staging_indices_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.staging_indices_len())
+    }
+}
+
 /// Compact the entity map by truncating trailing empty slots.
 #[wasm_bindgen]
 pub fn engine_compact_entity_map() {
