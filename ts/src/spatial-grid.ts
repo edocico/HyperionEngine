@@ -34,8 +34,8 @@ export class SpatialGrid {
   private readonly cellCounts: Int32Array;
   /** Exclusive prefix sum of cellCounts — start offset for each cell's entries. */
   private readonly cellOffsets: Int32Array;
-  /** Scattered entity indices, indexed by cellOffsets. */
-  private readonly cellEntities: Int32Array;
+  /** Scattered entity indices, indexed by cellOffsets. May be reallocated on overflow. */
+  private cellEntities: Int32Array;
   /** Reusable output buffer for query results. */
   private readonly queryBuffer: Int32Array;
 
@@ -65,7 +65,7 @@ export class SpatialGrid {
    * Uses well-distributed multiplicative hash with power-of-2 modulo.
    */
   private hash(ix: number, iy: number): number {
-    return ((ix * 92837111) ^ (iy * 689287499)) & this.cellMask;
+    return (Math.imul(ix, 92837111) ^ Math.imul(iy, 689287499)) & this.cellMask;
   }
 
   /**
@@ -147,6 +147,11 @@ export class SpatialGrid {
     }
     this.totalEntries = sum;
 
+    // Realloc if prefix sum exceeds buffer capacity (pathological: entities >> cell size)
+    if (sum > this.cellEntities.length) {
+      this.cellEntities = new Int32Array(sum);
+    }
+
     // --- Pass 3: Scatter entity indices into cellEntities ---
     // Reset counts to use as running insert cursors
     this.cellCounts.fill(0);
@@ -166,9 +171,7 @@ export class SpatialGrid {
         for (let gy = cellMinY; gy <= cellMaxY; gy++) {
           const h = this.hash(gx, gy);
           const offset = this.cellOffsets[h] + this.cellCounts[h];
-          if (offset < this.cellEntities.length) {
-            this.cellEntities[offset] = i;
-          }
+          this.cellEntities[offset] = i;
           this.cellCounts[h]++;
         }
       }
@@ -179,6 +182,10 @@ export class SpatialGrid {
    * Query the grid for candidate entity indices near a world-space point.
    * Scans a 3x3 neighborhood of cells around the query position.
    * Returns deduplicated results via sort+compact.
+   *
+   * **Aliasing warning:** The returned `indices` buffer is reused across calls.
+   * Contents are invalidated on the next call to `query()`. Copy the subarray
+   * (`indices.subarray(0, count).slice()`) if you need to retain results.
    *
    * @param wx World-space X coordinate
    * @param wy World-space Y coordinate

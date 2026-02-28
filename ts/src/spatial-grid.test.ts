@@ -69,6 +69,31 @@ describe('SpatialGrid', () => {
     expect(result.count).toBeGreaterThan(0);
   });
 
+  it('handles entities at negative world coordinates', () => {
+    const grid = new SpatialGrid(1024);
+    const bounds = makeBounds([
+      [-500, -300, 0, 15],
+      [-100, -200, 0, 10],
+      [0, 0, 0, 5],
+      [100, 200, 0, 10],
+    ]);
+    grid.rebuild(bounds, 4);
+
+    // Query near negative-coordinate entity — must find it as candidate
+    const r1 = grid.query(-500, -300);
+    const indices1 = Array.from(r1.indices.subarray(0, r1.count));
+    expect(indices1).toContain(0);
+
+    const r2 = grid.query(-100, -200);
+    const indices2 = Array.from(r2.indices.subarray(0, r2.count));
+    expect(indices2).toContain(1);
+
+    // Positive-coordinate entity must be found near its own position
+    const r3 = grid.query(100, 200);
+    const indices3 = Array.from(r3.indices.subarray(0, r3.count));
+    expect(indices3).toContain(3);
+  });
+
   it('matches brute-force results for random queries', () => {
     const grid = new SpatialGrid(2048);
     const count = 500;
