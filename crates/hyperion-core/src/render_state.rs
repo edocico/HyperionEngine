@@ -480,6 +480,47 @@ impl RenderState {
         slot
     }
 
+    /// Write all SoA data for an entity into its assigned slot.
+    /// Used for initial population and dirty updates.
+    pub fn write_slot(&mut self, slot: u32, world: &World, entity: hecs::Entity) {
+        let s = slot as usize;
+
+        if let Ok(matrix) = world.get::<&ModelMatrix>(entity) {
+            let t = s * 16;
+            self.gpu_transforms[t..t + 16].copy_from_slice(&matrix.0);
+        }
+
+        if let Ok(pos) = world.get::<&Position>(entity) {
+            let b = s * 4;
+            self.gpu_bounds[b] = pos.0.x;
+            self.gpu_bounds[b + 1] = pos.0.y;
+            self.gpu_bounds[b + 2] = pos.0.z;
+        }
+        if let Ok(radius) = world.get::<&BoundingRadius>(entity) {
+            self.gpu_bounds[s * 4 + 3] = radius.0;
+        }
+
+        if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
+            self.gpu_render_meta[s * 2] = mesh.0;
+        }
+        if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
+            self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
+        }
+
+        if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
+            self.gpu_tex_indices[s] = tex.0;
+        }
+
+        if let Ok(params) = world.get::<&PrimitiveParams>(entity) {
+            let p = s * 8;
+            self.gpu_prim_params[p..p + 8].copy_from_slice(&params.0);
+        }
+
+        if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
+            self.gpu_entity_ids[s] = ext_id.0;
+        }
+    }
+
     /// Process all pending despawns via batch swap-remove.
     /// Must be called once per frame before collect_gpu_dirty.
     /// Processes in descending slot order to maintain the invariant that
@@ -1181,6 +1222,34 @@ mod tests {
         assert_eq!(rs.get_slot(entities[0]), Some(0));
         assert_eq!(rs.get_slot(entities[1]), None);
         assert_eq!(rs.get_slot(entities[3]), None);
+    }
+
+    #[test]
+    fn write_slot_updates_soa_in_place() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e = world.spawn((
+            Position(Vec3::new(5.0, 10.0, 0.0)),
+            Rotation::default(),
+            Scale(Vec3::ONE),
+            ModelMatrix::default(),
+            BoundingRadius(2.0),
+            TextureLayerIndex(7),
+            MeshHandle(3),
+            RenderPrimitive(1),
+            PrimitiveParams::default(),
+            ExternalId(42),
+            Active,
+        ));
+        let slot = rs.assign_slot(e);
+        rs.write_slot(slot, &world, e);
+
+        // Check bounds: position (5, 10, 0) + radius 2
+        assert_eq!(rs.gpu_bounds[slot as usize * 4], 5.0);
+        assert_eq!(rs.gpu_bounds[slot as usize * 4 + 1], 10.0);
+        assert_eq!(rs.gpu_bounds[slot as usize * 4 + 3], 2.0);
+        // Check entity_ids
+        assert_eq!(rs.gpu_entity_ids[slot as usize], 42);
     }
 
     #[test]
