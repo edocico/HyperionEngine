@@ -48,7 +48,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (590 tests)
+cd ts && npm test                            # All vitest tests (596 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -119,6 +119,8 @@ cd ts && npx vitest run src/asset-pipeline/ktx2-node.test.ts   # Node.js KTX2 pa
 cd ts && npx vitest run src/asset-pipeline/scanner.test.ts     # Texture scanner (5 tests)
 cd ts && npx vitest run src/asset-pipeline/codegen.test.ts     # Code generator (3 tests)
 cd ts && npx vitest run src/asset-pipeline/vite-plugin.test.ts # Vite plugin (4 tests)
+cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
+cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
 # Debug/dev-tools (requires feature flag)
 cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (109 tests)
@@ -242,7 +244,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
 | `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
-| `main.ts` | Demo entry point: click-to-select, spatial audio, WASD camera, scroll-zoom, particles, bloom, bezier |
+| `main.ts` | Tab-based verification harness: 8-section switcher, lazy-loaded demo sections, check panel, JSON report export |
 
 #### Bridge & Workers
 
@@ -312,6 +314,21 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `text/font-atlas.ts` | `FontAtlas` + `GlyphMetrics`, `parseFontAtlas()`, `loadFontAtlas()` |
 | `text/text-layout.ts` | `layoutText()` — glyph positioning from atlas metrics |
 | `text/text-manager.ts` | `TextManager` — font atlas cache for MSDF text rendering |
+
+#### Demo / Verification Harness (`ts/src/demo/`)
+
+| Module | Role |
+|---|---|
+| `demo/types.ts` | `DemoSection`, `TestReporter`, `TestResult`, `SectionStatus`, `createTestReporter()` |
+| `demo/report.ts` | `ReportBuilder` — collects section reports, builds JSON, downloads file |
+| `demo/primitives.ts` | Quads, gradients, box shadows, lines, beziers, MSDF text (6 checks) |
+| `demo/scene-graph.ts` | Parent/child, velocity, rotation, scale, nested transforms (5 checks) |
+| `demo/input.ts` | Keyboard, click, pointer, scroll, hit-test, selection (6 checks) |
+| `demo/audio.ts` | Load, play, spatial, suspend/resume (4 checks) |
+| `demo/particles.ts` | Create, multiple, destroy, entity tracking (4 checks) |
+| `demo/rendering-fx.ts` | Bloom, outlines, tonemap, resize (4 checks) |
+| `demo/debug-tools.ts` | Profiler, bounds, inspector, debug-cam, time-travel (5 checks) |
+| `demo/lifecycle.ts` | Spawn/destroy, batch, compact, immediate, data, prefabs (6 checks) |
 
 #### Debug (`ts/src/debug/`, dev-tools only)
 
@@ -475,6 +492,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 10a-DX | DX Foundations | SystemViews, debug camera, ECS inspector (TLV + panel), WASM debug exports (`dev-tools` feature) |
 | 10b-DX | DX Features | Prefabs (PrefabRegistry/Instance), build-time Asset Pipeline (Vite plugin), bounds visualizer, PRIM_PARAMS_SCHEMA |
 | 10c-DX | Time-Travel Debug | CommandTapeRecorder, ReplayPlayer, SnapshotManager (`engine_reset/snapshot_create/snapshot_restore`), `createHotSystem` HMR helper, `Hyperion.debug` API |
+| — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export |
 
 ## Documentation
 
