@@ -26,7 +26,6 @@ function nextPowerOf2(v: number): number {
 }
 
 export class SpatialGrid {
-  private readonly maxEntities: number;
   private readonly maxCells: number;
   private readonly cellMask: number;
 
@@ -49,7 +48,6 @@ export class SpatialGrid {
   private entityCount = 0;
 
   constructor(maxEntities: number) {
-    this.maxEntities = maxEntities;
     this.maxCells = nextPowerOf2(maxEntities * 2);
     this.cellMask = this.maxCells - 1;
 

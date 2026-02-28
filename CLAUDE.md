@@ -41,6 +41,12 @@ cargo test -p hyperion-core engine::tests::spiral_of_death_capped
 cd ts && npm run build:wasm
 # Equivalent to: wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm
 
+# Optimized release build (wasm-pack + wasm-opt -O3 --strip-debug --enable-simd)
+cd ts && npm run build:wasm:release
+
+# Check binary size (CI gate: <200KB gzipped)
+cd ts && npm run check:wasm-size
+
 # After building, check generated TypeScript types
 cat ts/wasm/hyperion_core.d.ts
 ```
@@ -48,7 +54,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (596 tests)
+cd ts && npm test                            # All vitest tests (616 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -58,7 +64,7 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (17 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
-cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format (8 tests)
+cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format + subgroups (11 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
 cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager + KTX2/compressed (36 tests)
@@ -66,7 +72,7 @@ cd ts && npx vitest run src/backpressure.test.ts              # Backpressure que
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction (2 tests)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers (8 tests)
 cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass multi-pipeline (2 tests)
 cd ts && npx vitest run src/render/passes/fxaa-tonemap-pass.test.ts  # FXAATonemapPass (3 tests)
 cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # SelectionSeedPass (3 tests)
@@ -85,7 +91,7 @@ cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector bac
 cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
 cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
 cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (27 tests)
-cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing (8 tests)
+cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing + spatial grid (9 tests)
 cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state + bounds patching (10 tests)
 cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
 cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
@@ -119,6 +125,8 @@ cd ts && npx vitest run src/asset-pipeline/ktx2-node.test.ts   # Node.js KTX2 pa
 cd ts && npx vitest run src/asset-pipeline/scanner.test.ts     # Texture scanner (5 tests)
 cd ts && npx vitest run src/asset-pipeline/codegen.test.ts     # Code generator (3 tests)
 cd ts && npx vitest run src/asset-pipeline/vite-plugin.test.ts # Vite plugin (4 tests)
+cd ts && npx vitest run src/spatial-grid.test.ts               # SpatialGrid broadphase (8 tests)
+cd ts && npx vitest run src/ring-buffer-bench.test.ts          # Ring buffer saturation benchmark (2 tests)
 cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
@@ -242,7 +250,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hooks, FPS/frame-time tracking |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` |
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
-| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing |
+| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing, `detectSubgroupSupport()` for WebGPU subgroups |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
 | `main.ts` | Tab-based verification harness: 8-section switcher, lazy-loaded demo sections, check panel, JSON report export |
 
@@ -256,6 +264,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `engine-worker.ts` | Web Worker: loads WASM, calls `engine_init`/`engine_update`, heartbeat counter |
 | `render-worker.ts` | Mode A: OffscreenCanvas + `createRenderer()` |
 | `supervisor.ts` | `WorkerSupervisor` — heartbeat monitoring + timeout detection |
+| `ring-buffer-bench.ts` | `measureRingBufferSaturation()` — stress benchmark for ring buffer utilization. Verdict: no-action/monitor/optimize |
 
 #### Rendering Pipeline
 
@@ -284,7 +293,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | Module | Role |
 |---|---|
 | `input-manager.ts` | Keyboard/pointer/scroll state + callbacks (`onKey`/`onClick`/`onPointerMove`/`onScroll`), DOM lifecycle |
-| `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection, returns closest entityId or null |
+| `hit-tester.ts` | `hitTestRay()` — CPU ray-sphere intersection, returns closest entityId or null. Optional `SpatialGrid` parameter for O(1) broadphase |
+| `spatial-grid.ts` | `SpatialGrid` — zero-alloc uniform 2D hash grid for hit-testing broadphase. Flat `Int32Array` backing, 3-pass rebuild, 3×3 neighborhood query |
 | `immediate-state.ts` | Shadow position map for zero-latency rendering, `patchTransforms()` + `patchBounds()` |
 | `selection.ts` | `SelectionManager` — CPU `Set<number>` with dirty tracking + GPU mask upload |
 
@@ -412,6 +422,10 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **GameLoop postTick/frameEnd see current-frame views** — `_systemViews` is re-read AFTER `tickFn()` for postTick/frameEnd hooks. preTick sees previous frame (captured before tickFn). Do not cache `_systemViews` once for all hook phases.
 - **Snapshot binary uses `pod_read_unaligned`** — Snapshot byte buffers have no alignment guarantees. `bytemuck::from_bytes` panics on unaligned data; always use `pod_read_unaligned` for reading Pod types from snapshot data.
 - **Bridge tick count is on `latestRenderState`** — Use `bridge.latestRenderState?.tickCount ?? 0`, NOT `bridge.tickCount()`. The bridge interface has no direct `tickCount()` method.
+- **SpatialGrid cell size is world-space, not viewport-space** — `sqrt(worldArea / entityCount) * 2`. Viewport-space breaks with camera zoom. Grid rebuilds fully each frame (no incremental yet).
+- **SpatialGrid `query()` returns aliased buffer** — The returned `indices` Int32Array is an internal buffer reused across calls. Copy with `.slice()` if you need to retain results.
+- **Cull shader `enable subgroups;` must be prepended at pipeline creation** — The directive is NOT in `cull.wgsl`. Adding it would fail WGSL validation on non-subgroup devices. `prepareShaderSource()` handles this.
+- **Subgroup `requestDevice` requires `'subgroups'` in `requiredFeatures`** — Detection via `detectSubgroupSupport()` checks `adapter.features`, but the feature must also be requested at device creation. Use retry-without fallback if request fails.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -466,6 +480,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`Hyperion.debug` API** — `isRecording`, `startRecording(config?)`, `stopRecording(): CommandTape`. Zero overhead when not recording (null tap).
 - **Demo reporter resets on tab re-entry** — `switchSection()` calls `reporter.reset()` when re-entering a cached section. All reporter methods (`check`/`skip`/`pending`) deduplicate by name.
 - **Demo audio uses `sfx/click.wav`** — A minimal 0.1s 440Hz WAV file in `ts/public/sfx/`. Not `.ogg`.
+- **SIMD128 activated via `.cargo/config.toml`** — `[target.wasm32-unknown-unknown] rustflags = ["-C", "target-feature=+simd128"]`. Only affects wasm32 target, native tests unaffected. glam auto-detects and emits v128 ops.
+- **wasm-opt runs twice** — wasm-pack runs wasm-opt internally in release mode. `build:wasm:opt` runs it again with `--strip-debug --enable-simd`. The second pass has marginal effect (±1% size).
+- **SpatialGrid hash uses `Math.imul`** — `(Math.imul(ix, 92837111) ^ Math.imul(iy, 689287499)) & cellMask`. Standard idiom for int32 hash in JS. Power-of-2 mask for fast modulo.
+- **SpatialGrid 3-pass rebuild** — Count entries per cell → exclusive prefix sum → scatter entity indices. `cellEntities` reallocs on overflow (pathological case only).
+- **Cull shader override constants** — `USE_SUBGROUPS` and `SUBGROUP_SIZE` are pipeline-overridable. `if (USE_SUBGROUPS)` is compile-time branching (dead code eliminated). `subgroupElect()` + `subgroupBroadcastFirst()` ensure atomic-doer and broadcast source match.
+- **Ring buffer benchmark confirms 22% peak utilization** — At 10k entities / 100% movement / 1MB buffer. Transport layer is not the bottleneck.
 
 ## Conventions
 
@@ -479,7 +499,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 10c-DX complete. Next: Phase 11 (Networking / Multiplayer).**
+**Current: Phase 11 (Optimization Tier 1) complete. Next: Phase 12 per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -496,6 +516,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 10b-DX | DX Features | Prefabs (PrefabRegistry/Instance), build-time Asset Pipeline (Vite plugin), bounds visualizer, PRIM_PARAMS_SCHEMA |
 | 10c-DX | Time-Travel Debug | CommandTapeRecorder, ReplayPlayer, SnapshotManager (`engine_reset/snapshot_create/snapshot_restore`), `createHotSystem` HMR helper, `Hyperion.debug` API |
 | — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export |
+| 11 | Optimization Tier 1 | SIMD128 activation, wasm-opt build pipeline, SpatialGrid broadphase, ring buffer profiling, WebGPU subgroup compute path |
 
 ## Documentation
 
@@ -503,4 +524,5 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11). Historical reference for implementation decisions.
+- `hyperion-masterplan.md` — Authoritative high-level reference for all phases (0-20+). Optimization strategy in §17.
