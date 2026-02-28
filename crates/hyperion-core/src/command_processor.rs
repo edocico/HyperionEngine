@@ -3,6 +3,7 @@
 use hecs::World;
 
 use crate::components::*;
+use crate::render_state::RenderState;
 use crate::ring_buffer::{Command, CommandType};
 
 /// Maps external entity IDs (from TypeScript) to internal hecs entities.
@@ -95,7 +96,12 @@ impl EntityMap {
 }
 
 /// Process a batch of commands against the ECS world.
-pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mut EntityMap) {
+pub fn process_commands(
+    commands: &[Command],
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) {
     for cmd in commands {
         match cmd.cmd_type {
             CommandType::SpawnEntity => {
@@ -116,10 +122,13 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     Active,
                 ));
                 entity_map.insert(cmd.entity_id, entity);
+                let slot = render_state.assign_slot(entity);
+                render_state.write_slot(slot, world, entity);
             }
 
             CommandType::DespawnEntity => {
                 if let Some(entity) = entity_map.get(cmd.entity_id) {
+                    render_state.pending_despawns.push(entity);
                     let _ = world.despawn(entity);
                     entity_map.remove(cmd.entity_id);
                 }
@@ -133,6 +142,10 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     if let Ok(mut pos) = world.get::<&mut Position>(entity) {
                         pos.0 = glam::Vec3::new(x, y, z);
                     }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -145,6 +158,10 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
                         rot.0 = glam::Quat::from_xyzw(x, y, z, w);
                     }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -155,6 +172,10 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
                     if let Ok(mut scale) = world.get::<&mut Scale>(entity) {
                         scale.0 = glam::Vec3::new(x, y, z);
+                    }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                     }
                 }
             }
@@ -176,6 +197,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     if let Ok(mut tex) = world.get::<&mut TextureLayerIndex>(entity) {
                         tex.0 = packed;
                     }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -185,6 +209,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     if let Ok(mut mh) = world.get::<&mut MeshHandle>(entity) {
                         mh.0 = handle;
                     }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -193,6 +220,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                     let prim = cmd.payload[0];
                     if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
                         rp.0 = prim;
+                    }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                     }
                 }
             }
@@ -271,6 +301,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                             );
                         }
                     }
+                    if let Some(slot) = render_state.get_slot(child_entity) {
+                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -285,6 +318,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                         pp.0[1] = p1;
                         pp.0[2] = p2;
                         pp.0[3] = p3;
+                    }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                     }
                 }
             }
@@ -301,6 +337,9 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
                         pp.0[6] = p6;
                         pp.0[7] = p7;
                     }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                    }
                 }
             }
 
@@ -314,6 +353,7 @@ pub fn process_commands(commands: &[Command], world: &mut World, entity_map: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_state::RenderState;
     use crate::ring_buffer::CommandType;
 
     fn make_spawn_cmd(id: u32) -> Command {
@@ -348,8 +388,9 @@ mod tests {
     fn spawn_creates_entity() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         assert!(map.get(0).is_some());
         let entity = map.get(0).unwrap();
@@ -361,12 +402,14 @@ mod tests {
     fn set_position_updates_component() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
         process_commands(
             &[make_position_cmd(0, 5.0, 10.0, 15.0)],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         let entity = map.get(0).unwrap();
@@ -378,11 +421,12 @@ mod tests {
     fn despawn_removes_entity() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
         let entity = map.get(0).unwrap();
 
-        process_commands(&[make_despawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_despawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         assert!(map.get(0).is_none());
         assert!(world.get::<&Position>(entity).is_err());
@@ -405,8 +449,9 @@ mod tests {
     fn set_texture_layer_updates_component() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let packed: u32 = (2 << 16) | 10; // tier 2, layer 10
         let mut payload = [0u8; 16];
@@ -416,7 +461,7 @@ mod tests {
             entity_id: 0,
             payload,
         };
-        process_commands(&[cmd], &mut world, &mut map);
+        process_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let tex = world.get::<&TextureLayerIndex>(entity).unwrap();
@@ -427,13 +472,14 @@ mod tests {
     fn set_mesh_handle_updates_component() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&42u32.to_le_bytes());
         let cmd = Command { cmd_type: CommandType::SetMeshHandle, entity_id: 0, payload };
-        process_commands(&[cmd], &mut world, &mut map);
+        process_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let mh = world.get::<&MeshHandle>(entity).unwrap();
@@ -444,13 +490,14 @@ mod tests {
     fn set_render_primitive_updates_component() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let mut payload = [0u8; 16];
         payload[0] = 2; // SDFGlyph
         let cmd = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
-        process_commands(&[cmd], &mut world, &mut map);
+        process_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let rp = world.get::<&RenderPrimitive>(entity).unwrap();
@@ -461,12 +508,14 @@ mod tests {
     fn commands_on_nonexistent_entity_are_ignored() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         // Setting position on entity 99 which doesn't exist should not panic.
         process_commands(
             &[make_position_cmd(99, 1.0, 2.0, 3.0)],
             &mut world,
             &mut map,
+            &mut rs,
         );
         // No assertion needed -- just verifying no panic.
     }
@@ -475,11 +524,13 @@ mod tests {
     fn set_parent_adds_parent_component() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         process_commands(
             &[make_spawn_cmd(0), make_spawn_cmd(1)],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         let mut payload = [0u8; 16];
@@ -489,7 +540,7 @@ mod tests {
             entity_id: 1,
             payload,
         };
-        process_commands(&[cmd], &mut world, &mut map);
+        process_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let child_entity = map.get(1).unwrap();
         let parent = world.get::<&Parent>(child_entity).unwrap();
@@ -527,10 +578,11 @@ mod tests {
     fn process_set_prim_params() {
         let mut world = World::new();
         let mut entity_map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         // Spawn an entity first
         let spawn_cmd = Command { cmd_type: CommandType::SpawnEntity, entity_id: 0, payload: [0; 16] };
-        process_commands(&[spawn_cmd], &mut world, &mut entity_map);
+        process_commands(&[spawn_cmd], &mut world, &mut entity_map, &mut rs);
 
         // Set params 0-3
         let mut payload0 = [0u8; 16];
@@ -540,7 +592,7 @@ mod tests {
         payload0[12..16].copy_from_slice(&4.0f32.to_le_bytes());
 
         let cmd0 = Command { cmd_type: CommandType::SetPrimParams0, entity_id: 0, payload: payload0 };
-        process_commands(&[cmd0], &mut world, &mut entity_map);
+        process_commands(&[cmd0], &mut world, &mut entity_map, &mut rs);
 
         let entity = entity_map.get(0).unwrap();
         {
@@ -559,7 +611,7 @@ mod tests {
         payload1[12..16].copy_from_slice(&8.0f32.to_le_bytes());
 
         let cmd1 = Command { cmd_type: CommandType::SetPrimParams1, entity_id: 0, payload: payload1 };
-        process_commands(&[cmd1], &mut world, &mut entity_map);
+        process_commands(&[cmd1], &mut world, &mut entity_map, &mut rs);
 
         let pp = world.get::<&PrimitiveParams>(entity).unwrap();
         assert_eq!(pp.0[4], 5.0);
@@ -574,13 +626,14 @@ mod tests {
     fn spawn_sets_external_id() {
         let mut world = World::new();
         let mut entity_map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         let cmd = Command {
             cmd_type: CommandType::SpawnEntity,
             entity_id: 42,
             payload: [0u8; 16],
         };
-        process_commands(&[cmd], &mut world, &mut entity_map);
+        process_commands(&[cmd], &mut world, &mut entity_map, &mut rs);
 
         let hecs_entity = entity_map.get(42).unwrap();
         let ext_id = world.get::<&ExternalId>(hecs_entity).unwrap();
@@ -591,19 +644,21 @@ mod tests {
     fn set_parent_overflow_children_beyond_32() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         // Spawn parent
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         // Spawn 33 children and parent them all to entity 0
         for child_id in 1..=33u32 {
-            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map);
+            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
             let mut payload = [0u8; 16];
             payload[0..4].copy_from_slice(&0u32.to_le_bytes());
             process_commands(
                 &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
                 &mut world,
                 &mut map,
+                &mut rs,
             );
         }
 
@@ -622,17 +677,19 @@ mod tests {
     fn remove_child_from_overflow() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         // Spawn parent + 33 children
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map);
+        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
         for child_id in 1..=33u32 {
-            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map);
+            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
             let mut payload = [0u8; 16];
             payload[0..4].copy_from_slice(&0u32.to_le_bytes());
             process_commands(
                 &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
                 &mut world,
                 &mut map,
+                &mut rs,
             );
         }
 
@@ -643,6 +700,7 @@ mod tests {
             &[Command { cmd_type: CommandType::SetParent, entity_id: 33, payload }],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         // OverflowChildren should be removed (was only 1 item)
@@ -658,11 +716,13 @@ mod tests {
     fn set_parent_with_max_sentinel_unparents() {
         let mut world = World::new();
         let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         process_commands(
             &[make_spawn_cmd(0), make_spawn_cmd(1)],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         // Parent entity 1 to entity 0
@@ -676,6 +736,7 @@ mod tests {
             }],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         // Unparent entity 1
@@ -688,6 +749,7 @@ mod tests {
             }],
             &mut world,
             &mut map,
+            &mut rs,
         );
 
         let child_entity = map.get(1).unwrap();

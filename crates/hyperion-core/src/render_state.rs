@@ -1129,6 +1129,7 @@ mod tests {
 
         let mut world = World::new();
         let mut entity_map = EntityMap::new();
+        let mut rs = RenderState::new();
 
         // Spawn two entities with external IDs 10 and 20
         for &ext_id in &[10u32, 20] {
@@ -1137,7 +1138,7 @@ mod tests {
                 entity_id: ext_id,
                 payload: [0u8; 16],
             };
-            process_commands(&[cmd], &mut world, &mut entity_map);
+            process_commands(&[cmd], &mut world, &mut entity_map, &mut rs);
         }
 
         let mut state = RenderState::new();

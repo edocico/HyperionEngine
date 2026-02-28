@@ -63,7 +63,7 @@ impl Engine {
                 self.listener_prev_pos = new_pos;
             }
         }
-        process_commands(commands, &mut self.world, &mut self.entity_map);
+        process_commands(commands, &mut self.world, &mut self.entity_map, &mut self.render_state);
     }
 
     /// Advance the engine by `dt` seconds (variable, from requestAnimationFrame).
