@@ -1,8 +1,9 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import { BUCKETS_PER_TYPE } from './cull-pass';
 
 /**
- * Forward rendering pass with multi-pipeline per-type dispatch.
+ * Forward rendering pass with multi-pipeline per-type dispatch and 2-bucket material sort.
  *
  * Reads entity transforms, visible indices (from CullPass), texture layer
  * indices, render metadata, and primitive parameters, then issues per-type
@@ -10,8 +11,9 @@ import type { ResourcePool } from '../resource-pool';
  *
  * Each registered primitive type (via SHADER_SOURCES) gets its own
  * GPURenderPipeline. All pipelines share the same bind group layouts.
- * CullPass produces per-type DrawIndirectArgs at sequential 20-byte offsets
- * (type N at byte N*20), and this pass issues drawIndexedIndirect for each.
+ * CullPass produces 12 DrawIndirectArgs (6 prim types x 2 buckets) at
+ * sequential 20-byte offsets. For each primitive type, the tier0 bucket
+ * is drawn first, then the other-tiers bucket, reducing fragment divergence.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
@@ -225,15 +227,19 @@ export class ForwardPass implements RenderPass {
       },
     });
 
-    // Issue per-type draw calls using each pipeline's indirect args
+    // Issue per-type draw calls using each pipeline's indirect args.
+    // Each primitive type has 2 buckets (tier0 compressed, then other tiers).
+    // Bucket layout: argSlot = primType * BUCKETS_PER_TYPE + bucket.
     for (const [primType, pipeline] of this.pipelines) {
       renderPass.setPipeline(pipeline);
       renderPass.setVertexBuffer(0, this.vertexBuffer);
       renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
       renderPass.setBindGroup(0, this.bindGroup0);
       renderPass.setBindGroup(1, this.bindGroup1);
-      // Each type's indirect args at offset primType * 20 bytes (5 u32 x 4 bytes)
-      renderPass.drawIndexedIndirect(this.indirectBuffer, primType * 20);
+      for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
+        const argSlot = primType * BUCKETS_PER_TYPE + bucket;
+        renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
+      }
     }
 
     renderPass.end();

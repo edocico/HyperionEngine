@@ -148,10 +148,12 @@ export class SelectionSeedPass implements RenderPass {
     renderPass.setVertexBuffer(0, this.vertexBuffer);
     renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
     renderPass.setBindGroup(0, this.bindGroup);
-    // Use prim-type 0 indirect args (all visible quads).
+    // Use prim-type 0 indirect args (both buckets: tier0 + other).
     // A more refined approach would use a selection-specific indirect args buffer,
     // but all entities are drawn and selection filtering happens in the vertex shader.
+    // Bucket layout: argSlot 0 = type0/tier0, argSlot 1 = type0/other. Each at 20-byte stride.
     renderPass.drawIndexedIndirect(this.indirectBuffer, 0);
+    renderPass.drawIndexedIndirect(this.indirectBuffer, 20);
 
     renderPass.end();
   }

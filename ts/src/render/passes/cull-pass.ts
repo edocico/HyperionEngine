@@ -6,6 +6,12 @@ const WORKGROUP_SIZE = 256;
 const NUM_PRIM_TYPES = 6;
 const MAX_SUBGROUPS_PER_WG = 8;
 
+/** Number of material-sort buckets per primitive type (tier0 vs other). */
+export const BUCKETS_PER_TYPE = 2;
+
+/** Total number of indirect draw arg entries (prim types x buckets). */
+export const TOTAL_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
+
 /**
  * Compute the optimal workgroup size for the cull shader.
  *
@@ -34,15 +40,16 @@ export function prepareShaderSource(baseSource: string, useSubgroups: boolean): 
 }
 
 /**
- * GPU frustum-culling compute pass.
+ * GPU frustum-culling compute pass with 2-bucket material sort.
  *
- * Reads SoA entity buffers (transforms + bounds + renderMeta) and writes
- * per-primitive-type compacted visible-indices lists plus 6 sets of
- * indirect draw arguments (one per primitive type).
+ * Reads SoA entity buffers (transforms + bounds + renderMeta + texIndices) and writes
+ * per-primitive-type compacted visible-indices lists plus 12 sets of
+ * indirect draw arguments (2 buckets per primitive type: tier0 compressed vs other tiers).
+ * This reduces fragment divergence by grouping entities with the same texture binding path.
  */
 export class CullPass implements RenderPass {
   readonly name = 'cull';
-  readonly reads = ['entity-transforms', 'entity-bounds', 'render-meta'];
+  readonly reads = ['entity-transforms', 'entity-bounds', 'render-meta', 'tex-indices'];
   readonly writes = ['visible-indices', 'indirect-args'];
   readonly optional = false;
 
@@ -88,6 +95,8 @@ export class CullPass implements RenderPass {
     if (!this.indirectBuffer) throw new Error("CullPass.setup: missing 'indirect-args' in ResourcePool");
     const renderMetaBuffer = resources.getBuffer('render-meta');
     if (!renderMetaBuffer) throw new Error("CullPass.setup: missing 'render-meta' in ResourcePool");
+    const texIndexBuffer = resources.getBuffer('tex-indices');
+    if (!texIndexBuffer) throw new Error("CullPass.setup: missing 'tex-indices' in ResourcePool");
 
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -97,6 +106,7 @@ export class CullPass implements RenderPass {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -114,6 +124,7 @@ export class CullPass implements RenderPass {
         { binding: 3, resource: { buffer: visibleIndicesBuffer } },
         { binding: 4, resource: { buffer: this.indirectBuffer } },
         { binding: 5, resource: { buffer: renderMetaBuffer } },
+        { binding: 6, resource: { buffer: texIndexBuffer } },
       ],
     });
   }
@@ -133,14 +144,17 @@ export class CullPass implements RenderPass {
     // cullUints[2..3] = 0 (padding, already zeroed)
     device.queue.writeBuffer(this.cullUniformBuffer, 0, cullData);
 
-    // Reset indirect draw arguments: 6 primitive types × 5 u32 each
-    const resetData = new Uint32Array(NUM_PRIM_TYPES * 5);
-    for (let i = 0; i < NUM_PRIM_TYPES; i++) {
+    // Reset indirect draw arguments: 12 buckets (6 prim types × 2 buckets) × 5 u32 each.
+    // firstInstance encodes the visible-indices region offset so the vertex shader
+    // can read visibleIndices[instance_index] directly (instance_index = firstInstance + slot).
+    const MAX_ENTITIES_PER_TYPE = 100_000;
+    const resetData = new Uint32Array(TOTAL_DRAW_BUCKETS * 5);
+    for (let i = 0; i < TOTAL_DRAW_BUCKETS; i++) {
       resetData[i * 5 + 0] = 6;  // indexCount (quad = 6 indices)
-      resetData[i * 5 + 1] = 0;  // instanceCount (reset)
+      resetData[i * 5 + 1] = 0;  // instanceCount (reset by cull shader)
       resetData[i * 5 + 2] = 0;  // firstIndex
       resetData[i * 5 + 3] = 0;  // baseVertex
-      resetData[i * 5 + 4] = 0;  // firstInstance
+      resetData[i * 5 + 4] = i * MAX_ENTITIES_PER_TYPE;  // firstInstance = region offset
     }
     device.queue.writeBuffer(this.indirectBuffer, 0, resetData);
   }

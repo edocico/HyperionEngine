@@ -33,7 +33,8 @@ import type { GPURenderState } from './worker-bridge';
 
 const MAX_ENTITIES = 100_000;
 const NUM_PRIM_TYPES = 6;
-const INDIRECT_BUFFER_SIZE = NUM_PRIM_TYPES * 5 * 4;  // 6 x 5 u32 x 4 bytes = 120 bytes
+const BUCKETS_PER_TYPE = 2;  // tier0 compressed vs other tiers
+const INDIRECT_BUFFER_SIZE = NUM_PRIM_TYPES * BUCKETS_PER_TYPE * 5 * 4;  // 12 x 5 u32 x 4 bytes = 240 bytes
 
 export interface OutlineOptions {
   color: [number, number, number, number];
@@ -109,7 +110,7 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: NUM_PRIM_TYPES * MAX_ENTITIES * 4,  // 6 regions x 100k x u32
+    size: NUM_PRIM_TYPES * BUCKETS_PER_TYPE * MAX_ENTITIES * 4,  // 12 regions x 100k x u32
     usage: GPUBufferUsage.STORAGE,
   }));
 
