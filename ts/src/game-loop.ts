@@ -130,11 +130,13 @@ export class GameLoop {
     }
 
     if (!this._paused) {
-      const v = this._systemViews ?? undefined;
-      for (const fn of this.hooks.preTick) fn(dt, v);
+      const vPre = this._systemViews ?? undefined;
+      for (const fn of this.hooks.preTick) fn(dt, vPre);
       this.tickFn(dt);
-      for (const fn of this.hooks.postTick) fn(dt, v);
-      for (const fn of this.hooks.frameEnd) fn(dt, v);
+      // Re-read: tickFn may update _systemViews with current frame data
+      const vPost = this._systemViews ?? undefined;
+      for (const fn of this.hooks.postTick) fn(dt, vPost);
+      for (const fn of this.hooks.frameEnd) fn(dt, vPost);
     }
 
     this.rafId = requestAnimationFrame((t) => this.frame(t));

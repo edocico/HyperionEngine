@@ -13,7 +13,7 @@ const section: DemoSection = {
   async setup(engine: Hyperion, reporter: TestReporter) {
     // ── 1. Load sound ──────────────────────────────────────────────────────
     try {
-      loadedHandle = await engine.audio.load('sfx/click.ogg');
+      loadedHandle = await engine.audio.load('sfx/click.wav');
       reporter.check(
         'Load sound',
         true,

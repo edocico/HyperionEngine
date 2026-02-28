@@ -578,14 +578,10 @@ describe('Hyperion SystemViews', () => {
 
     engine.start();
     // Frame 1: tickFn sets SystemViews from fakeState.
-    // GameLoop captures views BEFORE tickFn, so postTick sees undefined this frame.
+    // postTick re-reads views after tickFn, so it sees fakeState immediately.
     rafCallbacks.shift()!(16.67);
-    expect(receivedViews[0]).toBeUndefined();
-
-    // Frame 2: views set in frame 1 are now visible to all hooks.
-    rafCallbacks.shift()!(33.34);
-    expect(receivedViews.length).toBe(2);
-    const v = receivedViews[1];
+    expect(receivedViews.length).toBe(1);
+    const v = receivedViews[0];
     expect(v).toBeDefined();
     expect(v.entityCount).toBe(3);
     expect(v.transforms).toBe(fakeState.transforms);
@@ -597,7 +593,7 @@ describe('Hyperion SystemViews', () => {
     engine.destroy();
   });
 
-  it('hooks see previous frame views (one-frame delay)', () => {
+  it('preTick sees previous frame views, postTick sees current frame views', () => {
     const bridge = mockBridge();
     const state1 = {
       entityCount: 1,
@@ -636,18 +632,17 @@ describe('Hyperion SystemViews', () => {
 
     engine.start();
 
-    // Frame 1: tick sets state1. But views captured before tickFn, so both see undefined.
+    // Frame 1: tick sets state1. preTick sees undefined, postTick sees state1.
     rafCallbacks.shift()!(16.67);
     expect(preViews[0]).toBeUndefined();
-    expect(postViews[0]).toBeUndefined();
+    expect(postViews[0]?.entityCount).toBe(1);
 
-    // Frame 2: tick sets state2. Views captured = state1 (from frame 1).
-    // Both preTick and postTick see state1.
+    // Frame 2: tick sets state2. preTick sees state1, postTick sees state2.
     rafCallbacks.shift()!(33.34);
     expect(preViews[1]?.entityCount).toBe(1);
-    expect(postViews[1]?.entityCount).toBe(1);
+    expect(postViews[1]?.entityCount).toBe(2);
 
-    // Frame 3: Views captured = state2 (from frame 2).
+    // Frame 3: preTick sees state2, postTick also sees state2.
     rafCallbacks.shift()!(50.01);
     expect(preViews[2]?.entityCount).toBe(2);
     expect(postViews[2]?.entityCount).toBe(2);

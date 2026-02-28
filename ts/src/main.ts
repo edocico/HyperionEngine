@@ -142,11 +142,13 @@ async function main() {
 
     currentKey = key;
 
-    // Get or create reporter for this section
+    // Get or create reporter for this section; reset on re-entry
     let reporter = reporterCache.get(key);
     if (!reporter) {
       reporter = createTestReporter();
       reporterCache.set(key, reporter);
+    } else {
+      reporter.reset();
     }
 
     // Load section (lazy, cached after first load)

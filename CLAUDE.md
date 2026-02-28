@@ -408,7 +408,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Compressed textures cannot have RENDER_ATTACHMENT usage** — BC7/ASTC textures fail `createTexture` on Metal if `RENDER_ATTACHMENT` is included. Only use `TEXTURE_BINDING | COPY_DST`.
 - **Orthographic near plane must be negative for z=0 entities** — WebGPU clip volume is z ∈ [0, w]. With `near=0.1`, entities at z=0 map to z_clip ≈ -0.0001, outside valid range. macOS/Metal clips strictly; Linux/Vulkan has guard bands. Default `near=-1` places the near plane behind z=0.
 - **Mode A: main thread has no renderer** — `createParticleEmitter()` returns `null` (not throw). `renderer` stays `null` on main thread; rendering happens in Render Worker.
-- **Mode A: ArrayBuffers transferred, not copied** — After `postMessage` with transferables to Render Worker, the original ArrayBuffers are neutered (zero-length). Main-thread bridge copies bounds + entityIds before transfer for picking/audio.
+- **Mode A: main thread copies ALL SoA arrays** — `latestRenderState` copies transforms, bounds, renderMeta, texIndices, primParams, entityIds before transferring originals to Render Worker (which neuters them). SystemViews, immediate-mode patches, and plugin hooks all require this data.
+- **GameLoop postTick/frameEnd see current-frame views** — `_systemViews` is re-read AFTER `tickFn()` for postTick/frameEnd hooks. preTick sees previous frame (captured before tickFn). Do not cache `_systemViews` once for all hook phases.
 - **Snapshot binary uses `pod_read_unaligned`** — Snapshot byte buffers have no alignment guarantees. `bytemuck::from_bytes` panics on unaligned data; always use `pod_read_unaligned` for reading Pod types from snapshot data.
 - **Bridge tick count is on `latestRenderState`** — Use `bridge.latestRenderState?.tickCount ?? 0`, NOT `bridge.tickCount()`. The bridge interface has no direct `tickCount()` method.
 
@@ -463,6 +464,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Snapshot binary format** — `[magic "HSNP"][version:u32][tick:u64][entity_count:u32][entity_map][per-entity: ext_id:u32 + component_mask:u16 + component data]`. 15 component types in bitmask.
 - **`createHotSystem` schema evolution** — `{ ...initialState(), ...savedState }` merge: new fields get defaults, removed fields silently dropped. No migration code needed.
 - **`Hyperion.debug` API** — `isRecording`, `startRecording(config?)`, `stopRecording(): CommandTape`. Zero overhead when not recording (null tap).
+- **Demo reporter resets on tab re-entry** — `switchSection()` calls `reporter.reset()` when re-entering a cached section. All reporter methods (`check`/`skip`/`pending`) deduplicate by name.
+- **Demo audio uses `sfx/click.wav`** — A minimal 0.1s 440Hz WAV file in `ts/public/sfx/`. Not `.ogg`.
 
 ## Conventions
 

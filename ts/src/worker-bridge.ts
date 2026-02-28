@@ -174,15 +174,15 @@ export function createFullIsolationBridge(
     } else if (msg.type === "tick-done" && msg.renderState && msg.renderState.entityCount > 0) {
       const rs = msg.renderState;
 
-      // Copy lightweight data for main-thread picking + audio before
-      // transferring the full ArrayBuffers to the render worker.
+      // Copy all SoA data for main-thread SystemViews, picking + audio
+      // before transferring the ArrayBuffers to the render worker.
       latestRenderState = {
         entityCount: rs.entityCount,
-        transforms: new Float32Array(0),
+        transforms: rs.transforms ? new Float32Array(new Float32Array(rs.transforms)) : new Float32Array(0),
         bounds: rs.bounds ? new Float32Array(new Float32Array(rs.bounds)) : new Float32Array(0),
-        renderMeta: new Uint32Array(0),
-        texIndices: new Uint32Array(0),
-        primParams: new Float32Array(0),
+        renderMeta: rs.renderMeta ? new Uint32Array(new Uint32Array(rs.renderMeta)) : new Uint32Array(0),
+        texIndices: rs.texIndices ? new Uint32Array(new Uint32Array(rs.texIndices)) : new Uint32Array(0),
+        primParams: rs.primParams ? new Float32Array(new Float32Array(rs.primParams)) : new Float32Array(0),
         entityIds: rs.entityIds ? new Uint32Array(new Uint32Array(rs.entityIds)) : new Uint32Array(0),
         listenerX: rs.listenerX ?? 0,
         listenerY: rs.listenerY ?? 0,

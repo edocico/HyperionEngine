@@ -18,6 +18,7 @@ export interface TestReporter {
   check(name: string, passed: boolean, detail?: string): void;
   skip(name: string, reason: string): void;
   pending(name: string): void;
+  reset(): void;
   results(): TestResult[];
   sectionStatus(): SectionStatus;
 }
@@ -43,10 +44,23 @@ export function createTestReporter(): TestReporter {
       }
     },
     skip(name: string, reason: string) {
-      results.push({ name, status: 'skip', detail: reason });
+      const existing = results.find(r => r.name === name);
+      if (existing) {
+        Object.assign(existing, { status: 'skip' as const, detail: reason });
+      } else {
+        results.push({ name, status: 'skip', detail: reason });
+      }
     },
     pending(name: string) {
-      results.push({ name, status: 'pending' });
+      const existing = results.find(r => r.name === name);
+      if (existing) {
+        Object.assign(existing, { status: 'pending' as const, detail: undefined });
+      } else {
+        results.push({ name, status: 'pending' });
+      }
+    },
+    reset() {
+      results.length = 0;
     },
     results() {
       return results;
