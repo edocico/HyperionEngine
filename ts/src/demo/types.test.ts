@@ -1,6 +1,5 @@
 // ts/src/demo/types.test.ts
 import { describe, it, expect } from 'vitest';
-import type { DemoSection, TestResult, SectionReport } from './types';
 import { createTestReporter } from './types';
 
 describe('DemoSection types', () => {
