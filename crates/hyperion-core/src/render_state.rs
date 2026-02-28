@@ -190,6 +190,18 @@ pub struct RenderState {
     pub(crate) pending_despawns: Vec<hecs::Entity>,
 }
 
+/// Result of collect_dirty_staging: compact staging buffer + indices for GPU scatter.
+pub struct DirtyStagingResult {
+    /// 32 u32 per dirty entity (128 bytes each): transforms(16) + bounds(4) + meta(2) + tex(1) + params(8) + pad(1)
+    pub staging: Vec<u32>,
+    /// Destination slot index for each dirty entity
+    pub dirty_indices: Vec<u32>,
+    /// Number of dirty entities
+    pub dirty_count: u32,
+    /// Union dirty ratio (for threshold decision)
+    pub dirty_ratio: f32,
+}
+
 impl RenderState {
     pub fn new() -> Self {
         Self {
@@ -608,6 +620,79 @@ impl RenderState {
         if slot == u32::MAX { None } else { Some(slot) }
     }
 
+    /// Collect dirty entity data into a compact staging buffer for GPU scatter upload.
+    /// Call flush_pending_despawns() before this.
+    pub fn collect_dirty_staging(&mut self, world: &World) -> DirtyStagingResult {
+        let total = self.gpu_count as usize;
+        if total == 0 {
+            return DirtyStagingResult {
+                staging: Vec::new(),
+                dirty_indices: Vec::new(),
+                dirty_count: 0,
+                dirty_ratio: 0.0,
+            };
+        }
+
+        // Union all dirty bitsets
+        let mut dirty_count = 0u32;
+        let mut dirty_indices = Vec::new();
+        for slot in 0..total {
+            let t = self.dirty_tracker.is_transform_dirty(slot);
+            let b = self.dirty_tracker.is_bounds_dirty(slot);
+            let m = self.dirty_tracker.is_meta_dirty(slot);
+            if t || b || m {
+                dirty_indices.push(slot as u32);
+                dirty_count += 1;
+            }
+        }
+
+        let dirty_ratio = dirty_count as f32 / total as f32;
+
+        // Build staging buffer: 32 u32 per dirty entity
+        let mut staging = Vec::with_capacity(dirty_count as usize * 32);
+        for &slot in &dirty_indices {
+            let s = slot as usize;
+            let entity = self.slot_to_entity[s];
+
+            // First update SoA from world (in case systems modified components)
+            self.write_slot(slot, world, entity);
+
+            // Pack into staging: transforms (16) + bounds (4) + meta (2) + tex (1) + params (8) + pad (1)
+            // Transforms as u32 (bitwise)
+            let t = s * 16;
+            for j in 0..16 {
+                staging.push(self.gpu_transforms[t + j].to_bits());
+            }
+            // Bounds as u32
+            let b = s * 4;
+            for j in 0..4 {
+                staging.push(self.gpu_bounds[b + j].to_bits());
+            }
+            // RenderMeta
+            let m = s * 2;
+            staging.push(self.gpu_render_meta[m]);
+            staging.push(self.gpu_render_meta[m + 1]);
+            // TexIndices
+            staging.push(self.gpu_tex_indices[s]);
+            // PrimParams as u32
+            let p = s * 8;
+            for j in 0..8 {
+                staging.push(self.gpu_prim_params[p + j].to_bits());
+            }
+            // Pad to 32 u32 (format flag: 1 = pre-computed mat4x4)
+            staging.push(1);
+        }
+
+        self.dirty_tracker.clear();
+
+        DirtyStagingResult {
+            staging,
+            dirty_indices,
+            dirty_count,
+            dirty_ratio,
+        }
+    }
+
     /// Release excess heap memory from all internal buffers.
     /// Call after a large batch of entity despawns to reclaim memory.
     pub fn shrink_to_fit(&mut self) {
@@ -631,6 +716,7 @@ impl Default for RenderState {
 mod tests {
     use super::*;
     use crate::components::*;
+    use crate::systems::transform_system;
     use glam::{Quat, Vec3};
 
     #[test]
@@ -1269,5 +1355,60 @@ mod tests {
         assert_eq!(rs.gpu_entity_count(), 1);
         assert_eq!(rs.get_slot(e0), Some(0));
         assert_eq!(rs.get_slot(e1), None);
+    }
+
+    #[test]
+    fn collect_dirty_staging_writes_only_dirty_slots() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        let e0 = world.spawn((
+            Position(Vec3::new(1.0, 0.0, 0.0)),
+            Rotation::default(),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(0),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+        let e1 = world.spawn((
+            Position(Vec3::new(2.0, 0.0, 0.0)),
+            Rotation::default(),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(1),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+        rs.assign_slot(e0);
+        rs.assign_slot(e1);
+
+        // Write initial data
+        transform_system(&mut world);
+        rs.write_slot(0, &world, e0);
+        rs.write_slot(1, &world, e1);
+
+        // Clear dirty, then dirty only e0
+        rs.dirty_tracker.clear();
+        rs.dirty_tracker.mark_transform_dirty(0);
+        rs.dirty_tracker.mark_bounds_dirty(0);
+
+        let result = rs.collect_dirty_staging(&world);
+        assert_eq!(result.dirty_count, 1);
+        assert_eq!(result.dirty_indices[0], 0); // slot 0
     }
 }
