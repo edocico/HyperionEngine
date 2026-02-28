@@ -7,8 +7,8 @@
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Position, PrimitiveParams,
-    RenderPrimitive, TextureLayerIndex,
+    Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Parent, Position, PrimitiveParams,
+    RenderPrimitive, Rotation, Scale, TextureLayerIndex,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -198,7 +198,8 @@ pub struct RenderState {
 
 /// Result of collect_dirty_staging: compact staging buffer + indices for GPU scatter.
 pub struct DirtyStagingResult {
-    /// 32 u32 per dirty entity (128 bytes each): transforms(16) + bounds(4) + meta(2) + tex(1) + params(8) + pad(1)
+    /// 32 u32 per dirty entity (128 bytes each): transforms(16) + bounds(4) + meta(2) + tex(1) + params(8) + format(1)
+    /// Format flag at offset 31: 0 = compressed 2D (pos+rot+scale), 1 = pre-computed mat4x4
     pub staging: Vec<u32>,
     /// Destination slot index for each dirty entity
     pub dirty_indices: Vec<u32>,
@@ -667,12 +668,46 @@ impl RenderState {
             // First update SoA from world (in case systems modified components)
             self.write_slot(slot, world, entity);
 
-            // Pack into staging: transforms (16) + bounds (4) + meta (2) + tex (1) + params (8) + pad (1)
-            // Transforms as u32 (bitwise)
-            let t = s * 16;
-            for j in 0..16 {
-                staging.push(self.gpu_transforms[t + j].to_bits());
+            // Check if entity is a root (no Parent or Parent == u32::MAX)
+            let is_root = world
+                .get::<&Parent>(entity)
+                .map(|p| p.0 == u32::MAX)
+                .unwrap_or(true); // no Parent component = root
+
+            if is_root {
+                // Compressed 2D format (format=0): pos(3) + rot_angle(1) + scale(2) + padding(10)
+                let pos = world
+                    .get::<&Position>(entity)
+                    .map(|p| p.0)
+                    .unwrap_or(glam::Vec3::ZERO);
+                let rot = world
+                    .get::<&Rotation>(entity)
+                    .map(|r| r.0)
+                    .unwrap_or(glam::Quat::IDENTITY);
+                let scale = world
+                    .get::<&Scale>(entity)
+                    .map(|s| s.0)
+                    .unwrap_or(glam::Vec3::ONE);
+
+                // Extract z-rotation angle from quaternion
+                let (angle, _, _) = rot.to_euler(glam::EulerRot::ZYX);
+
+                staging.push(pos.x.to_bits());
+                staging.push(pos.y.to_bits());
+                staging.push(pos.z.to_bits());
+                staging.push(angle.to_bits());
+                staging.push(scale.x.to_bits());
+                staging.push(scale.y.to_bits());
+                // Padding: 10 zeros to reach offset 16
+                staging.extend(std::iter::repeat_n(0u32, 10));
+            } else {
+                // Pre-computed mat4x4 (format=1): copy from SoA transforms
+                let t = s * 16;
+                for j in 0..16 {
+                    staging.push(self.gpu_transforms[t + j].to_bits());
+                }
             }
+
             // Bounds as u32
             let b = s * 4;
             for j in 0..4 {
@@ -689,8 +724,8 @@ impl RenderState {
             for j in 0..8 {
                 staging.push(self.gpu_prim_params[p + j].to_bits());
             }
-            // Pad to 32 u32 (format flag: 1 = pre-computed mat4x4)
-            staging.push(1);
+            // Format flag: 0 = compressed 2D, 1 = pre-computed mat4x4
+            staging.push(if is_root { 0 } else { 1 });
         }
 
         self.dirty_tracker.clear();
@@ -1461,5 +1496,121 @@ mod tests {
         let result = rs.collect_dirty_staging(&world);
         assert_eq!(result.dirty_count, 1);
         assert_eq!(result.dirty_indices[0], 0); // slot 0
+    }
+
+    #[test]
+    fn collect_dirty_staging_compressed_root() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        let e = world.spawn((
+            Position(Vec3::new(10.0, 20.0, 0.0)),
+            Rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)), // 45 degrees
+            Scale(Vec3::new(2.0, 3.0, 1.0)),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(0),
+            Parent::default(), // u32::MAX = no parent = root
+            Children::default(),
+            Active,
+        ));
+        rs.assign_slot(e);
+
+        // Clear dirty from assign, then mark dirty
+        rs.dirty_tracker.clear();
+        rs.dirty_tracker.mark_transform_dirty(0);
+        rs.dirty_tracker.mark_bounds_dirty(0);
+
+        let result = rs.collect_dirty_staging(&world);
+        assert_eq!(result.dirty_count, 1);
+
+        // Format flag at position 31 should be 0 (compressed)
+        assert_eq!(result.staging[31], 0);
+
+        // Position at [0..2]
+        assert_eq!(f32::from_bits(result.staging[0]), 10.0);
+        assert_eq!(f32::from_bits(result.staging[1]), 20.0);
+        assert_eq!(f32::from_bits(result.staging[2]), 0.0);
+
+        // Rotation angle at [3] — should be ~PI/4 (0.785...)
+        let angle = f32::from_bits(result.staging[3]);
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_4).abs() < 0.001,
+            "expected ~PI/4, got {angle}"
+        );
+
+        // Scale at [4..5]
+        assert_eq!(f32::from_bits(result.staging[4]), 2.0);
+        assert_eq!(f32::from_bits(result.staging[5]), 3.0);
+
+        // Padding [6..15] should be 0
+        for i in 6..16 {
+            assert_eq!(result.staging[i], 0, "padding at index {i} should be 0");
+        }
+    }
+
+    #[test]
+    fn collect_dirty_staging_precomputed_child() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        // Parent entity
+        let parent = world.spawn((
+            Position(Vec3::new(100.0, 0.0, 0.0)),
+            Rotation::default(),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(0),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+        rs.assign_slot(parent);
+
+        // Child entity with Parent(0) — not root
+        let child = world.spawn((
+            Position(Vec3::new(5.0, 0.0, 0.0)),
+            Rotation::default(),
+            Scale(Vec3::ONE),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(1),
+            Parent(0), // Has parent — child entity
+            Children::default(),
+            Active,
+        ));
+        rs.assign_slot(child);
+
+        // Transform system to populate matrices
+        transform_system(&mut world);
+
+        // Clear and mark only child dirty
+        rs.dirty_tracker.clear();
+        rs.dirty_tracker.mark_transform_dirty(1);
+
+        let result = rs.collect_dirty_staging(&world);
+        assert_eq!(result.dirty_count, 1);
+
+        // Format flag at position 31 should be 1 (pre-computed mat4x4)
+        assert_eq!(result.staging[31], 1);
+
+        // staging[0..16] should contain ModelMatrix values (translation at [12])
+        assert_eq!(f32::from_bits(result.staging[12]), 5.0); // child's x position in mat4
     }
 }
