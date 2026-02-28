@@ -96,257 +96,332 @@ impl EntityMap {
 }
 
 /// Process a batch of commands against the ECS world.
+///
+/// Consecutive `SpawnEntity` commands are automatically detected and flushed
+/// via `hecs::World::spawn_batch()`, which resizes the archetype table once
+/// instead of per-entity. The optimization is transparent — same observable
+/// behavior, better performance for burst spawns.
 pub fn process_commands(
     commands: &[Command],
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
 ) {
-    for cmd in commands {
-        match cmd.cmd_type {
-            CommandType::SpawnEntity => {
-                let entity = world.spawn((
-                    Position::default(),
-                    Rotation::default(),
-                    Scale::default(),
-                    Velocity::default(),
-                    ModelMatrix::default(),
-                    BoundingRadius::default(),
-                    TextureLayerIndex::default(),
-                    MeshHandle::default(),
-                    RenderPrimitive::default(),
-                    PrimitiveParams::default(),
-                    ExternalId(cmd.entity_id),
-                    Parent::default(),
-                    Children::default(),
-                    Active,
-                ));
-                entity_map.insert(cmd.entity_id, entity);
-                let slot = render_state.assign_slot(entity);
-                render_state.write_slot(slot, world, entity);
+    let mut i = 0;
+    while i < commands.len() {
+        if commands[i].cmd_type == CommandType::SpawnEntity {
+            // Collect consecutive spawn commands
+            let batch_start = i;
+            while i < commands.len() && commands[i].cmd_type == CommandType::SpawnEntity {
+                i += 1;
             }
+            let batch = &commands[batch_start..i];
 
-            CommandType::DespawnEntity => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    render_state.pending_despawns.push(entity);
-                    let _ = world.despawn(entity);
-                    entity_map.remove(cmd.entity_id);
+            if batch.len() >= 2 {
+                // Batch spawn: hecs resizes archetype table once for all N entities
+                flush_spawn_batch(batch, world, entity_map, render_state);
+            } else {
+                // Single spawn: use normal path
+                process_single_command(&batch[0], world, entity_map, render_state);
+            }
+        } else {
+            process_single_command(&commands[i], world, entity_map, render_state);
+            i += 1;
+        }
+    }
+}
+
+/// Flush a batch of consecutive SpawnEntity commands using `spawn_batch()`.
+///
+/// All entities share the same 14-component archetype, so `spawn_batch()`
+/// resizes the archetype's column vecs once instead of per-entity.
+fn flush_spawn_batch(
+    batch: &[Command],
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) {
+    // Build component tuples. ExternalId is set to 0 initially; corrected below.
+    let archetypes = batch.iter().map(|cmd| {
+        (
+            Position::default(),
+            Rotation::default(),
+            Scale::default(),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius::default(),
+            TextureLayerIndex::default(),
+            MeshHandle::default(),
+            RenderPrimitive::default(),
+            PrimitiveParams::default(),
+            ExternalId(cmd.entity_id),
+            Parent::default(),
+            Children::default(),
+            Active,
+        )
+    });
+
+    // spawn_batch returns entities in insertion order
+    let entities: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
+
+    // Wire up entity map and render state
+    for (cmd, entity) in batch.iter().zip(entities.iter()) {
+        entity_map.insert(cmd.entity_id, *entity);
+        let slot = render_state.assign_slot(*entity);
+        render_state.write_slot(slot, world, *entity);
+    }
+}
+
+/// Process a single non-batch command against the ECS world.
+fn process_single_command(
+    cmd: &Command,
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) {
+    match cmd.cmd_type {
+        CommandType::SpawnEntity => {
+            let entity = world.spawn((
+                Position::default(),
+                Rotation::default(),
+                Scale::default(),
+                Velocity::default(),
+                ModelMatrix::default(),
+                BoundingRadius::default(),
+                TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
+                PrimitiveParams::default(),
+                ExternalId(cmd.entity_id),
+                Parent::default(),
+                Children::default(),
+                Active,
+            ));
+            entity_map.insert(cmd.entity_id, entity);
+            let slot = render_state.assign_slot(entity);
+            render_state.write_slot(slot, world, entity);
+        }
+
+        CommandType::DespawnEntity => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                render_state.pending_despawns.push(entity);
+                let _ = world.despawn(entity);
+                entity_map.remove(cmd.entity_id);
+            }
+        }
+
+        CommandType::SetPosition => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if let Ok(mut pos) = world.get::<&mut Position>(entity) {
+                    pos.0 = glam::Vec3::new(x, y, z);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetPosition => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    if let Ok(mut pos) = world.get::<&mut Position>(entity) {
-                        pos.0 = glam::Vec3::new(x, y, z);
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                    }
+        CommandType::SetRotation => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let w = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
+                    rot.0 = glam::Quat::from_xyzw(x, y, z, w);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetRotation => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    let w = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
-                    if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
-                        rot.0 = glam::Quat::from_xyzw(x, y, z, w);
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                    }
+        CommandType::SetScale => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if let Ok(mut scale) = world.get::<&mut Scale>(entity) {
+                    scale.0 = glam::Vec3::new(x, y, z);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetScale => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    if let Ok(mut scale) = world.get::<&mut Scale>(entity) {
-                        scale.0 = glam::Vec3::new(x, y, z);
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                    }
+        CommandType::SetVelocity => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if let Ok(mut vel) = world.get::<&mut Velocity>(entity) {
+                    vel.0 = glam::Vec3::new(x, y, z);
                 }
             }
+        }
 
-            CommandType::SetVelocity => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    if let Ok(mut vel) = world.get::<&mut Velocity>(entity) {
-                        vel.0 = glam::Vec3::new(x, y, z);
-                    }
+        CommandType::SetTextureLayer => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let packed = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if let Ok(mut tex) = world.get::<&mut TextureLayerIndex>(entity) {
+                    tex.0 = packed;
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetTextureLayer => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let packed = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    if let Ok(mut tex) = world.get::<&mut TextureLayerIndex>(entity) {
-                        tex.0 = packed;
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
-                    }
+        CommandType::SetMeshHandle => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let handle = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if let Ok(mut mh) = world.get::<&mut MeshHandle>(entity) {
+                    mh.0 = handle;
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetMeshHandle => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let handle = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    if let Ok(mut mh) = world.get::<&mut MeshHandle>(entity) {
-                        mh.0 = handle;
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
-                    }
+        CommandType::SetRenderPrimitive => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let prim = cmd.payload[0];
+                if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
+                    rp.0 = prim;
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                 }
             }
+        }
 
-            CommandType::SetRenderPrimitive => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let prim = cmd.payload[0];
-                    if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
-                        rp.0 = prim;
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
-                    }
-                }
-            }
+        CommandType::SetParent => {
+            if let Some(child_entity) = entity_map.get(cmd.entity_id) {
+                let new_parent_id =
+                    u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
 
-            CommandType::SetParent => {
-                if let Some(child_entity) = entity_map.get(cmd.entity_id) {
-                    let new_parent_id =
-                        u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                // Remove from old parent's Children (or OverflowChildren) if currently parented.
+                // Two-phase: extract old_id first (drops the Parent borrow), then mutate.
+                let old_parent_id = world
+                    .get::<&Parent>(child_entity)
+                    .ok()
+                    .map(|p| p.0);
+                if let Some(old_id) = old_parent_id
+                    && old_id != u32::MAX
+                    && let Some(old_parent_entity) = entity_map.get(old_id)
+                {
+                    let removed_from_inline =
+                        if let Ok(mut children) =
+                            world.get::<&mut Children>(old_parent_entity)
+                        {
+                            children.remove(cmd.entity_id)
+                        } else {
+                            false
+                        };
 
-                    // Remove from old parent's Children (or OverflowChildren) if currently parented.
-                    // Two-phase: extract old_id first (drops the Parent borrow), then mutate.
-                    let old_parent_id = world
-                        .get::<&Parent>(child_entity)
-                        .ok()
-                        .map(|p| p.0);
-                    if let Some(old_id) = old_parent_id
-                        && old_id != u32::MAX
-                        && let Some(old_parent_entity) = entity_map.get(old_id)
-                    {
-                        let removed_from_inline =
-                            if let Ok(mut children) =
-                                world.get::<&mut Children>(old_parent_entity)
+                    if !removed_from_inline {
+                        // Try OverflowChildren
+                        let should_remove_component =
+                            if let Ok(mut overflow) =
+                                world.get::<&mut OverflowChildren>(old_parent_entity)
                             {
-                                children.remove(cmd.entity_id)
+                                overflow.items.retain(|&id| id != cmd.entity_id);
+                                overflow.items.is_empty()
                             } else {
                                 false
                             };
-
-                        if !removed_from_inline {
-                            // Try OverflowChildren
-                            let should_remove_component =
-                                if let Ok(mut overflow) =
-                                    world.get::<&mut OverflowChildren>(old_parent_entity)
-                                {
-                                    overflow.items.retain(|&id| id != cmd.entity_id);
-                                    overflow.items.is_empty()
-                                } else {
-                                    false
-                                };
-                            if should_remove_component {
-                                let _ =
-                                    world.remove_one::<OverflowChildren>(old_parent_entity);
-                            }
+                        if should_remove_component {
+                            let _ =
+                                world.remove_one::<OverflowChildren>(old_parent_entity);
                         }
                     }
+                }
 
-                    // Update child's Parent component
-                    if let Ok(mut parent) = world.get::<&mut Parent>(child_entity) {
-                        parent.0 = new_parent_id;
-                    }
+                // Update child's Parent component
+                if let Ok(mut parent) = world.get::<&mut Parent>(child_entity) {
+                    parent.0 = new_parent_id;
+                }
 
-                    // Add to new parent's Children (if not u32::MAX = unparent).
-                    // Two-phase approach: try inline add, then handle overflow
-                    // separately. We can't use a single if-let chain because the
-                    // RefMut<Children> borrow would keep `world` borrowed, blocking
-                    // the insert_one call needed for OverflowChildren.
-                    let mut overflow_child: Option<(hecs::Entity, u32)> = None;
-                    if new_parent_id != u32::MAX
-                        && let Some(parent_entity) = entity_map.get(new_parent_id)
-                        && let Ok(mut children) =
-                            world.get::<&mut Children>(parent_entity)
-                        && !children.add(cmd.entity_id)
+                // Add to new parent's Children (if not u32::MAX = unparent).
+                // Two-phase approach: try inline add, then handle overflow
+                // separately. We can't use a single if-let chain because the
+                // RefMut<Children> borrow would keep `world` borrowed, blocking
+                // the insert_one call needed for OverflowChildren.
+                let mut overflow_child: Option<(hecs::Entity, u32)> = None;
+                if new_parent_id != u32::MAX
+                    && let Some(parent_entity) = entity_map.get(new_parent_id)
+                    && let Ok(mut children) =
+                        world.get::<&mut Children>(parent_entity)
+                    && !children.add(cmd.entity_id)
+                {
+                    overflow_child = Some((parent_entity, cmd.entity_id));
+                }
+                // Phase 2: handle overflow outside the Children borrow scope
+                if let Some((parent_entity, child_id)) = overflow_child {
+                    if let Ok(mut overflow) =
+                        world.get::<&mut OverflowChildren>(parent_entity)
                     {
-                        overflow_child = Some((parent_entity, cmd.entity_id));
-                    }
-                    // Phase 2: handle overflow outside the Children borrow scope
-                    if let Some((parent_entity, child_id)) = overflow_child {
-                        if let Ok(mut overflow) =
-                            world.get::<&mut OverflowChildren>(parent_entity)
-                        {
-                            overflow.items.push(child_id);
-                        } else {
-                            let _ = world.insert_one(
-                                parent_entity,
-                                OverflowChildren { items: vec![child_id] },
-                            );
-                        }
-                    }
-                    if let Some(slot) = render_state.get_slot(child_entity) {
-                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                        overflow.items.push(child_id);
+                    } else {
+                        let _ = world.insert_one(
+                            parent_entity,
+                            OverflowChildren { items: vec![child_id] },
+                        );
                     }
                 }
-            }
-
-            CommandType::SetPrimParams0 => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let p0 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let p1 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let p2 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    let p3 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
-                    if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
-                        pp.0[0] = p0;
-                        pp.0[1] = p1;
-                        pp.0[2] = p2;
-                        pp.0[3] = p3;
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
-                    }
+                if let Some(slot) = render_state.get_slot(child_entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
                 }
             }
-
-            CommandType::SetPrimParams1 => {
-                if let Some(entity) = entity_map.get(cmd.entity_id) {
-                    let p4 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                    let p5 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                    let p6 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                    let p7 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
-                    if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
-                        pp.0[4] = p4;
-                        pp.0[5] = p5;
-                        pp.0[6] = p6;
-                        pp.0[7] = p7;
-                    }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_meta_dirty(slot as usize);
-                    }
-                }
-            }
-
-            CommandType::Noop => {}
-
-            CommandType::SetListenerPosition => {} // handled in Engine::process_commands
         }
+
+        CommandType::SetPrimParams0 => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let p0 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let p1 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let p2 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let p3 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
+                    pp.0[0] = p0;
+                    pp.0[1] = p1;
+                    pp.0[2] = p2;
+                    pp.0[3] = p3;
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
+
+        CommandType::SetPrimParams1 => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let p4 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let p5 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let p6 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let p7 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
+                    pp.0[4] = p4;
+                    pp.0[5] = p5;
+                    pp.0[6] = p6;
+                    pp.0[7] = p7;
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
+
+        CommandType::Noop => {}
+
+        CommandType::SetListenerPosition => {} // handled in Engine::process_commands
     }
 }
 
@@ -759,5 +834,42 @@ mod tests {
         let parent_entity = map.get(0).unwrap();
         let children = world.get::<&Children>(parent_entity).unwrap();
         assert!(!children.as_slice().contains(&1));
+    }
+
+    #[test]
+    fn batch_spawn_detection() {
+        let mut world = World::new();
+        let mut entity_map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let cmds = vec![make_spawn_cmd(0), make_spawn_cmd(1), make_spawn_cmd(2)];
+        process_commands(&cmds, &mut world, &mut entity_map, &mut rs);
+        assert_eq!(rs.gpu_entity_count(), 3);
+        // All three entities should exist with correct ExternalId
+        assert!(entity_map.get(0).is_some());
+        assert!(entity_map.get(1).is_some());
+        assert!(entity_map.get(2).is_some());
+        for ext_id in 0..3u32 {
+            let entity = entity_map.get(ext_id).unwrap();
+            let eid = world.get::<&ExternalId>(entity).unwrap();
+            assert_eq!(eid.0, ext_id);
+        }
+    }
+
+    #[test]
+    fn batch_spawn_interrupted_by_other_command() {
+        let mut world = World::new();
+        let mut entity_map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let cmds = vec![
+            make_spawn_cmd(0),
+            make_spawn_cmd(1),
+            make_position_cmd(0, 5.0, 0.0, 0.0), // interrupts batch
+            make_spawn_cmd(2),
+        ];
+        process_commands(&cmds, &mut world, &mut entity_map, &mut rs);
+        assert_eq!(rs.gpu_entity_count(), 3);
+        let e0 = entity_map.get(0).unwrap();
+        let pos = world.get::<&Position>(e0).unwrap();
+        assert!((pos.0.x - 5.0).abs() < 0.001);
     }
 }
