@@ -88,6 +88,10 @@ function renderLoop(): void {
         listenerY: latestRenderState.listenerY ?? 0,
         listenerZ: latestRenderState.listenerZ ?? 0,
         tickCount: latestRenderState.tickCount ?? 0,
+        dirtyCount: 0,
+        dirtyRatio: 0,
+        stagingData: null,
+        dirtyIndices: null,
       }, camera);
     }
 

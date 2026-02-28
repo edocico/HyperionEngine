@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (99 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (110 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -25,8 +25,8 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 # Run specific test groups
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (19 tests)
 cargo test -p hyperion-core engine           # Engine tests only (9 tests)
-cargo test -p hyperion-core render_state     # Render state tests only (27 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (15 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (36 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (17 tests)
 cargo test -p hyperion-core systems          # Systems tests only (7 tests)
 cargo test -p hyperion-core components       # Component tests only (23 tests)
 
@@ -54,7 +54,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (616 tests)
+cd ts && npm test                            # All vitest tests (632 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -72,7 +72,8 @@ cd ts && npx vitest run src/backpressure.test.ts              # Backpressure que
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers (8 tests)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers + 2-bucket sort (12 tests)
+cd ts && npx vitest run src/render/passes/scatter-pass.test.ts # ScatterPass compute (2 tests)
 cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass multi-pipeline (2 tests)
 cd ts && npx vitest run src/render/passes/fxaa-tonemap-pass.test.ts  # FXAATonemapPass (3 tests)
 cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # SelectionSeedPass (3 tests)
@@ -126,12 +127,13 @@ cd ts && npx vitest run src/asset-pipeline/scanner.test.ts     # Texture scanner
 cd ts && npx vitest run src/asset-pipeline/codegen.test.ts     # Code generator (3 tests)
 cd ts && npx vitest run src/asset-pipeline/vite-plugin.test.ts # Vite plugin (4 tests)
 cd ts && npx vitest run src/spatial-grid.test.ts               # SpatialGrid broadphase (8 tests)
+cd ts && npx vitest run src/texture-priority.test.ts           # TexturePriorityQueue (10 tests)
 cd ts && npx vitest run src/ring-buffer-bench.test.ts          # Ring buffer saturation benchmark (2 tests)
 cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (109 tests)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (120 tests)
 ```
 
 ### Development Workflow
@@ -204,13 +206,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy. Listener position state with velocity derivation and extrapolation. Dev-tools: `reset()`, `snapshot_create()`, `snapshot_restore()` for time-travel debug |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (14 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`, `SetListenerPosition`), `Command` struct |
 | `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
 | `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
-| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + `shrink_to_fit()` for memory compaction |
+| `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
 
@@ -272,7 +274,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | Module | Role |
 |---|---|
 | `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (14 WGSL files), device-lost recovery, compressed texture format detection + overflow views |
-| `texture-manager.ts` | Multi-tier Texture2DArray with compressed format support (BC7/ASTC), overflow tiers for mixed-mode, lazy allocation (0→16→32→64→128→256), KTX2 load path, `createImageBitmap` pipeline |
+| `texture-manager.ts` | Multi-tier Texture2DArray with compressed format support (BC7/ASTC), overflow tiers for mixed-mode, lazy allocation (0→16→32→64→128→256), KTX2 load path, `createImageBitmap` pipeline, `TexturePriorityQueue` min-heap for viewport-distance-based load ordering |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type |
 | `render/resource-pool.ts` | `ResourcePool` — named GPU resource registry |
 | `render/render-graph.ts` | `RenderGraph` — DAG scheduling with Kahn's topological sort + dead-pass culling |
@@ -284,6 +286,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
 | `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan |
+| `render/passes/scatter-pass.ts` | GPU scatter compute pass: writes dirty staging data to SoA buffers, grow-only buffers, 2-bind-group layout |
 | `particle-types.ts` | `ParticleHandle`, `ParticleEmitterConfig`, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
 | `particle-system.ts` | GPU particle system: per-emitter buffers, compute simulate+spawn, instanced point-sprite render, entity tracking, spawn accumulator |
 | `ktx2-parser.ts` | Custom KTX2 container parser: magic validation, header/level reading, `isKTX2()` detection, `VK_FORMAT` constants |
@@ -383,6 +386,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `particle-simulate.wgsl` | Compute: PCG hash PRNG, gravity, color/size interpolation (48 B/particle) |
 | `particle-render.wgsl` | Instanced point-sprite circles, dead particle clipping |
 | `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) |
+| `scatter.wgsl` | Compute: dirty entity data scatter from compact staging to SoA buffers, format=0 compressed 2D reconstruct / format=1 direct mat4x4 copy |
 
 `vite-env.d.ts` — Type declarations for WGSL `?raw` imports, Vite client, and vendored Basis Universal WASM module.
 
@@ -429,6 +433,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Subgroup `requestDevice` requires `'subgroups'` in `requiredFeatures`** — Detection via `detectSubgroupSupport()` checks `adapter.features`, but the feature must also be requested at device creation. Use retry-without fallback if request fails.
 - **`subgroupBroadcastFirst` always broadcasts from thread 0** — In compute shaders, ALL invocations are active. `subgroupBroadcastFirst(x)` returns thread 0's value, NOT the first thread where `x != 0`. Use `subgroupElect()` to gate the writer so thread 0 is always the one with the result.
 - **SpatialGrid `cellEntities` may realloc on oversized entities** — Default 4x buffer covers typical cases. Entities with radius >> cellSize can span O((r/cellSize)^2) cells, exceeding the buffer. The grid auto-reallocs but this breaks zero-alloc-per-frame for that one frame.
+- **`flush_pending_despawns()` must be called before `collect_dirty_staging()`** — Despawns create stale slot references. The descending slot order in batch despawn is a correctness invariant (guarantees `last` is always live).
+- **Scatter shader @group(1) must match CullPass read layout** — ScatterPass writes to the same SoA buffers CullPass reads. Both must agree on buffer names in ResourcePool.
+- **Compressed transforms use format flag at staging[31]** — `0` = compressed 2D (pos+rot+scale, root entities), `1` = pre-computed mat4x4 (child entities). Scatter shader reconstructs mat4x4 from 6 f32 for format=0.
+- **2-bucket cull: 12 indirect args entries** — 6 primitive types × 2 buckets (tier0 vs other). Indirect args buffer is 240 bytes. `firstInstance` encodes visible-indices region offset.
+- **`process_commands` takes `&mut RenderState` as 4th parameter** — All callers (engine.rs, tests) must provide it. Dirty marking happens at command level, not system level.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -487,6 +496,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **wasm-opt runs twice** — wasm-pack runs wasm-opt internally in release mode. `build:wasm:opt` runs it again with `--strip-debug --enable-simd`. The second pass has marginal effect (±1% size).
 - **SpatialGrid hash uses `Math.imul`** — `(Math.imul(ix, 92837111) ^ Math.imul(iy, 689287499)) & cellMask`. Standard idiom for int32 hash in JS. Power-of-2 mask for fast modulo.
 - **SpatialGrid 3-pass rebuild** — Count entries per cell → exclusive prefix sum → scatter entity indices. `cellEntities` reallocs on overflow (pathological case only).
+- **Stable slot mapping uses `entity_to_slot: Vec<u32>`** — Indexed by `entity.id()`, `u32::MAX` sentinel for unassigned. Power-of-two growth for `slot_to_entity`.
+- **Batch despawn processes in descending slot order** — `despawn_slots.sort_unstable_by(|a, b| b.cmp(a))`. This guarantees the "last" entity being swapped is always live.
+- **DirtyTracker 3 BitSets: transforms, bounds, meta** — Union of all 3 determines scatter upload set. Individual BitSets kept for profiling.
+- **Scatter staging buffer: 32 u32 per entity (128 bytes)** — Cache-line aligned. Layout: transforms[16] + bounds[4] + meta[2] + tex[1] + params[8] + format[1].
+- **ScatterPass grow-only buffers** — Staging and indices GPU buffers never shrink. Destroyed and recreated only when larger size needed.
+- **Batch spawn auto-detection in `process_commands`** — Consecutive `SpawnEntity` commands are batched via `hecs::World::spawn_batch()`. Threshold: 2+ consecutive.
+- **TexturePriorityQueue is standalone** — Min-heap with `urlToIndex` map for O(log n) update. Integrated into TextureManager alongside FIFO `fetchQueue`.
+- **Progressive KTX2 is a TODO** — Priority queue is implemented; HTTP Range-based progressive loading deferred to future work.
 - **Cull shader override constants** — `USE_SUBGROUPS` and `SUBGROUP_SIZE` are pipeline-overridable. `if (USE_SUBGROUPS)` is compile-time branching (dead code eliminated). `subgroupElect()` + `subgroupBroadcastFirst()` ensure atomic-doer and broadcast source match.
 - **Ring buffer benchmark confirms 22% peak utilization** — At 10k entities / 100% movement / 1MB buffer. Transport layer is not the bottleneck.
 
@@ -502,7 +519,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 11 (Optimization Tier 1) complete. Next: Phase 12 per masterplan.**
+**Current: Phase 12 (Optimization Tier 2) complete. Next: Phase 13 per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -520,6 +537,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 10c-DX | Time-Travel Debug | CommandTapeRecorder, ReplayPlayer, SnapshotManager (`engine_reset/snapshot_create/snapshot_restore`), `createHotSystem` HMR helper, `Hyperion.debug` API |
 | — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export |
 | 11 | Optimization Tier 1 | SIMD128 activation, wasm-opt build pipeline, SpatialGrid broadphase, ring buffer profiling, WebGPU subgroup compute path |
+| 12 | Optimization Tier 2 | GPU scatter upload (DirtyTracker + stable slots + swap-remove), compressed 2D transforms, 2-bucket material sort, batch spawn, texture priority queue |
 
 ## Documentation
 
