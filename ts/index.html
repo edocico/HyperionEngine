@@ -3,29 +3,188 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hyperion Engine</title>
+    <title>Hyperion Engine — Verification Harness</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #111; color: #eee; font-family: monospace; overflow: hidden; }
-      canvas { display: block; width: 100vw; height: 100vh; }
+      body {
+        background: #0d0d14;
+        color: #eee;
+        font-family: 'Courier New', Courier, monospace;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+
+      /* Tab bar */
+      #tab-bar {
+        display: flex;
+        align-items: center;
+        background: #16161e;
+        border-bottom: 1px solid #2a2a3a;
+        height: 40px;
+        flex-shrink: 0;
+        padding: 0 8px;
+        gap: 2px;
+        overflow-x: auto;
+      }
+      .tab {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 14px;
+        font-size: 12px;
+        color: #888;
+        cursor: pointer;
+        border: 1px solid transparent;
+        border-bottom: 2px solid transparent;
+        border-radius: 4px 4px 0 0;
+        white-space: nowrap;
+        user-select: none;
+        transition: color 0.15s, border-color 0.15s;
+      }
+      .tab:hover { color: #ccc; }
+      .tab.active {
+        color: #eee;
+        border-bottom-color: #4488ff;
+        background: #1a1a28;
+      }
+      .tab-badge {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #555;
+      }
+      .tab-badge.pass   { background: #44cc66; }
+      .tab-badge.fail   { background: #cc4444; }
+      .tab-badge.partial { background: #ccaa44; }
+      .tab-badge.not-run { background: #555; }
+      #export-btn {
+        margin-left: auto;
+        padding: 6px 16px;
+        font-size: 12px;
+        font-family: inherit;
+        background: #2255aa;
+        color: #eee;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #export-btn:hover { background: #3366bb; }
+
+      /* Main layout */
+      #main-layout {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+      }
+
+      /* Canvas area */
+      #canvas-area {
+        flex: 1;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
       #overlay {
-        position: fixed;
+        position: absolute;
         top: 10px;
         left: 10px;
-        font-size: 13px;
+        font-size: 12px;
         line-height: 1.6;
-        background: rgba(0, 0, 0, 0.6);
+        background: rgba(0, 0, 0, 0.7);
         padding: 8px 12px;
         border-radius: 4px;
         pointer-events: none;
         z-index: 10;
         white-space: pre-line;
       }
+      canvas#canvas {
+        display: block;
+        flex: 1;
+        width: 100%;
+        min-height: 0;
+      }
+      #instructions {
+        background: #12121a;
+        border-top: 1px solid #2a2a3a;
+        padding: 6px 14px;
+        font-size: 11px;
+        color: #666;
+        flex-shrink: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* Check panel */
+      #check-panel {
+        width: 220px;
+        flex-shrink: 0;
+        background: #12121a;
+        border-left: 1px solid #2a2a3a;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #check-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+      }
+      .check-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 4px 0;
+        font-size: 11px;
+        border-bottom: 1px solid #1a1a28;
+      }
+      .check-icon {
+        flex-shrink: 0;
+        width: 16px;
+        text-align: center;
+        font-size: 12px;
+      }
+      .check-icon.pass    { color: #44cc66; }
+      .check-icon.fail    { color: #cc4444; }
+      .check-icon.skip    { color: #666; }
+      .check-icon.pending { color: #ccaa44; }
+      .check-name {
+        color: #ccc;
+        word-break: break-word;
+      }
+      .check-detail {
+        font-size: 10px;
+        color: #777;
+        margin-top: 2px;
+        padding-left: 22px;
+      }
+      #check-summary {
+        padding: 8px;
+        font-size: 11px;
+        color: #999;
+        border-top: 1px solid #2a2a3a;
+        flex-shrink: 0;
+      }
     </style>
   </head>
   <body>
-    <div id="overlay">Hyperion Engine — initializing...</div>
-    <canvas id="canvas"></canvas>
+    <div id="tab-bar"></div>
+    <div id="main-layout">
+      <div id="canvas-area">
+        <div id="overlay">Hyperion Engine — initializing...</div>
+        <canvas id="canvas"></canvas>
+        <div id="instructions">WASD: move camera | Scroll: zoom | Click: interact</div>
+      </div>
+      <div id="check-panel">
+        <div id="check-list"></div>
+        <div id="check-summary"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
