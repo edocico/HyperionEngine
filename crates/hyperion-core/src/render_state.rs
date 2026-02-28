@@ -442,6 +442,54 @@ impl RenderState {
         self.gpu_entity_ids.len() as u32
     }
 
+    /// Assign a stable GPU slot to an entity. Returns the slot index.
+    pub fn assign_slot(&mut self, entity: hecs::Entity) -> u32 {
+        let slot = self.gpu_count;
+        self.gpu_count += 1;
+
+        // Grow slot_to_entity
+        if slot as usize >= self.slot_to_entity.len() {
+            self.slot_to_entity.resize(
+                (slot as usize + 1).next_power_of_two(),
+                hecs::Entity::DANGLING,
+            );
+        }
+        self.slot_to_entity[slot as usize] = entity;
+
+        // Grow entity_to_slot
+        let eid = entity.id() as usize;
+        if eid >= self.entity_to_slot.len() {
+            self.entity_to_slot.resize(eid + 1, u32::MAX);
+        }
+        self.entity_to_slot[eid] = slot;
+
+        // Grow SoA buffers to match
+        self.gpu_transforms.resize((self.gpu_count as usize) * 16, 0.0);
+        self.gpu_bounds.resize((self.gpu_count as usize) * 4, 0.0);
+        self.gpu_render_meta.resize((self.gpu_count as usize) * 2, 0);
+        self.gpu_tex_indices.resize(self.gpu_count as usize, 0);
+        self.gpu_prim_params.resize((self.gpu_count as usize) * 8, 0.0);
+        self.gpu_entity_ids.resize(self.gpu_count as usize, 0);
+
+        // Mark all dirty
+        self.dirty_tracker.ensure_capacity(self.gpu_count as usize);
+        self.dirty_tracker.mark_transform_dirty(slot as usize);
+        self.dirty_tracker.mark_bounds_dirty(slot as usize);
+        self.dirty_tracker.mark_meta_dirty(slot as usize);
+
+        slot
+    }
+
+    /// Look up the GPU slot for an entity. Returns None if not assigned.
+    pub fn get_slot(&self, entity: hecs::Entity) -> Option<u32> {
+        let eid = entity.id() as usize;
+        if eid >= self.entity_to_slot.len() {
+            return None;
+        }
+        let slot = self.entity_to_slot[eid];
+        if slot == u32::MAX { None } else { Some(slot) }
+    }
+
     /// Release excess heap memory from all internal buffers.
     /// Call after a large batch of entity despawns to reclaim memory.
     pub fn shrink_to_fit(&mut self) {
@@ -983,5 +1031,28 @@ mod tests {
         let mut ids = state.gpu_entity_ids().to_vec();
         ids.sort();
         assert_eq!(ids, vec![10, 20]);
+    }
+
+    #[test]
+    fn assign_slot_returns_sequential_indices() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e0 = world.spawn((Position::default(), Active));
+        let e1 = world.spawn((Position::default(), Active));
+        assert_eq!(rs.assign_slot(e0), 0);
+        assert_eq!(rs.assign_slot(e1), 1);
+        assert_eq!(rs.gpu_entity_count(), 2);
+    }
+
+    #[test]
+    fn entity_to_slot_lookup() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e0 = world.spawn((Position::default(), Active));
+        let e1 = world.spawn((Position::default(), Active));
+        rs.assign_slot(e0);
+        rs.assign_slot(e1);
+        assert_eq!(rs.get_slot(e0), Some(0));
+        assert_eq!(rs.get_slot(e1), Some(1));
     }
 }
