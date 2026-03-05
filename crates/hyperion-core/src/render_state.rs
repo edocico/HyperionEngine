@@ -8,7 +8,7 @@ use hecs::World;
 
 use crate::components::{
     Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Parent, Position, PrimitiveParams,
-    RenderPrimitive, Rotation, Scale, TextureLayerIndex,
+    RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -544,6 +544,63 @@ impl RenderState {
         }
     }
 
+    /// Write all SoA data for a 2D entity (Transform2D archetype) into its assigned slot.
+    /// Builds the ModelMatrix directly from Transform2D fields instead of reading
+    /// Position/Rotation/Scale + pre-computed ModelMatrix.
+    pub fn write_slot_2d(&mut self, slot: u32, world: &World, entity: hecs::Entity) {
+        let s = slot as usize;
+
+        // Build ModelMatrix from Transform2D directly
+        if let Ok(transform) = world.get::<&Transform2D>(entity) {
+            let (sin, cos) = transform.rot.sin_cos();
+            let t = s * 16;
+            // Column-major 4x4 (same format as transform_system_2d in systems.rs)
+            self.gpu_transforms[t]     = transform.sx * cos;
+            self.gpu_transforms[t + 1] = transform.sx * sin;
+            self.gpu_transforms[t + 2] = 0.0;
+            self.gpu_transforms[t + 3] = 0.0;
+            self.gpu_transforms[t + 4] = -transform.sy * sin;
+            self.gpu_transforms[t + 5] = transform.sy * cos;
+            self.gpu_transforms[t + 6] = 0.0;
+            self.gpu_transforms[t + 7] = 0.0;
+            self.gpu_transforms[t + 8] = 0.0;
+            self.gpu_transforms[t + 9] = 0.0;
+            self.gpu_transforms[t + 10] = 1.0;
+            self.gpu_transforms[t + 11] = 0.0;
+            self.gpu_transforms[t + 12] = transform.x;
+            self.gpu_transforms[t + 13] = transform.y;
+            self.gpu_transforms[t + 14] = 0.0;
+            self.gpu_transforms[t + 15] = 1.0;
+
+            // Bounds from Transform2D position
+            let b = s * 4;
+            self.gpu_bounds[b] = transform.x;
+            self.gpu_bounds[b + 1] = transform.y;
+            self.gpu_bounds[b + 2] = 0.0;
+        }
+
+        // Remaining SoA fields are identical to write_slot()
+        if let Ok(radius) = world.get::<&BoundingRadius>(entity) {
+            self.gpu_bounds[s * 4 + 3] = radius.0;
+        }
+        if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
+            self.gpu_render_meta[s * 2] = mesh.0;
+        }
+        if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
+            self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
+        }
+        if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
+            self.gpu_tex_indices[s] = tex.0;
+        }
+        if let Ok(params) = world.get::<&PrimitiveParams>(entity) {
+            let p = s * 8;
+            self.gpu_prim_params[p..p + 8].copy_from_slice(&params.0);
+        }
+        if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
+            self.gpu_entity_ids[s] = ext_id.0;
+        }
+    }
+
     /// Process all pending despawns via batch swap-remove.
     /// Must be called once per frame before collect_gpu_dirty.
     /// Processes in descending slot order to maintain the invariant that
@@ -665,8 +722,15 @@ impl RenderState {
             let s = slot as usize;
             let entity = self.slot_to_entity[s];
 
+            // Detect archetype: 2D (Transform2D) vs 3D (Position+Rotation+Scale)
+            let is_2d = world.get::<&Transform2D>(entity).is_ok();
+
             // First update SoA from world (in case systems modified components)
-            self.write_slot(slot, world, entity);
+            if is_2d {
+                self.write_slot_2d(slot, world, entity);
+            } else {
+                self.write_slot(slot, world, entity);
+            }
 
             // Check if entity is a root (no Parent or Parent == u32::MAX)
             let is_root = world
@@ -675,31 +739,47 @@ impl RenderState {
                 .unwrap_or(true); // no Parent component = root
 
             if is_root {
-                // Compressed 2D format (format=0): pos(3) + rot_angle(1) + scale(2) + padding(10)
-                let pos = world
-                    .get::<&Position>(entity)
-                    .map(|p| p.0)
-                    .unwrap_or(glam::Vec3::ZERO);
-                let rot = world
-                    .get::<&Rotation>(entity)
-                    .map(|r| r.0)
-                    .unwrap_or(glam::Quat::IDENTITY);
-                let scale = world
-                    .get::<&Scale>(entity)
-                    .map(|s| s.0)
-                    .unwrap_or(glam::Vec3::ONE);
+                if is_2d {
+                    // Compressed 2D format (format=0): read directly from Transform2D
+                    let t2d = world
+                        .get::<&Transform2D>(entity)
+                        .map(|t| *t)
+                        .unwrap_or_default();
+                    staging.push(t2d.x.to_bits());
+                    staging.push(t2d.y.to_bits());
+                    staging.push(0u32); // z = 0 for 2D
+                    staging.push(t2d.rot.to_bits());
+                    staging.push(t2d.sx.to_bits());
+                    staging.push(t2d.sy.to_bits());
+                    // Padding: 10 zeros to reach offset 16
+                    staging.extend(std::iter::repeat_n(0u32, 10));
+                } else {
+                    // Compressed 3D format (format=0): pos(3) + rot_angle(1) + scale(2) + padding(10)
+                    let pos = world
+                        .get::<&Position>(entity)
+                        .map(|p| p.0)
+                        .unwrap_or(glam::Vec3::ZERO);
+                    let rot = world
+                        .get::<&Rotation>(entity)
+                        .map(|r| r.0)
+                        .unwrap_or(glam::Quat::IDENTITY);
+                    let scale = world
+                        .get::<&Scale>(entity)
+                        .map(|s| s.0)
+                        .unwrap_or(glam::Vec3::ONE);
 
-                // Extract z-rotation angle from quaternion
-                let (angle, _, _) = rot.to_euler(glam::EulerRot::ZYX);
+                    // Extract z-rotation angle from quaternion
+                    let (angle, _, _) = rot.to_euler(glam::EulerRot::ZYX);
 
-                staging.push(pos.x.to_bits());
-                staging.push(pos.y.to_bits());
-                staging.push(pos.z.to_bits());
-                staging.push(angle.to_bits());
-                staging.push(scale.x.to_bits());
-                staging.push(scale.y.to_bits());
-                // Padding: 10 zeros to reach offset 16
-                staging.extend(std::iter::repeat_n(0u32, 10));
+                    staging.push(pos.x.to_bits());
+                    staging.push(pos.y.to_bits());
+                    staging.push(pos.z.to_bits());
+                    staging.push(angle.to_bits());
+                    staging.push(scale.x.to_bits());
+                    staging.push(scale.y.to_bits());
+                    // Padding: 10 zeros to reach offset 16
+                    staging.extend(std::iter::repeat_n(0u32, 10));
+                }
             } else {
                 // Pre-computed mat4x4 (format=1): copy from SoA transforms
                 let t = s * 16;
@@ -1612,5 +1692,33 @@ mod tests {
 
         // staging[0..16] should contain ModelMatrix values (translation at [12])
         assert_eq!(f32::from_bits(result.staging[12]), 5.0); // child's x position in mat4
+    }
+
+    #[test]
+    fn write_slot_works_for_2d_entity() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Transform2D { x: 50.0, y: 75.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(10.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot_2d(slot, &world, ent);
+        // Verify transforms written correctly (identity rotation, unit scale)
+        let t = slot as usize * 16;
+        assert_eq!(rs.gpu_transforms[t], 1.0);      // sx*cos(0) = 1
+        assert_eq!(rs.gpu_transforms[t + 5], 1.0);  // sy*cos(0) = 1
+        assert_eq!(rs.gpu_transforms[t + 12], 50.0); // x
+        assert_eq!(rs.gpu_transforms[t + 13], 75.0); // y
+        // Verify bounds
+        let b = slot as usize * 4;
+        assert_eq!(rs.gpu_bounds[b], 50.0);
+        assert_eq!(rs.gpu_bounds[b + 1], 75.0);
+        assert_eq!(rs.gpu_bounds[b + 2], 0.0);
+        assert_eq!(rs.gpu_bounds[b + 3], 10.0);
+        assert!(rs.gpu_entity_count() >= 1);
     }
 }

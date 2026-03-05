@@ -279,7 +279,11 @@ fn flush_spawn_batch(
         entity_map.insert(cmd.entity_id, *entity);
         entity_map.set_2d_flag(cmd.entity_id, *is_2d);
         let slot = render_state.assign_slot(*entity);
-        render_state.write_slot(slot, world, *entity);
+        if *is_2d {
+            render_state.write_slot_2d(slot, world, *entity);
+        } else {
+            render_state.write_slot(slot, world, *entity);
+        }
     }
 }
 
@@ -329,7 +333,11 @@ fn process_single_command(
             entity_map.insert(cmd.entity_id, entity);
             entity_map.set_2d_flag(cmd.entity_id, is_2d);
             let slot = render_state.assign_slot(entity);
-            render_state.write_slot(slot, world, entity);
+            if is_2d {
+                render_state.write_slot_2d(slot, world, entity);
+            } else {
+                render_state.write_slot(slot, world, entity);
+            }
         }
 
         CommandType::DespawnEntity => {
