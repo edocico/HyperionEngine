@@ -92,6 +92,7 @@ function renderLoop(): void {
         dirtyRatio: 0,
         stagingData: null,
         dirtyIndices: null,
+        dirtyBits: null,
       }, camera);
     }
 

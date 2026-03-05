@@ -27,6 +27,8 @@ export interface GPURenderState {
   dirtyRatio: number;
   stagingData: Uint32Array | null;    // 32 u32 per dirty entity
   dirtyIndices: Uint32Array | null;   // slot index per dirty entity
+  // Dirty bitfield for temporal culling (1 bit per entity slot, packed u32)
+  dirtyBits: Uint32Array | null;
 }
 
 export interface EngineBridge {
@@ -98,6 +100,7 @@ export function createWorkerBridge(
         dirtyRatio: rs.dirtyRatio ?? 0,
         stagingData: rs.stagingData ? new Uint32Array(rs.stagingData) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(rs.dirtyIndices) : null,
+        dirtyBits: rs.dirtyBits ? new Uint32Array(rs.dirtyBits) : null,
       };
     }
   };
@@ -201,6 +204,7 @@ export function createFullIsolationBridge(
         dirtyRatio: rs.dirtyRatio ?? 0,
         stagingData: rs.stagingData ? new Uint32Array(new Uint32Array(rs.stagingData)) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(new Uint32Array(rs.dirtyIndices)) : null,
+        dirtyBits: rs.dirtyBits ? new Uint32Array(new Uint32Array(rs.dirtyBits)) : null,
       };
 
       // Forward full render state to Render Worker.
@@ -308,6 +312,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_staging_u32_len(): number;
     engine_staging_indices_ptr(): number;
     engine_staging_indices_len(): number;
+    // Dirty bitfield exports (temporal culling)
+    engine_dirty_bits_ptr(): number;
+    engine_dirty_bits_u32_len(): number;
   };
 
   engine.engine_init();
@@ -350,6 +357,16 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           : null;
       }
 
+      // Read dirty bitfield for temporal culling
+      let dirtyBitsArr: Uint32Array | null = null;
+      const dbLen = engine.engine_dirty_bits_u32_len();
+      if (dbLen > 0) {
+        const dbPtr = engine.engine_dirty_bits_ptr();
+        if (dbPtr) {
+          dirtyBitsArr = new Uint32Array(new Uint32Array(engine.engine_memory().buffer, dbPtr, dbLen));
+        }
+      }
+
       if (count > 0) {
         const tPtr = engine.engine_gpu_transforms_ptr();
         const tLen = engine.engine_gpu_transforms_f32_len();
@@ -381,6 +398,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           dirtyRatio,
           stagingData,
           dirtyIndices: dirtyIndicesArr,
+          dirtyBits: dirtyBitsArr,
         };
       } else {
         latestRenderState = {
@@ -399,6 +417,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           dirtyRatio: 0,
           stagingData: null,
           dirtyIndices: null,
+          dirtyBits: null,
         };
       }
     },

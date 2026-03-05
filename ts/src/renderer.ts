@@ -626,6 +626,7 @@ export async function createRenderer(
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
         deltaTime: dt ?? 0,
+        dirtyBits: state.dirtyBits ?? undefined,
       };
 
       graph.render(device, frameState, resources);

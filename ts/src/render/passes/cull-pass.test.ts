@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType } from './cull-pass';
+import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType, computeInvalidationFlag, visibilityBufferSize } from './cull-pass';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -105,5 +105,55 @@ describe('prepareShaderSource', () => {
     const src = 'override USE_SUBGROUPS: bool = false;';
     const result = prepareShaderSource(src, true);
     expect(result).toBe('enable subgroups;\n' + src);
+  });
+});
+
+describe('temporal culling', () => {
+  it('computeInvalidationFlag returns true when camera teleports in X', () => {
+    const prev = { x: 0, y: 0, frustumWidth: 1000 };
+    const curr = { x: 600, y: 0, frustumWidth: 1000 };
+    expect(computeInvalidationFlag(prev, curr)).toBe(true);
+  });
+
+  it('computeInvalidationFlag returns false for smooth pan', () => {
+    const prev = { x: 0, y: 0, frustumWidth: 1000 };
+    const curr = { x: 5, y: 3, frustumWidth: 1000 };
+    expect(computeInvalidationFlag(prev, curr)).toBe(false);
+  });
+
+  it('computeInvalidationFlag returns true for Y teleport', () => {
+    const prev = { x: 0, y: 0, frustumWidth: 1000 };
+    const curr = { x: 0, y: 600, frustumWidth: 1000 };
+    expect(computeInvalidationFlag(prev, curr)).toBe(true);
+  });
+
+  it('computeInvalidationFlag at exact threshold is false (strict >)', () => {
+    const prev = { x: 0, y: 0, frustumWidth: 1000 };
+    const curr = { x: 500, y: 0, frustumWidth: 1000 };
+    // dx == threshold (500 == 1000*0.5), > is strict so not exceeded
+    expect(computeInvalidationFlag(prev, curr)).toBe(false);
+  });
+});
+
+describe('visibilityBufferSize', () => {
+  it('returns 4 bytes for 1 entity (1 u32 word)', () => {
+    expect(visibilityBufferSize(1)).toBe(4);
+  });
+
+  it('returns 4 bytes for 32 entities (exactly 1 u32 word)', () => {
+    expect(visibilityBufferSize(32)).toBe(4);
+  });
+
+  it('returns 8 bytes for 33 entities (2 u32 words)', () => {
+    expect(visibilityBufferSize(33)).toBe(8);
+  });
+
+  it('returns 12500 bytes for 100000 entities', () => {
+    // ceil(100000/32) * 4 = 3125 * 4 = 12500
+    expect(visibilityBufferSize(100000)).toBe(12500);
+  });
+
+  it('returns 0 bytes for 0 entities', () => {
+    expect(visibilityBufferSize(0)).toBe(0);
   });
 });
