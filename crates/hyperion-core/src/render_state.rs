@@ -8,7 +8,7 @@ use hecs::World;
 
 use crate::components::{
     Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Parent, Position, PrimitiveParams,
-    RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D,
+    RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D, Transparent,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -529,6 +529,10 @@ impl RenderState {
         if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
             self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
         }
+        // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
+        if world.get::<&Transparent>(entity).is_ok() {
+            self.gpu_render_meta[s * 2 + 1] |= 0x100;
+        }
 
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
@@ -588,6 +592,10 @@ impl RenderState {
         }
         if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
             self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
+        }
+        // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
+        if world.get::<&Transparent>(entity).is_ok() {
+            self.gpu_render_meta[s * 2 + 1] |= 0x100;
         }
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
@@ -1720,5 +1728,48 @@ mod tests {
         assert_eq!(rs.gpu_bounds[b + 2], 0.0);
         assert_eq!(rs.gpu_bounds[b + 3], 10.0);
         assert!(rs.gpu_entity_count() >= 1);
+    }
+
+    #[test]
+    fn write_slot_encodes_transparent_in_render_meta() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(3),
+            Active,
+            ExternalId(42),
+            Transparent(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
+        assert_eq!(meta & 0xFF, 3);      // primType
+        assert_eq!(meta & 0x100, 0x100);  // transparent bit
+    }
+
+    #[test]
+    fn write_slot_no_transparent_flag_when_absent() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(3),
+            Active,
+            ExternalId(42),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
+        assert_eq!(meta & 0xFF, 3);
+        assert_eq!(meta & 0x100, 0);
     }
 }

@@ -39,6 +39,16 @@ export function prepareShaderSource(baseSource: string, useSubgroups: boolean): 
   return 'enable subgroups;\n' + baseSource;
 }
 
+/** Extract the transparent flag (bit 8) from a renderMeta entry. */
+export function extractTransparentFlag(meta: number): boolean {
+    return (meta & 0x100) !== 0;
+}
+
+/** Extract the primitive type (bits 0-7) from a renderMeta entry. */
+export function extractPrimType(meta: number): number {
+    return meta & 0xFF;
+}
+
 /**
  * GPU frustum-culling compute pass with 2-bucket material sort.
  *

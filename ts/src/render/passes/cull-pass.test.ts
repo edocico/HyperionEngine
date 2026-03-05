@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, TOTAL_DRAW_BUCKETS } from './cull-pass';
+import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, TOTAL_DRAW_BUCKETS, extractTransparentFlag, extractPrimType } from './cull-pass';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -34,6 +34,20 @@ describe('2-bucket material sort constants', () => {
 
   it('produces 240-byte indirect args buffer (12 x 5 u32 x 4 bytes)', () => {
     expect(TOTAL_DRAW_BUCKETS * 5 * 4).toBe(240);
+  });
+});
+
+describe('transparent flag extraction', () => {
+  it('extractTransparentFlag reads bit 8 from renderMeta', () => {
+    const meta = (5 << 0) | (1 << 8); // primType=5, transparent=true
+    expect(extractTransparentFlag(meta)).toBe(true);
+    expect(extractPrimType(meta)).toBe(5);
+  });
+
+  it('non-transparent entity has bit 8 = 0', () => {
+    const meta = 3; // primType=3, transparent=false
+    expect(extractTransparentFlag(meta)).toBe(false);
+    expect(extractPrimType(meta)).toBe(3);
   });
 });
 
