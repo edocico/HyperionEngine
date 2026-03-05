@@ -15,6 +15,9 @@ pub struct EntityMap {
     free_list: Vec<u32>,
     /// Next external ID to assign.
     next_id: u32,
+    /// Tracks whether each external ID is a 2D entity (Transform2D) vs 3D (Position+Rotation+Scale).
+    /// Indexed by external ID. Default `false` = 3D.
+    is_2d: Vec<bool>,
 }
 
 impl Default for EntityMap {
@@ -29,6 +32,7 @@ impl EntityMap {
             map: Vec::new(),
             free_list: Vec::new(),
             next_id: 0,
+            is_2d: Vec::new(),
         }
     }
 
@@ -48,8 +52,25 @@ impl EntityMap {
         let idx = external_id as usize;
         if idx >= self.map.len() {
             self.map.resize(idx + 1, None);
+            self.is_2d.resize(idx + 1, false);
         }
         self.map[idx] = Some(entity);
+    }
+
+    /// Mark an external ID as 2D or 3D. Must be called after `insert()`.
+    pub fn set_2d_flag(&mut self, external_id: u32, is_2d: bool) {
+        let idx = external_id as usize;
+        if idx < self.is_2d.len() {
+            self.is_2d[idx] = is_2d;
+        }
+    }
+
+    /// Returns whether the given external ID is a 2D entity.
+    pub(crate) fn is_entity_2d(&self, external_id: u32) -> bool {
+        self.is_2d
+            .get(external_id as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Look up the hecs entity for an external ID.
@@ -71,6 +92,9 @@ impl EntityMap {
         if idx < self.map.len() {
             self.map[idx] = None;
         }
+        if idx < self.is_2d.len() {
+            self.is_2d[idx] = false;
+        }
         if external_id < self.next_id {
             self.free_list.push(external_id);
         }
@@ -91,6 +115,8 @@ impl EntityMap {
             None => self.map.clear(),
         }
         self.map.shrink_to_fit();
+        self.is_2d.truncate(self.map.len());
+        self.is_2d.shrink_to_fit();
         self.free_list.retain(|&id| (id as usize) < self.map.len());
     }
 }
@@ -133,54 +159,55 @@ pub fn process_commands(
 
 /// Flush a batch of consecutive SpawnEntity commands using `spawn_batch()`.
 ///
-/// All entities share the same 14-component archetype, so `spawn_batch()`
-/// resizes the archetype's column vecs once instead of per-entity.
+/// 3D and 2D entities have different archetypes, so the batch is split
+/// into two sub-batches. Each sub-batch resizes its archetype table once.
+/// Mixed batches are handled correctly.
 fn flush_spawn_batch(
     batch: &[Command],
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
 ) {
-    // Build component tuples. ExternalId is set to 0 initially; corrected below.
-    let archetypes = batch.iter().map(|cmd| {
-        (
-            Position::default(),
-            Rotation::default(),
-            Scale::default(),
-            Velocity::default(),
-            ModelMatrix::default(),
-            BoundingRadius::default(),
-            TextureLayerIndex::default(),
-            MeshHandle::default(),
-            RenderPrimitive::default(),
-            PrimitiveParams::default(),
-            ExternalId(cmd.entity_id),
-            Parent::default(),
-            Children::default(),
-            Active,
-        )
-    });
-
-    // spawn_batch returns entities in insertion order
-    let entities: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
-
-    // Wire up entity map and render state
-    for (cmd, entity) in batch.iter().zip(entities.iter()) {
-        entity_map.insert(cmd.entity_id, *entity);
-        let slot = render_state.assign_slot(*entity);
-        render_state.write_slot(slot, world, *entity);
+    // Partition into 3D and 2D sub-batches, preserving original indices
+    let mut batch_3d: Vec<(usize, &Command)> = Vec::new();
+    let mut batch_2d: Vec<(usize, &Command)> = Vec::new();
+    for (i, cmd) in batch.iter().enumerate() {
+        if cmd.payload[0] == 1 {
+            batch_2d.push((i, cmd));
+        } else {
+            batch_3d.push((i, cmd));
+        }
     }
-}
 
-/// Process a single non-batch command against the ECS world.
-fn process_single_command(
-    cmd: &Command,
-    world: &mut World,
-    entity_map: &mut EntityMap,
-    render_state: &mut RenderState,
-) {
-    match cmd.cmd_type {
-        CommandType::SpawnEntity => {
+    // Collect all spawned entities indexed by their position in the original batch
+    let mut entities: Vec<(usize, hecs::Entity, bool)> = Vec::with_capacity(batch.len());
+
+    // Batch-spawn 3D entities
+    if batch_3d.len() >= 2 {
+        let archetypes = batch_3d.iter().map(|(_, cmd)| {
+            (
+                Position::default(),
+                Rotation::default(),
+                Scale::default(),
+                Velocity::default(),
+                ModelMatrix::default(),
+                BoundingRadius::default(),
+                TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
+                PrimitiveParams::default(),
+                ExternalId(cmd.entity_id),
+                Parent::default(),
+                Children::default(),
+                Active,
+            )
+        });
+        let spawned: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
+        for ((orig_idx, _), entity) in batch_3d.iter().zip(spawned.into_iter()) {
+            entities.push((*orig_idx, entity, false));
+        }
+    } else {
+        for &(orig_idx, cmd) in &batch_3d {
             let entity = world.spawn((
                 Position::default(),
                 Rotation::default(),
@@ -197,7 +224,110 @@ fn process_single_command(
                 Children::default(),
                 Active,
             ));
+            entities.push((orig_idx, entity, false));
+        }
+    }
+
+    // Batch-spawn 2D entities
+    if batch_2d.len() >= 2 {
+        let archetypes = batch_2d.iter().map(|(_, cmd)| {
+            (
+                Transform2D::default(),
+                Velocity::default(),
+                ModelMatrix::default(),
+                BoundingRadius::default(),
+                TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
+                PrimitiveParams::default(),
+                ExternalId(cmd.entity_id),
+                Parent::default(),
+                Children::default(),
+                Active,
+            )
+        });
+        let spawned: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
+        for ((orig_idx, _), entity) in batch_2d.iter().zip(spawned.into_iter()) {
+            entities.push((*orig_idx, entity, true));
+        }
+    } else {
+        for &(orig_idx, cmd) in &batch_2d {
+            let entity = world.spawn((
+                Transform2D::default(),
+                Velocity::default(),
+                ModelMatrix::default(),
+                BoundingRadius::default(),
+                TextureLayerIndex::default(),
+                MeshHandle::default(),
+                RenderPrimitive::default(),
+                PrimitiveParams::default(),
+                ExternalId(cmd.entity_id),
+                Parent::default(),
+                Children::default(),
+                Active,
+            ));
+            entities.push((orig_idx, entity, true));
+        }
+    }
+
+    // Sort by original batch index to preserve insertion order
+    entities.sort_unstable_by_key(|(idx, _, _)| *idx);
+
+    // Wire up entity map and render state
+    for (orig_idx, entity, is_2d) in &entities {
+        let cmd = &batch[*orig_idx];
+        entity_map.insert(cmd.entity_id, *entity);
+        entity_map.set_2d_flag(cmd.entity_id, *is_2d);
+        let slot = render_state.assign_slot(*entity);
+        render_state.write_slot(slot, world, *entity);
+    }
+}
+
+/// Process a single non-batch command against the ECS world.
+fn process_single_command(
+    cmd: &Command,
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) {
+    match cmd.cmd_type {
+        CommandType::SpawnEntity => {
+            let is_2d = cmd.payload[0] == 1;
+            let entity = if is_2d {
+                world.spawn((
+                    Transform2D::default(),
+                    Velocity::default(),
+                    ModelMatrix::default(),
+                    BoundingRadius::default(),
+                    TextureLayerIndex::default(),
+                    MeshHandle::default(),
+                    RenderPrimitive::default(),
+                    PrimitiveParams::default(),
+                    ExternalId(cmd.entity_id),
+                    Parent::default(),
+                    Children::default(),
+                    Active,
+                ))
+            } else {
+                world.spawn((
+                    Position::default(),
+                    Rotation::default(),
+                    Scale::default(),
+                    Velocity::default(),
+                    ModelMatrix::default(),
+                    BoundingRadius::default(),
+                    TextureLayerIndex::default(),
+                    MeshHandle::default(),
+                    RenderPrimitive::default(),
+                    PrimitiveParams::default(),
+                    ExternalId(cmd.entity_id),
+                    Parent::default(),
+                    Children::default(),
+                    Active,
+                ))
+            };
             entity_map.insert(cmd.entity_id, entity);
+            entity_map.set_2d_flag(cmd.entity_id, is_2d);
             let slot = render_state.assign_slot(entity);
             render_state.write_slot(slot, world, entity);
         }
@@ -215,7 +345,13 @@ fn process_single_command(
                 let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                if let Ok(mut pos) = world.get::<&mut Position>(entity) {
+                if entity_map.is_entity_2d(cmd.entity_id) {
+                    if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
+                        t.x = x;
+                        t.y = y;
+                        // z ignored for 2D entities
+                    }
+                } else if let Ok(mut pos) = world.get::<&mut Position>(entity) {
                     pos.0 = glam::Vec3::new(x, y, z);
                 }
                 if let Some(slot) = render_state.get_slot(entity) {
@@ -231,7 +367,16 @@ fn process_single_command(
                 let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
                 let w = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
-                if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
+                if entity_map.is_entity_2d(cmd.entity_id) {
+                    // Compatibility fallback: extract z-axis angle from quaternion
+                    let angle = f32::atan2(
+                        2.0 * (w * z + x * y),
+                        1.0 - 2.0 * (y * y + z * z),
+                    );
+                    if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
+                        t.rot = angle;
+                    }
+                } else if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
                     rot.0 = glam::Quat::from_xyzw(x, y, z, w);
                 }
                 if let Some(slot) = render_state.get_slot(entity) {
@@ -246,7 +391,13 @@ fn process_single_command(
                 let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                if let Ok(mut scale) = world.get::<&mut Scale>(entity) {
+                if entity_map.is_entity_2d(cmd.entity_id) {
+                    if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
+                        t.sx = x;
+                        t.sy = y;
+                        // z ignored for 2D entities
+                    }
+                } else if let Ok(mut scale) = world.get::<&mut Scale>(entity) {
                     scale.0 = glam::Vec3::new(x, y, z);
                 }
                 if let Some(slot) = render_state.get_slot(entity) {
@@ -424,10 +575,44 @@ fn process_single_command(
 
         CommandType::SetListenerPosition => {} // handled in Engine::process_commands
 
-        // Phase 13 Transform2D commands — ECS component handling in later task
-        CommandType::SetRotation2D => {}
-        CommandType::SetTransparent => {}
-        CommandType::SetDepth => {}
+        CommandType::SetRotation2D => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let angle = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if entity_map.is_entity_2d(cmd.entity_id)
+                    && let Ok(mut t) = world.get::<&mut Transform2D>(entity)
+                {
+                    t.rot = angle;
+                }
+                // For 3D entities, SetRotation2D is invalid — silently ignored.
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                }
+            }
+        }
+
+        CommandType::SetTransparent => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                if cmd.payload[0] == 1 {
+                    let _ = world.insert_one(entity, Transparent(1));
+                } else {
+                    let _ = world.remove_one::<Transparent>(entity);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
+
+        CommandType::SetDepth => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let z = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let _ = world.insert_one(entity, Depth(z));
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
     }
 }
 
@@ -877,5 +1062,330 @@ mod tests {
         let e0 = entity_map.get(0).unwrap();
         let pos = world.get::<&Position>(e0).unwrap();
         assert!((pos.0.x - 5.0).abs() < 0.001);
+    }
+
+    // -- 2D / 3D routing tests (Phase 13 Task 4) --
+
+    fn make_spawn_2d_cmd(id: u32) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = 1; // 2D flag
+        Command {
+            cmd_type: CommandType::SpawnEntity,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[test]
+    fn spawn_2d_entity_creates_transform2d() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        process_commands(&[make_spawn_2d_cmd(1)], &mut world, &mut map, &mut rs);
+        let ent = map.get(1).unwrap();
+        assert!(world.get::<&Transform2D>(ent).is_ok());
+        assert!(world.get::<&Position>(ent).is_err()); // NOT 3D
+    }
+
+    #[test]
+    fn spawn_3d_entity_creates_position() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        process_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
+        let ent = map.get(1).unwrap();
+        assert!(world.get::<&Position>(ent).is_ok());
+        assert!(world.get::<&Transform2D>(ent).is_err()); // NOT 2D
+    }
+
+    #[test]
+    fn set_position_on_2d_entity_updates_transform2d() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        process_commands(
+            &[make_spawn_2d_cmd(1), make_position_cmd(1, 10.0, 20.0, 99.0)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let t = world.get::<&Transform2D>(ent).unwrap();
+        assert!((t.x - 10.0).abs() < 1e-7);
+        assert!((t.y - 20.0).abs() < 1e-7);
+        // z (99.0) is ignored for 2D
+    }
+
+    #[test]
+    fn set_position_on_3d_entity_updates_position() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        process_commands(
+            &[make_spawn_cmd(1), make_position_cmd(1, 10.0, 20.0, 30.0)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let pos = world.get::<&Position>(ent).unwrap();
+        assert_eq!(pos.0, glam::Vec3::new(10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn set_rotation_2d_updates_transform2d() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut angle_payload = [0u8; 16];
+        angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
+        process_commands(
+            &[
+                make_spawn_2d_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetRotation2D,
+                    entity_id: 1,
+                    payload: angle_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let t = world.get::<&Transform2D>(ent).unwrap();
+        assert!((t.rot - 1.5).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_rotation_2d_on_3d_entity_is_ignored() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut angle_payload = [0u8; 16];
+        angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
+        process_commands(
+            &[
+                make_spawn_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetRotation2D,
+                    entity_id: 1,
+                    payload: angle_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        // 3D entity should NOT have Transform2D
+        let ent = map.get(1).unwrap();
+        assert!(world.get::<&Transform2D>(ent).is_err());
+        // Rotation should still be identity (untouched)
+        let rot = world.get::<&Rotation>(ent).unwrap();
+        assert_eq!(rot.0, glam::Quat::IDENTITY);
+    }
+
+    #[test]
+    fn set_rotation_quat_on_2d_entity_extracts_angle() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        // Quaternion for 90 degrees around Z: (0, 0, sin(45°), cos(45°))
+        let angle = std::f32::consts::FRAC_PI_2;
+        let qz = (angle / 2.0).sin();
+        let qw = (angle / 2.0).cos();
+        let mut rot_payload = [0u8; 16];
+        rot_payload[0..4].copy_from_slice(&0.0f32.to_le_bytes()); // qx
+        rot_payload[4..8].copy_from_slice(&0.0f32.to_le_bytes()); // qy
+        rot_payload[8..12].copy_from_slice(&qz.to_le_bytes());    // qz
+        rot_payload[12..16].copy_from_slice(&qw.to_le_bytes());   // qw
+        process_commands(
+            &[
+                make_spawn_2d_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetRotation,
+                    entity_id: 1,
+                    payload: rot_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let t = world.get::<&Transform2D>(ent).unwrap();
+        assert!((t.rot - angle).abs() < 1e-5);
+    }
+
+    #[test]
+    fn set_scale_on_2d_entity_updates_transform2d() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut scale_payload = [0u8; 16];
+        scale_payload[0..4].copy_from_slice(&2.0f32.to_le_bytes());
+        scale_payload[4..8].copy_from_slice(&3.0f32.to_le_bytes());
+        scale_payload[8..12].copy_from_slice(&99.0f32.to_le_bytes()); // z ignored
+        process_commands(
+            &[
+                make_spawn_2d_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetScale,
+                    entity_id: 1,
+                    payload: scale_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let t = world.get::<&Transform2D>(ent).unwrap();
+        assert!((t.sx - 2.0).abs() < 1e-7);
+        assert!((t.sy - 3.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_depth_adds_depth_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut depth_payload = [0u8; 16];
+        depth_payload[0..4].copy_from_slice(&5.0f32.to_le_bytes());
+        process_commands(
+            &[
+                make_spawn_2d_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetDepth,
+                    entity_id: 1,
+                    payload: depth_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let d = world.get::<&Depth>(ent).unwrap();
+        assert!((d.0 - 5.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_depth_works_on_3d_entity_too() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut depth_payload = [0u8; 16];
+        depth_payload[0..4].copy_from_slice(&7.0f32.to_le_bytes());
+        process_commands(
+            &[
+                make_spawn_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetDepth,
+                    entity_id: 1,
+                    payload: depth_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        let d = world.get::<&Depth>(ent).unwrap();
+        assert!((d.0 - 7.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_transparent_toggles_component() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut on_payload = [0u8; 16];
+        on_payload[0] = 1;
+        process_commands(
+            &[
+                make_spawn_2d_cmd(1),
+                Command {
+                    cmd_type: CommandType::SetTransparent,
+                    entity_id: 1,
+                    payload: on_payload,
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let ent = map.get(1).unwrap();
+        assert!(world.get::<&Transparent>(ent).is_ok());
+
+        // Toggle off
+        process_commands(
+            &[Command {
+                cmd_type: CommandType::SetTransparent,
+                entity_id: 1,
+                payload: [0u8; 16],
+            }],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        assert!(world.get::<&Transparent>(ent).is_err());
+    }
+
+    #[test]
+    fn is_entity_2d_flag_tracks_correctly() {
+        let mut map = EntityMap::new();
+        let mut world = World::new();
+        let e1 = world.spawn((Transform2D::default(), Active));
+        map.insert(1, e1);
+        map.set_2d_flag(1, true);
+        assert!(map.is_entity_2d(1));
+        assert!(!map.is_entity_2d(0)); // unset ID
+
+        // Remove clears flag
+        map.remove(1);
+        assert!(!map.is_entity_2d(1));
+    }
+
+    #[test]
+    fn batch_spawn_mixed_2d_and_3d() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let cmds = vec![
+            make_spawn_cmd(0),     // 3D
+            make_spawn_2d_cmd(1),  // 2D
+            make_spawn_cmd(2),     // 3D
+            make_spawn_2d_cmd(3),  // 2D
+        ];
+        process_commands(&cmds, &mut world, &mut map, &mut rs);
+
+        // All 4 entities should exist
+        assert_eq!(rs.gpu_entity_count(), 4);
+        for id in 0..4u32 {
+            assert!(map.get(id).is_some());
+        }
+
+        // 3D entities have Position, no Transform2D
+        let e0 = map.get(0).unwrap();
+        assert!(world.get::<&Position>(e0).is_ok());
+        assert!(world.get::<&Transform2D>(e0).is_err());
+        let e2 = map.get(2).unwrap();
+        assert!(world.get::<&Position>(e2).is_ok());
+        assert!(world.get::<&Transform2D>(e2).is_err());
+
+        // 2D entities have Transform2D, no Position
+        let e1 = map.get(1).unwrap();
+        assert!(world.get::<&Transform2D>(e1).is_ok());
+        assert!(world.get::<&Position>(e1).is_err());
+        let e3 = map.get(3).unwrap();
+        assert!(world.get::<&Transform2D>(e3).is_ok());
+        assert!(world.get::<&Position>(e3).is_err());
+
+        // is_2d flags
+        assert!(!map.is_entity_2d(0));
+        assert!(map.is_entity_2d(1));
+        assert!(!map.is_entity_2d(2));
+        assert!(map.is_entity_2d(3));
     }
 }
