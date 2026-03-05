@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex, TextureManager } from "./texture-manager";
+import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex, TextureManager, mipLevelCount } from "./texture-manager";
 import { KTX2_MAGIC } from './ktx2-parser';
 
 // Polyfill GPUTextureUsage for Node/vitest environment (browser global)
@@ -417,6 +417,148 @@ describe("TextureManager with compressed format", () => {
     tm.destroy();
     // Should have destroyed 2 overflow textures (tiers 0 and 1)
     expect(destroyCalls).toBe(2);
+  });
+});
+
+describe("mipmap support", () => {
+  it("mipLevelCount returns correct values for tier sizes", () => {
+    expect(mipLevelCount(64)).toBe(7);
+    expect(mipLevelCount(128)).toBe(8);
+    expect(mipLevelCount(256)).toBe(9);
+    expect(mipLevelCount(512)).toBe(10);
+  });
+
+  it("mipLevelCount handles edge cases", () => {
+    expect(mipLevelCount(1)).toBe(1);
+    expect(mipLevelCount(2)).toBe(2);
+  });
+
+  it("tier textures are created with correct mipLevelCount", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device);
+    // Allocate tier 0 (size 64 → 7 mips)
+    tm.ensureTierCapacity(0, 1);
+    expect(textures[0].desc.mipLevelCount).toBe(7);
+  });
+
+  it("each tier has mipLevelCount matching its size", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device);
+    tm.ensureTierCapacity(0, 1); // 64 → 7
+    tm.ensureTierCapacity(1, 1); // 128 → 8
+    tm.ensureTierCapacity(2, 1); // 256 → 9
+    tm.ensureTierCapacity(3, 1); // 512 → 10
+    expect(textures[0].desc.mipLevelCount).toBe(7);
+    expect(textures[1].desc.mipLevelCount).toBe(8);
+    expect(textures[2].desc.mipLevelCount).toBe(9);
+    expect(textures[3].desc.mipLevelCount).toBe(10);
+  });
+
+  it("placeholder texture from getTierView has mipLevelCount", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device);
+    tm.getTierView(2); // tier 2, size 256 → 9 mips
+    expect(textures[0].desc.mipLevelCount).toBe(9);
+  });
+
+  it("overflow placeholder texture has mipLevelCount", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.getOverflowTierView(1); // tier 1, size 128 → 8 mips
+    expect(textures[0].desc.mipLevelCount).toBe(8);
+  });
+
+  it("overflow capacity texture has mipLevelCount", () => {
+    const textures: any[] = [];
+    const device = {
+      ...createMockDevice(),
+      createTexture: (desc: any) => {
+        const t = { desc, createView: () => ({}), destroy: () => {} };
+        textures.push(t);
+        return t;
+      },
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat: "bc7-rgba-unorm" as GPUTextureFormat });
+    tm.ensureOverflowCapacity(0, 1); // tier 0, size 64 → 7 mips
+    const overflowTex = textures.find((t) => t.desc.format === "rgba8unorm");
+    expect(overflowTex!.desc.mipLevelCount).toBe(7);
+  });
+
+  it("tier resize copies all mip levels", () => {
+    const copyArgs: any[] = [];
+    const device = {
+      createSampler: () => ({}),
+      createTexture: (desc: any) => ({
+        desc, createView: () => ({}), destroy: () => {},
+      }),
+      queue: {
+        writeTexture: () => {},
+        submit: () => {},
+      },
+      createCommandEncoder: () => ({
+        copyTextureToTexture: (src: any, dst: any, size: any) => {
+          copyArgs.push({ src, dst, size });
+        },
+        finish: () => ({}),
+      }),
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device);
+    // First allocation (16 layers) — no copy
+    tm.ensureTierCapacity(0, 1);
+    expect(copyArgs.length).toBe(0);
+    // Growth 16 → 32 — should copy all 7 mip levels for tier 0 (size 64)
+    tm.ensureTierCapacity(0, 17);
+    expect(copyArgs.length).toBe(7); // 7 mip levels
+    // Verify mip sizes: 64, 32, 16, 8, 4, 2, 1
+    for (let mip = 0; mip < 7; mip++) {
+      const expectedSize = Math.max(1, 64 >> mip);
+      expect(copyArgs[mip].src.mipLevel).toBe(mip);
+      expect(copyArgs[mip].dst.mipLevel).toBe(mip);
+      expect(copyArgs[mip].size.width).toBe(expectedSize);
+      expect(copyArgs[mip].size.height).toBe(expectedSize);
+    }
+  });
+
+  it("sampler uses trilinear filtering (mipmapFilter: linear)", () => {
+    let samplerDesc: any = null;
+    const device = {
+      ...createMockDevice(),
+      createSampler: (desc: any) => { samplerDesc = desc; return {}; },
+    } as unknown as GPUDevice;
+    new TextureManager(device);
+    expect(samplerDesc.mipmapFilter).toBe("linear");
   });
 });
 

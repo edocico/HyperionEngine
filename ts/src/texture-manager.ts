@@ -6,6 +6,14 @@ export const TIER_SIZES = [64, 128, 256, 512] as const;
 export const NUM_TIERS = TIER_SIZES.length;
 export const MAX_LAYERS_PER_TIER = 256;
 
+/**
+ * Compute the number of mip levels for a square texture of the given size.
+ * E.g. 64→7, 128→8, 256→9, 512→10.
+ */
+export function mipLevelCount(size: number): number {
+  return Math.floor(Math.log2(size)) + 1;
+}
+
 /** Exponential growth steps for lazy tier allocation. */
 const GROWTH_STEPS = [16, 32, 64, 128, 256] as const;
 
@@ -199,7 +207,7 @@ export class TextureManager {
     this._sampler = device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
-      mipmapFilter: "nearest",
+      mipmapFilter: "linear",
     });
 
     // Initialize tier state without creating any GPU textures
@@ -238,6 +246,7 @@ export class TextureManager {
           depthOrArrayLayers: 1,
         },
         format: state.format,
+        mipLevelCount: mipLevelCount(size),
         usage:
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.COPY_DST |
@@ -300,6 +309,7 @@ export class TextureManager {
       state.overflowTexture = this.device.createTexture({
         size: { width: size, height: size, depthOrArrayLayers: 1 },
         format: "rgba8unorm",
+        mipLevelCount: mipLevelCount(size),
         usage:
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.COPY_DST |
@@ -353,6 +363,7 @@ export class TextureManager {
     const oldAllocatedLayers = state.overflowAllocatedLayers;
 
     // Create the new, larger overflow texture (always rgba8unorm)
+    const mips = mipLevelCount(size);
     const newTexture = this.device.createTexture({
       size: {
         width: size,
@@ -360,6 +371,7 @@ export class TextureManager {
         depthOrArrayLayers: newAllocation,
       },
       format: "rgba8unorm",
+      mipLevelCount: mips,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -382,17 +394,20 @@ export class TextureManager {
         state.overflowNextFreeLayer = 1;
       }
     } else if (oldTexture !== null && oldAllocatedLayers > 0) {
-      // Copy existing layers from old overflow texture to new
+      // Copy existing layers from old overflow texture to new (all mip levels)
       const encoder = this.device.createCommandEncoder();
-      encoder.copyTextureToTexture(
-        { texture: oldTexture, origin: { x: 0, y: 0, z: 0 } },
-        { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
-        {
-          width: size,
-          height: size,
-          depthOrArrayLayers: oldAllocatedLayers,
-        },
-      );
+      for (let mip = 0; mip < mips; mip++) {
+        const mipSize = Math.max(1, size >> mip);
+        encoder.copyTextureToTexture(
+          { texture: oldTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },
+          { texture: newTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },
+          {
+            width: mipSize,
+            height: mipSize,
+            depthOrArrayLayers: oldAllocatedLayers,
+          },
+        );
+      }
       this.device.queue.submit([encoder.finish()]);
     }
 
@@ -441,6 +456,7 @@ export class TextureManager {
 
     // Create the new, larger texture (compressed formats can't have RENDER_ATTACHMENT)
     const isCompressed = state.format !== "rgba8unorm";
+    const mips = mipLevelCount(size);
     const newTexture = this.device.createTexture({
       size: {
         width: size,
@@ -448,6 +464,7 @@ export class TextureManager {
         depthOrArrayLayers: newAllocation,
       },
       format: state.format,
+      mipLevelCount: mips,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -473,17 +490,20 @@ export class TextureManager {
         state.nextFreeLayer = 1;
       }
     } else if (oldTexture !== null && oldAllocatedLayers > 0) {
-      // Copy existing layers from old texture to new texture
+      // Copy existing layers from old texture to new texture (all mip levels)
       const encoder = this.device.createCommandEncoder();
-      encoder.copyTextureToTexture(
-        { texture: oldTexture, origin: { x: 0, y: 0, z: 0 } },
-        { texture: newTexture, origin: { x: 0, y: 0, z: 0 } },
-        {
-          width: size,
-          height: size,
-          depthOrArrayLayers: oldAllocatedLayers,
-        },
-      );
+      for (let mip = 0; mip < mips; mip++) {
+        const mipSize = Math.max(1, size >> mip);
+        encoder.copyTextureToTexture(
+          { texture: oldTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },
+          { texture: newTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },
+          {
+            width: mipSize,
+            height: mipSize,
+            depthOrArrayLayers: oldAllocatedLayers,
+          },
+        );
+      }
       this.device.queue.submit([encoder.finish()]);
     }
 
