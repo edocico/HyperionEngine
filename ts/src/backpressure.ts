@@ -5,7 +5,7 @@ export type BackpressureMode = 'retry-queue' | 'drop';
 export interface QueuedCommand {
   cmd: CommandType;
   entityId: number;
-  payload?: Float32Array;
+  payload?: Float32Array | Uint8Array;
 }
 
 export interface FlushStats {
@@ -21,7 +21,7 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 14; // CommandType values: 0..13
+const MAX_COMMAND_TYPE = 17; // CommandType values: 0..16
 
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
@@ -32,7 +32,7 @@ export class PrioritizedCommandQueue {
   get criticalCount(): number { return this.critical.length; }
   get overwriteCount(): number { return this.overwrites.size; }
 
-  enqueue(cmd: CommandType, entityId: number, payload?: Float32Array): void {
+  enqueue(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): void {
     if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) {
       if (cmd === CommandType.DespawnEntity) {
         this.purgeEntity(entityId);
@@ -160,7 +160,7 @@ export class BackpressuredProducer {
     return this.queue.drainTo(this.inner, this.recordingTap);
   }
 
-  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array): boolean {
+  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
     this.queue.enqueue(cmd, entityId, payload);
     return true;
   }
@@ -227,5 +227,17 @@ export class BackpressuredProducer {
       0, // sentinel entity ID
       new Float32Array([x, y, z]),
     );
+  }
+
+  setRotation2D(entityId: number, angle: number): boolean {
+    return this.writeCommand(CommandType.SetRotation2D, entityId, new Float32Array([angle]));
+  }
+
+  setTransparent(entityId: number, value: number): boolean {
+    return this.writeCommand(CommandType.SetTransparent, entityId, new Uint8Array([value & 0xFF]));
+  }
+
+  setDepth(entityId: number, z: number): boolean {
+    return this.writeCommand(CommandType.SetDepth, entityId, new Float32Array([z]));
   }
 }

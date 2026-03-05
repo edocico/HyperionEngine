@@ -46,6 +46,9 @@ pub enum CommandType {
     SetPrimParams0 = 11,   // params[0..3], 4 × f32 = 16 bytes
     SetPrimParams1 = 12,   // params[4..7], 4 × f32 = 16 bytes
     SetListenerPosition = 13, // listener xyz, 3 × f32 = 12 bytes
+    SetRotation2D = 14,       // f32 angle (radians)
+    SetTransparent = 15,      // u8: 0=opaque, 1=transparent
+    SetDepth = 16,            // f32 z depth for 2.5D ordering
 }
 
 impl CommandType {
@@ -66,6 +69,9 @@ impl CommandType {
             11 => Some(Self::SetPrimParams0),
             12 => Some(Self::SetPrimParams1),
             13 => Some(Self::SetListenerPosition),
+            14 => Some(Self::SetRotation2D),
+            15 => Some(Self::SetTransparent),
+            16 => Some(Self::SetDepth),
             _ => None,
         }
     }
@@ -82,6 +88,9 @@ impl CommandType {
             Self::SetParent => 4,           // parent entity id (u32 LE), 0xFFFFFFFF = unparent
             Self::SetPrimParams0 | Self::SetPrimParams1 => 16, // 4 × f32
             Self::SetListenerPosition => 12, // 3 × f32
+            Self::SetRotation2D => 4,       // 1 × f32
+            Self::SetTransparent => 1,      // 1 × u8
+            Self::SetDepth => 4,            // 1 × f32
         }
     }
 
@@ -638,5 +647,115 @@ mod tests {
         let cmd_type = CommandType::from_u8(13).unwrap();
         assert_eq!(cmd_type, CommandType::SetListenerPosition);
         assert_eq!(cmd_type.payload_size(), 12);
+    }
+
+    #[test]
+    fn set_rotation_2d_round_trip() {
+        let cmd = Command {
+            cmd_type: CommandType::SetRotation2D,
+            entity_id: 42,
+            payload: {
+                let mut p = [0u8; 16];
+                p[0..4].copy_from_slice(&std::f32::consts::FRAC_PI_4.to_le_bytes());
+                p
+            },
+        };
+        assert_eq!(cmd.cmd_type as u8, 14);
+        let angle = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+        assert!((angle - std::f32::consts::FRAC_PI_4).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_transparent_round_trip() {
+        let cmd = Command {
+            cmd_type: CommandType::SetTransparent,
+            entity_id: 99,
+            payload: {
+                let mut p = [0u8; 16];
+                p[0] = 1;
+                p
+            },
+        };
+        assert_eq!(cmd.cmd_type as u8, 15);
+        assert_eq!(cmd.payload[0], 1);
+    }
+
+    #[test]
+    fn set_depth_round_trip() {
+        let cmd = Command {
+            cmd_type: CommandType::SetDepth,
+            entity_id: 7,
+            payload: {
+                let mut p = [0u8; 16];
+                p[0..4].copy_from_slice(&5.0f32.to_le_bytes());
+                p
+            },
+        };
+        assert_eq!(cmd.cmd_type as u8, 16);
+        let depth = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+        assert!((depth - 5.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn parse_set_rotation_2d() {
+        let mut data = Vec::new();
+        data.push(CommandType::SetRotation2D as u8);
+        data.extend_from_slice(&42u32.to_le_bytes());
+        data.extend_from_slice(&std::f32::consts::FRAC_PI_4.to_le_bytes());
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetRotation2D);
+        assert_eq!(cmds[0].entity_id, 42);
+        let angle = f32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        assert!((angle - std::f32::consts::FRAC_PI_4).abs() < 1e-7);
+    }
+
+    #[test]
+    fn parse_set_transparent() {
+        // cmd=15, entity_id=99, payload=1 byte
+        let data = [
+            15, 99, 0, 0, 0, // cmd + entity_id
+            1,                // transparent flag
+        ];
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetTransparent);
+        assert_eq!(cmds[0].entity_id, 99);
+        assert_eq!(cmds[0].payload[0], 1);
+    }
+
+    #[test]
+    fn parse_set_depth() {
+        let mut data = Vec::new();
+        data.push(CommandType::SetDepth as u8);
+        data.extend_from_slice(&7u32.to_le_bytes());
+        data.extend_from_slice(&5.0f32.to_le_bytes());
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SetDepth);
+        assert_eq!(cmds[0].entity_id, 7);
+        let depth = f32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
+        assert!((depth - 5.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn set_rotation_2d_payload_size_is_4() {
+        let cmd_type = CommandType::from_u8(14).unwrap();
+        assert_eq!(cmd_type, CommandType::SetRotation2D);
+        assert_eq!(cmd_type.payload_size(), 4);
+    }
+
+    #[test]
+    fn set_transparent_payload_size_is_1() {
+        let cmd_type = CommandType::from_u8(15).unwrap();
+        assert_eq!(cmd_type, CommandType::SetTransparent);
+        assert_eq!(cmd_type.payload_size(), 1);
+    }
+
+    #[test]
+    fn set_depth_payload_size_is_4() {
+        let cmd_type = CommandType::from_u8(16).unwrap();
+        assert_eq!(cmd_type, CommandType::SetDepth);
+        assert_eq!(cmd_type.payload_size(), 4);
     }
 }

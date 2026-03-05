@@ -27,6 +27,9 @@ export const enum CommandType {
   SetPrimParams0 = 11,
   SetPrimParams1 = 12,
   SetListenerPosition = 13,
+  SetRotation2D = 14,
+  SetTransparent = 15,
+  SetDepth = 16,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -45,6 +48,9 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetPrimParams0]: 16,
   [CommandType.SetPrimParams1]: 16,
   [CommandType.SetListenerPosition]: 12,
+  [CommandType.SetRotation2D]: 4,
+  [CommandType.SetTransparent]: 1,
+  [CommandType.SetDepth]: 4,
 };
 
 export class RingBufferProducer {
@@ -92,7 +98,7 @@ export class RingBufferProducer {
     return r - w - 1;
   }
 
-  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array): boolean {
+  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
     const payloadSize = PAYLOAD_SIZES[cmd];
     const msgSize = 1 + 4 + payloadSize;
 
@@ -122,34 +128,42 @@ export class RingBufferProducer {
     }
     pos += 4;
 
-    // Write payload (f32 values, little-endian)
+    // Write payload
     if (payload && payloadSize > 0) {
-      const scratch = RingBufferProducer._scratch;
-      if (IS_LITTLE_ENDIAN) {
-        for (let i = 0; i < payload.length; i++) {
-          const p = (pos + i * 4) % this.capacity;
-          if ((p & 3) === 0) {
-            this.f32View[p >> 2] = payload[i];
-          } else if (p + 4 <= this.capacity) {
-            this.data.setFloat32(p, payload[i], true);
-          } else {
-            // Float straddles wrap boundary — write byte-by-byte LE
-            scratch.setFloat32(0, payload[i], true);
-            for (let b = 0; b < 4; b++) {
-              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
-            }
-          }
+      if (payload instanceof Uint8Array) {
+        // Byte-level payload (e.g. SetTransparent: 1 byte)
+        for (let i = 0; i < payloadSize; i++) {
+          this.u8View[(pos + i) % this.capacity] = payload[i];
         }
       } else {
-        for (let i = 0; i < payload.length; i++) {
-          const p = (pos + i * 4) % this.capacity;
-          if (p + 4 <= this.capacity) {
-            this.data.setFloat32(p, payload[i], true);
-          } else {
-            // Float straddles wrap boundary — write byte-by-byte LE
-            scratch.setFloat32(0, payload[i], true);
-            for (let b = 0; b < 4; b++) {
-              this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+        // f32-level payload (standard path)
+        const scratch = RingBufferProducer._scratch;
+        if (IS_LITTLE_ENDIAN) {
+          for (let i = 0; i < payload.length; i++) {
+            const p = (pos + i * 4) % this.capacity;
+            if ((p & 3) === 0) {
+              this.f32View[p >> 2] = payload[i];
+            } else if (p + 4 <= this.capacity) {
+              this.data.setFloat32(p, payload[i], true);
+            } else {
+              // Float straddles wrap boundary — write byte-by-byte LE
+              scratch.setFloat32(0, payload[i], true);
+              for (let b = 0; b < 4; b++) {
+                this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+              }
+            }
+          }
+        } else {
+          for (let i = 0; i < payload.length; i++) {
+            const p = (pos + i * 4) % this.capacity;
+            if (p + 4 <= this.capacity) {
+              this.data.setFloat32(p, payload[i], true);
+            } else {
+              // Float straddles wrap boundary — write byte-by-byte LE
+              scratch.setFloat32(0, payload[i], true);
+              for (let b = 0; b < 4; b++) {
+                this.u8View[(p + b) % this.capacity] = scratch.getUint8(b);
+              }
             }
           }
         }
@@ -202,6 +216,20 @@ export class RingBufferProducer {
   setPrimParams1(entityId: number, p4: number, p5: number, p6: number, p7: number): boolean {
     const payload = new Float32Array([p4, p5, p6, p7]);
     return this.writeCommand(CommandType.SetPrimParams1, entityId, payload);
+  }
+
+  setRotation2D(entityId: number, angle: number): boolean {
+    const payload = new Float32Array([angle]);
+    return this.writeCommand(CommandType.SetRotation2D, entityId, payload);
+  }
+
+  setTransparent(entityId: number, value: number): boolean {
+    return this.writeCommand(CommandType.SetTransparent, entityId, new Uint8Array([value & 0xFF]));
+  }
+
+  setDepth(entityId: number, z: number): boolean {
+    const payload = new Float32Array([z]);
+    return this.writeCommand(CommandType.SetDepth, entityId, payload);
   }
 }
 

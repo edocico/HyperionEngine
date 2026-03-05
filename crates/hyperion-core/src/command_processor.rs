@@ -423,6 +423,11 @@ fn process_single_command(
         CommandType::Noop => {}
 
         CommandType::SetListenerPosition => {} // handled in Engine::process_commands
+
+        // Phase 13 Transform2D commands — ECS component handling in later task
+        CommandType::SetRotation2D => {}
+        CommandType::SetTransparent => {}
+        CommandType::SetDepth => {}
     }
 }
 
