@@ -8,57 +8,132 @@ export interface QueuedCommand {
   payload?: Float32Array;
 }
 
+export interface FlushStats {
+  /** Commands actually written to the ring buffer this flush. */
+  writtenCount: number;
+  /** Commands dropped by last-write-wins deduplication (same entity + command type). */
+  coalescedCount: number;
+  /** Pending overwrites purged because the entity was despawned. */
+  purgedByDespawn: number;
+}
+
+/**
+ * Maximum command type value (exclusive). Used for despawn purge iteration.
+ * Must be updated if new CommandType variants are added.
+ */
+const MAX_COMMAND_TYPE = 14; // CommandType values: 0..13
+
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
   private overwrites = new Map<number, QueuedCommand>(); // key = entityId * 256 + cmd
+  private _coalescedCount = 0;
+  private _purgedByDespawn = 0;
 
   get criticalCount(): number { return this.critical.length; }
   get overwriteCount(): number { return this.overwrites.size; }
 
   enqueue(cmd: CommandType, entityId: number, payload?: Float32Array): void {
     if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) {
+      if (cmd === CommandType.DespawnEntity) {
+        this.purgeEntity(entityId);
+      }
       this.critical.push({ cmd, entityId, payload });
     } else {
       const key = entityId * 256 + cmd;
+      if (this.overwrites.has(key)) {
+        this._coalescedCount++;
+      }
       this.overwrites.set(key, { cmd, entityId, payload });
     }
   }
 
-  drainTo(rb: RingBufferProducer): void {
+  /**
+   * Purge ALL pending overwrites for a given entity.
+   * O(MAX_COMMAND_TYPE) per despawn — not O(map.size).
+   */
+  private purgeEntity(entityId: number): void {
+    for (let cmdType = 0; cmdType < MAX_COMMAND_TYPE; cmdType++) {
+      if (this.overwrites.delete(entityId * 256 + cmdType)) {
+        this._purgedByDespawn++;
+      }
+    }
+  }
+
+  /**
+   * Drain queued commands into the ring buffer.
+   * Critical (lifecycle) commands are written first, then overwrites.
+   * Map iteration order matches insertion order, so drain order for different
+   * command types on the same entity matches the original call order.
+   *
+   * @param rb - Ring buffer producer to write into.
+   * @param tap - Optional recording tap, called for each written command.
+   * @returns FlushStats with coalescing metrics.
+   */
+  drainTo(
+    rb: RingBufferProducer,
+    tap?: ((type: number, entityId: number, payload: Uint8Array) => void) | null,
+  ): FlushStats {
+    const stats: FlushStats = {
+      writtenCount: 0,
+      coalescedCount: this._coalescedCount,
+      purgedByDespawn: this._purgedByDespawn,
+    };
+    this._coalescedCount = 0;
+    this._purgedByDespawn = 0;
+
     // Critical first
     let i = 0;
     for (; i < this.critical.length; i++) {
       const c = this.critical[i];
       if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
+      stats.writtenCount++;
+      if (tap) {
+        const bytes = c.payload
+          ? new Uint8Array(c.payload.buffer, c.payload.byteOffset, c.payload.byteLength)
+          : new Uint8Array(0);
+        tap(c.cmd, c.entityId, bytes);
+      }
     }
     this.critical.splice(0, i);
 
     // Do not attempt overwrites if any criticals remain unwritten.
-    if (this.critical.length > 0) return;
+    if (this.critical.length > 0) return stats;
 
     // Overwrites
     const toDelete: number[] = [];
     for (const [key, c] of this.overwrites) {
       if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
+      stats.writtenCount++;
       toDelete.push(key);
+      if (tap) {
+        const bytes = c.payload
+          ? new Uint8Array(c.payload.buffer, c.payload.byteOffset, c.payload.byteLength)
+          : new Uint8Array(0);
+        tap(c.cmd, c.entityId, bytes);
+      }
     }
     for (const key of toDelete) {
       this.overwrites.delete(key);
     }
+
+    return stats;
   }
 
   clear(): void {
     this.critical.length = 0;
     this.overwrites.clear();
+    this._coalescedCount = 0;
+    this._purgedByDespawn = 0;
   }
 }
 
 /**
- * Wraps a RingBufferProducer with automatic overflow queuing.
+ * Wraps a RingBufferProducer with command coalescing.
  *
- * When writeCommand() fails (ring buffer full), the command is enqueued
- * into a PrioritizedCommandQueue. Call flush() at the start of each tick
- * to drain queued commands back into the ring buffer.
+ * ALL commands are queued into a PrioritizedCommandQueue on writeCommand().
+ * Lifecycle commands (Spawn/Despawn) go to an ordered critical queue.
+ * Non-lifecycle commands use last-write-wins deduplication per (entityId, commandType).
+ * Call flush() once per frame to drain coalesced commands into the ring buffer.
  */
 export class BackpressuredProducer {
   private readonly inner: RingBufferProducer;
@@ -81,23 +156,13 @@ export class BackpressuredProducer {
     return this.inner.freeSpace;
   }
 
-  flush(): void {
-    this.queue.drainTo(this.inner);
+  flush(): FlushStats {
+    return this.queue.drainTo(this.inner, this.recordingTap);
   }
 
   writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array): boolean {
-    const ok = this.inner.writeCommand(cmd, entityId, payload);
-    if (!ok) {
-      this.queue.enqueue(cmd, entityId, payload);
-    }
-    // Fire recording tap for every command (whether written directly or queued)
-    if (this.recordingTap) {
-      const bytes = payload
-        ? new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
-        : new Uint8Array(0);
-      this.recordingTap(cmd, entityId, bytes);
-    }
-    return ok;
+    this.queue.enqueue(cmd, entityId, payload);
+    return true;
   }
 
   spawnEntity(entityId: number): boolean {
