@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (110 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (155 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -54,7 +54,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (632 tests)
+cd ts && npm test                            # All vitest tests (721 tests)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -133,7 +133,7 @@ cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + Te
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (120 tests)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (165 tests)
 ```
 
 ### Development Workflow
@@ -206,12 +206,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy. Listener position state with velocity derivation and extrapolation. Dev-tools: `reset()`, `snapshot_create()`, `snapshot_restore()` for time-travel debug |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`) + `process_commands` (including `SetParent` with parent/child bookkeeping) |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (14 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`, `SetListenerPosition`), `Command` struct |
-| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])` — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
-| `systems.rs` | `velocity_system`, `transform_system`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (17 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`, `SetListenerPosition`, `SetRotation2D`, `SetTransparent`, `SetDepth`), `Command` struct |
+| `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])`, `Transform2D { x, y, rot, sx, sy }` (20 bytes, compact 2D archetype), `Depth(f32)` (opt-in 2.5D), `Transparent(u8)` (blend mode flag) — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
+| `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
@@ -286,11 +286,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
 | `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan |
+| `render/passes/radix-sort-pass.ts` | GPU radix sort pass for transparent entities. CPU references: `floatToSortKey()`, `makeTransparentSortKey()`, `cpuRadixSort()`. Ping-pong buffer pairs, 4-pass 8-bit radix |
 | `render/passes/scatter-pass.ts` | GPU scatter compute pass: writes dirty staging data to SoA buffers, grow-only buffers, 2-bind-group layout |
 | `particle-types.ts` | `ParticleHandle`, `ParticleEmitterConfig`, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
 | `particle-system.ts` | GPU particle system: per-emitter buffers, compute simulate+spawn, instanced point-sprite render, entity tracking, spawn accumulator |
 | `ktx2-parser.ts` | Custom KTX2 container parser: magic validation, header/level reading, `isKTX2()` detection, `VK_FORMAT` constants |
 | `basis-transcoder.ts` | Singleton Basis Universal WASM transcoder wrapper, lazy-loaded, `transcode()` with BC7/ASTC/RGBA8 targets |
+| `ktx2-stream-loader.ts` | HTTP Range-based progressive KTX2 loader: 3-phase fetch (header→SGD→mip levels), `isRangeSupported()` detection |
+| `texture-streaming.ts` | `StreamingScheduler` — bandwidth-budgeted progressive texture loading. State machine: pending→header-fetched→sgd-loaded→partial-mips→complete |
 
 #### Input & Picking
 
@@ -386,6 +389,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `particle-simulate.wgsl` | Compute: PCG hash PRNG, gravity, color/size interpolation (48 B/particle) |
 | `particle-render.wgsl` | Instanced point-sprite circles, dead particle clipping |
 | `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) |
+| `radix-sort.wgsl` | Compute: GPU radix sort for transparent entity ordering. 3 entry points (histogram, prefix_sum, scatter), float_to_sort_key sign-aware conversion, composite sort key |
 | `scatter.wgsl` | Compute: dirty entity data scatter from compact staging to SoA buffers, format=0 compressed 2D reconstruct / format=1 direct mat4x4 copy |
 
 `vite-env.d.ts` — Type declarations for WGSL `?raw` imports, Vite client, and vendored Basis Universal WASM module.
@@ -440,7 +444,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`process_commands` takes `&mut RenderState` as 4th parameter** — All callers (engine.rs, tests) must provide it. Dirty marking happens at command level, not system level.
 - **`collect_gpu()` destroys retained slot mapping** — Never call `collect_gpu()` in the retained-slot path. It rebuilds SoA in hecs iteration order (arbitrary), overwriting `write_slot()` slot assignments. The update flow is: `mark_post_system_dirty()` → `collect()` → `collect_and_cache_dirty()`. `collect_gpu()` is legacy-only.
 - **Systems bypass command_processor dirty marking** — `velocity_system`, `transform_system`, and `propagate_transforms` modify components directly. Call `mark_post_system_dirty()` after systems run to mark velocity-driven entities and children of dirty parents.
-- **SoA length accessors use `gpu_count * stride`, not `vec.len()`** — Retained-slot Vecs grow via `assign_slot()` but never shrink (except `shrink_to_fit()`). `vec.len()` may include stale trailing data. All 6 WASM exports (`gpu_transforms_f32_len`, etc.) use `gpu_count * stride`.
+- **SoA length accessors use `gpu_count * stride`, not `vec.len()`** — Retained-slot Vecs grow via `assign_slot()` but never shrink (except `shrink_to_fit()`). `vec.len()` may include stale trailing data. All 7 WASM exports (`gpu_transforms_f32_len`, `gpu_depths_f32_len`, etc.) use `gpu_count * stride`.
+- **Transform2D entities have no `Position` component** — Queries on `&Position` skip 2D entities. Use `Transform2D.x/y` for position data. `collect_gpu()` (legacy) only queries `&Position` — 2D entities invisible in legacy path.
+- **SpawnEntity payload is 1 byte (2D flag)** — `payload[0]`: 1=2D (Transform2D archetype), 0=3D (Position+Rotation+Scale). The `is_2d` flag routes all subsequent commands to the correct component type.
+- **Indirect args now 24 entries (480 bytes)** — 6 prim types × 2 material buckets × 2 blend modes (opaque/transparent). Opaque = entries 0-11, transparent = entries 12-23.
+- **`MAX_COMMAND_TYPE` must be updated when adding commands** — Hardcoded constant in `backpressure.ts` (currently 17). Must match the highest `CommandType` discriminant + 1.
+- **Depth SoA column not in scatter staging buffer** — The 32 u32/entity staging format has no room for depth. Depth is updated via `write_slot`/`write_slot_2d` only, not the GPU scatter path.
+- **Temporal culling dirty bits must be uploaded BEFORE `DirtyTracker.clear()`** — Tick loop ordering: collect → upload SoA → upload dirty bits → clear → cull dispatch. Clearing first would make all entities appear clean.
+- **`__DEV__` is a Vite compile-time constant** — `true` in dev/test, `false` in production builds. Use `typeof __DEV__ !== 'undefined'` guard when checking outside Vite context.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -550,7 +561,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 12 (Optimization Tier 2) complete. Next: Phase 13 per masterplan.**
+**Current: Phase 13 (Optimization Tier 3) complete. Next: Phase 14 per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -569,6 +580,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export |
 | 11 | Optimization Tier 1 | SIMD128 activation, wasm-opt build pipeline, SpatialGrid broadphase, ring buffer profiling, WebGPU subgroup compute path |
 | 12 | Optimization Tier 2 | GPU scatter upload (DirtyTracker + stable slots + swap-remove), compressed 2D transforms, 2-bucket material sort, batch spawn, texture priority queue |
+| 13 | Optimization Tier 3 | Command coalescing, Transform2D (20B 2D archetype), GPU radix sort (transparency), temporal culling (skip-bounds), sized binding array stub, KTX2 streaming (Range requests + mipmap), `__DEV__` debug elimination |
 
 ## Documentation
 
@@ -576,5 +588,5 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11, 12, 13). Historical reference for implementation decisions.
 - `hyperion-masterplan.md` — Authoritative high-level reference for all phases (0-20+). Optimization strategy in §17.
