@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use glam::Mat4;
 use hecs::World;
 
-use crate::components::{Active, ModelMatrix, Parent, Position, Rotation, Scale, Velocity};
+use crate::components::{Active, ModelMatrix, Parent, Position, Rotation, Scale, Transform2D, Velocity};
 
 /// Apply velocity to position. Runs once per fixed-timestep tick.
 pub fn velocity_system(world: &mut World, dt: f32) {
@@ -22,6 +22,41 @@ pub fn transform_system(world: &mut World) {
     {
         let m = Mat4::from_scale_rotation_translation(scale.0, rot.0, pos.0);
         matrix.0 = m.to_cols_array();
+    }
+}
+
+/// Apply velocity to 2D entities (hot path).
+/// Only modifies x/y; vel.0.z is ignored for 2D entities.
+pub fn velocity_system_2d(world: &mut World, dt: f32) {
+    for (transform, vel) in world.query_mut::<(&mut Transform2D, &Velocity)>() {
+        transform.x += vel.0.x * dt;
+        transform.y += vel.0.y * dt;
+        // vel.0.z ignored for 2D entities
+    }
+}
+
+/// Build ModelMatrix from Transform2D (hot path).
+/// Column-major 4×4: scale * rotation_2d * translation.
+pub fn transform_system_2d(world: &mut World) {
+    for (transform, matrix) in world.query_mut::<(&Transform2D, &mut ModelMatrix)>() {
+        let (sin, cos) = transform.rot.sin_cos();
+        let m = &mut matrix.0;
+        m[0] = transform.sx * cos;
+        m[1] = transform.sx * sin;
+        m[2] = 0.0;
+        m[3] = 0.0;
+        m[4] = -transform.sy * sin;
+        m[5] = transform.sy * cos;
+        m[6] = 0.0;
+        m[7] = 0.0;
+        m[8] = 0.0;
+        m[9] = 0.0;
+        m[10] = 1.0;
+        m[11] = 0.0;
+        m[12] = transform.x;
+        m[13] = transform.y;
+        m[14] = 0.0;
+        m[15] = 1.0;
     }
 }
 
@@ -235,5 +270,80 @@ mod tests {
 
         let matrix = world.get::<&ModelMatrix>(entity).unwrap();
         assert!((matrix.0[12] - 5.0).abs() < 0.001);
+    }
+
+    // ── 2D system tests ──────────────────────────────────────────────
+
+    #[test]
+    fn velocity_system_2d_updates_transform2d() {
+        let mut world = World::new();
+        let e = world.spawn((
+            Transform2D { x: 0.0, y: 0.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            Velocity(Vec3::new(10.0, 20.0, 5.0)), // z=5 should be ignored
+        ));
+        velocity_system_2d(&mut world, 0.5);
+        let t = world.get::<&Transform2D>(e).unwrap();
+        assert!((t.x - 5.0).abs() < 1e-5);
+        assert!((t.y - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn transform_system_2d_builds_identity_model_matrix() {
+        let mut world = World::new();
+        let e = world.spawn((
+            Transform2D { x: 0.0, y: 0.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+        ));
+        transform_system_2d(&mut world);
+        let m = world.get::<&ModelMatrix>(e).unwrap();
+        // Identity-like: m[0]=1, m[5]=1, m[10]=1, m[15]=1
+        assert!((m.0[0] - 1.0).abs() < 1e-5);
+        assert!((m.0[5] - 1.0).abs() < 1e-5);
+        assert!((m.0[10] - 1.0).abs() < 1e-5);
+        assert!((m.0[15] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn transform_system_2d_with_translation() {
+        let mut world = World::new();
+        let e = world.spawn((
+            Transform2D { x: 100.0, y: 200.0, rot: 0.0, sx: 2.0, sy: 3.0 },
+            ModelMatrix([0.0; 16]),
+        ));
+        transform_system_2d(&mut world);
+        let m = world.get::<&ModelMatrix>(e).unwrap();
+        assert!((m.0[0] - 2.0).abs() < 1e-5);  // sx * cos(0)
+        assert!((m.0[5] - 3.0).abs() < 1e-5);  // sy * cos(0)
+        assert!((m.0[12] - 100.0).abs() < 1e-5);
+        assert!((m.0[13] - 200.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn transform_system_2d_with_rotation() {
+        let mut world = World::new();
+        let angle = std::f32::consts::FRAC_PI_2; // 90 degrees
+        let e = world.spawn((
+            Transform2D { x: 0.0, y: 0.0, rot: angle, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+        ));
+        transform_system_2d(&mut world);
+        let m = world.get::<&ModelMatrix>(e).unwrap();
+        // cos(pi/2) ~ 0, sin(pi/2) ~ 1
+        assert!(m.0[0].abs() < 1e-5);       // sx * cos = 0
+        assert!((m.0[1] - 1.0).abs() < 1e-5); // sx * sin = 1
+        assert!((m.0[4] + 1.0).abs() < 1e-5); // -sy * sin = -1
+        assert!(m.0[5].abs() < 1e-5);       // sy * cos = 0
+    }
+
+    #[test]
+    fn velocity_system_2d_does_not_affect_3d_entities() {
+        let mut world = World::new();
+        let e = world.spawn((
+            Position(Vec3::new(0.0, 0.0, 0.0)),
+            Velocity(Vec3::new(10.0, 20.0, 30.0)),
+        ));
+        velocity_system_2d(&mut world, 1.0);
+        let pos = world.get::<&Position>(e).unwrap();
+        assert!((pos.0.x - 0.0).abs() < 1e-5); // unchanged
     }
 }

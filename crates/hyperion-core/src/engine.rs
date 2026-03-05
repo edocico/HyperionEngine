@@ -7,7 +7,7 @@ use crate::command_processor::{process_commands, EntityMap};
 use crate::components::{Active, Parent, Velocity};
 use crate::render_state::RenderState;
 use crate::ring_buffer::{Command, CommandType};
-use crate::systems::{propagate_transforms, transform_system, velocity_system};
+use crate::systems::{propagate_transforms, transform_system, transform_system_2d, velocity_system, velocity_system_2d};
 
 /// Fixed timestep: 60 ticks per second.
 pub const FIXED_DT: f32 = 1.0 / 60.0;
@@ -87,6 +87,7 @@ impl Engine {
 
         // 2. Recompute model matrices after all ticks.
         transform_system(&mut self.world);
+        transform_system_2d(&mut self.world);
 
         // 2b. Propagate parent transforms for scene graph.
         {
@@ -115,7 +116,7 @@ impl Engine {
     ///   transform_system recomputed their ModelMatrix.
     /// - Children of dirty parents: propagate_transforms updated their ModelMatrix.
     fn mark_post_system_dirty(&mut self) {
-        // Pass 1: velocity-driven entities
+        // Pass 1: velocity-driven entities (both 3D and 2D — query is archetype-agnostic)
         for (entity, vel, _active) in
             self.world.query::<(hecs::Entity, &Velocity, &Active)>().iter()
         {
@@ -147,6 +148,7 @@ impl Engine {
     /// A single fixed-timestep tick.
     fn fixed_tick(&mut self) {
         velocity_system(&mut self.world, FIXED_DT);
+        velocity_system_2d(&mut self.world, FIXED_DT);
         for (pos, &vel) in self.listener_pos.iter_mut().zip(self.listener_vel.iter()) {
             *pos += vel * FIXED_DT;
         }
