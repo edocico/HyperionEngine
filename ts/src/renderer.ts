@@ -13,10 +13,11 @@ import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import scatterShaderCode from './shaders/scatter.wgsl?raw';
+import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
-import { CullPass } from './render/passes/cull-pass';
+import { CullPass, TOTAL_DRAW_BUCKETS } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
 import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
@@ -25,6 +26,7 @@ import { OutlineCompositePass } from './render/passes/outline-composite-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
+import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
 import { detectCompressedFormat } from './capabilities';
 import { ParticleSystem } from './particle-system';
@@ -32,9 +34,8 @@ import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
 
 const MAX_ENTITIES = 100_000;
-const NUM_PRIM_TYPES = 6;
-const BUCKETS_PER_TYPE = 2;  // tier0 compressed vs other tiers
-const INDIRECT_BUFFER_SIZE = NUM_PRIM_TYPES * BUCKETS_PER_TYPE * 5 * 4;  // 12 x 5 u32 x 4 bytes = 240 bytes
+// 24 draw entries (12 opaque + 12 transparent) x 5 u32 x 4 bytes = 480 bytes
+const INDIRECT_BUFFER_SIZE = TOTAL_DRAW_BUCKETS * 5 * 4;
 
 export interface OutlineOptions {
   color: [number, number, number, number];
@@ -110,7 +111,7 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: NUM_PRIM_TYPES * BUCKETS_PER_TYPE * MAX_ENTITIES * 4,  // 12 regions x 100k x u32
+    size: TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4,  // 24 regions x 100k x u32
     usage: GPUBufferUsage.STORAGE,
   }));
 
@@ -190,10 +191,16 @@ export async function createRenderer(
   scatterPass.setup(device, resources);
   const resolvedScatterThreshold = scatterThreshold ?? 0.3;
 
+  // --- 6c. Create RadixSortPass for transparent entity ordering ---
+  RadixSortPass.SHADER_SOURCE = radixSortShaderCode;
+  let radixSortPass: RadixSortPass | null = new RadixSortPass();
+  radixSortPass.setup(device, resources);
+
   // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
   let graph = new RenderGraph();
   if (scatterPass) graph.addPass(scatterPass);
   graph.addPass(cullPass);
+  if (radixSortPass) graph.addPass(radixSortPass);
   graph.addPass(forwardPass);
   graph.addPass(fxaaPass);
   graph.compile();
@@ -323,9 +330,14 @@ export async function createRenderer(
     scatterPass = new ScatterPass();
     scatterPass.setup(device, resources);
 
+    // Recreate RadixSortPass
+    radixSortPass = new RadixSortPass();
+    radixSortPass.setup(device, resources);
+
     graph = new RenderGraph();
     if (scatterPass) graph.addPass(scatterPass);
     graph.addPass(newCullPass);
+    if (radixSortPass) graph.addPass(radixSortPass);
     graph.addPass(newForwardPass);
 
     if (withOutlines) {
@@ -480,6 +492,9 @@ export async function createRenderer(
           break;
         case 'scatter':
           ScatterPass.SHADER_SOURCE = shaderCode;
+          break;
+        case 'radix-sort':
+          RadixSortPass.SHADER_SOURCE = shaderCode;
           break;
         case 'particle-simulate':
           currentParticleSimSrc = shaderCode;
@@ -700,6 +715,9 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/scatter.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('scatter', mod.default);
+    });
+    import.meta.hot.accept('./shaders/radix-sort.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('radix-sort', mod.default);
     });
     import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('particle-simulate', mod.default);

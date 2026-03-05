@@ -1,19 +1,24 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
-import { BUCKETS_PER_TYPE } from './cull-pass';
+import { BUCKETS_PER_TYPE, OPAQUE_DRAW_BUCKETS } from './cull-pass';
 
 /**
- * Forward rendering pass with multi-pipeline per-type dispatch and 2-bucket material sort.
+ * Forward rendering pass with multi-pipeline per-type dispatch, 2-bucket material sort,
+ * and separate opaque/transparent sub-passes.
  *
  * Reads entity transforms, visible indices (from CullPass), texture layer
  * indices, render metadata, and primitive parameters, then issues per-type
  * indirect indexed draws to the scene-hdr intermediate texture.
  *
- * Each registered primitive type (via SHADER_SOURCES) gets its own
- * GPURenderPipeline. All pipelines share the same bind group layouts.
- * CullPass produces 12 DrawIndirectArgs (6 prim types x 2 buckets) at
- * sequential 20-byte offsets. For each primitive type, the tier0 bucket
- * is drawn first, then the other-tiers bucket, reducing fragment divergence.
+ * Each registered primitive type (via SHADER_SOURCES) gets TWO pipelines:
+ * one opaque (depth-write enabled, no blend) and one transparent (depth-write
+ * disabled, alpha blend enabled).
+ *
+ * CullPass produces 24 DrawIndirectArgs (12 opaque + 12 transparent, each set
+ * being 6 prim types x 2 material buckets) at sequential 20-byte offsets.
+ *
+ * Sub-pass 1: Opaque entities (buckets 0-11) with depth write.
+ * Sub-pass 2: Transparent entities (buckets 12-23) with alpha blend, no depth write.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
@@ -21,7 +26,8 @@ export class ForwardPass implements RenderPass {
   readonly writes = ['scene-hdr'];
   readonly optional = false;
 
-  private pipelines = new Map<number, GPURenderPipeline>();
+  private opaquePipelines = new Map<number, GPURenderPipeline>();
+  private transparentPipelines = new Map<number, GPURenderPipeline>();
   private bindGroup0: GPUBindGroup | null = null;
   private bindGroup1: GPUBindGroup | null = null;
   private vertexBuffer: GPUBuffer | null = null;
@@ -140,18 +146,48 @@ export class ForwardPass implements RenderPass {
       attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }],
     };
 
-    // --- Create one pipeline per primitive type ---
+    // --- Create opaque and transparent pipelines per primitive type ---
     for (const [typeStr, source] of Object.entries(sources)) {
       const type = Number(typeStr);
       const module = device.createShaderModule({ code: source });
-      const pipeline = device.createRenderPipeline({
+
+      // Opaque pipeline: depth write enabled, no blend
+      const opaquePipeline = device.createRenderPipeline({
         layout: pipelineLayout,
         vertex: { module, entryPoint: 'vs_main', buffers: [vertexBufferLayout] },
         fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
         depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
         primitive: { topology: 'triangle-list', cullMode: 'back' },
       });
-      this.pipelines.set(type, pipeline);
+      this.opaquePipelines.set(type, opaquePipeline);
+
+      // Transparent pipeline: depth write disabled, alpha blend
+      const transparentPipeline = device.createRenderPipeline({
+        layout: pipelineLayout,
+        vertex: { module, entryPoint: 'vs_main', buffers: [vertexBufferLayout] },
+        fragment: {
+          module,
+          entryPoint: 'fs_main',
+          targets: [{
+            format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha' as GPUBlendFactor,
+                dstFactor: 'one-minus-src-alpha' as GPUBlendFactor,
+                operation: 'add' as GPUBlendOperation,
+              },
+              alpha: {
+                srcFactor: 'one' as GPUBlendFactor,
+                dstFactor: 'one-minus-src-alpha' as GPUBlendFactor,
+                operation: 'add' as GPUBlendOperation,
+              },
+            },
+          }],
+        },
+        depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+      });
+      this.transparentPipelines.set(type, transparentPipeline);
     }
 
     this.bindGroup0 = device.createBindGroup({
@@ -202,7 +238,7 @@ export class ForwardPass implements RenderPass {
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
-    if (this.pipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
+    if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
     // Get render target view (scene-hdr intermediate for post-processing)
     const targetView = resources.getTextureView('scene-hdr');
@@ -227,10 +263,9 @@ export class ForwardPass implements RenderPass {
       },
     });
 
-    // Issue per-type draw calls using each pipeline's indirect args.
-    // Each primitive type has 2 buckets (tier0 compressed, then other tiers).
-    // Bucket layout: argSlot = primType * BUCKETS_PER_TYPE + bucket.
-    for (const [primType, pipeline] of this.pipelines) {
+    // --- Sub-pass 1: Opaque entities (buckets 0-11) ---
+    // Depth write enabled, no alpha blend.
+    for (const [primType, pipeline] of this.opaquePipelines) {
       renderPass.setPipeline(pipeline);
       renderPass.setVertexBuffer(0, this.vertexBuffer);
       renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
@@ -238,6 +273,20 @@ export class ForwardPass implements RenderPass {
       renderPass.setBindGroup(1, this.bindGroup1);
       for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
         const argSlot = primType * BUCKETS_PER_TYPE + bucket;
+        renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
+      }
+    }
+
+    // --- Sub-pass 2: Transparent entities (buckets 12-23) ---
+    // Depth write disabled, alpha blend enabled. Drawn after opaque.
+    for (const [primType, pipeline] of this.transparentPipelines) {
+      renderPass.setPipeline(pipeline);
+      renderPass.setVertexBuffer(0, this.vertexBuffer);
+      renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
+      renderPass.setBindGroup(0, this.bindGroup0);
+      renderPass.setBindGroup(1, this.bindGroup1);
+      for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
+        const argSlot = OPAQUE_DRAW_BUCKETS + primType * BUCKETS_PER_TYPE + bucket;
         renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
       }
     }
@@ -276,7 +325,8 @@ export class ForwardPass implements RenderPass {
     this.indexBuffer = null;
     this.cameraBuffer = null;
     this.depthTexture = null;
-    this.pipelines.clear();
+    this.opaquePipelines.clear();
+    this.transparentPipelines.clear();
     this.bindGroup0 = null;
     this.bindGroup1 = null;
     this.indirectBuffer = null;

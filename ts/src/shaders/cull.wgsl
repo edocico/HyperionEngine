@@ -1,4 +1,5 @@
-// GPU frustum culling compute shader with per-primitive-type grouping.
+// GPU frustum culling compute shader with per-primitive-type grouping
+// and opaque/transparent split.
 // Dispatched with ceil(totalEntities / 256) workgroups.
 // SoA layout: separate transforms, bounds, and renderMeta buffers.
 //
@@ -11,7 +12,8 @@ override SUBGROUP_SIZE: u32 = 32u;
 
 const NUM_PRIM_TYPES: u32 = 6u;
 const BUCKETS_PER_TYPE: u32 = 2u;   // bucket 0 = tier0 compressed, bucket 1 = other tiers
-const TOTAL_BUCKETS: u32 = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
+const OPAQUE_BUCKETS: u32 = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;   // 12
+const TOTAL_BUCKETS: u32 = OPAQUE_BUCKETS * 2u;                  // 24 (12 opaque + 12 transparent)
 
 struct CullUniforms {
     frustumPlanes: array<vec4f, 6>,
@@ -21,8 +23,8 @@ struct CullUniforms {
     _pad2: u32,
 };
 
-// Per-type-bucket indirect draw args. Packed as 12 consecutive DrawIndirectArgs
-// (6 prim types x 2 buckets: tier0 compressed, then other tiers).
+// Per-type-bucket indirect draw args. Packed as 24 consecutive DrawIndirectArgs
+// (12 opaque + 12 transparent: each set = 6 prim types x 2 material buckets).
 struct DrawIndirectArgs {
     indexCount: u32,
     instanceCount: atomic<u32>,
@@ -35,8 +37,8 @@ struct DrawIndirectArgs {
 @group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
 @group(0) @binding(2) var<storage, read> bounds: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> visibleIndices: array<u32>;
-@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, 12>;
-@group(0) @binding(5) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim]
+@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, 24>;
+@group(0) @binding(5) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
 @group(0) @binding(6) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
 
 @compute @workgroup_size(256)
@@ -47,6 +49,7 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     var visible = false;
     var primType = 0u;
     var bucket = 0u;  // 0 = tier0 compressed, 1 = other tiers
+    var isTransparent = false;
     if (idx < cull.totalEntities) {
         let sphere = bounds[idx];
         let center = sphere.xyz;
@@ -64,7 +67,11 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
         visible = vis;
 
         if (visible) {
-            primType = min(renderMeta[idx * 2u + 1u], NUM_PRIM_TYPES - 1u);
+            let metaVal = renderMeta[idx * 2u + 1u];
+            primType = min(metaVal & 0xFFu, NUM_PRIM_TYPES - 1u);
+
+            // Bit 8 of renderMeta = transparency flag
+            isTransparent = (metaVal & 0x100u) != 0u;
 
             // Determine texture tier bucket from packed texture index:
             // bit 31 = overflow flag, bits 18-16 = tier, bits 15-0 = layer
@@ -80,32 +87,41 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
         // N/SUBGROUP_SIZE by batching within each subgroup.
         for (var p = 0u; p < NUM_PRIM_TYPES; p = p + 1u) {
             for (var b = 0u; b < BUCKETS_PER_TYPE; b = b + 1u) {
-                let vote = select(0u, 1u, visible && primType == p && bucket == b);
-                let subOffset = subgroupExclusiveAdd(vote);
-                let subTotal = subgroupAdd(vote);
+                for (var t = 0u; t < 2u; t = t + 1u) {
+                    let isTransp = t == 1u;
+                    let vote = select(0u, 1u, visible && primType == p && bucket == b && isTransparent == isTransp);
+                    let subOffset = subgroupExclusiveAdd(vote);
+                    let subTotal = subgroupAdd(vote);
 
-                let argSlot = p * BUCKETS_PER_TYPE + b;
+                    // Opaque slots: p * 2 + b (indices 0-11)
+                    // Transparent slots: 12 + p * 2 + b (indices 12-23)
+                    let blendOffset = select(0u, OPAQUE_BUCKETS, isTransp);
+                    let argSlot = blendOffset + p * BUCKETS_PER_TYPE + b;
 
-                // Thread 0 of the subgroup (subgroupElect) does the batched atomic.
-                // subgroupBroadcastFirst broadcasts from thread 0, so they match.
-                var baseSlot = 0u;
-                if (subTotal > 0u) {
-                    if (subgroupElect()) {
-                        baseSlot = atomicAdd(&drawArgs[argSlot].instanceCount, subTotal);
+                    // Thread 0 of the subgroup (subgroupElect) does the batched atomic.
+                    // subgroupBroadcastFirst broadcasts from thread 0, so they match.
+                    var baseSlot = 0u;
+                    if (subTotal > 0u) {
+                        if (subgroupElect()) {
+                            baseSlot = atomicAdd(&drawArgs[argSlot].instanceCount, subTotal);
+                        }
+                        baseSlot = subgroupBroadcastFirst(baseSlot);
                     }
-                    baseSlot = subgroupBroadcastFirst(baseSlot);
-                }
 
-                if (vote == 1u) {
-                    let offset = argSlot * cull.maxEntitiesPerType;
-                    visibleIndices[offset + baseSlot + subOffset] = idx;
+                    if (vote == 1u) {
+                        let offset = argSlot * cull.maxEntitiesPerType;
+                        visibleIndices[offset + baseSlot + subOffset] = idx;
+                    }
                 }
             }
         }
     } else {
         // Original atomic path — one global atomic per visible entity
         if (visible) {
-            let argSlot = primType * BUCKETS_PER_TYPE + bucket;
+            // Opaque slots: primType * 2 + bucket (indices 0-11)
+            // Transparent slots: 12 + primType * 2 + bucket (indices 12-23)
+            let blendOffset = select(0u, OPAQUE_BUCKETS, isTransparent);
+            let argSlot = blendOffset + primType * BUCKETS_PER_TYPE + bucket;
             let slot = atomicAdd(&drawArgs[argSlot].instanceCount, 1u);
             let offset = argSlot * cull.maxEntitiesPerType;
             visibleIndices[offset + slot] = idx;

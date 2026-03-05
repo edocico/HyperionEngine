@@ -9,8 +9,20 @@ const MAX_SUBGROUPS_PER_WG = 8;
 /** Number of material-sort buckets per primitive type (tier0 vs other). */
 export const BUCKETS_PER_TYPE = 2;
 
-/** Total number of indirect draw arg entries (prim types x buckets). */
-export const TOTAL_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
+/** Number of blend modes: 0 = opaque, 1 = transparent. */
+export const BLEND_MODES = 2;
+
+/** Number of opaque draw buckets (6 prim types x 2 material buckets). */
+export const OPAQUE_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
+
+/**
+ * Total number of indirect draw arg entries including both opaque and transparent.
+ * Layout: [0..11] opaque (6 types x 2 buckets), [12..23] transparent (6 types x 2 buckets).
+ */
+export const TOTAL_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE * BLEND_MODES;
+
+/** Offset (in number of draw entries) where transparent buckets begin. */
+export const TRANSPARENT_BUCKET_OFFSET = OPAQUE_DRAW_BUCKETS;
 
 /**
  * Compute the optimal workgroup size for the cull shader.
@@ -50,12 +62,14 @@ export function extractPrimType(meta: number): number {
 }
 
 /**
- * GPU frustum-culling compute pass with 2-bucket material sort.
+ * GPU frustum-culling compute pass with 2-bucket material sort and opaque/transparent split.
  *
  * Reads SoA entity buffers (transforms + bounds + renderMeta + texIndices) and writes
- * per-primitive-type compacted visible-indices lists plus 12 sets of
- * indirect draw arguments (2 buckets per primitive type: tier0 compressed vs other tiers).
- * This reduces fragment divergence by grouping entities with the same texture binding path.
+ * per-primitive-type compacted visible-indices lists plus 24 sets of
+ * indirect draw arguments: 12 opaque (6 types x 2 material buckets) followed by
+ * 12 transparent (6 types x 2 material buckets).
+ * Transparency is determined by bit 8 of renderMeta.
+ * This reduces fragment divergence and enables correct alpha-blended rendering.
  */
 export class CullPass implements RenderPass {
   readonly name = 'cull';
@@ -154,7 +168,7 @@ export class CullPass implements RenderPass {
     // cullUints[2..3] = 0 (padding, already zeroed)
     device.queue.writeBuffer(this.cullUniformBuffer, 0, cullData);
 
-    // Reset indirect draw arguments: 12 buckets (6 prim types × 2 buckets) × 5 u32 each.
+    // Reset indirect draw arguments: 24 buckets (12 opaque + 12 transparent) × 5 u32 each.
     // firstInstance encodes the visible-indices region offset so the vertex shader
     // can read visibleIndices[instance_index] directly (instance_index = firstInstance + slot).
     const MAX_ENTITIES_PER_TYPE = 100_000;

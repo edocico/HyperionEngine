@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, TOTAL_DRAW_BUCKETS, extractTransparentFlag, extractPrimType } from './cull-pass';
+import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType } from './cull-pass';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -23,17 +23,29 @@ describe('CullPass', () => {
   });
 });
 
-describe('2-bucket material sort constants', () => {
+describe('opaque/transparent split constants', () => {
   it('has 2 buckets per primitive type (tier0 vs other)', () => {
     expect(BUCKETS_PER_TYPE).toBe(2);
   });
 
-  it('has 12 total draw buckets (6 prim types x 2 buckets)', () => {
-    expect(TOTAL_DRAW_BUCKETS).toBe(12);
+  it('has 2 blend modes (opaque and transparent)', () => {
+    expect(BLEND_MODES).toBe(2);
   });
 
-  it('produces 240-byte indirect args buffer (12 x 5 u32 x 4 bytes)', () => {
-    expect(TOTAL_DRAW_BUCKETS * 5 * 4).toBe(240);
+  it('has 12 opaque draw buckets (6 prim types x 2 buckets)', () => {
+    expect(OPAQUE_DRAW_BUCKETS).toBe(12);
+  });
+
+  it('has 24 total draw buckets (12 opaque + 12 transparent)', () => {
+    expect(TOTAL_DRAW_BUCKETS).toBe(24);
+  });
+
+  it('transparent bucket offset starts at 12', () => {
+    expect(TRANSPARENT_BUCKET_OFFSET).toBe(12);
+  });
+
+  it('produces 480-byte indirect args buffer (24 x 5 u32 x 4 bytes)', () => {
+    expect(TOTAL_DRAW_BUCKETS * 5 * 4).toBe(480);
   });
 });
 
@@ -48,6 +60,24 @@ describe('transparent flag extraction', () => {
     const meta = 3; // primType=3, transparent=false
     expect(extractTransparentFlag(meta)).toBe(false);
     expect(extractPrimType(meta)).toBe(3);
+  });
+
+  it('transparent entities route to correct bucket offset', () => {
+    // For a transparent entity with primType=2, bucket=1:
+    // argSlot = TRANSPARENT_BUCKET_OFFSET + 2 * BUCKETS_PER_TYPE + 1 = 12 + 4 + 1 = 17
+    const primType = 2;
+    const bucket = 1;
+    const argSlot = TRANSPARENT_BUCKET_OFFSET + primType * BUCKETS_PER_TYPE + bucket;
+    expect(argSlot).toBe(17);
+  });
+
+  it('opaque entities route to correct bucket offset', () => {
+    // For an opaque entity with primType=2, bucket=1:
+    // argSlot = 0 + 2 * 2 + 1 = 5
+    const primType = 2;
+    const bucket = 1;
+    const argSlot = primType * BUCKETS_PER_TYPE + bucket;
+    expect(argSlot).toBe(5);
   });
 });
 

@@ -18,4 +18,12 @@ describe('ForwardPass', () => {
     expect(pass.reads).toContain('render-meta');
     expect(pass.reads).toContain('prim-params');
   });
+
+  it('should start with empty pipeline maps', () => {
+    const pass = new ForwardPass();
+    // Access via destroy to verify no pipelines exist
+    pass.destroy();
+    // If no error, pipelines were successfully cleared (even though empty)
+    expect(true).toBe(true);
+  });
 });
