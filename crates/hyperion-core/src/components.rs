@@ -169,6 +169,42 @@ impl Default for LocalMatrix {
     }
 }
 
+/// Compact 2D transform: position + rotation angle + scale. 20 bytes.
+/// Used by the hot-path transform_system_2d for 99% of entities.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Transform2D {
+    pub x: f32,
+    pub y: f32,
+    pub rot: f32, // angle in radians
+    pub sx: f32,
+    pub sy: f32,
+}
+
+impl Default for Transform2D {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            rot: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+        }
+    }
+}
+
+/// Opt-in depth for 2.5D z-ordering. 4 bytes.
+/// Entities with Depth participate in back-to-front transparent sorting.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Depth(pub f32);
+
+/// Marker component for transparent entities. 1 byte.
+/// Transparent entities are sorted back-to-front via GPU radix sort.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Transparent(pub u8);
+
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
@@ -392,5 +428,40 @@ mod tests {
         oc.items.retain(|&id| id != 100);
         assert_eq!(oc.items.len(), 1);
         assert_eq!(oc.items[0], 200);
+    }
+
+    #[test]
+    fn transform2d_is_pod() {
+        let t = Transform2D { x: 1.0, y: 2.0, rot: 0.5, sx: 1.0, sy: 1.0 };
+        let bytes: &[u8] = bytemuck::bytes_of(&t);
+        assert_eq!(bytes.len(), 20);
+        let back: Transform2D = bytemuck::pod_read_unaligned(bytes);
+        assert_eq!(back.x, 1.0);
+        assert_eq!(back.rot, 0.5);
+    }
+
+    #[test]
+    fn transform2d_default_has_unit_scale() {
+        let t = Transform2D::default();
+        assert_eq!(t.sx, 1.0);
+        assert_eq!(t.sy, 1.0);
+        assert_eq!(t.x, 0.0);
+        assert_eq!(t.rot, 0.0);
+    }
+
+    #[test]
+    fn depth_is_pod() {
+        let d = Depth(42.0);
+        let bytes: &[u8] = bytemuck::bytes_of(&d);
+        assert_eq!(bytes.len(), 4);
+        let back: Depth = bytemuck::pod_read_unaligned(bytes);
+        assert_eq!(back.0, 42.0);
+    }
+
+    #[test]
+    fn transparent_is_pod() {
+        let t = Transparent(1);
+        let bytes: &[u8] = bytemuck::bytes_of(&t);
+        assert_eq!(bytes.len(), 1);
     }
 }
