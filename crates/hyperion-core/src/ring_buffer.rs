@@ -79,7 +79,8 @@ impl CommandType {
     /// Number of payload bytes that follow the 5-byte header (cmd_type + entity_id).
     pub fn payload_size(self) -> usize {
         match self {
-            Self::Noop | Self::SpawnEntity | Self::DespawnEntity => 0,
+            Self::Noop | Self::DespawnEntity => 0,
+            Self::SpawnEntity => 1,           // u8: 0=3D, 1=2D
             Self::SetPosition | Self::SetScale | Self::SetVelocity => 12, // 3 x f32
             Self::SetRotation => 16, // 4 x f32
             Self::SetTextureLayer => 4, // 1 x u32
@@ -370,10 +371,11 @@ mod tests {
     fn reads_spawn_command() {
         let (mut buf, ptr) = make_buffer(64);
 
-        // SpawnEntity (type=1) for entity 42.  Message size = 5.
+        // SpawnEntity (type=1) for entity 42.  Message size = 6 (1 cmd + 4 entity_id + 1 payload).
         let entity_id: u32 = 42;
         let mut msg = vec![1u8]; // cmd_type
         msg.extend_from_slice(&entity_id.to_le_bytes());
+        msg.push(0); // 3D flag (payload byte)
         write_data(&mut buf, 0, &msg);
         set_write_head(&mut buf, msg.len() as u32);
 
@@ -382,7 +384,27 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].cmd_type, CommandType::SpawnEntity);
         assert_eq!(commands[0].entity_id, 42);
-        assert_eq!(commands[0].payload, [0u8; 16]);
+        assert_eq!(commands[0].payload[0], 0); // 3D
+    }
+
+    #[test]
+    fn reads_spawn_2d_command() {
+        let (mut buf, ptr) = make_buffer(64);
+
+        // SpawnEntity (type=1) for entity 7 with 2D flag.
+        let entity_id: u32 = 7;
+        let mut msg = vec![1u8]; // cmd_type
+        msg.extend_from_slice(&entity_id.to_le_bytes());
+        msg.push(1); // 2D flag
+        write_data(&mut buf, 0, &msg);
+        set_write_head(&mut buf, msg.len() as u32);
+
+        let consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
+        let commands = consumer.drain();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].cmd_type, CommandType::SpawnEntity);
+        assert_eq!(commands[0].entity_id, 7);
+        assert_eq!(commands[0].payload[0], 1); // 2D
     }
 
     #[test]
@@ -422,9 +444,10 @@ mod tests {
 
         let mut offset = 0usize;
 
-        // Command 1: SpawnEntity for entity 1 (5 bytes).
+        // Command 1: SpawnEntity for entity 1 (6 bytes: 1 cmd + 4 id + 1 payload).
         let mut msg1 = vec![1u8];
         msg1.extend_from_slice(&1u32.to_le_bytes());
+        msg1.push(0); // 3D flag
         write_data(&mut buf, offset, &msg1);
         offset += msg1.len();
 
@@ -464,11 +487,27 @@ mod tests {
         let mut data = Vec::new();
         data.push(CommandType::SpawnEntity as u8);
         data.extend_from_slice(&42u32.to_le_bytes());
+        data.push(0); // 3D flag (1 byte payload)
 
         let cmds = parse_commands(&data);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].cmd_type, CommandType::SpawnEntity);
         assert_eq!(cmds[0].entity_id, 42);
+        assert_eq!(cmds[0].payload[0], 0); // 3D
+    }
+
+    #[test]
+    fn parse_commands_reads_spawn_2d() {
+        let mut data = Vec::new();
+        data.push(CommandType::SpawnEntity as u8);
+        data.extend_from_slice(&7u32.to_le_bytes());
+        data.push(1); // 2D flag
+
+        let cmds = parse_commands(&data);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cmd_type, CommandType::SpawnEntity);
+        assert_eq!(cmds[0].entity_id, 7);
+        assert_eq!(cmds[0].payload[0], 1); // 2D
     }
 
     #[test]
@@ -492,10 +531,11 @@ mod tests {
     #[test]
     fn parse_commands_reads_multiple() {
         let mut data = Vec::new();
-        // Spawn entity 1
+        // Spawn entity 1 (6 bytes: 1 cmd + 4 id + 1 payload)
         data.push(CommandType::SpawnEntity as u8);
         data.extend_from_slice(&1u32.to_le_bytes());
-        // Despawn entity 2
+        data.push(0); // 3D flag
+        // Despawn entity 2 (5 bytes: 1 cmd + 4 id)
         data.push(CommandType::DespawnEntity as u8);
         data.extend_from_slice(&2u32.to_le_bytes());
 
@@ -508,7 +548,7 @@ mod tests {
 
     #[test]
     fn parse_commands_handles_incomplete() {
-        // Only 3 bytes — not enough for a full command (need 5 minimum)
+        // Only 3 bytes — not enough for a full command (need 5 minimum for Noop/Despawn, 6 for Spawn)
         let data = vec![CommandType::SpawnEntity as u8, 0, 0];
         let cmds = parse_commands(&data);
         assert!(cmds.is_empty());
@@ -736,6 +776,14 @@ mod tests {
         assert_eq!(cmds[0].entity_id, 7);
         let depth = f32::from_le_bytes(cmds[0].payload[0..4].try_into().unwrap());
         assert!((depth - 5.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn spawn_entity_payload_size_is_1() {
+        let cmd_type = CommandType::from_u8(1).unwrap();
+        assert_eq!(cmd_type, CommandType::SpawnEntity);
+        assert_eq!(cmd_type.payload_size(), 1);
+        assert_eq!(cmd_type.message_size(), 6); // 1 cmd + 4 entity_id + 1 payload
     }
 
     #[test]

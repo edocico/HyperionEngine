@@ -578,15 +578,18 @@ fn process_single_command(
         CommandType::SetRotation2D => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 let angle = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                if entity_map.is_entity_2d(cmd.entity_id)
-                    && let Ok(mut t) = world.get::<&mut Transform2D>(entity)
-                {
-                    t.rot = angle;
-                }
-                // For 3D entities, SetRotation2D is invalid — silently ignored.
-                if let Some(slot) = render_state.get_slot(entity) {
-                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                if entity_map.is_entity_2d(cmd.entity_id) {
+                    if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
+                        t.rot = angle;
+                    }
+                    if let Some(slot) = render_state.get_slot(entity) {
+                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                    }
+                } else {
+                    // SetRotation2D on a 3D entity is invalid — log warning and ignore.
+                    #[cfg(debug_assertions)]
+                    eprintln!("warning: SetRotation2D on 3D entity {}", cmd.entity_id);
                 }
             }
         }
@@ -1183,6 +1186,42 @@ mod tests {
         // Rotation should still be identity (untouched)
         let rot = world.get::<&Rotation>(ent).unwrap();
         assert_eq!(rot.0, glam::Quat::IDENTITY);
+    }
+
+    #[test]
+    fn set_rotation_2d_on_3d_entity_does_not_dirty() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+
+        // Spawn 3D entity
+        process_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
+
+        // Clear any dirty bits from spawn
+        rs.dirty_tracker.clear();
+
+        // Send SetRotation2D to 3D entity — should be ignored, no dirty marking
+        let mut angle_payload = [0u8; 16];
+        angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
+        process_commands(
+            &[Command {
+                cmd_type: CommandType::SetRotation2D,
+                entity_id: 1,
+                payload: angle_payload,
+            }],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        // Entity should NOT be dirty since SetRotation2D on 3D is ignored
+        let ent = map.get(1).unwrap();
+        if let Some(slot) = rs.get_slot(ent) {
+            assert!(
+                !rs.dirty_tracker.is_transform_dirty(slot as usize),
+                "3D entity should not be dirty after ignored SetRotation2D"
+            );
+        }
     }
 
     #[test]

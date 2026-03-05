@@ -15,14 +15,14 @@ describe("Integration: Ring Buffer Protocol", () => {
     const header = new Int32Array(sab, 0, 4);
     const writeHead = Atomics.load(header, 0);
 
-    // spawn: 5 bytes + setPosition: 17 bytes + despawn: 5 bytes = 27
-    expect(writeHead).toBe(27);
+    // spawn: 6 bytes (1 cmd + 4 id + 1 payload) + setPosition: 17 bytes + despawn: 5 bytes = 28
+    expect(writeHead).toBe(28);
 
     // Verify the data region has correct command bytes.
     const data = new Uint8Array(sab, 32);
     expect(data[0]).toBe(CommandType.SpawnEntity);
-    expect(data[5]).toBe(CommandType.SetPosition);
-    expect(data[22]).toBe(CommandType.DespawnEntity);
+    expect(data[6]).toBe(CommandType.SetPosition);   // offset 6 (after 6-byte spawn)
+    expect(data[23]).toBe(CommandType.DespawnEntity); // offset 23 (6 + 17)
   });
 });
 
@@ -31,27 +31,27 @@ describe("Integration: Texture Layer Index Pipeline", () => {
     const sab = new SharedArrayBuffer(32 + 128);
     const rb = new RingBufferProducer(sab);
 
-    rb.spawnEntity(0);                           // 5 bytes
+    rb.spawnEntity(0);                           // 6 bytes (1 cmd + 4 id + 1 payload)
     rb.setTextureLayer(0, (2 << 16) | 42);      // 9 bytes
 
     const header = new Int32Array(sab, 0, 4);
     const writeHead = Atomics.load(header, 0);
-    expect(writeHead).toBe(14); // 5 + 9
+    expect(writeHead).toBe(15); // 6 + 9
 
     const data = new Uint8Array(sab, 32, 128);
 
     // SpawnEntity at offset 0
     expect(data[0]).toBe(1);
 
-    // SetTextureLayer at offset 5
-    expect(data[5]).toBe(7); // CommandType.SetTextureLayer
+    // SetTextureLayer at offset 6 (after 6-byte spawn)
+    expect(data[6]).toBe(7); // CommandType.SetTextureLayer
 
-    // Entity ID = 0 at offset 6-9
-    const entityId = data[6] | (data[7] << 8) | (data[8] << 16) | (data[9] << 24);
+    // Entity ID = 0 at offset 7-10
+    const entityId = data[7] | (data[8] << 8) | (data[9] << 16) | (data[10] << 24);
     expect(entityId).toBe(0);
 
-    // Packed value at offset 10-13
-    const packed = data[10] | (data[11] << 8) | (data[12] << 16) | (data[13] << 24);
+    // Packed value at offset 11-14
+    const packed = data[11] | (data[12] << 8) | (data[13] << 16) | (data[14] << 24);
     expect(packed).toBe((2 << 16) | 42);
   });
 

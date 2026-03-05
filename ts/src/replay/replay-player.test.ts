@@ -21,7 +21,7 @@ describe('ReplayPlayer', () => {
     const reset = vi.fn();
     const update = vi.fn();
     const pushCommands = vi.fn();
-    const tape = makeTape([entry(0, 1, 0)]);
+    const tape = makeTape([entry(0, 1, 0, [0])]); // SpawnEntity payload: 1 byte (0=3D)
     const player = new ReplayPlayer(tape, { reset, update, pushCommands });
     player.replayAll();
     expect(reset).toHaveBeenCalledTimes(1);
@@ -35,7 +35,7 @@ describe('ReplayPlayer', () => {
     const update = vi.fn();
     const pushCommands = vi.fn();
     const tape = makeTape([
-      entry(0, 1, 0),
+      entry(0, 1, 0, [0]), // SpawnEntity with 1 byte payload (0=3D)
       entry(0, 3, 0, [0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0]),
       entry(1, 3, 0, [0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0]),
     ]);
@@ -47,7 +47,7 @@ describe('ReplayPlayer', () => {
 
   it('passes FIXED_DT to update', () => {
     const update = vi.fn();
-    const tape = makeTape([entry(0, 1, 0)]);
+    const tape = makeTape([entry(0, 1, 0, [0])]); // SpawnEntity payload
     const player = new ReplayPlayer(tape, { reset: vi.fn(), update, pushCommands: vi.fn() });
     player.replayAll();
     expect(update).toHaveBeenCalledWith(1 / 60);
@@ -55,13 +55,15 @@ describe('ReplayPlayer', () => {
 
   it('serializes commands as binary [type:u8][entityId:u32 LE][payload]', () => {
     const pushCommands = vi.fn();
-    const tape = makeTape([entry(0, 1, 42)]);
+    const tape = makeTape([entry(0, 1, 42, [0])]); // SpawnEntity with 1 byte payload (0=3D)
     const player = new ReplayPlayer(tape, { reset: vi.fn(), update: vi.fn(), pushCommands });
     player.replayAll();
     const data: Uint8Array = pushCommands.mock.calls[0][0];
+    expect(data.length).toBe(6); // 1 cmd + 4 entity_id + 1 payload
     expect(data[0]).toBe(1); // CommandType.SpawnEntity
     const dv = new DataView(data.buffer, data.byteOffset);
     expect(dv.getUint32(1, true)).toBe(42);
+    expect(data[5]).toBe(0); // 3D flag
   });
 
   it('handles empty tape without error', () => {
@@ -77,7 +79,7 @@ describe('ReplayPlayer', () => {
   it('handles tape spanning multiple ticks with gaps', () => {
     const update = vi.fn();
     const tape = makeTape([
-      entry(0, 1, 0),
+      entry(0, 1, 0, [0]), // SpawnEntity with payload
       entry(5, 3, 0, new Array(12).fill(0)),
     ]);
     const player = new ReplayPlayer(tape, { reset: vi.fn(), update, pushCommands: vi.fn() });

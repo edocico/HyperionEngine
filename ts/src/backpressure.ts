@@ -165,8 +165,8 @@ export class BackpressuredProducer {
     return true;
   }
 
-  spawnEntity(entityId: number): boolean {
-    return this.writeCommand(CommandType.SpawnEntity, entityId);
+  spawnEntity(entityId: number, is2D = false): boolean {
+    return this.writeCommand(CommandType.SpawnEntity, entityId, new Uint8Array([is2D ? 1 : 0]));
   }
 
   despawnEntity(entityId: number): boolean {

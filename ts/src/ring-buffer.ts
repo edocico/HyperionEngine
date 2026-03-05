@@ -35,7 +35,7 @@ export const enum CommandType {
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
 const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.Noop]: 0,
-  [CommandType.SpawnEntity]: 0,
+  [CommandType.SpawnEntity]: 1,   // u8: 0=3D, 1=2D
   [CommandType.DespawnEntity]: 0,
   [CommandType.SetPosition]: 12,
   [CommandType.SetRotation]: 16,
@@ -181,8 +181,8 @@ export class RingBufferProducer {
     return this.writeCommand(CommandType.SetPosition, entityId, payload);
   }
 
-  spawnEntity(entityId: number): boolean {
-    return this.writeCommand(CommandType.SpawnEntity, entityId);
+  spawnEntity(entityId: number, is2D = false): boolean {
+    return this.writeCommand(CommandType.SpawnEntity, entityId, new Uint8Array([is2D ? 1 : 0]));
   }
 
   despawnEntity(entityId: number): boolean {

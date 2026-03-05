@@ -33,14 +33,26 @@ describe("RingBufferProducer", () => {
     expect(rb.freeSpace).toBe(CAPACITY - 1);
   });
 
-  it("writes a spawn command", () => {
+  it("writes a spawn command (3D default)", () => {
     const sab = makeBuffer();
     const rb = new RingBufferProducer(sab);
     const ok = rb.spawnEntity(42);
     expect(ok).toBe(true);
     expect(readByte(sab, 0)).toBe(CommandType.SpawnEntity);
     expect(readU32LE(sab, 1)).toBe(42);
-    expect(getWriteHead(sab)).toBe(5);
+    expect(readByte(sab, 5)).toBe(0); // 3D flag
+    expect(getWriteHead(sab)).toBe(6); // 1 cmd + 4 entity_id + 1 payload
+  });
+
+  it("writes a spawn command with 2D flag", () => {
+    const sab = makeBuffer();
+    const rb = new RingBufferProducer(sab);
+    const ok = rb.spawnEntity(7, true);
+    expect(ok).toBe(true);
+    expect(readByte(sab, 0)).toBe(CommandType.SpawnEntity);
+    expect(readU32LE(sab, 1)).toBe(7);
+    expect(readByte(sab, 5)).toBe(1); // 2D flag
+    expect(getWriteHead(sab)).toBe(6);
   });
 
   it("writes a position command with f32 payload", () => {
@@ -66,10 +78,10 @@ describe("RingBufferProducer", () => {
   it("writes multiple commands sequentially", () => {
     const sab = makeBuffer();
     const rb = new RingBufferProducer(sab);
-    rb.spawnEntity(1);
-    rb.spawnEntity(2);
-    rb.despawnEntity(3);
-    expect(getWriteHead(sab)).toBe(15);
+    rb.spawnEntity(1);     // 6 bytes (1 cmd + 4 id + 1 payload)
+    rb.spawnEntity(2);     // 6 bytes
+    rb.despawnEntity(3);   // 5 bytes (no payload)
+    expect(getWriteHead(sab)).toBe(17); // 6 + 6 + 5
   });
 
   it("writes SetTextureLayer command with u32 payload", () => {
@@ -158,15 +170,9 @@ describe("RingBufferProducer", () => {
     const cap = 32; // small capacity
     const sab = new SharedArrayBuffer(HEADER_SIZE + cap);
     const header = new Int32Array(sab, 0, 8);
-    // Place writeHead at cap-4 so: cmd at 28, entity_id at 29,30,31,0
-    // readHead = writeHead initially so extractUnread returns only newly written bytes
-    // freeSpace when w >= r: capacity - w + r - 1. But w == r means we'd get cap - 1 free.
-    // Actually when w == r freeSpace = cap - w + r - 1 = cap - 1. Perfect.
-    // But wait: we need readHead < writeHead or readHead to wrap properly.
-    // Actually readHead = 0 works: freeSpace = cap - 28 + 0 - 1 = 3, too small for 5 bytes.
-    // readHead = 1: freeSpace = cap - 28 + 1 - 1 = 4, still too small.
-    // readHead = 10: freeSpace = cap - 28 + 10 - 1 = 13, enough.
-    // Set readHead = cap - 4 = 28 (same as writeHead): freeSpace = cap - 28 + 28 - 1 = 31.
+    // SpawnEntity is now 6 bytes: 1 cmd + 4 entity_id + 1 payload.
+    // Place writeHead at cap-4 = 28 so entity_id straddles the wrap.
+    // readHead = writeHead → freeSpace = cap - 1 = 31, enough for 6 bytes.
     Atomics.store(header, 0, cap - 4); // writeHead = 28
     Atomics.store(header, 1, cap - 4); // readHead = 28 (same: all space is "free")
 
@@ -174,14 +180,14 @@ describe("RingBufferProducer", () => {
     const ok = rb.spawnEntity(0xDEADBEEF);
     expect(ok).toBe(true);
 
-    // Use extractUnread to get the contiguous byte stream
-    // After write, writeHead = (28 + 5) % 32 = 1. readHead = 28.
-    // extractUnread: writeHead(1) < readHead(28) → wrap: data[28..32] + data[0..1] = 5 bytes
+    // After write, writeHead = (28 + 6) % 32 = 2. readHead = 28.
+    // extractUnread: writeHead(2) < readHead(28) → wrap: data[28..32] + data[0..2] = 6 bytes
     const { bytes } = extractUnread(sab);
-    expect(bytes.length).toBe(5);
+    expect(bytes.length).toBe(6);
     expect(bytes[0]).toBe(CommandType.SpawnEntity);
     const id = (bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24)) >>> 0;
     expect(id).toBe(0xDEADBEEF);
+    expect(bytes[5]).toBe(0); // 3D flag
   });
 
   it("writes correctly when f32 payload straddles the wrap boundary", () => {
