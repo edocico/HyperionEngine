@@ -521,6 +521,33 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - Vite dev server must serve COOP/COEP headers for SharedArrayBuffer access (`vite.config.ts`).
 - WGSL shaders live in `ts/src/shaders/`, loaded at dev time via Vite `?raw` imports.
 
+## Claude Code Automations
+
+### Hooks (`.claude/settings.json`)
+
+- **PreToolUse**: Blocks edits to `ts/wasm/` (generated files)
+- **PostToolUse**: Auto-runs `cargo clippy` on `.rs` edits, colocated vitest on `.ts` edits, WGSL bind group warning on `.wgsl` edits, protocol sync reminder on bridge files
+
+### Skills
+
+- `/build-wasm` — Rebuild Rust→WASM and optionally start dev server
+- `/validate` — Full Rust + TypeScript validation pipeline (run before committing)
+- `/new-primitive` — Add a new RenderPrimitiveType (shader + pipeline + API, 7-step checklist)
+- `/start-phase` — Begin a new engine development phase from the masterplan (9-step workflow)
+
+### Agents
+
+- `protocol-sync-checker` — Validates Rust↔TypeScript protocol consistency (CommandType, ring buffer layout, WASM exports)
+- `wgsl-validator` — Cross-validates all 16 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
+
+### MCP (`.mcp.json`)
+
+- **Context7** — Live documentation lookup for WebGPU, KTX2, wasm-bindgen, and other specs
+
+### Formatting
+
+- No ESLint, Prettier, or Biome configured. Do not attempt to run formatters.
+
 ## Implementation Status
 
 **Current: Phase 12 (Optimization Tier 2) complete. Next: Phase 13 per masterplan.**

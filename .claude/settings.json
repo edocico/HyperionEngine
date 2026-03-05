@@ -18,6 +18,18 @@
           {
             "type": "command",
             "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -q '\\.rs'; then cd /home/edoardocicognani/Code/HyperionEngine && cargo clippy -p hyperion-core --message-format=short 2>&1 | tail -5; fi"
+          },
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '\\.ts$' && ! echo \"$FILE\" | grep -qP '\\.test\\.ts$'; then TEST=\"${FILE%.ts}.test.ts\"; if [ -f \"$TEST\" ]; then cd /home/edoardocicognani/Code/HyperionEngine/ts && npx vitest run \"$TEST\" --reporter=dot 2>&1 | tail -3; fi; fi"
+          },
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '\\.wgsl$'; then echo 'WARNING: WGSL shader modified. Verify bind group layouts match across cull.wgsl, scatter.wgsl, forward-pass.ts, and renderer.ts'; fi"
+          },
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '(ring_buffer\\.rs|ring-buffer\\.ts|lib\\.rs|worker-bridge\\.ts|engine-worker\\.ts)'; then echo 'REMINDER: Cross-language protocol file modified. Run protocol-sync-checker agent before committing.'; fi"
           }
         ]
       }
