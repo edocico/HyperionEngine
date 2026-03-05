@@ -65,6 +65,19 @@ impl BitSet {
         self.count
     }
 
+    /// Pointer to the raw backing words, reinterpreted as `u32`.
+    ///
+    /// Each `u64` word contributes two consecutive `u32` values (little-endian).
+    /// The returned pointer is valid until the next mutation of the BitSet.
+    pub fn words_ptr_u32(&self) -> *const u32 {
+        self.bits.as_ptr() as *const u32
+    }
+
+    /// Number of `u32` values in the backing storage (2× the number of `u64` words).
+    pub fn words_u32_len(&self) -> usize {
+        self.bits.len() * 2
+    }
+
     /// Grow the bitset if needed to hold at least `capacity` bits.
     pub fn ensure_capacity(&mut self, capacity: usize) {
         let words_needed = capacity.div_ceil(64);
@@ -145,6 +158,19 @@ impl DirtyTracker {
             return 0.0;
         }
         self.meta_dirty.count() as f32 / total as f32
+    }
+
+    /// Pointer to the raw transform dirty bitfield as `u32` words.
+    ///
+    /// One bit per entity slot, packed little-endian into `u32` values.
+    /// Suitable for GPU upload (e.g., temporal culling bitmask).
+    pub fn transforms_words_ptr(&self) -> *const u32 {
+        self.transform_dirty.words_ptr_u32()
+    }
+
+    /// Number of `u32` words in the transform dirty bitfield.
+    pub fn transforms_words_len(&self) -> usize {
+        self.transform_dirty.words_u32_len()
     }
 
     /// Pre-size all internal bitsets to hold at least `capacity` entity slots.
@@ -915,6 +941,19 @@ impl RenderState {
     /// Ratio of dirty entities to total entities in the last staging collection.
     pub fn dirty_ratio(&self) -> f32 {
         self.staging_dirty_ratio
+    }
+
+    /// Pointer to the dirty-transform bitfield (one bit per entity slot).
+    ///
+    /// Packed as little-endian `u32` words. Upload to the GPU for temporal
+    /// culling: a bit value of 1 means the entity's transform changed this frame.
+    pub fn dirty_transform_bits_ptr(&self) -> *const u32 {
+        self.dirty_tracker.transforms_words_ptr()
+    }
+
+    /// Number of `u32` words in the dirty-transform bitfield.
+    pub fn dirty_transform_bits_u32_len(&self) -> usize {
+        self.dirty_tracker.transforms_words_len()
     }
 
     /// Release excess heap memory from all internal buffers.
@@ -1894,5 +1933,115 @@ mod tests {
         let slot = rs.assign_slot(ent);
         rs.write_slot_2d(slot, &world, ent);
         assert_eq!(rs.gpu_depths[slot as usize], 0.0);
+    }
+
+    #[test]
+    fn dirty_bits_exposed_as_u32_array() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        // Spawn two entities and assign slots
+        let ent1 = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot1 = rs.assign_slot(ent1);
+
+        let ent2 = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Active,
+            ExternalId(2),
+        ));
+        let slot2 = rs.assign_slot(ent2);
+
+        // Clear dirty state (assign_slot marks everything dirty)
+        rs.dirty_tracker.clear();
+
+        // Mark only slot1 dirty
+        rs.dirty_tracker.mark_transform_dirty(slot1 as usize);
+
+        // Check the raw bits
+        let len = rs.dirty_transform_bits_u32_len();
+        assert!(len > 0);
+        let ptr = rs.dirty_transform_bits_ptr();
+        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
+
+        // Slot1 should be dirty (its bit set)
+        assert_ne!(
+            bits[slot1 as usize / 32] & (1 << (slot1 as usize % 32)),
+            0
+        );
+        // Slot2 should NOT be dirty
+        assert_eq!(
+            bits[slot2 as usize / 32] & (1 << (slot2 as usize % 32)),
+            0
+        );
+    }
+
+    #[test]
+    fn dirty_bits_length_covers_all_slots() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        // Spawn 100 entities to force the bitset to grow
+        for i in 0..100 {
+            let ent = world.spawn((
+                Position(Vec3::ZERO),
+                Rotation(Quat::IDENTITY),
+                Scale(Vec3::ONE),
+                ModelMatrix([0.0; 16]),
+                BoundingRadius(1.0),
+                Active,
+                ExternalId(i),
+            ));
+            rs.assign_slot(ent);
+        }
+
+        let len = rs.dirty_transform_bits_u32_len();
+        // 100 slots need at least ceil(100/32) = 4 u32 words
+        assert!(len >= 4, "expected at least 4 u32 words, got {len}");
+        // BitSet uses u64 internally, so len is always even
+        assert_eq!(len % 2, 0, "u32 count should be even (from u64 backing)");
+    }
+
+    #[test]
+    fn dirty_bits_cleared_after_clear() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+
+        // After assign_slot the bit is dirty; clear it
+        rs.dirty_tracker.clear();
+        rs.dirty_tracker.mark_transform_dirty(slot as usize);
+
+        // Verify dirty
+        let ptr = rs.dirty_transform_bits_ptr();
+        let len = rs.dirty_transform_bits_u32_len();
+        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_ne!(bits[slot as usize / 32] & (1 << (slot as usize % 32)), 0);
+
+        // Clear and verify clean
+        rs.dirty_tracker.clear();
+        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_eq!(bits[slot as usize / 32] & (1 << (slot as usize % 32)), 0);
     }
 }

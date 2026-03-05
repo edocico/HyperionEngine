@@ -352,6 +352,33 @@ pub fn engine_staging_indices_len() -> u32 {
     }
 }
 
+// ── Dirty bitfield WASM exports ─────────────────────────────────
+
+/// Pointer to the dirty-transform bitfield (one bit per entity slot, packed u32).
+/// Upload to the GPU for temporal culling: bit=1 means the slot's transform changed this frame.
+#[wasm_bindgen]
+pub fn engine_dirty_bits_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| {
+                e.render_state.dirty_transform_bits_ptr()
+            })
+    }
+}
+
+/// Number of u32 words in the dirty-transform bitfield.
+#[wasm_bindgen]
+pub fn engine_dirty_bits_u32_len() -> usize {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.dirty_transform_bits_u32_len())
+    }
+}
+
 /// Compact the entity map by truncating trailing empty slots.
 #[wasm_bindgen]
 pub fn engine_compact_entity_map() {
