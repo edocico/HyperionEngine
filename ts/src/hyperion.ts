@@ -225,8 +225,11 @@ export class Hyperion implements Disposable {
   /**
    * Debug API for time-travel recording controls.
    * Start/stop command recording to produce a CommandTape snapshot.
+   * Returns null in production builds (__DEV__ === false) to enable
+   * tree-shaking of debug/replay modules.
    */
   get debug() {
+    if (typeof __DEV__ !== 'undefined' && !__DEV__) return null;
     const self = this;
     return {
       get isRecording(): boolean {

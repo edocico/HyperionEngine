@@ -84,9 +84,9 @@ const section: DemoSection = {
 
     // ── 5. Time-travel record ──────────────────────────────────────────
     try {
-      engine.debug.startRecording();
+      engine.debug?.startRecording();
       await new Promise(resolve => setTimeout(resolve, 200));
-      const tape = engine.debug.stopRecording();
+      const tape = engine.debug?.stopRecording() ?? null;
       reporter.check(
         'Time-travel record',
         tape !== null,

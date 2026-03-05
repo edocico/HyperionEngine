@@ -13,6 +13,9 @@ export default defineConfig({
       "Cross-Origin-Embedder-Policy": "require-corp",
     },
   },
+  define: {
+    __DEV__: JSON.stringify(process.env.NODE_ENV !== "production"),
+  },
   build: {
     target: "esnext",
   },

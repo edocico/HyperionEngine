@@ -679,9 +679,9 @@ describe('Hyperion.create', () => {
 describe('debug API', () => {
   it('startRecording / stopRecording returns a CommandTape', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    engine.debug.startRecording();
+    engine.debug!.startRecording();
     engine.spawn();
-    const tape = engine.debug.stopRecording();
+    const tape = engine.debug!.stopRecording();
     expect(tape).toBeDefined();
     expect(tape!.version).toBe(1);
     expect(tape!.entries.length).toBeGreaterThanOrEqual(1);
@@ -690,17 +690,17 @@ describe('debug API', () => {
 
   it('stopRecording returns null when not recording', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    expect(engine.debug.stopRecording()).toBeNull();
+    expect(engine.debug!.stopRecording()).toBeNull();
     engine.destroy();
   });
 
   it('isRecording reflects state', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
-    expect(engine.debug.isRecording).toBe(false);
-    engine.debug.startRecording();
-    expect(engine.debug.isRecording).toBe(true);
-    engine.debug.stopRecording();
-    expect(engine.debug.isRecording).toBe(false);
+    expect(engine.debug!.isRecording).toBe(false);
+    engine.debug!.startRecording();
+    expect(engine.debug!.isRecording).toBe(true);
+    engine.debug!.stopRecording();
+    expect(engine.debug!.isRecording).toBe(false);
     engine.destroy();
   });
 });

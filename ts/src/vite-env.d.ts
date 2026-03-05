@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+/** Compile-time constant injected by Vite `define`. True in dev/test, false in production builds. */
+declare const __DEV__: boolean;
+
 // Allow importing .wgsl files as raw text via Vite's ?raw suffix.
 declare module "*.wgsl?raw" {
   const content: string;
