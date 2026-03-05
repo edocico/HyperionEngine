@@ -45,7 +45,7 @@ export { parseKTX2, isKTX2, VK_FORMAT } from './ktx2-parser';
 export type { KTX2Container } from './ktx2-parser';
 export { BasisTranscoder } from './basis-transcoder';
 export type { TranscodeTarget, TranscodeResult } from './basis-transcoder';
-export { detectCompressedFormat } from './capabilities';
+export { detectCompressedFormat, detectSizedBindingArrays } from './capabilities';
 
 // Prefabs
 export type { PrefabTemplate, PrefabNode, SpawnOverrides } from './prefab/types';

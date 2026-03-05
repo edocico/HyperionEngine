@@ -4,6 +4,7 @@ import {
   ExecutionMode,
   detectCompressedFormat,
   detectSubgroupSupport,
+  detectSizedBindingArrays,
   type Capabilities,
 } from "./capabilities";
 
@@ -78,5 +79,12 @@ describe("detectSubgroupSupport", () => {
   it("returns supported=false for subgroups-f16-only (not what we need)", () => {
     const features = new Set<string>(["subgroups-f16"]);
     expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+  });
+});
+
+describe("detectSizedBindingArrays", () => {
+  it("returns false (proposal not yet shipped)", () => {
+    const mockDevice = { features: new Set() } as unknown as GPUDevice;
+    expect(detectSizedBindingArrays(mockDevice)).toBe(false);
   });
 });

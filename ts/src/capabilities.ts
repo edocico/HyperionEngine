@@ -106,3 +106,14 @@ export function detectSubgroupSupport(
 ): SubgroupSupport {
   return { supported: adapterFeatures.has('subgroups') };
 }
+
+/**
+ * Detect WebGPU sized binding arrays support.
+ * W3C proposal, not yet shipped in any browser (March 2026).
+ * When available, detection will likely be via device.features
+ * or try/catch on createBindGroupLayout with bindingArraySize.
+ * See: gpuweb/proposals/sized-binding-arrays.md
+ */
+export function detectSizedBindingArrays(_device: GPUDevice): boolean {
+  return false;
+}
