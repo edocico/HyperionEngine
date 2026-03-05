@@ -77,6 +77,8 @@ function defaultConfig(): ResolvedConfig {
     fixedTimestep: 1 / 60,
     preferredMode: 'auto',
     scatterThreshold: 0.3,
+    textureStreaming: false,
+    streamingBudgetBytesPerFrame: 256 * 1024,
   };
 }
 

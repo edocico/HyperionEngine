@@ -16,6 +16,10 @@ export interface HyperionConfig {
   onDeviceLost?: (reason: string) => void;
   /** Dirty ratio threshold for scatter upload vs full upload. Default 0.3 */
   scatterThreshold?: number;
+  /** Enable progressive texture streaming via HTTP Range requests. Default: false. */
+  textureStreaming?: boolean;
+  /** Max bytes fetched per frame for texture streaming. Default: 256KB. */
+  streamingBudgetBytesPerFrame?: number;
 }
 
 /** Resolved config with all defaults applied. */
@@ -30,6 +34,8 @@ export interface ResolvedConfig {
   onOverflow?: (dropped: number) => void;
   onDeviceLost?: (reason: string) => void;
   scatterThreshold: number;
+  textureStreaming: boolean;
+  streamingBudgetBytesPerFrame: number;
 }
 
 /** Live engine statistics. */
@@ -79,5 +85,7 @@ export function validateConfig(config: HyperionConfig): ResolvedConfig {
     onOverflow: config.onOverflow,
     onDeviceLost: config.onDeviceLost,
     scatterThreshold: config.scatterThreshold ?? 0.3,
+    textureStreaming: config.textureStreaming ?? false,
+    streamingBudgetBytesPerFrame: config.streamingBudgetBytesPerFrame ?? 256 * 1024,
   };
 }
