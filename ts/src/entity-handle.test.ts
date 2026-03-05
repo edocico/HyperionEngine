@@ -10,7 +10,10 @@ function mockProducer(): BackpressuredProducer {
     setPosition: vi.fn(() => true),
     setVelocity: vi.fn(() => true),
     setRotation: vi.fn(() => true),
+    setRotation2D: vi.fn(() => true),
     setScale: vi.fn(() => true),
+    setDepth: vi.fn(() => true),
+    setTransparent: vi.fn(() => true),
     setTextureLayer: vi.fn(() => true),
     setMeshHandle: vi.fn(() => true),
     setRenderPrimitive: vi.fn(() => true),
@@ -62,6 +65,39 @@ describe('EntityHandle', () => {
     const result = h.rotation(0, 0, 0, 1);
     expect(result).toBe(h);
     expect(p.setRotation).toHaveBeenCalledWith(0, 0, 0, 0, 1);
+  });
+
+  it('rotation(angle) sends SetRotation2D for 2D rotation', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(5, p);
+    const result = h.rotation(Math.PI / 4);
+    expect(result).toBe(h);
+    expect(p.setRotation2D).toHaveBeenCalledWith(5, Math.PI / 4);
+    expect(p.setRotation).not.toHaveBeenCalled();
+  });
+
+  it('depth(z) sends SetDepth command', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(3, p);
+    const result = h.depth(10.5);
+    expect(result).toBe(h);
+    expect(p.setDepth).toHaveBeenCalledWith(3, 10.5);
+  });
+
+  it('transparent() sends SetTransparent with value 1', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(2, p);
+    const result = h.transparent();
+    expect(result).toBe(h);
+    expect(p.setTransparent).toHaveBeenCalledWith(2, 1);
+  });
+
+  it('opaque() sends SetTransparent with value 0', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(2, p);
+    const result = h.opaque();
+    expect(result).toBe(h);
+    expect(p.setTransparent).toHaveBeenCalledWith(2, 0);
   });
 
   it('fluent texture returns this', () => {

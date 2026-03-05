@@ -100,10 +100,14 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Set entity rotation (quaternion). Returns `this` for chaining. */
-  rotation(x: number, y: number, z: number, w: number): this {
+  /** Set entity rotation. 1 arg = 2D angle (radians). 4 args = quaternion (x,y,z,w). */
+  rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
-    this._producer!.setRotation(this._id, x, y, z, w);
+    if (qy === undefined) {
+      this._producer!.setRotation2D(this._id, angleOrQx);
+    } else {
+      this._producer!.setRotation(this._id, angleOrQx, qy!, qz!, qw!);
+    }
     return this;
   }
 
@@ -111,6 +115,27 @@ export class EntityHandle implements Disposable {
   scale(sx: number, sy: number, sz: number): this {
     this.check();
     this._producer!.setScale(this._id, sx, sy, sz);
+    return this;
+  }
+
+  /** Set entity depth for 2.5D layering. Returns `this` for chaining. */
+  depth(z: number): this {
+    this.check();
+    this._producer!.setDepth(this._id, z);
+    return this;
+  }
+
+  /** Mark entity as transparent (enables back-to-front sorting). Returns `this` for chaining. */
+  transparent(): this {
+    this.check();
+    this._producer!.setTransparent(this._id, 1);
+    return this;
+  }
+
+  /** Mark entity as opaque (default, front-to-back sorting). Returns `this` for chaining. */
+  opaque(): this {
+    this.check();
+    this._producer!.setTransparent(this._id, 0);
     return this;
   }
 
