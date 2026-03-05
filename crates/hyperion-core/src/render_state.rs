@@ -7,8 +7,8 @@
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, ExternalId, MeshHandle, ModelMatrix, Parent, Position, PrimitiveParams,
-    RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D, Transparent,
+    Active, BoundingRadius, Depth, ExternalId, MeshHandle, ModelMatrix, Parent, Position,
+    PrimitiveParams, RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D, Transparent,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -179,6 +179,7 @@ pub struct RenderState {
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_prim_params: Vec<f32>,   // 8 f32/entity (primitive-specific parameters)
     gpu_entity_ids: Vec<u32>,    // 1 u32/entity (external entity ID for picking)
+    gpu_depths: Vec<f32>,        // 1 f32/entity (depth for back-to-front sorting)
     gpu_count: u32,
 
     /// Per-buffer dirty tracking for partial upload optimization.
@@ -219,6 +220,7 @@ impl RenderState {
             gpu_tex_indices: Vec::new(),
             gpu_prim_params: Vec::new(),
             gpu_entity_ids: Vec::new(),
+            gpu_depths: Vec::new(),
             gpu_count: 0,
             dirty_tracker: DirtyTracker::new(0),
             slot_to_entity: Vec::new(),
@@ -276,6 +278,7 @@ impl RenderState {
         self.gpu_tex_indices.clear();
         self.gpu_prim_params.clear();
         self.gpu_entity_ids.clear();
+        self.gpu_depths.clear();
 
         // Pre-allocate based on previous frame's entity count to avoid reallocation.
         let hint = self.gpu_count as usize;
@@ -285,6 +288,7 @@ impl RenderState {
         self.gpu_tex_indices.reserve(hint);
         self.gpu_prim_params.reserve(hint * 8);
         self.gpu_entity_ids.reserve(hint);
+        self.gpu_depths.reserve(hint);
         self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
@@ -322,6 +326,9 @@ impl RenderState {
             // Entity ID (1 u32)
             self.gpu_entity_ids.push(ext_id.0);
 
+            // Depth (1 f32) — legacy path uses position.z as fallback
+            self.gpu_depths.push(pos.0.z);
+
             self.gpu_count += 1;
         }
 
@@ -331,6 +338,7 @@ impl RenderState {
         debug_assert_eq!(self.gpu_count as usize, self.gpu_tex_indices.len());
         debug_assert_eq!(self.gpu_count as usize * 8, self.gpu_prim_params.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_entity_ids.len());
+        debug_assert_eq!(self.gpu_count as usize, self.gpu_depths.len());
     }
 
     /// Number of entities in the GPU buffer.
@@ -465,6 +473,28 @@ impl RenderState {
         self.gpu_count
     }
 
+    // --- SoA buffer accessors: depths ---
+
+    /// Depth values, one f32 per GPU entity (parallel to other SoA buffers).
+    /// Used for back-to-front transparent sorting via GPU radix sort.
+    pub fn gpu_depths(&self) -> &[f32] {
+        &self.gpu_depths
+    }
+
+    /// Raw pointer to the depths buffer for WASM export. Returns null if empty.
+    pub fn gpu_depths_ptr(&self) -> *const f32 {
+        if self.gpu_depths.is_empty() {
+            std::ptr::null()
+        } else {
+            self.gpu_depths.as_ptr()
+        }
+    }
+
+    /// Number of f32 values in the depths buffer (same as gpu_entity_count).
+    pub fn gpu_depths_f32_len(&self) -> usize {
+        self.gpu_count as usize
+    }
+
     /// Assign a stable GPU slot to an entity. Returns the slot index.
     pub fn assign_slot(&mut self, entity: hecs::Entity) -> u32 {
         let slot = self.gpu_count;
@@ -493,6 +523,7 @@ impl RenderState {
         self.gpu_tex_indices.resize(self.gpu_count as usize, 0);
         self.gpu_prim_params.resize((self.gpu_count as usize) * 8, 0.0);
         self.gpu_entity_ids.resize(self.gpu_count as usize, 0);
+        self.gpu_depths.resize(self.gpu_count as usize, 0.0);
 
         // Mark all dirty
         self.dirty_tracker.ensure_capacity(self.gpu_count as usize);
@@ -545,6 +576,15 @@ impl RenderState {
 
         if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
             self.gpu_entity_ids[s] = ext_id.0;
+        }
+
+        // Depth: prefer Depth component, fall back to Position.z, else 0.0
+        if let Ok(depth) = world.get::<&Depth>(entity) {
+            self.gpu_depths[s] = depth.0;
+        } else if let Ok(pos) = world.get::<&Position>(entity) {
+            self.gpu_depths[s] = pos.0.z;
+        } else {
+            self.gpu_depths[s] = 0.0;
         }
     }
 
@@ -606,6 +646,13 @@ impl RenderState {
         }
         if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
             self.gpu_entity_ids[s] = ext_id.0;
+        }
+
+        // 2D entities: prefer Depth component, else 0.0
+        if let Ok(depth) = world.get::<&Depth>(entity) {
+            self.gpu_depths[s] = depth.0;
+        } else {
+            self.gpu_depths[s] = 0.0;
         }
     }
 
@@ -684,6 +731,9 @@ impl RenderState {
 
         // entity_ids: 1 u32 per slot
         self.gpu_entity_ids[d] = self.gpu_entity_ids[s];
+
+        // depths: 1 f32 per slot
+        self.gpu_depths[d] = self.gpu_depths[s];
     }
 
     /// Look up the GPU slot for an entity. Returns None if not assigned.
@@ -877,6 +927,7 @@ impl RenderState {
         self.gpu_tex_indices.shrink_to_fit();
         self.gpu_prim_params.shrink_to_fit();
         self.gpu_entity_ids.shrink_to_fit();
+        self.gpu_depths.shrink_to_fit();
     }
 }
 
@@ -1771,5 +1822,77 @@ mod tests {
         let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
         assert_eq!(meta & 0xFF, 3);
         assert_eq!(meta & 0x100, 0);
+    }
+
+    // --- Depth SoA column tests ---
+
+    #[test]
+    fn write_slot_populates_depth_from_position_z() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Position(Vec3::new(10.0, 20.0, 42.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        assert_eq!(rs.gpu_depths[slot as usize], 42.0);
+    }
+
+    #[test]
+    fn write_slot_prefers_depth_component_over_position_z() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Position(Vec3::new(10.0, 20.0, 42.0)),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Depth(99.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        assert_eq!(rs.gpu_depths[slot as usize], 99.0);
+    }
+
+    #[test]
+    fn write_slot_2d_populates_depth_from_depth_component() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Transform2D { x: 10.0, y: 20.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Depth(7.5),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot_2d(slot, &world, ent);
+        assert_eq!(rs.gpu_depths[slot as usize], 7.5);
+    }
+
+    #[test]
+    fn write_slot_2d_defaults_depth_to_zero() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Transform2D { x: 10.0, y: 20.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            Active,
+            ExternalId(1),
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot_2d(slot, &world, ent);
+        assert_eq!(rs.gpu_depths[slot as usize], 0.0);
     }
 }

@@ -262,6 +262,28 @@ pub fn engine_gpu_entity_ids_len() -> u32 {
     }
 }
 
+/// Pointer to the depth buffer (1 f32 per entity, for back-to-front sorting).
+#[wasm_bindgen]
+pub fn engine_gpu_depths_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.render_state.gpu_depths_ptr())
+    }
+}
+
+/// Number of f32 values in the depths buffer.
+#[wasm_bindgen]
+pub fn engine_gpu_depths_f32_len() -> usize {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.gpu_depths_f32_len())
+    }
+}
+
 // ── Dirty staging WASM exports ──────────────────────────────────
 
 /// Returns the number of dirty entities from the last staging collection.
