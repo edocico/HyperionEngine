@@ -62,16 +62,22 @@ export function computeWorkgroupSize(useSubgroups: boolean, subgroupSize: number
 }
 
 /**
- * Conditionally prepend the `enable subgroups;` WGSL directive.
+ * Conditionally prepend WGSL directives for subgroup support.
  *
- * The directive MUST NOT appear in the shader source when the device does
- * not support subgroups — WGSL validation would reject it.  This helper
- * keeps the raw shader file free of the directive and adds it at pipeline
- * creation time when the capability is confirmed.
+ * 3 levels:
+ * - No subgroups: unchanged source
+ * - Subgroups: prepend `enable subgroups;`
+ * - Subgroups + subgroup_id (Chrome 144+): also prepend `requires subgroup_id;`
  */
-export function prepareShaderSource(baseSource: string, useSubgroups: boolean): string {
+export function prepareShaderSource(
+  baseSource: string,
+  useSubgroups: boolean,
+  useSubgroupId: boolean = false,
+): string {
   if (!useSubgroups) return baseSource;
-  return 'enable subgroups;\n' + baseSource;
+  let prefix = 'enable subgroups;\n';
+  if (useSubgroupId) prefix += 'requires subgroup_id;\n';
+  return prefix + baseSource;
 }
 
 /** Extract the transparent flag (bit 8) from a renderMeta entry. */
