@@ -35,3 +35,48 @@ export function exclusiveScanCPU(input: number[]): number[] {
 
   return buf.slice(0, n);
 }
+
+/**
+ * Simulates subgroup-accelerated exclusive scan.
+ * Uses subgroup-sized chunks with intra-chunk scan + cross-chunk reduction.
+ * CPU reference to verify the subgroup WGSL variant produces identical results.
+ */
+export function exclusiveScanSubgroupSimCPU(input: number[], subgroupSize: number): number[] {
+  const n = input.length;
+  if (n === 0) return [];
+  const result = new Array(n).fill(0);
+
+  // Phase 1: Intra-subgroup exclusive scan
+  const numSubgroups = Math.ceil(n / subgroupSize);
+  const subgroupTotals = new Array(numSubgroups).fill(0);
+
+  for (let sg = 0; sg < numSubgroups; sg++) {
+    let running = 0;
+    for (let lane = 0; lane < subgroupSize; lane++) {
+      const idx = sg * subgroupSize + lane;
+      if (idx >= n) break;
+      result[idx] = running;
+      running += input[idx];
+    }
+    subgroupTotals[sg] = running;
+  }
+
+  // Phase 2: Cross-subgroup exclusive prefix sum
+  const sgPrefixes = new Array(numSubgroups).fill(0);
+  let running = 0;
+  for (let sg = 0; sg < numSubgroups; sg++) {
+    sgPrefixes[sg] = running;
+    running += subgroupTotals[sg];
+  }
+
+  // Phase 3: Add subgroup prefix to each element
+  for (let sg = 0; sg < numSubgroups; sg++) {
+    for (let lane = 0; lane < subgroupSize; lane++) {
+      const idx = sg * subgroupSize + lane;
+      if (idx >= n) break;
+      result[idx] += sgPrefixes[sg];
+    }
+  }
+
+  return result;
+}

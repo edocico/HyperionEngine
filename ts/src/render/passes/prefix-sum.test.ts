@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { exclusiveScanCPU } from './prefix-sum-reference';
+import { exclusiveScanCPU, exclusiveScanSubgroupSimCPU } from './prefix-sum-reference';
 
 describe('Prefix sum reference implementation', () => {
   it('should compute exclusive scan for simple input', () => {
@@ -41,5 +41,35 @@ describe('Prefix sum reference implementation', () => {
       }
     }
     expect(compacted).toEqual([1, 2, 4, 6, 7]);
+  });
+});
+
+describe('Subgroup-simulated prefix sum', () => {
+  it('produces same result as Blelloch for simple input (sgSize=4)', () => {
+    const input = [0, 1, 1, 0, 1, 0, 1, 1];
+    const blelloch = exclusiveScanCPU(input);
+    const subgroup = exclusiveScanSubgroupSimCPU(input, 4);
+    expect(subgroup).toEqual(blelloch);
+  });
+
+  it('produces same result for all-visible (sgSize=32)', () => {
+    const input = new Array(64).fill(1);
+    expect(exclusiveScanSubgroupSimCPU(input, 32)).toEqual(exclusiveScanCPU(input));
+  });
+
+  it('produces same result for sparse visibility (sgSize=32)', () => {
+    const input = new Array(256).fill(0);
+    for (let i = 0; i < 256; i += 7) input[i] = 1;
+    expect(exclusiveScanSubgroupSimCPU(input, 32)).toEqual(exclusiveScanCPU(input));
+  });
+
+  it('produces correct compacted indices (sgSize=8)', () => {
+    const visibility = [0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0];
+    const scan = exclusiveScanSubgroupSimCPU(visibility, 8);
+    const compacted: number[] = [];
+    for (let i = 0; i < visibility.length; i++) {
+      if (visibility[i] === 1) compacted[scan[i]] = i;
+    }
+    expect(compacted).toEqual([1, 2, 4, 6, 7, 10]);
   });
 });
