@@ -141,6 +141,9 @@ export class CullPass implements RenderPass {
    */
   static SHADER_SOURCE = '';
 
+  static SUBGROUP_CONFIG: { useSubgroups: boolean; subgroupSize: number; useSubgroupId: boolean } =
+    { useSubgroups: false, subgroupSize: 32, useSubgroupId: false };
+
   setup(device: GPUDevice, resources: ResourcePool): void {
     if (!CullPass.SHADER_SOURCE) {
       throw new Error('CullPass.SHADER_SOURCE must be set before calling setup()');
@@ -192,7 +195,15 @@ export class CullPass implements RenderPass {
 
     this.pipeline = device.createComputePipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout0, this.bindGroupLayout1] }),
-      compute: { module: shaderModule, entryPoint: 'cull_main' },
+      compute: {
+        module: shaderModule,
+        entryPoint: 'cull_main',
+        constants: {
+          USE_SUBGROUPS: CullPass.SUBGROUP_CONFIG.useSubgroups ? 1 : 0,
+          SUBGROUP_SIZE: CullPass.SUBGROUP_CONFIG.subgroupSize,
+          USE_SUBGROUP_ID: CullPass.SUBGROUP_CONFIG.useSubgroupId ? 1 : 0,
+        },
+      },
     });
 
     this.bindGroup0 = device.createBindGroup({
