@@ -68,23 +68,118 @@ describe("detectCompressedFormat", () => {
 describe("detectSubgroupSupport", () => {
   it("returns supported=false when feature not present", () => {
     const features = new Set<string>();
-    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
   });
 
   it("returns supported=true when subgroups feature present", () => {
     const features = new Set<string>(["subgroups"]);
-    expect(detectSubgroupSupport(features)).toEqual({ supported: true });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(true);
+    expect(result.hasSubgroupId).toBe(false);
   });
 
   it("returns supported=false for subgroups-f16-only (not what we need)", () => {
     const features = new Set<string>(["subgroups-f16"]);
-    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
+  });
+});
+
+describe("detectSubgroupSupport v2 (subgroup_id builtins)", () => {
+  it("returns hasSubgroupId=false when wgslLanguageFeatures not available", () => {
+    const features = new Set<string>(["subgroups"]);
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(true);
+    expect(result.hasSubgroupId).toBe(false);
+  });
+
+  it("returns hasSubgroupId=true when subgroup_id in wgslLanguageFeatures", () => {
+    const origGpu = (navigator as any).gpu;
+    const hadGpu = 'gpu' in navigator;
+    Object.defineProperty(navigator, 'gpu', {
+      value: { wgslLanguageFeatures: new Set(["subgroup_id"]) },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      const features = new Set<string>(["subgroups"]);
+      const result = detectSubgroupSupport(features);
+      expect(result.supported).toBe(true);
+      expect(result.hasSubgroupId).toBe(true);
+    } finally {
+      if (hadGpu) {
+        Object.defineProperty(navigator, 'gpu', {
+          value: origGpu,
+          writable: true,
+          configurable: true,
+        });
+      } else {
+        delete (navigator as any).gpu;
+      }
+    }
+  });
+
+  it("returns hasSubgroupId=false when subgroups not supported", () => {
+    const features = new Set<string>();
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
   });
 });
 
 describe("detectSizedBindingArrays", () => {
-  it("returns false (proposal not yet shipped)", () => {
-    const mockDevice = { features: new Set() } as unknown as GPUDevice;
-    expect(detectSizedBindingArrays(mockDevice)).toBe(false);
+  it("returns supported=false and maxSize=0 when feature not available", () => {
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => { throw new Error("not supported"); },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(false);
+    expect(result.maxSize).toBe(0);
+  });
+
+  it("returns supported=true when createBindGroupLayout accepts bindingArraySize", () => {
+    const mockLayout = {};
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => mockLayout,
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBeGreaterThanOrEqual(256);
+  });
+
+  it("probes maxSize up to 1024", () => {
+    let callCount = 0;
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => {
+        callCount++;
+        return {};
+      },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBe(1024);
+    // Initial probe (256) + 2 size probes (512, 1024) = 3 calls
+    expect(callCount).toBe(3);
+  });
+
+  it("stops probing at first failure", () => {
+    let callCount = 0;
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => {
+        callCount++;
+        if (callCount > 1) throw new Error("too large");
+        return {};
+      },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBe(256);
   });
 });

@@ -62,16 +62,22 @@ export function computeWorkgroupSize(useSubgroups: boolean, subgroupSize: number
 }
 
 /**
- * Conditionally prepend the `enable subgroups;` WGSL directive.
+ * Conditionally prepend WGSL directives for subgroup support.
  *
- * The directive MUST NOT appear in the shader source when the device does
- * not support subgroups — WGSL validation would reject it.  This helper
- * keeps the raw shader file free of the directive and adds it at pipeline
- * creation time when the capability is confirmed.
+ * 3 levels:
+ * - No subgroups: unchanged source
+ * - Subgroups: prepend `enable subgroups;`
+ * - Subgroups + subgroup_id (Chrome 144+): also prepend `requires subgroup_id;`
  */
-export function prepareShaderSource(baseSource: string, useSubgroups: boolean): string {
+export function prepareShaderSource(
+  baseSource: string,
+  useSubgroups: boolean,
+  useSubgroupId: boolean = false,
+): string {
   if (!useSubgroups) return baseSource;
-  return 'enable subgroups;\n' + baseSource;
+  let prefix = 'enable subgroups;\n';
+  if (useSubgroupId) prefix += 'requires subgroup_id;\n';
+  return prefix + baseSource;
 }
 
 /** Extract the transparent flag (bit 8) from a renderMeta entry. */
@@ -135,6 +141,9 @@ export class CullPass implements RenderPass {
    */
   static SHADER_SOURCE = '';
 
+  static SUBGROUP_CONFIG: { useSubgroups: boolean; subgroupSize: number; useSubgroupId: boolean } =
+    { useSubgroups: false, subgroupSize: 32, useSubgroupId: false };
+
   setup(device: GPUDevice, resources: ResourcePool): void {
     if (!CullPass.SHADER_SOURCE) {
       throw new Error('CullPass.SHADER_SOURCE must be set before calling setup()');
@@ -186,7 +195,15 @@ export class CullPass implements RenderPass {
 
     this.pipeline = device.createComputePipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout0, this.bindGroupLayout1] }),
-      compute: { module: shaderModule, entryPoint: 'cull_main' },
+      compute: {
+        module: shaderModule,
+        entryPoint: 'cull_main',
+        constants: {
+          USE_SUBGROUPS: CullPass.SUBGROUP_CONFIG.useSubgroups ? 1 : 0,
+          SUBGROUP_SIZE: CullPass.SUBGROUP_CONFIG.subgroupSize,
+          USE_SUBGROUP_ID: CullPass.SUBGROUP_CONFIG.useSubgroupId ? 1 : 0,
+        },
+      },
     });
 
     this.bindGroup0 = device.createBindGroup({

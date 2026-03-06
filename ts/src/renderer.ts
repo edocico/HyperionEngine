@@ -17,7 +17,7 @@ import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
-import { CullPass, TOTAL_DRAW_BUCKETS } from './render/passes/cull-pass';
+import { CullPass, TOTAL_DRAW_BUCKETS, prepareShaderSource } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
 import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
@@ -28,7 +28,7 @@ import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
-import { detectCompressedFormat } from './capabilities';
+import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
 import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
@@ -75,14 +75,29 @@ export async function createRenderer(
   // Detect compression support from adapter
   const compressedFormat = detectCompressedFormat(adapter.features);
 
-  // Request device with compression feature if available
+  // Detect subgroup support from adapter
+  const subgroupSupport = detectSubgroupSupport(adapter.features);
+
+  // Request device with compression + subgroups features if available
   const requiredFeatures: GPUFeatureName[] = [];
   if (compressedFormat === 'bc7-rgba-unorm') requiredFeatures.push('texture-compression-bc');
   else if (compressedFormat === 'astc-4x4-unorm') requiredFeatures.push('texture-compression-astc');
+  if (subgroupSupport.supported) requiredFeatures.push('subgroups' as GPUFeatureName);
 
-  const device = await adapter.requestDevice({
-    requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
-  });
+  let device: GPUDevice;
+  let useSubgroups = subgroupSupport.supported;
+  try {
+    device = await adapter.requestDevice({
+      requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
+    });
+  } catch {
+    // Subgroup request failed — retry without
+    useSubgroups = false;
+    const fallbackFeatures = requiredFeatures.filter(f => f !== ('subgroups' as GPUFeatureName));
+    device = await adapter.requestDevice({
+      requiredFeatures: fallbackFeatures.length > 0 ? fallbackFeatures : undefined,
+    });
+  }
 
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);
@@ -164,7 +179,11 @@ export async function createRenderer(
   let sceneHdrHeight = canvas.height;
 
   // --- 6. Set shader sources and setup base passes ---
-  CullPass.SHADER_SOURCE = cullShaderCode;
+  CullPass.SHADER_SOURCE = prepareShaderSource(
+    cullShaderCode,
+    useSubgroups,
+    useSubgroups && subgroupSupport.hasSubgroupId,
+  );
   ForwardPass.SHADER_SOURCES = {
     0: shaderCode,              // Quad
     1: lineShaderCode,          // Line
@@ -181,6 +200,11 @@ export async function createRenderer(
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
   const fxaaPass = new FXAATonemapPass();
+  CullPass.SUBGROUP_CONFIG = {
+    useSubgroups,
+    subgroupSize: 32,  // TODO: query actual subgroup size from adapter if API available
+    useSubgroupId: useSubgroups && subgroupSupport.hasSubgroupId,
+  };
   cullPass.setup(device, resources);
   forwardPass.setup(device, resources);
   fxaaPass.setup(device, resources);
@@ -455,7 +479,11 @@ export async function createRenderer(
     recompileShader(passName: string, shaderCode: string): void {
       switch (passName) {
         case 'cull':
-          CullPass.SHADER_SOURCE = shaderCode;
+          CullPass.SHADER_SOURCE = prepareShaderSource(
+            shaderCode,
+            useSubgroups,
+            useSubgroups && subgroupSupport.hasSubgroupId,
+          );
           break;
         case 'basic': case 'quad':
           ForwardPass.SHADER_SOURCES[0] = shaderCode;

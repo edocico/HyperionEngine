@@ -108,6 +108,30 @@ describe('prepareShaderSource', () => {
   });
 });
 
+describe('prepareShaderSource v2 (3-level)', () => {
+  it('returns unchanged source for no subgroups', () => {
+    const src = 'override USE_SUBGROUPS: bool = false;';
+    expect(prepareShaderSource(src, false, false)).toBe(src);
+  });
+
+  it('prepends enable subgroups when subgroups used but no subgroup_id', () => {
+    const src = 'override USE_SUBGROUPS: bool = false;';
+    const result = prepareShaderSource(src, true, false);
+    expect(result).toBe('enable subgroups;\n' + src);
+  });
+
+  it('prepends enable subgroups + requires subgroup_id when both available', () => {
+    const src = 'override USE_SUBGROUPS: bool = false;';
+    const result = prepareShaderSource(src, true, true);
+    expect(result).toBe('enable subgroups;\nrequires subgroup_id;\n' + src);
+  });
+
+  it('ignores subgroup_id when subgroups not supported', () => {
+    const src = 'fn main() {}';
+    expect(prepareShaderSource(src, false, true)).toBe(src);
+  });
+});
+
 describe('temporal culling', () => {
   it('computeInvalidationFlag returns true when camera teleports in X', () => {
     const prev = { x: 0, y: 0, frustumWidth: 1000 };
