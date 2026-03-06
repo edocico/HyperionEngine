@@ -13,6 +13,7 @@
 
 override USE_SUBGROUPS: bool = false;
 override SUBGROUP_SIZE: u32 = 32u;
+override USE_SUBGROUP_ID: bool = false;
 
 const NUM_PRIM_TYPES: u32 = 6u;
 const BUCKETS_PER_TYPE: u32 = 2u;   // bucket 0 = tier0 compressed, bucket 1 = other tiers
