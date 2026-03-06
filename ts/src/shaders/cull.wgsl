@@ -52,6 +52,14 @@ struct DrawIndirectArgs {
 @group(1) @binding(1) var<storage, read> dirty_bits: array<u32>;
 @group(1) @binding(2) var<storage, read_write> visibility_out: array<atomic<u32>>;
 
+// Shared memory for subgroup prefix-sum compaction.
+// Reduces global atomics from 192/workgroup (24 buckets × 8 subgroups) to
+// at most 24/workgroup (one per active bucket).
+const MAX_SUBGROUPS: u32 = 8u;  // 256 / 32
+var<workgroup> sg_counts: array<u32, 192>;    // 24 buckets * 8 subgroups
+var<workgroup> sg_prefixes: array<u32, 192>;  // exclusive prefix sums per bucket per subgroup
+var<workgroup> wg_bases: array<u32, 24>;      // global base offset per bucket
+
 @compute @workgroup_size(256)
 fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     let idx = gid.x;
@@ -112,36 +120,74 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (USE_SUBGROUPS) {
-        // Subgroup-accelerated path: reduces global atomics from N to
-        // N/SUBGROUP_SIZE by batching within each subgroup.
-        for (var p = 0u; p < NUM_PRIM_TYPES; p = p + 1u) {
-            for (var b = 0u; b < BUCKETS_PER_TYPE; b = b + 1u) {
-                for (var t = 0u; t < 2u; t = t + 1u) {
-                    let isTransp = t == 1u;
-                    let vote = select(0u, 1u, visible && primType == p && bucket == b && isTransparent == isTransp);
-                    let subOffset = subgroupExclusiveAdd(vote);
-                    let subTotal = subgroupAdd(vote);
+        // Shared-memory prefix-sum compaction: reduces global atomics from
+        // up to 192/workgroup (24 buckets × 8 subgroups) to at most
+        // 24/workgroup (one atomicAdd per active bucket).
+        //
+        // Three phases:
+        //  1. Intra-subgroup: subgroupExclusiveAdd per bucket, leader writes
+        //     per-subgroup total to sg_counts[bucket][sg_id]
+        //  2. Cross-subgroup exclusive prefix sum over sg_counts → sg_prefixes,
+        //     plus one global atomicAdd per active bucket → wg_bases
+        //  3. Re-derive intra-subgroup offset, combine with sg_prefix + wg_base
+        //     for deterministic scatter into visibleIndices
 
-                    // Opaque slots: p * 2 + b (indices 0-11)
-                    // Transparent slots: 12 + p * 2 + b (indices 12-23)
-                    let blendOffset = select(0u, OPAQUE_BUCKETS, isTransp);
-                    let argSlot = blendOffset + p * BUCKETS_PER_TYPE + b;
+        let lid = gid.x % 256u;
+        let sg_id = lid / SUBGROUP_SIZE;
+        let num_sg = 256u / SUBGROUP_SIZE;
 
-                    // Thread 0 of the subgroup (subgroupElect) does the batched atomic.
-                    // subgroupBroadcastFirst broadcasts from thread 0, so they match.
-                    var baseSlot = 0u;
-                    if (subTotal > 0u) {
-                        if (subgroupElect()) {
-                            baseSlot = atomicAdd(&drawArgs[argSlot].instanceCount, subTotal);
-                        }
-                        baseSlot = subgroupBroadcastFirst(baseSlot);
-                    }
+        // Compute this thread's bucket index (only meaningful if visible)
+        let blendOff = select(0u, OPAQUE_BUCKETS, isTransparent);
+        let myBucket = blendOff + primType * BUCKETS_PER_TYPE + bucket;
 
-                    if (vote == 1u) {
-                        let offset = argSlot * cull.maxEntitiesPerType;
-                        visibleIndices[offset + baseSlot + subOffset] = idx;
-                    }
-                }
+        // --- Phase 1: Intra-subgroup count per bucket ---
+        // All threads participate in subgroup ops (even non-visible, voting 0).
+        // The subgroup leader writes the total count to shared memory.
+        for (var bk = 0u; bk < TOTAL_BUCKETS; bk = bk + 1u) {
+            let vote = select(0u, 1u, visible && myBucket == bk);
+            let total = subgroupAdd(vote);
+            if (subgroupElect()) {
+                sg_counts[bk * MAX_SUBGROUPS + sg_id] = total;
+            }
+        }
+
+        workgroupBarrier();
+
+        // --- Phase 2: Cross-subgroup exclusive prefix sum + global reserve ---
+        // First 24 threads each handle one bucket: scan across subgroup totals,
+        // write per-subgroup prefix sums, then one atomicAdd for the whole
+        // workgroup's contribution to that bucket.
+        if (lid < TOTAL_BUCKETS) {
+            let bk = lid;
+            var running = 0u;
+            for (var s = 0u; s < num_sg; s = s + 1u) {
+                let c = sg_counts[bk * MAX_SUBGROUPS + s];
+                sg_prefixes[bk * MAX_SUBGROUPS + s] = running;
+                running = running + c;
+            }
+            // Reserve a contiguous range in the global drawArgs for this workgroup
+            if (running > 0u) {
+                wg_bases[bk] = atomicAdd(&drawArgs[bk].instanceCount, running);
+            } else {
+                wg_bases[bk] = 0u;
+            }
+        }
+
+        workgroupBarrier();
+
+        // --- Phase 3: Deterministic scatter ---
+        // Re-derive the intra-subgroup exclusive offset per bucket (same vote
+        // as Phase 1). Each visible thread writes to its computed global slot:
+        //   region + wg_base + sg_prefix + intra_offset
+        for (var bk = 0u; bk < TOTAL_BUCKETS; bk = bk + 1u) {
+            let vote = select(0u, 1u, visible && myBucket == bk);
+            let intra = subgroupExclusiveAdd(vote);
+
+            if (vote == 1u) {
+                let sg_prefix = sg_prefixes[bk * MAX_SUBGROUPS + sg_id];
+                let wg_base = wg_bases[bk];
+                let region = bk * cull.maxEntitiesPerType;
+                visibleIndices[region + wg_base + sg_prefix + intra] = idx;
             }
         }
     } else {
