@@ -54,7 +54,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (721 tests)
+cd ts && npm test                            # All vitest tests (736 tests + 5 skipped)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -64,7 +64,7 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (17 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
-cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format + subgroups (11 tests)
+cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format + subgroups + sized binding arrays (18 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
 cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager + KTX2/compressed (36 tests)
@@ -72,14 +72,14 @@ cd ts && npx vitest run src/backpressure.test.ts              # Backpressure que
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers + 2-bucket sort (12 tests)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers + 2-bucket sort + temporal culling (32 tests)
 cd ts && npx vitest run src/render/passes/scatter-pass.test.ts # ScatterPass compute (2 tests)
 cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass multi-pipeline (2 tests)
 cd ts && npx vitest run src/render/passes/fxaa-tonemap-pass.test.ts  # FXAATonemapPass (3 tests)
 cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # SelectionSeedPass (3 tests)
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
-cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum (6 tests)
+cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum + subgroup sim (10 tests)
 cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (65 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (30 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
@@ -132,6 +132,7 @@ cd ts && npx vitest run src/ring-buffer-bench.test.ts          # Ring buffer sat
 cd ts && npx vitest run src/render/passes/radix-sort-pass.test.ts  # Radix sort pass + CPU reference (20 tests)
 cd ts && npx vitest run src/ktx2-stream-loader.test.ts             # KTX2 Range-based streaming loader (13 tests)
 cd ts && npx vitest run src/texture-streaming.test.ts              # StreamingScheduler progressive textures (17 tests)
+cd ts && npx vitest run src/loro-bench.test.ts                     # Loro CRDT feasibility spike (1 test + 5 skipped)
 cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
@@ -217,6 +218,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
 
+### Crate: loro-spike (feasibility spike only)
+
+| Module | Role |
+|---|---|
+| `lib.rs` | Minimal WASM surface: `create_doc`, `apply_operations`, `export_updates`, `import_updates`. Thread-local LoroDoc storage. NOT a production dependency. |
+
 ### TypeScript: ts/src/
 
 #### Core & Public API
@@ -256,7 +263,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `game-loop.ts` | `GameLoop` — RAF lifecycle with preTick/postTick/frameEnd hooks, FPS/frame-time tracking |
 | `camera.ts` | Orthographic camera, `extractFrustumPlanes()`, `isSphereInFrustum()`, `mat4Inverse()`, `screenToRay()` |
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
-| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing, `detectSubgroupSupport()` for WebGPU subgroups |
+| `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing, `detectSubgroupSupport()` with `hasSubgroupId` for Chrome 144+ builtins, `detectSizedBindingArrays()` with empirical size probing (256→1024) |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
 | `main.ts` | Tab-based verification harness: 8-section switcher, lazy-loaded demo sections, check panel, JSON report export |
 
@@ -288,7 +295,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/jfa-pass.ts` | Single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
 | `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
-| `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan |
+| `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan. `exclusiveScanSubgroupSimCPU()` — subgroup-simulated 3-phase scan reference |
 | `render/passes/radix-sort-pass.ts` | GPU radix sort pass for transparent entities. CPU references: `floatToSortKey()`, `makeTransparentSortKey()`, `cpuRadixSort()`. Ping-pong buffer pairs, 4-pass 8-bit radix |
 | `render/passes/scatter-pass.ts` | GPU scatter compute pass: writes dirty staging data to SoA buffers, grow-only buffers, 2-bind-group layout |
 | `particle-types.ts` | `ParticleHandle`, `ParticleEmitterConfig`, `DEFAULT_PARTICLE_CONFIG`, `PARTICLE_STRIDE_BYTES=48` |
@@ -391,7 +398,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `bloom.wgsl` | Dual Kawase bloom (5 entry points), tonemap + FXAA |
 | `particle-simulate.wgsl` | Compute: PCG hash PRNG, gravity, color/size interpolation (48 B/particle) |
 | `particle-render.wgsl` | Instanced point-sprite circles, dead particle clipping |
-| `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) |
+| `prefix-sum.wgsl` | Blelloch prefix sum (workgroup-level, 512 elements) + `prefix_sum_subgroups` entry point with `subgroupExclusiveAdd` |
+| `basic-binding-array.wgsl` | Design artifact: sized binding array texture sampling (not wired into ForwardPass, documents target WGSL structure) |
 | `radix-sort.wgsl` | Compute: GPU radix sort for transparent entity ordering. 3 entry points (histogram, prefix_sum, scatter), float_to_sort_key sign-aware conversion, composite sort key |
 | `scatter.wgsl` | Compute: dirty entity data scatter from compact staging to SoA buffers, format=0 compressed 2D reconstruct / format=1 direct mat4x4 copy |
 
@@ -455,6 +463,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Depth SoA column not in scatter staging buffer** — The 32 u32/entity staging format has no room for depth. Depth is updated via `write_slot`/`write_slot_2d` only, not the GPU scatter path.
 - **Temporal culling dirty bits must be uploaded BEFORE `DirtyTracker.clear()`** — Tick loop ordering: collect → upload SoA → upload dirty bits → clear → cull dispatch. Clearing first would make all entities appear clean.
 - **`__DEV__` is a Vite compile-time constant** — `true` in dev/test, `false` in production builds. Use `typeof __DEV__ !== 'undefined'` guard when checking outside Vite context.
+- **`prefix_sum_subgroups` entry point requires `enable subgroups;`** — The directive is NOT in `prefix-sum.wgsl`. Must be prepended at pipeline creation time (same pattern as `cull.wgsl`). Without it, WGSL validation fails on non-subgroup devices.
+- **Cull shader shared-memory arrays sized for MAX_SUBGROUPS=8** — `sg_counts[192]` = 24 buckets × 8 subgroups. If future hardware has >8 subgroups per workgroup at size 256, arrays must grow.
+- **`detectSizedBindingArrays` uses try/catch on `createBindGroupLayout`** — The W3C proposal (`bindingArraySize`) isn't finalized. The probe creates throwaway layouts. Safe on current Chrome/Firefox (throws cleanly). Cast to `any` bypasses TypeScript strict typing.
+- **`basic-binding-array.wgsl` is a design artifact only** — NOT imported anywhere. Not in `renderer.ts` SHADER_SOURCES. Exists to document target WGSL structure for when browsers ship `bindingArraySize`.
+- **`loro-spike` crate is NOT part of the main build** — In workspace but not a dependency of `hyperion-core`. The WASM output (`ts/loro-spike-wasm/`) is gitignored. The crate exists solely for binary size measurement.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -524,6 +537,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Progressive KTX2 is a TODO** — Priority queue is implemented; HTTP Range-based progressive loading deferred to future work.
 - **Cull shader override constants** — `USE_SUBGROUPS` and `SUBGROUP_SIZE` are pipeline-overridable. `if (USE_SUBGROUPS)` is compile-time branching (dead code eliminated). `subgroupElect()` + `subgroupBroadcastFirst()` ensure atomic-doer and broadcast source match.
 - **Ring buffer benchmark confirms 22% peak utilization** — At 10k entities / 100% movement / 1MB buffer. Transport layer is not the bottleneck.
+- **Cull shader Phase 14a: 3-phase shared-memory prefix-sum replaces per-subgroup atomics** — Phase 1: intra-subgroup `subgroupAdd(vote)`, leader writes to `sg_counts`. Phase 2: first 24 threads compute exclusive prefix across subgroups, one `atomicAdd` per active bucket. Phase 3: deterministic scatter via `wg_base + sg_prefix + intra_offset`. ~8× fewer atomics at 80%+ visibility.
+- **`SizedBindingArraySupport.maxSize` probed empirically** — Tries 256, 512, 1024 via `createBindGroupLayout`. Stops at first failure. Current browsers return `supported=false` (proposal-stage).
+- **Loro CRDT WASM binary: 664KB gzipped (5.7× over budget)** — Monolithic, 127 transitive deps. Not viable in WASM. Alternative: JS-side sync library as optional plugin via hook-based integration.
 
 ## Conventions
 
@@ -564,7 +580,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 13 (Optimization Tier 3) complete. Next: Phase 14 per masterplan.**
+**Current: Phase 14 (Tech Integrations) complete. Next: Phase 15 per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -584,6 +600,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 11 | Optimization Tier 1 | SIMD128 activation, wasm-opt build pipeline, SpatialGrid broadphase, ring buffer profiling, WebGPU subgroup compute path |
 | 12 | Optimization Tier 2 | GPU scatter upload (DirtyTracker + stable slots + swap-remove), compressed 2D transforms, 2-bucket material sort, batch spawn, texture priority queue |
 | 13 | Optimization Tier 3 | Command coalescing, Transform2D (20B 2D archetype), GPU radix sort (transparency), temporal culling (skip-bounds), sized binding array stub, KTX2 streaming (Range requests + mipmap), `__DEV__` debug elimination |
+| 14a | Tech Integrations: Subgroups v2 + Binding Arrays | Cull shader shared-memory prefix-sum compaction (8× fewer atomics), `hasSubgroupId` detection for Chrome 144+ builtins, `USE_SUBGROUP_ID` override constant, `SizedBindingArraySupport` with empirical probing, `basic-binding-array.wgsl` design artifact |
+| 14b | Tech Integrations: Loro CRDT Spike | Feasibility spike: 664KB gzipped (5.7× over 120KB budget) — **FAIL**. Loro monolithic, no container cherry-picking. Recommendation: JS-side sync plugin (Yjs/Automerge/Loro-JS) via `Hyperion.onCommand` hook |
 
 ## Documentation
 
@@ -591,5 +609,6 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11, 12, 13). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11, 12, 13, 14). Historical reference for implementation decisions.
+- `docs/plans/2026-03-06-phase14b-loro-results.md` — Loro CRDT feasibility spike results (FAIL: 664KB gzipped, 5.7× over budget).
 - `hyperion-masterplan.md` — Authoritative high-level reference for all phases (0-20+). Optimization strategy in §17.
