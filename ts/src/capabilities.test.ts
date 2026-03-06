@@ -131,8 +131,55 @@ describe("detectSubgroupSupport v2 (subgroup_id builtins)", () => {
 });
 
 describe("detectSizedBindingArrays", () => {
-  it("returns false (proposal not yet shipped)", () => {
-    const mockDevice = { features: new Set() } as unknown as GPUDevice;
-    expect(detectSizedBindingArrays(mockDevice)).toBe(false);
+  it("returns supported=false and maxSize=0 when feature not available", () => {
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => { throw new Error("not supported"); },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(false);
+    expect(result.maxSize).toBe(0);
+  });
+
+  it("returns supported=true when createBindGroupLayout accepts bindingArraySize", () => {
+    const mockLayout = {};
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => mockLayout,
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBeGreaterThanOrEqual(256);
+  });
+
+  it("probes maxSize up to 1024", () => {
+    let callCount = 0;
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => {
+        callCount++;
+        return {};
+      },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBe(1024);
+    // Initial probe (256) + 2 size probes (512, 1024) = 3 calls
+    expect(callCount).toBe(3);
+  });
+
+  it("stops probing at first failure", () => {
+    let callCount = 0;
+    const mockDevice = {
+      features: new Set(),
+      createBindGroupLayout: () => {
+        callCount++;
+        if (callCount > 1) throw new Error("too large");
+        return {};
+      },
+    } as unknown as GPUDevice;
+    const result = detectSizedBindingArrays(mockDevice);
+    expect(result.supported).toBe(true);
+    expect(result.maxSize).toBe(256);
   });
 });

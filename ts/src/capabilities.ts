@@ -114,12 +114,49 @@ export function detectSubgroupSupport(
 }
 
 /**
- * Detect WebGPU sized binding arrays support.
- * W3C proposal, not yet shipped in any browser (March 2026).
- * When available, detection will likely be via device.features
- * or try/catch on createBindGroupLayout with bindingArraySize.
- * See: gpuweb/proposals/sized-binding-arrays.md
+ * Result of sized binding array feature detection.
  */
-export function detectSizedBindingArrays(_device: GPUDevice): boolean {
-  return false;
+export interface SizedBindingArraySupport {
+  supported: boolean;
+  /** Maximum binding array size (0 if unsupported). Discovery is empirical. */
+  maxSize: number;
+}
+
+/**
+ * Detect WebGPU sized binding arrays support.
+ * Uses try/catch on createBindGroupLayout with bindingArraySize.
+ * W3C proposal hasn't finalized the limit name, so maxSize is probed empirically.
+ */
+export function detectSizedBindingArrays(device: GPUDevice): SizedBindingArraySupport {
+  // Use numeric constant 0x2 for GPUShaderStage.FRAGMENT to avoid
+  // ReferenceError in environments without WebGPU globals (e.g., tests).
+  const FRAGMENT = 0x2;
+  try {
+    device.createBindGroupLayout({
+      entries: [{
+        binding: 0,
+        visibility: FRAGMENT,
+        texture: { bindingArraySize: 256 } as any,
+      }],
+    });
+    // Probe max size: try 256, 512, 1024
+    let maxSize = 256;
+    for (const size of [512, 1024]) {
+      try {
+        device.createBindGroupLayout({
+          entries: [{
+            binding: 0,
+            visibility: FRAGMENT,
+            texture: { bindingArraySize: size } as any,
+          }],
+        });
+        maxSize = size;
+      } catch {
+        break;
+      }
+    }
+    return { supported: true, maxSize };
+  } catch {
+    return { supported: false, maxSize: 0 };
+  }
 }
