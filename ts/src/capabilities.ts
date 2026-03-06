@@ -92,19 +92,25 @@ export function detectCompressedFormat(
  */
 export interface SubgroupSupport {
   supported: boolean;
+  /** Chrome 144+: @builtin(subgroup_id) and @builtin(num_subgroups) available */
+  hasSubgroupId: boolean;
 }
 
 /**
- * Detect whether the GPU adapter supports the `subgroups` WebGPU feature.
- * This enables `subgroupExclusiveAdd()`, `subgroupAdd()`, etc. in compute shaders.
+ * Detect whether the GPU adapter supports subgroup operations.
  *
- * Note: At `requestDevice()` time, the caller must add `'subgroups'` to
- * `requiredFeatures` if detection returns `supported: true`.
+ * - `supported`: adapter has 'subgroups' feature (subgroupExclusiveAdd, etc.)
+ * - `hasSubgroupId`: WGSL has 'subgroup_id' language feature (Chrome 144+)
+ *
+ * At `requestDevice()` time, add `'subgroups'` to `requiredFeatures` if supported.
  */
 export function detectSubgroupSupport(
   adapterFeatures: ReadonlySet<string>,
 ): SubgroupSupport {
-  return { supported: adapterFeatures.has('subgroups') };
+  const supported = adapterFeatures.has('subgroups');
+  const hasSubgroupId = supported &&
+    !!(navigator as any).gpu?.wgslLanguageFeatures?.has('subgroup_id');
+  return { supported, hasSubgroupId };
 }
 
 /**

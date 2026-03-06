@@ -68,17 +68,65 @@ describe("detectCompressedFormat", () => {
 describe("detectSubgroupSupport", () => {
   it("returns supported=false when feature not present", () => {
     const features = new Set<string>();
-    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
   });
 
   it("returns supported=true when subgroups feature present", () => {
     const features = new Set<string>(["subgroups"]);
-    expect(detectSubgroupSupport(features)).toEqual({ supported: true });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(true);
+    expect(result.hasSubgroupId).toBe(false);
   });
 
   it("returns supported=false for subgroups-f16-only (not what we need)", () => {
     const features = new Set<string>(["subgroups-f16"]);
-    expect(detectSubgroupSupport(features)).toEqual({ supported: false });
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
+  });
+});
+
+describe("detectSubgroupSupport v2 (subgroup_id builtins)", () => {
+  it("returns hasSubgroupId=false when wgslLanguageFeatures not available", () => {
+    const features = new Set<string>(["subgroups"]);
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(true);
+    expect(result.hasSubgroupId).toBe(false);
+  });
+
+  it("returns hasSubgroupId=true when subgroup_id in wgslLanguageFeatures", () => {
+    const origGpu = (navigator as any).gpu;
+    const hadGpu = 'gpu' in navigator;
+    Object.defineProperty(navigator, 'gpu', {
+      value: { wgslLanguageFeatures: new Set(["subgroup_id"]) },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      const features = new Set<string>(["subgroups"]);
+      const result = detectSubgroupSupport(features);
+      expect(result.supported).toBe(true);
+      expect(result.hasSubgroupId).toBe(true);
+    } finally {
+      if (hadGpu) {
+        Object.defineProperty(navigator, 'gpu', {
+          value: origGpu,
+          writable: true,
+          configurable: true,
+        });
+      } else {
+        delete (navigator as any).gpu;
+      }
+    }
+  });
+
+  it("returns hasSubgroupId=false when subgroups not supported", () => {
+    const features = new Set<string>();
+    const result = detectSubgroupSupport(features);
+    expect(result.supported).toBe(false);
+    expect(result.hasSubgroupId).toBe(false);
   });
 });
 
