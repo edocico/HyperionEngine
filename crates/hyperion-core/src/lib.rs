@@ -463,6 +463,34 @@ pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
+// ── Physics WASM exports ────────────────────────────────────────
+
+/// Configure physics gravity and scale.
+/// Call after engine_init(), before the first engine_update().
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_configure(gravity_x: f32, gravity_y: f32, pixels_per_meter: f32) {
+    // SAFETY: wasm32 is single-threaded; no concurrent access.
+    unsafe {
+        if let Some(ref mut engine) = *addr_of_mut!(ENGINE) {
+            engine.physics.gravity = rapier2d::math::Vector::new(gravity_x, gravity_y);
+            engine.physics.integration_parameters.length_unit = pixels_per_meter;
+        }
+    }
+}
+
+/// Returns the number of active rigid bodies in the physics world.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_body_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.physics.body_count())
+    }
+}
+
 // ── Dev-tools WASM exports ──────────────────────────────────────
 
 /// Returns the number of active entities (dev-tools only).
