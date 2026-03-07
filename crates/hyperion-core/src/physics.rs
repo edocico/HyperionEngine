@@ -309,6 +309,30 @@ mod world {
             results.len() as u32
         }
 
+        /// Find all entities whose colliders overlap a circle at (cx, cy) with given radius.
+        /// Returns the count; entity IDs written to OVERLAP_RESULTS (deduplicated, shared with overlap_aabb).
+        pub fn overlap_circle(&self, cx: f32, cy: f32, radius: f32) -> u32 {
+            let qp = self.broad_phase.as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.rigid_body_set,
+                &self.collider_set,
+                QueryFilter::default(),
+            );
+            let shape = Ball::new(radius);
+            let pose = Pose::translation(cx, cy);
+            // SAFETY: wasm32 is single-threaded
+            let results = unsafe { &mut *addr_of_mut!(OVERLAP_RESULTS) };
+            results.clear();
+            for (col_handle, _collider) in qp.intersect_shape(pose, &shape) {
+                if let Some(ext_id) = self.collider_handle_to_entity(col_handle) {
+                    results.push(ext_id);
+                }
+            }
+            results.sort_unstable();
+            results.dedup();
+            results.len() as u32
+        }
+
         // --- Private event translation helpers ---
 
         fn collider_handle_to_entity(&self, handle: ColliderHandle) -> Option<u32> {
@@ -1130,5 +1154,57 @@ mod tests {
         let occurrences = results.iter().filter(|&&id| id == 99).count();
         assert_eq!(occurrences, 1, "entity should be deduplicated, found {} times", occurrences);
         assert_eq!(count as usize, results.len());
+    }
+
+    // --- Circle overlap tests ---
+
+    #[test]
+    fn overlap_circle_finds_entities() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        let rb = RigidBodyBuilder::fixed()
+            .translation(Vector::new(50.0, 0.0))
+            .build();
+        let handle = pw.rigid_body_set.insert(rb);
+        let col = ColliderBuilder::ball(5.0).build();
+        let col_handle = pw.collider_set.insert_with_parent(
+            col, handle, &mut pw.rigid_body_set,
+        );
+        let idx = col_handle.0.into_raw_parts().0 as usize;
+        pw.collider_to_entity.resize(idx + 1, None);
+        pw.collider_to_entity[idx] = Some(77);
+
+        pw.step();
+
+        let count = pw.overlap_circle(50.0, 0.0, 20.0);
+        assert!(count >= 1, "expected at least 1 entity, got {}", count);
+        let results = unsafe { &*std::ptr::addr_of!(super::world::OVERLAP_RESULTS) };
+        assert!(results.contains(&77));
+    }
+
+    #[test]
+    fn overlap_circle_excludes_outside() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        let rb = RigidBodyBuilder::fixed()
+            .translation(Vector::new(1000.0, 1000.0))
+            .build();
+        let handle = pw.rigid_body_set.insert(rb);
+        let col = ColliderBuilder::ball(5.0).build();
+        let col_handle = pw.collider_set.insert_with_parent(
+            col, handle, &mut pw.rigid_body_set,
+        );
+        let idx = col_handle.0.into_raw_parts().0 as usize;
+        pw.collider_to_entity.resize(idx + 1, None);
+        pw.collider_to_entity[idx] = Some(88);
+
+        pw.step();
+
+        let count = pw.overlap_circle(0.0, 0.0, 10.0);
+        assert_eq!(count, 0, "expected 0 entities, got {}", count);
     }
 }
