@@ -21,7 +21,7 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 17; // CommandType values: 0..16
+const MAX_COMMAND_TYPE = 42; // CommandType values: 0..41
 
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];

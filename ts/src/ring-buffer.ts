@@ -30,10 +30,43 @@ export const enum CommandType {
   SetRotation2D = 14,
   SetTransparent = 15,
   SetDepth = 16,
+
+  // Physics: body
+  CreateRigidBody = 17,
+  DestroyRigidBody = 18,
+  CreateCollider = 19,
+  DestroyCollider = 20,
+  SetLinearDamping = 21,
+  SetAngularDamping = 22,
+  SetGravityScale = 23,
+  SetCCDEnabled = 24,
+  ApplyForce = 25,
+  ApplyImpulse = 26,
+  ApplyTorque = 27,
+
+  // Physics: collider overrides
+  SetColliderSensor = 28,
+  SetColliderDensity = 29,
+  SetColliderRestitution = 30,
+  SetColliderFriction = 31,
+  SetCollisionGroups = 32,
+
+  // Physics: joints
+  CreateRevoluteJoint = 33,
+  CreatePrismaticJoint = 34,
+  CreateFixedJoint = 35,
+  CreateRopeJoint = 36,
+  RemoveJoint = 37,
+  SetJointMotor = 38,
+  SetJointLimits = 39,
+
+  // Physics: character controller
+  MoveCharacter = 40,
+  SetCharacterConfig = 41,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
-const PAYLOAD_SIZES: Record<CommandType, number> = {
+export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.Noop]: 0,
   [CommandType.SpawnEntity]: 1,   // u8: 0=3D, 1=2D
   [CommandType.DespawnEntity]: 0,
@@ -51,6 +84,39 @@ const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetRotation2D]: 4,
   [CommandType.SetTransparent]: 1,
   [CommandType.SetDepth]: 4,
+
+  // Physics: body
+  [CommandType.CreateRigidBody]: 1,
+  [CommandType.DestroyRigidBody]: 0,
+  [CommandType.CreateCollider]: 16,
+  [CommandType.DestroyCollider]: 0,
+  [CommandType.SetLinearDamping]: 4,
+  [CommandType.SetAngularDamping]: 4,
+  [CommandType.SetGravityScale]: 4,
+  [CommandType.SetCCDEnabled]: 1,
+  [CommandType.ApplyForce]: 8,
+  [CommandType.ApplyImpulse]: 8,
+  [CommandType.ApplyTorque]: 4,
+
+  // Physics: collider overrides
+  [CommandType.SetColliderSensor]: 1,
+  [CommandType.SetColliderDensity]: 4,
+  [CommandType.SetColliderRestitution]: 4,
+  [CommandType.SetColliderFriction]: 4,
+  [CommandType.SetCollisionGroups]: 4,
+
+  // Physics: joints
+  [CommandType.CreateRevoluteJoint]: 12,
+  [CommandType.CreatePrismaticJoint]: 12,
+  [CommandType.CreateFixedJoint]: 4,
+  [CommandType.CreateRopeJoint]: 8,
+  [CommandType.RemoveJoint]: 0,
+  [CommandType.SetJointMotor]: 8,
+  [CommandType.SetJointLimits]: 8,
+
+  // Physics: character controller
+  [CommandType.MoveCharacter]: 8,
+  [CommandType.SetCharacterConfig]: 12,
 };
 
 export class RingBufferProducer {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN, extractUnread } from "./ring-buffer";
+import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN, extractUnread, PAYLOAD_SIZES } from "./ring-buffer";
 
 const HEADER_SIZE = 32;
 const CAPACITY = 256;
@@ -285,5 +285,31 @@ describe("RingBufferProducer", () => {
     expect(view.getFloat32(5, true)).toBeCloseTo(1.5);
     expect(view.getFloat32(9, true)).toBeCloseTo(2.5);
     expect(view.getFloat32(13, true)).toBeCloseTo(3.5);
+  });
+});
+
+describe('physics CommandTypes', () => {
+  it('should have matching payload sizes for all physics commands', () => {
+    // Physics commands 17-41 must all exist and have payload <= 16
+    const physicsCommands = [
+      CommandType.CreateRigidBody, CommandType.DestroyRigidBody,
+      CommandType.CreateCollider, CommandType.DestroyCollider,
+      CommandType.SetLinearDamping, CommandType.SetAngularDamping,
+      CommandType.SetGravityScale, CommandType.SetCCDEnabled,
+      CommandType.ApplyForce, CommandType.ApplyImpulse, CommandType.ApplyTorque,
+      CommandType.SetColliderSensor, CommandType.SetColliderDensity,
+      CommandType.SetColliderRestitution, CommandType.SetColliderFriction,
+      CommandType.SetCollisionGroups,
+      CommandType.CreateRevoluteJoint, CommandType.CreatePrismaticJoint,
+      CommandType.CreateFixedJoint, CommandType.CreateRopeJoint,
+      CommandType.RemoveJoint, CommandType.SetJointMotor, CommandType.SetJointLimits,
+      CommandType.MoveCharacter, CommandType.SetCharacterConfig,
+    ];
+    expect(physicsCommands).toHaveLength(25);
+    for (const cmd of physicsCommands) {
+      expect(cmd).toBeGreaterThanOrEqual(17);
+      expect(cmd).toBeLessThanOrEqual(41);
+      expect(PAYLOAD_SIZES[cmd]).toBeLessThanOrEqual(16);
+    }
   });
 });
