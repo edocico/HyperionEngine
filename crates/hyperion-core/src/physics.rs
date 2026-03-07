@@ -126,12 +126,15 @@ mod world {
     }  // 12 bytes total, 4-byte aligned
 
     /// Contact force event translated to external entity IDs.
-    #[derive(Debug, Clone, PartialEq)]
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct HyperionContactForceEvent {
-        pub entity_a: u32,
-        pub entity_b: u32,
-        pub total_force_magnitude: f32,
-    }
+        pub entity_a: u32,                  // 4B
+        pub entity_b: u32,                  // 4B
+        pub total_force_magnitude: f32,     // 4B
+        pub max_force_direction_x: f32,     // 4B
+        pub max_force_direction_y: f32,     // 4B
+    }  // 20 bytes total, naturally aligned
 
     /// Wraps the complete Rapier2D simulation state.
     ///
@@ -283,6 +286,8 @@ mod world {
                     entity_a,
                     entity_b,
                     total_force_magnitude: event.total_force_magnitude,
+                    max_force_direction_x: event.max_force_direction.x,
+                    max_force_direction_y: event.max_force_direction.y,
                 });
             }
         }
@@ -906,5 +911,10 @@ mod tests {
         };
         assert_eq!(evt.is_sensor, 1);
         assert_eq!(evt.event_type, 0);
+    }
+
+    #[test]
+    fn contact_force_event_repr_c_size() {
+        assert_eq!(std::mem::size_of::<HyperionContactForceEvent>(), 20);
     }
 }
