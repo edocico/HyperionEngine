@@ -917,4 +917,54 @@ mod tests {
     fn contact_force_event_repr_c_size() {
         assert_eq!(std::mem::size_of::<HyperionContactForceEvent>(), 20);
     }
+
+    #[test]
+    fn sensor_event_flagged_correctly() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        // Body A: dynamic with sensor collider
+        let rb_a = RigidBodyBuilder::dynamic()
+            .translation(Vector::new(0.0, 0.0))
+            .build();
+        let handle_a = pw.rigid_body_set.insert(rb_a);
+        let col_a = ColliderBuilder::ball(10.0)
+            .sensor(true)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .build();
+        let col_handle_a = pw.collider_set.insert_with_parent(
+            col_a, handle_a, &mut pw.rigid_body_set,
+        );
+
+        // Body B: dynamic with normal collider, overlapping
+        let rb_b = RigidBodyBuilder::dynamic()
+            .translation(Vector::new(5.0, 0.0))
+            .build();
+        let handle_b = pw.rigid_body_set.insert(rb_b);
+        let col_b = ColliderBuilder::ball(10.0)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .build();
+        let col_handle_b = pw.collider_set.insert_with_parent(
+            col_b, handle_b, &mut pw.rigid_body_set,
+        );
+
+        // Register reverse mapping
+        let idx_a = col_handle_a.0.into_raw_parts().0 as usize;
+        let idx_b = col_handle_b.0.into_raw_parts().0 as usize;
+        let max_idx = idx_a.max(idx_b);
+        pw.collider_to_entity.resize(max_idx + 1, None);
+        pw.collider_to_entity[idx_a] = Some(10);
+        pw.collider_to_entity[idx_b] = Some(20);
+
+        pw.step();
+
+        assert!(
+            !pw.frame_collision_events.is_empty(),
+            "expected sensor collision event"
+        );
+        let evt = &pw.frame_collision_events[0];
+        assert_eq!(evt.is_sensor, 1, "sensor flag should be set");
+        assert_eq!(evt.event_type, 0, "should be a started event");
+    }
 }
