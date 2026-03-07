@@ -7,6 +7,8 @@ pub mod components;
 pub mod engine;
 #[cfg(feature = "physics-2d")]
 pub mod physics;
+#[cfg(feature = "physics-2d")]
+pub mod physics_commands;
 pub mod render_state;
 pub mod ring_buffer;
 pub mod systems;
