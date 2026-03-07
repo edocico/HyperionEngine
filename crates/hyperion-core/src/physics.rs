@@ -117,6 +117,7 @@ mod world {
 
     // SAFETY: wasm32 is single-threaded; static buffers accessed only from main thread.
     pub(crate) static mut RAYCAST_RESULT: [f32; 3] = [0.0; 3]; // [toi, normal_x, normal_y]
+    pub(crate) static mut OVERLAP_RESULTS: Vec<u32> = Vec::new();
 
     /// Collision event translated to external entity IDs.
     #[repr(C)]
@@ -283,6 +284,29 @@ mod world {
                 }
                 None => -1,
             }
+        }
+
+        /// Find all entities whose colliders overlap the given AABB.
+        /// Returns the count; entity IDs written to OVERLAP_RESULTS (deduplicated).
+        pub fn overlap_aabb(&self, min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> u32 {
+            let qp = self.broad_phase.as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.rigid_body_set,
+                &self.collider_set,
+                QueryFilter::default(),
+            );
+            let aabb = Aabb::new(Vector::new(min_x, min_y), Vector::new(max_x, max_y));
+            // SAFETY: wasm32 is single-threaded
+            let results = unsafe { &mut *addr_of_mut!(OVERLAP_RESULTS) };
+            results.clear();
+            for (col_handle, _collider) in qp.intersect_aabb_conservative(aabb) {
+                if let Some(ext_id) = self.collider_handle_to_entity(col_handle) {
+                    results.push(ext_id);
+                }
+            }
+            results.sort_unstable();
+            results.dedup();
+            results.len() as u32
         }
 
         // --- Private event translation helpers ---
@@ -1039,5 +1063,72 @@ mod tests {
 
         let entity_id = pw.raycast(0.0, 0.0, 1.0, 0.0, 100.0);
         assert_eq!(entity_id, -1);
+    }
+
+    // --- AABB overlap tests ---
+
+    #[test]
+    fn overlap_aabb_finds_entities() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        for (x, ext_id) in [(50.0, 10u32), (80.0, 20u32)] {
+            let rb = RigidBodyBuilder::fixed()
+                .translation(Vector::new(x, 0.0))
+                .build();
+            let handle = pw.rigid_body_set.insert(rb);
+            let col = ColliderBuilder::ball(5.0).build();
+            let col_handle = pw.collider_set.insert_with_parent(
+                col, handle, &mut pw.rigid_body_set,
+            );
+            let idx = col_handle.0.into_raw_parts().0 as usize;
+            if idx >= pw.collider_to_entity.len() {
+                pw.collider_to_entity.resize(idx + 1, None);
+            }
+            pw.collider_to_entity[idx] = Some(ext_id);
+        }
+
+        pw.step();
+
+        let count = pw.overlap_aabb(0.0, -50.0, 100.0, 50.0);
+        assert!(count >= 2, "expected at least 2 entities, got {}", count);
+
+        let results = unsafe { &*std::ptr::addr_of!(super::world::OVERLAP_RESULTS) };
+        assert!(results.contains(&10));
+        assert!(results.contains(&20));
+    }
+
+    #[test]
+    fn overlap_aabb_deduplicates() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        let rb = RigidBodyBuilder::fixed()
+            .translation(Vector::new(50.0, 0.0))
+            .build();
+        let handle = pw.rigid_body_set.insert(rb);
+
+        let col1 = ColliderBuilder::ball(5.0).build();
+        let ch1 = pw.collider_set.insert_with_parent(col1, handle, &mut pw.rigid_body_set);
+        let col2 = ColliderBuilder::ball(3.0).build();
+        let ch2 = pw.collider_set.insert_with_parent(col2, handle, &mut pw.rigid_body_set);
+
+        for ch in [ch1, ch2] {
+            let idx = ch.0.into_raw_parts().0 as usize;
+            if idx >= pw.collider_to_entity.len() {
+                pw.collider_to_entity.resize(idx + 1, None);
+            }
+            pw.collider_to_entity[idx] = Some(99);
+        }
+
+        pw.step();
+
+        let count = pw.overlap_aabb(0.0, -50.0, 100.0, 50.0);
+        let results = unsafe { &*std::ptr::addr_of!(super::world::OVERLAP_RESULTS) };
+        let occurrences = results.iter().filter(|&&id| id == 99).count();
+        assert_eq!(occurrences, 1, "entity should be deduplicated, found {} times", occurrences);
+        assert_eq!(count as usize, results.len());
     }
 }
