@@ -624,6 +624,35 @@ fn process_single_command(
                 }
             }
         }
+
+        // Physics commands (17-41) — parsed and forwarded to PhysicsWorld when implemented.
+        CommandType::CreateRigidBody
+        | CommandType::DestroyRigidBody
+        | CommandType::CreateCollider
+        | CommandType::DestroyCollider
+        | CommandType::SetLinearDamping
+        | CommandType::SetAngularDamping
+        | CommandType::SetGravityScale
+        | CommandType::SetCCDEnabled
+        | CommandType::ApplyForce
+        | CommandType::ApplyImpulse
+        | CommandType::ApplyTorque
+        | CommandType::SetColliderSensor
+        | CommandType::SetColliderDensity
+        | CommandType::SetColliderRestitution
+        | CommandType::SetColliderFriction
+        | CommandType::SetCollisionGroups
+        | CommandType::CreateRevoluteJoint
+        | CommandType::CreatePrismaticJoint
+        | CommandType::CreateFixedJoint
+        | CommandType::CreateRopeJoint
+        | CommandType::RemoveJoint
+        | CommandType::SetJointMotor
+        | CommandType::SetJointLimits
+        | CommandType::MoveCharacter
+        | CommandType::SetCharacterConfig => {
+            // TODO: forward to PhysicsWorld (Phase 15)
+        }
     }
 }
 

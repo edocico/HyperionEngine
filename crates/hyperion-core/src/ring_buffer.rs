@@ -49,6 +49,39 @@ pub enum CommandType {
     SetRotation2D = 14,       // f32 angle (radians)
     SetTransparent = 15,      // u8: 0=opaque, 1=transparent
     SetDepth = 16,            // f32 z depth for 2.5D ordering
+
+    // ── Physics: body commands ──
+    CreateRigidBody = 17,       // 1B: body_type (0=dynamic, 1=fixed, 2=kinematic)
+    DestroyRigidBody = 18,      // 0B
+    CreateCollider = 19,        // 16B max: shape_type(1B) + params(up to 12B)
+    DestroyCollider = 20,       // 0B
+    SetLinearDamping = 21,      // 4B: f32
+    SetAngularDamping = 22,     // 4B: f32
+    SetGravityScale = 23,       // 4B: f32
+    SetCCDEnabled = 24,         // 1B: u8 bool
+    ApplyForce = 25,            // 8B: fx(f32) + fy(f32)
+    ApplyImpulse = 26,          // 8B: ix(f32) + iy(f32)
+    ApplyTorque = 27,           // 4B: f32
+
+    // ── Physics: collider overrides ──
+    SetColliderSensor = 28,     // 1B: u8 bool
+    SetColliderDensity = 29,    // 4B: f32
+    SetColliderRestitution = 30, // 4B: f32
+    SetColliderFriction = 31,   // 4B: f32
+    SetCollisionGroups = 32,    // 4B: membership(u16) + filter(u16)
+
+    // ── Physics: joints ──
+    CreateRevoluteJoint = 33,   // 12B: entity_b(u32) + anchor_a(f32,f32)
+    CreatePrismaticJoint = 34,  // 12B: entity_b(u32) + axis(f32,f32)
+    CreateFixedJoint = 35,      // 4B: entity_b(u32)
+    CreateRopeJoint = 36,       // 8B: entity_b(u32) + max_dist(f32)
+    RemoveJoint = 37,           // 0B
+    SetJointMotor = 38,         // 8B: target_vel(f32) + max_force(f32)
+    SetJointLimits = 39,        // 8B: min(f32) + max(f32)
+
+    // ── Physics: character controller ──
+    MoveCharacter = 40,         // 8B: dx(f32) + dy(f32)
+    SetCharacterConfig = 41,    // 12B: autostep_h(f32) + max_slope(f32) + snap(f32)
 }
 
 impl CommandType {
@@ -72,6 +105,35 @@ impl CommandType {
             14 => Some(Self::SetRotation2D),
             15 => Some(Self::SetTransparent),
             16 => Some(Self::SetDepth),
+            // Physics: body commands
+            17 => Some(Self::CreateRigidBody),
+            18 => Some(Self::DestroyRigidBody),
+            19 => Some(Self::CreateCollider),
+            20 => Some(Self::DestroyCollider),
+            21 => Some(Self::SetLinearDamping),
+            22 => Some(Self::SetAngularDamping),
+            23 => Some(Self::SetGravityScale),
+            24 => Some(Self::SetCCDEnabled),
+            25 => Some(Self::ApplyForce),
+            26 => Some(Self::ApplyImpulse),
+            27 => Some(Self::ApplyTorque),
+            // Physics: collider overrides
+            28 => Some(Self::SetColliderSensor),
+            29 => Some(Self::SetColliderDensity),
+            30 => Some(Self::SetColliderRestitution),
+            31 => Some(Self::SetColliderFriction),
+            32 => Some(Self::SetCollisionGroups),
+            // Physics: joints
+            33 => Some(Self::CreateRevoluteJoint),
+            34 => Some(Self::CreatePrismaticJoint),
+            35 => Some(Self::CreateFixedJoint),
+            36 => Some(Self::CreateRopeJoint),
+            37 => Some(Self::RemoveJoint),
+            38 => Some(Self::SetJointMotor),
+            39 => Some(Self::SetJointLimits),
+            // Physics: character controller
+            40 => Some(Self::MoveCharacter),
+            41 => Some(Self::SetCharacterConfig),
             _ => None,
         }
     }
@@ -92,6 +154,25 @@ impl CommandType {
             Self::SetRotation2D => 4,       // 1 × f32
             Self::SetTransparent => 1,      // 1 × u8
             Self::SetDepth => 4,            // 1 × f32
+            // Physics: body commands
+            Self::CreateRigidBody => 1,     // body_type u8
+            Self::DestroyRigidBody | Self::DestroyCollider | Self::RemoveJoint => 0,
+            Self::CreateCollider => 16,     // shape_type(1B) + params(up to 12B)
+            Self::SetLinearDamping | Self::SetAngularDamping | Self::SetGravityScale
+            | Self::ApplyTorque => 4,       // 1 × f32
+            Self::SetCCDEnabled | Self::SetColliderSensor => 1, // u8 bool
+            Self::ApplyForce | Self::ApplyImpulse => 8, // 2 × f32
+            // Physics: collider overrides
+            Self::SetColliderDensity | Self::SetColliderRestitution
+            | Self::SetColliderFriction | Self::SetCollisionGroups => 4, // f32 or 2×u16
+            // Physics: joints
+            Self::CreateRevoluteJoint | Self::CreatePrismaticJoint => 12, // u32 + 2×f32
+            Self::CreateFixedJoint => 4,    // u32
+            Self::CreateRopeJoint => 8,     // u32 + f32
+            Self::SetJointMotor | Self::SetJointLimits => 8, // 2 × f32
+            // Physics: character controller
+            Self::MoveCharacter => 8,       // 2 × f32
+            Self::SetCharacterConfig => 12, // 3 × f32
         }
     }
 
@@ -805,5 +886,25 @@ mod tests {
         let cmd_type = CommandType::from_u8(16).unwrap();
         assert_eq!(cmd_type, CommandType::SetDepth);
         assert_eq!(cmd_type.payload_size(), 4);
+    }
+
+    #[test]
+    fn physics_command_types_round_trip() {
+        // All 25 physics commands should survive from_u8 round-trip
+        for val in 17..=41u8 {
+            let ct = CommandType::from_u8(val);
+            assert!(ct.is_some(), "CommandType::from_u8({val}) should be Some");
+        }
+    }
+
+    #[test]
+    fn physics_payload_sizes_within_limit() {
+        for val in 17..=41u8 {
+            if let Some(ct) = CommandType::from_u8(val) {
+                assert!(ct.payload_size() <= 16,
+                    "CommandType {val} payload {} exceeds 16-byte limit",
+                    ct.payload_size());
+            }
+        }
     }
 }
