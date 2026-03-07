@@ -421,6 +421,41 @@ fn build_collider_shape(pending: &PendingCollider) -> Option<rapier2d::prelude::
     Some(builder)
 }
 
+// ---------------------------------------------------------------------------
+// physics_sync_post — write Rapier body state back to ECS components
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "physics-2d")]
+pub fn physics_sync_post(world: &mut hecs::World, physics: &PhysicsWorld) {
+    use crate::components::*;
+
+    // 2D entities
+    for (t2d, handle) in world.query_mut::<(&mut Transform2D, &PhysicsBodyHandle)>() {
+        let body = &physics.rigid_body_set[handle.0];
+        if body.is_sleeping() {
+            continue;
+        }
+        let pos = body.translation();
+        t2d.x = pos.x;
+        t2d.y = pos.y;
+        t2d.rot = body.rotation().angle();
+    }
+
+    // 3D entities
+    for (pos, rot, handle) in
+        world.query_mut::<(&mut Position, &mut Rotation, &PhysicsBodyHandle)>()
+    {
+        let body = &physics.rigid_body_set[handle.0];
+        if body.is_sleeping() {
+            continue;
+        }
+        let t = body.translation();
+        pos.0.x = t.x;
+        pos.0.y = t.y;
+        rot.0 = glam::Quat::from_rotation_z(body.rotation().angle());
+    }
+}
+
 #[cfg(feature = "physics-2d")]
 #[cfg(test)]
 mod tests {
@@ -790,5 +825,63 @@ mod tests {
 
         assert!(world.get::<&PhysicsColliderHandle>(entity).is_ok());
         assert_eq!(physics.collider_set.len(), 1);
+    }
+
+    // --- physics_sync_post tests ---
+
+    #[test]
+    fn physics_sync_post_writes_back_transform2d() {
+        use hecs::World;
+        use crate::components::*;
+        let mut world = World::new();
+        let mut physics = PhysicsWorld::new();
+        let entity_map = crate::command_processor::EntityMap::new();
+
+        // Create entity with pending body + collider (collider gives mass)
+        let entity = world.spawn((
+            Transform2D { x: 0.0, y: 0.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            PendingRigidBody::new(0), // dynamic
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]), // circle r=5
+            ExternalId(0),
+        ));
+
+        // Consume pending -> create Rapier body + collider
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        // Step physics (gravity should move the body)
+        for _ in 0..10 {
+            physics.step();
+        }
+
+        // Sync back
+        super::physics_sync_post(&mut world, &physics);
+
+        let t = world.get::<&Transform2D>(entity).unwrap();
+        // With gravity=(0,980) and length_unit=100, body should have moved down
+        assert!(t.y > 0.1, "body should have fallen: y={}", t.y);
+    }
+
+    #[test]
+    fn physics_sync_post_skips_sleeping_bodies() {
+        use hecs::World;
+        use crate::components::*;
+        let mut world = World::new();
+        let mut physics = PhysicsWorld::new();
+        let entity_map = crate::command_processor::EntityMap::new();
+
+        // Fixed body (never moves, sleeps immediately)
+        let entity = world.spawn((
+            Transform2D { x: 50.0, y: 50.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            PendingRigidBody::new(1), // fixed
+            ExternalId(0),
+        ));
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics.step();
+        super::physics_sync_post(&mut world, &physics);
+
+        let t = world.get::<&Transform2D>(entity).unwrap();
+        // Fixed body stays at same position
+        assert!((t.x - 50.0).abs() < 0.01);
+        assert!((t.y - 50.0).abs() < 0.01);
     }
 }
