@@ -1488,6 +1488,12 @@ mod tests {
                 entity_id: ext_id,
                 payload: [0u8; 16],
             };
+            #[cfg(feature = "physics-2d")]
+            {
+                let mut physics = crate::physics::PhysicsWorld::new();
+                process_commands(&[cmd], &mut world, &mut entity_map, &mut rs, &mut physics);
+            }
+            #[cfg(not(feature = "physics-2d"))]
             process_commands(&[cmd], &mut world, &mut entity_map, &mut rs);
         }
 

@@ -127,7 +127,56 @@ impl EntityMap {
 /// via `hecs::World::spawn_batch()`, which resizes the archetype table once
 /// instead of per-entity. The optimization is transparent — same observable
 /// behavior, better performance for burst spawns.
+#[cfg(not(feature = "physics-2d"))]
 pub fn process_commands(
+    commands: &[Command],
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) {
+    process_commands_inner(commands, world, entity_map, render_state);
+}
+
+/// Process a batch of commands against the ECS world (physics-enabled variant).
+///
+/// Physics-aware: passes `&mut PhysicsWorld` to `process_single_command` so that
+/// `DespawnEntity`, `DestroyRigidBody`, and `DestroyCollider` can clean up Rapier
+/// state. `CreateRigidBody` and `CreateCollider` insert pending ECS components.
+#[cfg(feature = "physics-2d")]
+pub fn process_commands(
+    commands: &[Command],
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+    physics: &mut crate::physics::PhysicsWorld,
+) {
+    let mut i = 0;
+    while i < commands.len() {
+        if commands[i].cmd_type == CommandType::SpawnEntity {
+            // Collect consecutive spawn commands
+            let batch_start = i;
+            while i < commands.len() && commands[i].cmd_type == CommandType::SpawnEntity {
+                i += 1;
+            }
+            let batch = &commands[batch_start..i];
+
+            if batch.len() >= 2 {
+                // Batch spawn: hecs resizes archetype table once for all N entities
+                flush_spawn_batch(batch, world, entity_map, render_state);
+            } else {
+                // Single spawn: use normal path
+                process_single_command_physics(&batch[0], world, entity_map, render_state, physics);
+            }
+        } else {
+            process_single_command_physics(&commands[i], world, entity_map, render_state, physics);
+            i += 1;
+        }
+    }
+}
+
+/// Shared implementation for non-physics `process_commands`.
+#[cfg(not(feature = "physics-2d"))]
+fn process_commands_inner(
     commands: &[Command],
     world: &mut World,
     entity_map: &mut EntityMap,
@@ -625,7 +674,8 @@ fn process_single_command(
             }
         }
 
-        // Physics commands (17-41) — parsed and forwarded to PhysicsWorld when implemented.
+        // Physics commands (17-41) — handled in process_single_command_physics
+        // when physics-2d is enabled. Without physics, they are no-ops.
         CommandType::CreateRigidBody
         | CommandType::DestroyRigidBody
         | CommandType::CreateCollider
@@ -650,9 +700,122 @@ fn process_single_command(
         | CommandType::SetJointMotor
         | CommandType::SetJointLimits
         | CommandType::MoveCharacter
-        | CommandType::SetCharacterConfig => {
-            // TODO: forward to PhysicsWorld (Phase 15)
+        | CommandType::SetCharacterConfig => {}
+    }
+}
+
+/// Physics-aware variant of `process_single_command`.
+///
+/// Delegates all non-physics commands to the base `process_single_command`,
+/// but intercepts `DespawnEntity` (for Rapier cleanup), `CreateRigidBody`,
+/// `CreateCollider`, `DestroyRigidBody`, and `DestroyCollider`.
+#[cfg(feature = "physics-2d")]
+fn process_single_command_physics(
+    cmd: &Command,
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+    physics: &mut crate::physics::PhysicsWorld,
+) {
+    match cmd.cmd_type {
+        // DespawnEntity: clean up Rapier state before despawning the ECS entity.
+        CommandType::DespawnEntity => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                despawn_physics_cleanup(world, entity, physics);
+                render_state.pending_despawns.push(entity);
+                let _ = world.despawn(entity);
+                entity_map.remove(cmd.entity_id);
+            }
         }
+
+        // CreateRigidBody: insert PendingRigidBody component (consumed by physics_sync_pre)
+        CommandType::CreateRigidBody => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let body_type = cmd.payload[0];
+                let _ = world.insert_one(entity, crate::physics::PendingRigidBody::new(body_type));
+            }
+        }
+
+        // CreateCollider: insert PendingCollider component (consumed by physics_sync_pre)
+        CommandType::CreateCollider => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let pending = crate::physics::PendingCollider::from_payload(&cmd.payload);
+                let _ = world.insert_one(entity, pending);
+            }
+        }
+
+        // DestroyRigidBody: remove Rapier body + ECS handles
+        CommandType::DestroyRigidBody => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                despawn_physics_cleanup(world, entity, physics);
+                let _ = world.remove_one::<crate::physics::PhysicsBodyHandle>(entity);
+                let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
+                let _ = world.remove_one::<crate::physics::PhysicsControlled>(entity);
+            }
+        }
+
+        // DestroyCollider: remove a single collider from Rapier
+        CommandType::DestroyCollider => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                // Extract the handle value before dropping the borrow on `world`.
+                let col_h = world
+                    .get::<&crate::physics::PhysicsColliderHandle>(entity)
+                    .ok()
+                    .map(|c| c.0);
+                if let Some(h) = col_h {
+                    let idx = h.0.into_raw_parts().0 as usize;
+                    if idx < physics.collider_to_entity.len() {
+                        physics.collider_to_entity[idx] = None;
+                    }
+                    physics.collider_set.remove(
+                        h,
+                        &mut physics.island_manager,
+                        &mut physics.rigid_body_set,
+                        true,
+                    );
+                    let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
+                }
+            }
+        }
+
+        // All other commands: delegate to the base (non-physics) handler
+        _ => {
+            process_single_command(cmd, world, entity_map, render_state);
+        }
+    }
+}
+
+/// Clean up Rapier state for an entity being despawned or having its body destroyed.
+///
+/// Clears reverse-map entries for all colliders attached to the body,
+/// then removes the body (which cascades collider + joint removal in Rapier).
+#[cfg(feature = "physics-2d")]
+fn despawn_physics_cleanup(
+    world: &hecs::World,
+    entity: hecs::Entity,
+    physics: &mut crate::physics::PhysicsWorld,
+) {
+    if let Ok(handle) = world.get::<&crate::physics::PhysicsBodyHandle>(entity) {
+        let body_handle = handle.0;
+        drop(handle);
+        // Clear reverse map entries for all attached colliders
+        if let Some(body) = physics.rigid_body_set.get(body_handle) {
+            for &col_handle in body.colliders() {
+                let idx = col_handle.0.into_raw_parts().0 as usize;
+                if idx < physics.collider_to_entity.len() {
+                    physics.collider_to_entity[idx] = None;
+                }
+            }
+        }
+        // Remove body (cascades collider + joint removal)
+        physics.rigid_body_set.remove(
+            body_handle,
+            &mut physics.island_manager,
+            &mut physics.collider_set,
+            &mut physics.impulse_joint_set,
+            &mut physics.multibody_joint_set,
+            true, // remove_attached_colliders
+        );
     }
 }
 
@@ -661,6 +824,25 @@ mod tests {
     use super::*;
     use crate::render_state::RenderState;
     use crate::ring_buffer::CommandType;
+
+    /// Test helper: calls `process_commands` with the correct signature
+    /// regardless of whether `physics-2d` feature is enabled.
+    fn run_commands(
+        commands: &[Command],
+        world: &mut World,
+        entity_map: &mut EntityMap,
+        render_state: &mut RenderState,
+    ) {
+        #[cfg(feature = "physics-2d")]
+        {
+            let mut physics = crate::physics::PhysicsWorld::new();
+            process_commands(commands, world, entity_map, render_state, &mut physics);
+        }
+        #[cfg(not(feature = "physics-2d"))]
+        {
+            process_commands(commands, world, entity_map, render_state);
+        }
+    }
 
     fn make_spawn_cmd(id: u32) -> Command {
         Command {
@@ -696,7 +878,7 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         assert!(map.get(0).is_some());
         let entity = map.get(0).unwrap();
@@ -710,8 +892,8 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
-        process_commands(
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(
             &[make_position_cmd(0, 5.0, 10.0, 15.0)],
             &mut world,
             &mut map,
@@ -729,10 +911,10 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
         let entity = map.get(0).unwrap();
 
-        process_commands(&[make_despawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_despawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         assert!(map.get(0).is_none());
         assert!(world.get::<&Position>(entity).is_err());
@@ -757,7 +939,7 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let packed: u32 = (2 << 16) | 10; // tier 2, layer 10
         let mut payload = [0u8; 16];
@@ -767,7 +949,7 @@ mod tests {
             entity_id: 0,
             payload,
         };
-        process_commands(&[cmd], &mut world, &mut map, &mut rs);
+        run_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let tex = world.get::<&TextureLayerIndex>(entity).unwrap();
@@ -780,12 +962,12 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&42u32.to_le_bytes());
         let cmd = Command { cmd_type: CommandType::SetMeshHandle, entity_id: 0, payload };
-        process_commands(&[cmd], &mut world, &mut map, &mut rs);
+        run_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let mh = world.get::<&MeshHandle>(entity).unwrap();
@@ -798,12 +980,12 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         let mut payload = [0u8; 16];
         payload[0] = 2; // SDFGlyph
         let cmd = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
-        process_commands(&[cmd], &mut world, &mut map, &mut rs);
+        run_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let entity = map.get(0).unwrap();
         let rp = world.get::<&RenderPrimitive>(entity).unwrap();
@@ -817,7 +999,7 @@ mod tests {
         let mut rs = RenderState::new();
 
         // Setting position on entity 99 which doesn't exist should not panic.
-        process_commands(
+        run_commands(
             &[make_position_cmd(99, 1.0, 2.0, 3.0)],
             &mut world,
             &mut map,
@@ -832,7 +1014,7 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(
+        run_commands(
             &[make_spawn_cmd(0), make_spawn_cmd(1)],
             &mut world,
             &mut map,
@@ -846,7 +1028,7 @@ mod tests {
             entity_id: 1,
             payload,
         };
-        process_commands(&[cmd], &mut world, &mut map, &mut rs);
+        run_commands(&[cmd], &mut world, &mut map, &mut rs);
 
         let child_entity = map.get(1).unwrap();
         let parent = world.get::<&Parent>(child_entity).unwrap();
@@ -888,7 +1070,7 @@ mod tests {
 
         // Spawn an entity first
         let spawn_cmd = Command { cmd_type: CommandType::SpawnEntity, entity_id: 0, payload: [0; 16] };
-        process_commands(&[spawn_cmd], &mut world, &mut entity_map, &mut rs);
+        run_commands(&[spawn_cmd], &mut world, &mut entity_map, &mut rs);
 
         // Set params 0-3
         let mut payload0 = [0u8; 16];
@@ -898,7 +1080,7 @@ mod tests {
         payload0[12..16].copy_from_slice(&4.0f32.to_le_bytes());
 
         let cmd0 = Command { cmd_type: CommandType::SetPrimParams0, entity_id: 0, payload: payload0 };
-        process_commands(&[cmd0], &mut world, &mut entity_map, &mut rs);
+        run_commands(&[cmd0], &mut world, &mut entity_map, &mut rs);
 
         let entity = entity_map.get(0).unwrap();
         {
@@ -917,7 +1099,7 @@ mod tests {
         payload1[12..16].copy_from_slice(&8.0f32.to_le_bytes());
 
         let cmd1 = Command { cmd_type: CommandType::SetPrimParams1, entity_id: 0, payload: payload1 };
-        process_commands(&[cmd1], &mut world, &mut entity_map, &mut rs);
+        run_commands(&[cmd1], &mut world, &mut entity_map, &mut rs);
 
         let pp = world.get::<&PrimitiveParams>(entity).unwrap();
         assert_eq!(pp.0[4], 5.0);
@@ -939,7 +1121,7 @@ mod tests {
             entity_id: 42,
             payload: [0u8; 16],
         };
-        process_commands(&[cmd], &mut world, &mut entity_map, &mut rs);
+        run_commands(&[cmd], &mut world, &mut entity_map, &mut rs);
 
         let hecs_entity = entity_map.get(42).unwrap();
         let ext_id = world.get::<&ExternalId>(hecs_entity).unwrap();
@@ -953,14 +1135,14 @@ mod tests {
         let mut rs = RenderState::new();
 
         // Spawn parent
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
 
         // Spawn 33 children and parent them all to entity 0
         for child_id in 1..=33u32 {
-            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
+            run_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
             let mut payload = [0u8; 16];
             payload[0..4].copy_from_slice(&0u32.to_le_bytes());
-            process_commands(
+            run_commands(
                 &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
                 &mut world,
                 &mut map,
@@ -986,12 +1168,12 @@ mod tests {
         let mut rs = RenderState::new();
 
         // Spawn parent + 33 children
-        process_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
         for child_id in 1..=33u32 {
-            process_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
+            run_commands(&[make_spawn_cmd(child_id)], &mut world, &mut map, &mut rs);
             let mut payload = [0u8; 16];
             payload[0..4].copy_from_slice(&0u32.to_le_bytes());
-            process_commands(
+            run_commands(
                 &[Command { cmd_type: CommandType::SetParent, entity_id: child_id, payload }],
                 &mut world,
                 &mut map,
@@ -1002,7 +1184,7 @@ mod tests {
         // Unparent child 33 (in overflow)
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        process_commands(
+        run_commands(
             &[Command { cmd_type: CommandType::SetParent, entity_id: 33, payload }],
             &mut world,
             &mut map,
@@ -1024,7 +1206,7 @@ mod tests {
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
 
-        process_commands(
+        run_commands(
             &[make_spawn_cmd(0), make_spawn_cmd(1)],
             &mut world,
             &mut map,
@@ -1034,7 +1216,7 @@ mod tests {
         // Parent entity 1 to entity 0
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&0u32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[Command {
                 cmd_type: CommandType::SetParent,
                 entity_id: 1,
@@ -1047,7 +1229,7 @@ mod tests {
 
         // Unparent entity 1
         payload[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        process_commands(
+        run_commands(
             &[Command {
                 cmd_type: CommandType::SetParent,
                 entity_id: 1,
@@ -1073,7 +1255,7 @@ mod tests {
         let mut entity_map = EntityMap::new();
         let mut rs = RenderState::new();
         let cmds = vec![make_spawn_cmd(0), make_spawn_cmd(1), make_spawn_cmd(2)];
-        process_commands(&cmds, &mut world, &mut entity_map, &mut rs);
+        run_commands(&cmds, &mut world, &mut entity_map, &mut rs);
         assert_eq!(rs.gpu_entity_count(), 3);
         // All three entities should exist with correct ExternalId
         assert!(entity_map.get(0).is_some());
@@ -1097,7 +1279,7 @@ mod tests {
             make_position_cmd(0, 5.0, 0.0, 0.0), // interrupts batch
             make_spawn_cmd(2),
         ];
-        process_commands(&cmds, &mut world, &mut entity_map, &mut rs);
+        run_commands(&cmds, &mut world, &mut entity_map, &mut rs);
         assert_eq!(rs.gpu_entity_count(), 3);
         let e0 = entity_map.get(0).unwrap();
         let pos = world.get::<&Position>(e0).unwrap();
@@ -1121,7 +1303,7 @@ mod tests {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
-        process_commands(&[make_spawn_2d_cmd(1)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_2d_cmd(1)], &mut world, &mut map, &mut rs);
         let ent = map.get(1).unwrap();
         assert!(world.get::<&Transform2D>(ent).is_ok());
         assert!(world.get::<&Position>(ent).is_err()); // NOT 3D
@@ -1132,7 +1314,7 @@ mod tests {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
-        process_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
         let ent = map.get(1).unwrap();
         assert!(world.get::<&Position>(ent).is_ok());
         assert!(world.get::<&Transform2D>(ent).is_err()); // NOT 2D
@@ -1143,7 +1325,7 @@ mod tests {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
-        process_commands(
+        run_commands(
             &[make_spawn_2d_cmd(1), make_position_cmd(1, 10.0, 20.0, 99.0)],
             &mut world,
             &mut map,
@@ -1161,7 +1343,7 @@ mod tests {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
-        process_commands(
+        run_commands(
             &[make_spawn_cmd(1), make_position_cmd(1, 10.0, 20.0, 30.0)],
             &mut world,
             &mut map,
@@ -1179,7 +1361,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut angle_payload = [0u8; 16];
         angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[
                 make_spawn_2d_cmd(1),
                 Command {
@@ -1204,7 +1386,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut angle_payload = [0u8; 16];
         angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[
                 make_spawn_cmd(1),
                 Command {
@@ -1232,7 +1414,7 @@ mod tests {
         let mut rs = RenderState::new();
 
         // Spawn 3D entity
-        process_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
+        run_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
 
         // Clear any dirty bits from spawn
         rs.dirty_tracker.clear();
@@ -1240,7 +1422,7 @@ mod tests {
         // Send SetRotation2D to 3D entity — should be ignored, no dirty marking
         let mut angle_payload = [0u8; 16];
         angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[Command {
                 cmd_type: CommandType::SetRotation2D,
                 entity_id: 1,
@@ -1275,7 +1457,7 @@ mod tests {
         rot_payload[4..8].copy_from_slice(&0.0f32.to_le_bytes()); // qy
         rot_payload[8..12].copy_from_slice(&qz.to_le_bytes());    // qz
         rot_payload[12..16].copy_from_slice(&qw.to_le_bytes());   // qw
-        process_commands(
+        run_commands(
             &[
                 make_spawn_2d_cmd(1),
                 Command {
@@ -1302,7 +1484,7 @@ mod tests {
         scale_payload[0..4].copy_from_slice(&2.0f32.to_le_bytes());
         scale_payload[4..8].copy_from_slice(&3.0f32.to_le_bytes());
         scale_payload[8..12].copy_from_slice(&99.0f32.to_le_bytes()); // z ignored
-        process_commands(
+        run_commands(
             &[
                 make_spawn_2d_cmd(1),
                 Command {
@@ -1328,7 +1510,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut depth_payload = [0u8; 16];
         depth_payload[0..4].copy_from_slice(&5.0f32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[
                 make_spawn_2d_cmd(1),
                 Command {
@@ -1353,7 +1535,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut depth_payload = [0u8; 16];
         depth_payload[0..4].copy_from_slice(&7.0f32.to_le_bytes());
-        process_commands(
+        run_commands(
             &[
                 make_spawn_cmd(1),
                 Command {
@@ -1378,7 +1560,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut on_payload = [0u8; 16];
         on_payload[0] = 1;
-        process_commands(
+        run_commands(
             &[
                 make_spawn_2d_cmd(1),
                 Command {
@@ -1395,7 +1577,7 @@ mod tests {
         assert!(world.get::<&Transparent>(ent).is_ok());
 
         // Toggle off
-        process_commands(
+        run_commands(
             &[Command {
                 cmd_type: CommandType::SetTransparent,
                 entity_id: 1,
@@ -1434,7 +1616,7 @@ mod tests {
             make_spawn_cmd(2),     // 3D
             make_spawn_2d_cmd(3),  // 2D
         ];
-        process_commands(&cmds, &mut world, &mut map, &mut rs);
+        run_commands(&cmds, &mut world, &mut map, &mut rs);
 
         // All 4 entities should exist
         assert_eq!(rs.gpu_entity_count(), 4);

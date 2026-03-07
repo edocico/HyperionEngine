@@ -3,11 +3,17 @@
 
 use hecs::World;
 
-use crate::command_processor::{process_commands, EntityMap};
 use crate::components::{Active, Parent, Velocity};
 use crate::render_state::RenderState;
 use crate::ring_buffer::{Command, CommandType};
-use crate::systems::{propagate_transforms, transform_system, transform_system_2d, velocity_system, velocity_system_2d};
+use crate::systems::{propagate_transforms, transform_system, transform_system_2d};
+
+#[cfg(not(feature = "physics-2d"))]
+use crate::command_processor::process_commands;
+#[cfg(not(feature = "physics-2d"))]
+use crate::systems::{velocity_system, velocity_system_2d};
+
+use crate::command_processor::EntityMap;
 
 /// Fixed timestep: 60 ticks per second.
 pub const FIXED_DT: f32 = 1.0 / 60.0;
@@ -17,6 +23,8 @@ pub struct Engine {
     pub world: World,
     pub entity_map: EntityMap,
     pub render_state: RenderState,
+    #[cfg(feature = "physics-2d")]
+    pub physics: crate::physics::PhysicsWorld,
     accumulator: f32,
     tick_count: u64,
     listener_pos: [f32; 3],
@@ -36,6 +44,8 @@ impl Engine {
             world: World::new(),
             entity_map: EntityMap::new(),
             render_state: RenderState::new(),
+            #[cfg(feature = "physics-2d")]
+            physics: crate::physics::PhysicsWorld::new(),
             accumulator: 0.0,
             tick_count: 0,
             listener_pos: [0.0; 3],
@@ -47,6 +57,7 @@ impl Engine {
     /// Apply a batch of commands to the ECS world.
     /// Called before `update()` each frame.
     pub fn process_commands(&mut self, commands: &[Command]) {
+        // Handle listener position (engine-level state, not entity-specific)
         for cmd in commands {
             if cmd.cmd_type == CommandType::SetListenerPosition {
                 let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
@@ -64,13 +75,42 @@ impl Engine {
                 self.listener_prev_pos = new_pos;
             }
         }
-        process_commands(commands, &mut self.world, &mut self.entity_map, &mut self.render_state);
+
+        // ECS command processing
+        #[cfg(feature = "physics-2d")]
+        {
+            crate::command_processor::process_commands(
+                commands,
+                &mut self.world,
+                &mut self.entity_map,
+                &mut self.render_state,
+                &mut self.physics,
+            );
+            // Second pass: route live-body physics commands (force/impulse/damping/etc.)
+            crate::physics_commands::process_physics_commands(
+                commands,
+                &mut self.world,
+                &self.entity_map,
+                &mut self.physics,
+            );
+        }
+        #[cfg(not(feature = "physics-2d"))]
+        {
+            process_commands(commands, &mut self.world, &mut self.entity_map, &mut self.render_state);
+        }
     }
 
     /// Advance the engine by `dt` seconds (variable, from requestAnimationFrame).
     /// Runs fixed-timestep physics ticks, then recomputes transforms and
     /// collects render state.
     pub fn update(&mut self, dt: f32) {
+        // 0. Clear physics frame event buffers at start of frame.
+        #[cfg(feature = "physics-2d")]
+        {
+            self.physics.frame_collision_events.clear();
+            self.physics.frame_contact_force_events.clear();
+        }
+
         // 1. Accumulate time and run fixed-timestep ticks.
         self.accumulator += dt;
 
@@ -84,6 +124,10 @@ impl Engine {
             self.accumulator -= FIXED_DT;
             self.tick_count += 1;
         }
+
+        // 1b. After all ticks, sync Rapier state back to ECS.
+        #[cfg(feature = "physics-2d")]
+        crate::physics::physics_sync_post(&mut self.world, &self.physics);
 
         // 2. Recompute model matrices after all ticks.
         transform_system(&mut self.world);
@@ -143,12 +187,51 @@ impl Engine {
                 self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
             }
         }
+
+        // Pass 3 (physics): mark non-sleeping physics entities as dirty.
+        // physics_sync_post wrote Rapier body state back to ECS — these entities
+        // need their SoA data updated.
+        #[cfg(feature = "physics-2d")]
+        {
+            use crate::physics::PhysicsBodyHandle;
+            for (entity, handle, _active) in
+                self.world.query::<(hecs::Entity, &PhysicsBodyHandle, &Active)>().iter()
+            {
+                if let Some(body) = self.physics.rigid_body_set.get(handle.0)
+                    && !body.is_sleeping()
+                    && let Some(slot) = self.render_state.get_slot(entity)
+                {
+                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                }
+            }
+        }
     }
 
     /// A single fixed-timestep tick.
     fn fixed_tick(&mut self) {
-        velocity_system(&mut self.world, FIXED_DT);
-        velocity_system_2d(&mut self.world, FIXED_DT);
+        // Physics sync: consume pending bodies/colliders, sync kinematic positions.
+        #[cfg(feature = "physics-2d")]
+        crate::physics::physics_sync_pre(&mut self.world, &mut self.physics, &self.entity_map);
+
+        // Physics step.
+        #[cfg(feature = "physics-2d")]
+        self.physics.step();
+
+        // Velocity integration: use filtered versions when physics is enabled
+        // so PhysicsControlled entities are not double-moved.
+        #[cfg(feature = "physics-2d")]
+        {
+            crate::systems::velocity_system_filtered(&mut self.world, FIXED_DT);
+            crate::systems::velocity_system_2d_filtered(&mut self.world, FIXED_DT);
+        }
+        #[cfg(not(feature = "physics-2d"))]
+        {
+            velocity_system(&mut self.world, FIXED_DT);
+            velocity_system_2d(&mut self.world, FIXED_DT);
+        }
+
+        // Listener extrapolation.
         for (pos, &vel) in self.listener_pos.iter_mut().zip(self.listener_vel.iter()) {
             *pos += vel * FIXED_DT;
         }
@@ -190,6 +273,10 @@ impl Engine {
         self.world = World::new();
         self.entity_map = EntityMap::new();
         self.render_state = RenderState::new();
+        #[cfg(feature = "physics-2d")]
+        {
+            self.physics = crate::physics::PhysicsWorld::new();
+        }
         self.accumulator = 0.0;
         self.tick_count = 0;
         self.listener_pos = [0.0; 3];
@@ -1008,5 +1095,164 @@ mod tests {
         let mut engine = Engine::new();
         let bad_data = b"BADDxxxxxxxxxxxxxxxxxxxxxxxx";
         assert!(!engine.snapshot_restore(bad_data));
+    }
+
+    // ── Physics integration tests ──────────────────────────────────
+
+    #[cfg(feature = "physics-2d")]
+    fn spawn_2d_cmd(id: u32) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = 1; // 2D
+        Command {
+            cmd_type: CommandType::SpawnEntity,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[cfg(feature = "physics-2d")]
+    fn create_rigid_body_cmd(id: u32, body_type: u8) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = body_type;
+        Command {
+            cmd_type: CommandType::CreateRigidBody,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[cfg(feature = "physics-2d")]
+    fn create_circle_collider_cmd(id: u32, radius: f32) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = 0; // circle
+        payload[1..5].copy_from_slice(&radius.to_le_bytes());
+        Command {
+            cmd_type: CommandType::CreateCollider,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn ball_falls_under_gravity() {
+        let mut engine = Engine::new();
+
+        // Spawn 2D entity + dynamic body + circle collider
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 0)]); // dynamic
+        engine.process_commands(&[create_circle_collider_cmd(0, 10.0)]);
+
+        // Run 10 frames
+        for _ in 0..10 {
+            engine.update(FIXED_DT);
+        }
+
+        // Ball should have fallen (gravity.y = 980)
+        let entity = engine.entity_map.get(0).unwrap();
+        let t = engine.world.get::<&crate::components::Transform2D>(entity).unwrap();
+        assert!(t.y > 1.0, "ball should have fallen: y={}", t.y);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn despawn_removes_rapier_body() {
+        let mut engine = Engine::new();
+
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 0)]);
+        engine.process_commands(&[create_circle_collider_cmd(0, 5.0)]);
+        engine.update(FIXED_DT);
+        assert_eq!(engine.physics.body_count(), 1);
+
+        // Despawn
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::DespawnEntity,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+        engine.update(FIXED_DT);
+        assert_eq!(engine.physics.body_count(), 0);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn destroy_rigid_body_removes_from_rapier() {
+        let mut engine = Engine::new();
+
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 0)]);
+        engine.process_commands(&[create_circle_collider_cmd(0, 5.0)]);
+        engine.update(FIXED_DT);
+        assert_eq!(engine.physics.body_count(), 1);
+
+        // DestroyRigidBody
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::DestroyRigidBody,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+        assert_eq!(engine.physics.body_count(), 0);
+
+        // Entity still exists in ECS
+        assert!(engine.entity_map.get(0).is_some());
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn physics_does_not_move_non_physics_entity() {
+        let mut engine = Engine::new();
+
+        // Spawn 2D entity WITHOUT physics — should stay at origin
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+
+        for _ in 0..10 {
+            engine.update(FIXED_DT);
+        }
+
+        let entity = engine.entity_map.get(0).unwrap();
+        let t = engine.world.get::<&crate::components::Transform2D>(entity).unwrap();
+        assert!((t.y - 0.0).abs() < 0.01, "non-physics entity should not move: y={}", t.y);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn velocity_on_non_physics_entity_still_works() {
+        let mut engine = Engine::new();
+
+        // Spawn 2D entity with velocity but NO physics body
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        let mut vel_payload = [0u8; 16];
+        vel_payload[0..4].copy_from_slice(&60.0f32.to_le_bytes());
+        vel_payload[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetVelocity,
+            entity_id: 0,
+            payload: vel_payload,
+        }]);
+
+        engine.update(FIXED_DT);
+
+        let entity = engine.entity_map.get(0).unwrap();
+        let t = engine.world.get::<&crate::components::Transform2D>(entity).unwrap();
+        assert!(t.x > 0.5, "velocity entity should move: x={}", t.x);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn physics_reset_clears_rapier_state() {
+        // This test requires dev-tools for the reset method.
+        // Only run if both features are available.
+        #[cfg(feature = "dev-tools")]
+        {
+            let mut engine = Engine::new();
+            engine.process_commands(&[spawn_2d_cmd(0)]);
+            engine.process_commands(&[create_rigid_body_cmd(0, 0)]);
+            engine.process_commands(&[create_circle_collider_cmd(0, 5.0)]);
+            engine.update(FIXED_DT);
+            assert_eq!(engine.physics.body_count(), 1);
+            engine.reset();
+            assert_eq!(engine.physics.body_count(), 0);
+        }
     }
 }
