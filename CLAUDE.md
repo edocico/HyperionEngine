@@ -508,7 +508,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`HyperionContactForceEvent` is 20 bytes `#[repr(C)]`** — `entity_a: u32, entity_b: u32, max_force_magnitude: f32, max_force_direction_x: f32, max_force_direction_y: f32`. Read at 20-byte stride.
 - **Scene query static buffers are module-level `static mut`** — `RAYCAST_RESULT: [f32; 3]` and `OVERLAP_RESULTS: Vec<u32>` persist between calls. WASM exports read via `addr_of_mut!()`. Safe because wasm32 is single-threaded.
 - **`QueryPipeline` is ephemeral, NOT stored** — Created on-the-fly via `broad_phase.as_query_pipeline()` for each query call. Holds borrows on `rigid_body_set`/`collider_set` so cannot persist.
-- **`overlap_aabb` deduplicates by entity** — Rapier returns collider handles; multiple colliders can map to the same entity. Results deduplicated via `seen: HashSet<u32>`.
+- **`overlap_aabb` deduplicates by entity** — Rapier returns collider handles; multiple colliders can map to the same entity. Results deduplicated via `sort_unstable()` + `dedup()`.
 - **`drainCollisionEvents`/`drainContactForceEvents` are standalone functions** — Separated from `PhysicsAPI` class for Mode B/A bridge seam reuse.
 
 ### Implementation Notes — design decisions and internal details
