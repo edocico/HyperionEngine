@@ -17,13 +17,13 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (155 tests)
+cargo test -p hyperion-core                  # All Rust unit tests (157 tests)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
-cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (19 tests)
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (21 tests)
 cargo test -p hyperion-core engine           # Engine tests only (9 tests)
 cargo test -p hyperion-core render_state     # Render state tests only (36 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (17 tests)
@@ -47,6 +47,10 @@ cd ts && npm run build:wasm:release
 # Check binary size (CI gate: <200KB gzipped)
 cd ts && npm run check:wasm-size
 
+# Compile with physics (outputs to ts/wasm-physics/)
+cd ts && npm run build:wasm:physics
+cd ts && npm run build:wasm:physics:release
+
 # After building, check generated TypeScript types
 cat ts/wasm/hyperion_core.d.ts
 ```
@@ -54,21 +58,21 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (736 tests + 5 skipped)
+cd ts && npm test                            # All vitest tests (775 tests + 5 skipped)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run specific test files
-cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (17 tests)
+cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (18 tests)
 cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
 cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
 cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format + subgroups + sized binding arrays (18 tests)
 cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
 cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
 cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager + KTX2/compressed (36 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer (22 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer + physics coalescing (67 tests)
 cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
 cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
 cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
@@ -135,6 +139,10 @@ cd ts && npx vitest run src/texture-streaming.test.ts              # StreamingSc
 cd ts && npx vitest run src/loro-bench.test.ts                     # Loro CRDT feasibility spike (1 test + 5 skipped)
 cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
+
+# Physics tests (requires feature flag)
+cargo test -p hyperion-core --features physics-2d  # Includes physics type tests (160 tests)
+cargo clippy -p hyperion-core --features physics-2d
 
 # Debug/dev-tools (requires feature flag)
 cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (165 tests)
@@ -213,7 +221,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy + 2D system variants (`velocity_system_2d`, `transform_system_2d`). Listener position state with velocity derivation and extrapolation. Dev-tools: `reset()`, `snapshot_create()`, `snapshot_restore()` for time-travel debug |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`, `is_2d` flag per entity) + `process_commands` (including `SetParent`, 2D/3D command routing, batch spawn partitioning) |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (17 variants incl. `SetParent`, `SetPrimParams0`, `SetPrimParams1`, `SetListenerPosition`, `SetRotation2D`, `SetTransparent`, `SetDepth`), `Command` struct |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (42 variants: 17 core + 25 physics incl. `CreateRigidBody`, `CreateCollider`, `ApplyForce`, `CreateRevoluteJoint`, `MoveCharacter`), `Command` struct |
+| `physics.rs` | `#[cfg(feature = "physics-2d")]` — `PendingRigidBody`, `PendingCollider` (defaults+override staging), `PhysicsBodyHandle`, `PhysicsColliderHandle`, `PhysicsControlled` marker |
 | `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])`, `Transform2D { x, y, rot, sx, sy }` (20 bytes, compact 2D archetype), `Depth(f32)` (opt-in 2.5D), `Transparent(u8)` (blend mode flag) — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
 | `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
@@ -223,6 +232,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | Module | Role |
 |---|---|
 | `lib.rs` | Minimal WASM surface: `create_doc`, `apply_operations`, `export_updates`, `import_updates`. Thread-local LoroDoc storage. NOT a production dependency. |
+
+### Crate: rapier-spike (feasibility spike only)
+
+| Module | Role |
+|---|---|
+| `lib.rs` | `spike_validate_all()` — validates 10 Rapier 0.32 API assumptions (step signature, types, events, joints, character controller). `spike_wasm_bindgen_check()` — vestigial. NOT a production dependency. |
 
 ### TypeScript: ts/src/
 
@@ -271,8 +286,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics |
-| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing + `setRecordingTap()` for command tape recording |
+| `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics. `CommandType` const enum (42 variants), `PAYLOAD_SIZES` record |
+| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing + `setRecordingTap()` for command tape recording + `isNonCoalescable()` for physics commands + 25 physics producer methods |
 | `worker-bridge.ts` | `EngineBridge` interface — `createFullIsolationBridge(canvas)` (A), `createWorkerBridge()` (B), `createDirectBridge()` (C). `GPURenderState` type |
 | `engine-worker.ts` | Web Worker: loads WASM, calls `engine_init`/`engine_update`, heartbeat counter |
 | `render-worker.ts` | Mode A: OffscreenCanvas + `createRenderer()` |
@@ -468,6 +483,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`detectSizedBindingArrays` uses try/catch on `createBindGroupLayout`** — The W3C proposal (`bindingArraySize`) isn't finalized. The probe creates throwaway layouts. Safe on current Chrome/Firefox (throws cleanly). Cast to `any` bypasses TypeScript strict typing.
 - **`basic-binding-array.wgsl` is a design artifact only** — NOT imported anywhere. Not in `renderer.ts` SHADER_SOURCES. Exists to document target WGSL structure for when browsers ship `bindingArraySize`.
 - **`loro-spike` crate is NOT part of the main build** — In workspace but not a dependency of `hyperion-core`. The WASM output (`ts/loro-spike-wasm/`) is gitignored. The crate exists solely for binary size measurement.
+- **`rapier-spike` crate is NOT part of the main build** — Like `loro-spike`, exists solely for API validation and binary size measurement. The WASM output (`ts/rapier-spike-wasm/`) is gitignored. Rapier2D production dependency is in `hyperion-core` behind `physics-2d` feature flag.
+- **`rapier2d` has NO `wasm-bindgen` feature** — The spike proved this feature does not exist in rapier2d 0.32. Only use `features = ["simd-stable"]`. The design doc incorrectly specifies `wasm-bindgen`.
+- **Physics CommandTypes are 17-41 (25 commands)** — NOT 14-39 as the design doc says. SetRotation2D=14, SetTransparent=15, SetDepth=16 already occupied 14-16. `MAX_COMMAND_TYPE` in backpressure.ts is 42.
+- **`isNonCoalescable()` classifies physics commands** — Create/Destroy (17-20), ApplyForce/Impulse/Torque (25-27), Joint lifecycle (33-37), MoveCharacter (40) are non-coalescable. All other physics commands (21-24, 28-32, 38-39, 41) coalesce via last-write-wins.
+- **`CreateCollider` payload limits to 3 f32 params** — 1B shapeType + 3×4B params = 13B within the 16B payload. Segment shapes (4 params = 17B total) exceed the limit. Design resolution needed in milestone 15b.
+- **Rapier2d uses nalgebra internally, not glam** — `vector![]` and `point![]` macros produce nalgebra types requiring `.into()` conversion. `step()` takes gravity by value (Copy), not by reference.
+- **`physics-2d` feature flag is zero-cost when unused** — Rapier is fully tree-shaken by wasm-opt. Physics WASM build is same size as standard until WASM exports actually call Rapier functions.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -580,7 +602,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 14 (Tech Integrations) complete. Next: Phase 15 per masterplan.**
+**Current: Phase 15 (Physics Rapier2D) spike + 15a complete. Next: Phase 15b (Core Simulation) per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -602,6 +624,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 13 | Optimization Tier 3 | Command coalescing, Transform2D (20B 2D archetype), GPU radix sort (transparency), temporal culling (skip-bounds), sized binding array stub, KTX2 streaming (Range requests + mipmap), `__DEV__` debug elimination |
 | 14a | Tech Integrations: Subgroups v2 + Binding Arrays | Cull shader shared-memory prefix-sum compaction (8× fewer atomics), `hasSubgroupId` detection for Chrome 144+ builtins, `USE_SUBGROUP_ID` override constant, `SizedBindingArraySupport` with empirical probing, `basic-binding-array.wgsl` design artifact |
 | 14b | Tech Integrations: Loro CRDT Spike | Feasibility spike: 664KB gzipped (5.7× over 120KB budget) — **FAIL**. Loro monolithic, no container cherry-picking. Recommendation: JS-side sync plugin (Yjs/Automerge/Loro-JS) via `Hyperion.onCommand` hook |
+| 15-spike | Physics: Rapier 0.32 Spike | API validation + binary size: +219KB gzipped (GO, under 400KB gate). 5 API divergences documented. `wasm-bindgen` feature does not exist. |
+| 15a | Physics: Protocol & Scaffolding | 25 physics CommandTypes (17-41), `isNonCoalescable()`, `physics-2d` feature flag + rapier2d optional dep, dual WASM build, 25 physics producer methods, `PendingRigidBody`/`PendingCollider` types |
 
 ## Documentation
 
@@ -609,6 +633,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/hyperion-engine-design-v3.md` — Full vision design doc v3 (all phases). Reference for future phase implementation.
 - `docs/plans/hyperion-engine-roadmap-unified-v3.md` — Unified roadmap v3. Phase-by-phase feature breakdown.
 - `docs/deployment-guide.md` — Deployment guide for 7 platforms with COOP/COEP headers and WASM caching.
-- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11, 12, 13, 14). Historical reference for implementation decisions.
+- `docs/plans/` — Completed phase plans (0-1, 3, 4.5, 5.5, 6, 7, 7.5, 9, 10, 10c, 11, 12, 13, 14, 15-spike/15a). Historical reference for implementation decisions.
 - `docs/plans/2026-03-06-phase14b-loro-results.md` — Loro CRDT feasibility spike results (FAIL: 664KB gzipped, 5.7× over budget).
+- `docs/plans/2026-03-07-phase15-physics-rapier2d-design.md` — Phase 15 physics integration design (Rapier2D). NOTE: Contains known errors (CommandType range 14-39 should be 17-41, `&gravity` should be by-value).
+- `docs/plans/2026-03-07-phase15-physics-rapier2d-plan.md` — Phase 15 implementation plan (spike + 15a tasks).
+- `docs/plans/2026-03-07-phase15-rapier-spike-results.md` — Rapier 0.32 spike results (GO: +219KB gzipped).
 - `hyperion-masterplan.md` — Authoritative high-level reference for all phases (0-20+). Optimization strategy in §17.
