@@ -113,6 +113,10 @@ pub use types::*;
 #[cfg(feature = "physics-2d")]
 mod world {
     use rapier2d::prelude::*;
+    use std::ptr::addr_of_mut;
+
+    // SAFETY: wasm32 is single-threaded; static buffers accessed only from main thread.
+    pub(crate) static mut RAYCAST_RESULT: [f32; 3] = [0.0; 3]; // [toi, normal_x, normal_y]
 
     /// Collision event translated to external entity IDs.
     #[repr(C)]
@@ -251,6 +255,34 @@ mod world {
         /// Number of rigid bodies currently in the simulation.
         pub fn body_count(&self) -> u32 {
             self.rigid_body_set.len() as u32
+        }
+
+        /// Cast a ray and return the external entity ID of the closest hit, or -1.
+        /// Results (toi, normal) written to RAYCAST_RESULT static buffer.
+        pub fn raycast(&self, ox: f32, oy: f32, dx: f32, dy: f32, max_toi: f32) -> i32 {
+            let qp = self.broad_phase.as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.rigid_body_set,
+                &self.collider_set,
+                QueryFilter::default(),
+            );
+            let ray = Ray::new(Vector::new(ox, oy), Vector::new(dx, dy));
+            match qp.cast_ray_and_get_normal(&ray, max_toi, true) {
+                Some((col_handle, hit)) => {
+                    // SAFETY: wasm32 is single-threaded
+                    unsafe {
+                        *addr_of_mut!(RAYCAST_RESULT) = [
+                            hit.time_of_impact,
+                            hit.normal.x,
+                            hit.normal.y,
+                        ];
+                    }
+                    self.collider_handle_to_entity(col_handle)
+                        .map(|id| id as i32)
+                        .unwrap_or(-1)
+                }
+                None => -1,
+            }
         }
 
         // --- Private event translation helpers ---
@@ -966,5 +998,46 @@ mod tests {
         let evt = &pw.frame_collision_events[0];
         assert_eq!(evt.is_sensor, 1, "sensor flag should be set");
         assert_eq!(evt.event_type, 0, "should be a started event");
+    }
+
+    // --- Raycast tests ---
+
+    #[test]
+    fn raycast_hits_collider() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::new(0.0, 0.0);
+
+        // Static body with circle at (100, 0), radius 10
+        let rb = RigidBodyBuilder::fixed()
+            .translation(Vector::new(100.0, 0.0))
+            .build();
+        let handle = pw.rigid_body_set.insert(rb);
+        let col = ColliderBuilder::ball(10.0).build();
+        let col_handle = pw.collider_set.insert_with_parent(
+            col, handle, &mut pw.rigid_body_set,
+        );
+        let idx = col_handle.0.into_raw_parts().0 as usize;
+        pw.collider_to_entity.resize(idx + 1, None);
+        pw.collider_to_entity[idx] = Some(42);
+
+        // Step once so BVH is built
+        pw.step();
+
+        // Ray from origin → +X, should hit at toi ~ 90 (100 - 10 radius)
+        let entity_id = pw.raycast(0.0, 0.0, 1.0, 0.0, 200.0);
+        assert_eq!(entity_id, 42);
+
+        let result = unsafe { *std::ptr::addr_of!(super::world::RAYCAST_RESULT) };
+        assert!((result[0] - 90.0).abs() < 1.0, "toi should be ~90, got {}", result[0]);
+    }
+
+    #[test]
+    fn raycast_misses_empty_world() {
+        let mut pw = PhysicsWorld::new();
+        pw.step();
+
+        let entity_id = pw.raycast(0.0, 0.0, 1.0, 0.0, 100.0);
+        assert_eq!(entity_id, -1);
     }
 }
