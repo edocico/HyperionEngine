@@ -2,6 +2,7 @@ target/
 ts/node_modules/
 ts/wasm/
 ts/loro-spike-wasm/
+ts/rapier-spike-wasm/
 ts/dist/
 *.swp
 .DS_Store
