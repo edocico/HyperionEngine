@@ -1,6 +1,7 @@
 target/
 ts/node_modules/
 ts/wasm/
+ts/wasm-physics/
 ts/loro-spike-wasm/
 ts/rapier-spike-wasm/
 ts/dist/
