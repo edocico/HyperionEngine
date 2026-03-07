@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (157 tests, 198 with physics-2d, 167 with dev-tools, 208 with both)
+cargo test -p hyperion-core                  # All Rust unit tests (157 tests, 208 with physics-2d, 167 with dev-tools, 218 with both)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -58,7 +58,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (787 tests + 5 skipped)
+cd ts && npm test                            # All vitest tests (802 tests + 5 skipped)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -84,7 +84,7 @@ cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # Selectio
 cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
 cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
 cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum + subgroup sim (10 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (65 tests)
+cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (66 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (46 tests)
 cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
 cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (12 tests)
@@ -137,11 +137,12 @@ cd ts && npx vitest run src/render/passes/radix-sort-pass.test.ts  # Radix sort 
 cd ts && npx vitest run src/ktx2-stream-loader.test.ts             # KTX2 Range-based streaming loader (13 tests)
 cd ts && npx vitest run src/texture-streaming.test.ts              # StreamingScheduler progressive textures (17 tests)
 cd ts && npx vitest run src/loro-bench.test.ts                     # Loro CRDT feasibility spike (1 test + 5 skipped)
+cd ts && npx vitest run src/physics-api.test.ts                    # PhysicsAPI events + queries (14 tests)
 cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
 cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (198 tests)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (208 tests)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Debug/dev-tools (requires feature flag)
@@ -218,11 +219,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Physics (physics-2d): `engine_physics_configure`, `engine_physics_body_count`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Physics (physics-2d): `engine_physics_configure`, `engine_physics_body_count`, `engine_collision_events_ptr/count`, `engine_contact_force_events_ptr/count`, `engine_physics_raycast/raycast_result_ptr`, `engine_physics_overlap_aabb/overlap_circle/overlap_results_ptr`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore` |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy + 2D system variants (`velocity_system_2d`, `transform_system_2d`). Listener position state with velocity derivation and extrapolation. `#[cfg(feature = "physics-2d")]`: `PhysicsWorld` field, `physics_sync_pre`/`step`/`physics_sync_post` in tick loop, filtered velocity systems, physics dirty marking, despawn cleanup. Dev-tools: `reset()`, `snapshot_create()`, `snapshot_restore()` for time-travel debug |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`, `is_2d` flag per entity) + `process_commands` (including `SetParent`, 2D/3D command routing, batch spawn partitioning) |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (42 variants: 17 core + 25 physics incl. `CreateRigidBody`, `CreateCollider`, `ApplyForce`, `CreateRevoluteJoint`, `MoveCharacter`), `Command` struct |
-| `physics.rs` | `#[cfg(feature = "physics-2d")]` — `PendingRigidBody`, `PendingCollider` (defaults+override staging+`from_payload`), `PhysicsBodyHandle`, `PhysicsColliderHandle`, `PhysicsControlled` marker. `PhysicsWorld` (wraps all Rapier2D state: body/collider/joint sets, pipeline, events). `physics_sync_pre` (consumes pending→Rapier bodies/colliders, kinematic sync), `physics_sync_post` (Rapier→ECS writeback), `build_collider_shape` (shape type→ColliderBuilder) |
+| `physics.rs` | `#[cfg(feature = "physics-2d")]` — `PendingRigidBody`, `PendingCollider` (defaults+override staging+`from_payload`), `PhysicsBodyHandle`, `PhysicsColliderHandle`, `PhysicsControlled` marker. `HyperionCollisionEvent` (#[repr(C)] 12-byte: entity_a/b, event_type, is_sensor), `HyperionContactForceEvent` (#[repr(C)] 20-byte: entity_a/b, max_force_magnitude, max_force_direction_x/y). `PhysicsWorld` (wraps all Rapier2D state: body/collider/joint sets, pipeline, events + `raycast()`/`overlap_aabb()`/`overlap_circle()` scene queries). Static buffers: `RAYCAST_RESULT`, `OVERLAP_RESULTS`. `physics_sync_pre` (consumes pending→Rapier bodies/colliders, kinematic sync), `physics_sync_post` (Rapier→ECS writeback), `build_collider_shape` (shape type→ColliderBuilder) |
 | `physics_commands.rs` | `#[cfg(feature = "physics-2d")]` — `process_physics_commands`: second-pass command router for live-body Rapier commands (ApplyForce, ApplyImpulse, ApplyTorque, SetGravityScale, SetLinearDamping, SetAngularDamping, SetCCDEnabled) |
 | `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])`, `Transform2D { x, y, rot, sx, sy }` (20 bytes, compact 2D archetype), `Depth(f32)` (opt-in 2.5D), `Transparent(u8)` (blend mode flag) — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
 | `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
@@ -246,12 +247,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `prefabs`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`, `debug` (recording tap). `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `physics` (PhysicsAPI), `prefabs`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`, `debug` (recording tap). `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder (`.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`). Physics: `.rigidBody()/.collider()/.gravityScale()/.linearDamping()/.applyForce()/.applyImpulse()`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
 | `types.ts` | `HyperionConfig`, `ResolvedConfig`, `HyperionStats`, `MemoryStats`, `CompactOptions`, `TextureHandle` |
-| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`, `KTX2Container`, `BasisTranscoder`, `detectCompressedFormat`, `PrefabRegistry`, `boundsVisualizerPlugin`, `CommandTapeRecorder`, `ReplayPlayer`, `SnapshotManager`, `createHotSystem`) |
+| `index.ts` | Barrel export (includes `BloomConfig`, `ParticleEmitterConfig`, `ParticleHandle`, `DEFAULT_PARTICLE_CONFIG`, `KTX2Container`, `BasisTranscoder`, `detectCompressedFormat`, `PrefabRegistry`, `boundsVisualizerPlugin`, `CommandTapeRecorder`, `ReplayPlayer`, `SnapshotManager`, `createHotSystem`, `PhysicsAPI`, `CollisionEvent`, `ContactForceEvent`, `RaycastHit`, `drainCollisionEvents`, `drainContactForceEvents`) |
 | `prim-params-schema.ts` | `PRIM_PARAMS_SCHEMA` + `resolvePrimParams()` — shared parameter name → f32[8] slot registry |
 
 #### Prefabs (`ts/src/prefab/`)
@@ -339,6 +340,12 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `sound-registry.ts` | URL-deduplicated audio buffer management with DI, bidirectional handle-URL maps |
 | `playback-engine.ts` | Web Audio node graph, 2D spatial (StereoPanner + distance attenuation), `setTargetAtTime` smoothing |
 | `audio-manager.ts` | Public facade: lazy AudioContext, safe no-ops before init, suspend/resume/destroy lifecycle |
+
+#### Physics API
+
+| Module | Role |
+|---|---|
+| `physics-api.ts` | `PhysicsAPI` — collision/contact-force event dispatch with two-phase drain (copy WASM data before firing callbacks), sensor sugar (`onSensorEnter`/`onSensorExit`), scene queries (`raycast`/`queryAABB`/`queryCircle`). `drainCollisionEvents()`/`drainContactForceEvents()` standalone helpers |
 
 #### Plugins
 
@@ -496,6 +503,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`process_commands` has cfg-conditional signature** — With `physics-2d`: 5 params (includes `&mut PhysicsWorld`). Without: 4 params. `process_single_command_physics` wraps the base handler to intercept physics commands.
 - **Physics events cleared at frame start, accumulated across ticks** — `frame_collision_events`/`frame_contact_force_events` cleared in `Engine::update()` before the tick loop; `PhysicsWorld::step()` accumulates events from all N ticks in that frame.
 - **`InteractionGroups::new()` takes 3 args in rapier2d 0.32** — `InteractionGroups::new(membership, filter, InteractionTestMode::And)`. The design doc had 2 args.
+- **Two-phase event dispatch in PhysicsAPI** — Phase 1: drain ALL data from WASM memory into JS arrays. Phase 2: fire callbacks from copied data. This prevents `memory.grow` (triggered by callbacks spawning entities) from invalidating DataView mid-iteration.
+- **`HyperionCollisionEvent` is 12 bytes `#[repr(C)]`** — `entity_a: u32, entity_b: u32, event_type: u8, is_sensor: u8, _pad: [u8; 2]`. Read via DataView at 12-byte stride. `event_type`: 0=started, 1=stopped.
+- **`HyperionContactForceEvent` is 20 bytes `#[repr(C)]`** — `entity_a: u32, entity_b: u32, max_force_magnitude: f32, max_force_direction_x: f32, max_force_direction_y: f32`. Read at 20-byte stride.
+- **Scene query static buffers are module-level `static mut`** — `RAYCAST_RESULT: [f32; 3]` and `OVERLAP_RESULTS: Vec<u32>` persist between calls. WASM exports read via `addr_of_mut!()`. Safe because wasm32 is single-threaded.
+- **`QueryPipeline` is ephemeral, NOT stored** — Created on-the-fly via `broad_phase.as_query_pipeline()` for each query call. Holds borrows on `rigid_body_set`/`collider_set` so cannot persist.
+- **`overlap_aabb` deduplicates by entity** — Rapier returns collider handles; multiple colliders can map to the same entity. Results deduplicated via `seen: HashSet<u32>`.
+- **`drainCollisionEvents`/`drainContactForceEvents` are standalone functions** — Separated from `PhysicsAPI` class for Mode B/A bridge seam reuse.
 
 ### Implementation Notes — design decisions and internal details
 
@@ -612,7 +626,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 15 (Physics Rapier2D) spike + 15a + 15b complete. Next: Phase 15c (Joints + Character Controller) per masterplan.**
+**Current: Phase 15 (Physics Rapier2D) spike + 15a + 15b + 15c complete. Next: Phase 15d (Joints + Character Controller) per masterplan.**
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -637,6 +651,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | 15-spike | Physics: Rapier 0.32 Spike | API validation + binary size: +219KB gzipped (GO, under 400KB gate). 5 API divergences documented. `wasm-bindgen` feature does not exist. |
 | 15a | Physics: Protocol & Scaffolding | 25 physics CommandTypes (17-41), `isNonCoalescable()`, `physics-2d` feature flag + rapier2d optional dep, dual WASM build, 25 physics producer methods, `PendingRigidBody`/`PendingCollider` types |
 | 15b | Physics: Core Simulation | `PhysicsWorld` (Rapier2D state wrapper), `physics_sync_pre`/`physics_sync_post` (ECS↔Rapier sync), `process_physics_commands` (live-body routing), `velocity_system_filtered` (excludes `PhysicsControlled`), `despawn_physics_cleanup`, WASM exports (`engine_physics_configure`/`engine_physics_body_count`), `EntityHandle` fluent physics API (`.rigidBody()/.collider()/.applyForce()/.applyImpulse()`) |
+| 15c | Physics: Events & Scene Queries | `#[repr(C)]` event structs (`HyperionCollisionEvent` 12B, `HyperionContactForceEvent` 20B), 9 WASM exports (4 event + 5 query), `PhysicsWorld.raycast()`/`overlap_aabb()`/`overlap_circle()`, `PhysicsAPI` class (two-phase dispatch, sensor sugar, `onCollisionStart/End`/`onContactForce`/`onSensorEnter/Exit`), `drainCollisionEvents()`/`drainContactForceEvents()` standalone helpers |
 
 ## Documentation
 
@@ -651,4 +666,6 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `docs/plans/2026-03-07-phase15-rapier-spike-results.md` — Rapier 0.32 spike results (GO: +219KB gzipped).
 - `docs/plans/2026-03-07-phase15b-core-simulation-design.md` — Phase 15b core simulation design (PhysicsWorld, sync pre/post, command routing).
 - `docs/plans/2026-03-07-phase15b-core-simulation-plan.md` — Phase 15b implementation plan (10 tasks).
+- `docs/plans/2026-03-07-phase15c-events-queries-design.md` — Phase 15c events & scene queries design (#[repr(C)] events, two-phase dispatch, raycast/AABB/circle queries).
+- `docs/plans/2026-03-07-phase15c-events-queries-plan.md` — Phase 15c implementation plan (10 tasks).
 - `hyperion-masterplan.md` — Authoritative high-level reference for all phases (0-20+). Optimization strategy in §17.

@@ -72,3 +72,8 @@ export type { SnapshotEntry, SnapshotManagerConfig } from './replay/snapshot-man
 // HMR State Preservation (Phase 10c)
 export { createHotSystem } from './hmr/hot-system';
 export type { HotSystemConfig } from './hmr/hot-system';
+
+// Physics API (Phase 15c)
+export { PhysicsAPI } from './physics-api';
+export type { CollisionEvent, ContactForceEvent, RaycastHit } from './physics-api';
+export { drainCollisionEvents, drainContactForceEvents } from './physics-api';
