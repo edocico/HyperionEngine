@@ -488,3 +488,292 @@ describe('BackpressuredProducer convenience methods', () => {
     expect(bytes[0]).toBe(CommandType.SetPrimParams1);
   });
 });
+
+describe('physics producer methods', () => {
+  const HEADER = 32;
+
+  function createProducer(): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const bp = new BackpressuredProducer(new RingBufferProducer(sab));
+    return { bp, sab };
+  }
+
+  it('should serialize createRigidBody', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createRigidBody(1, 0)).toBe(true); // dynamic
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 1 payload (bodyType u8) = 6 bytes
+    expect(bytes.length).toBe(6);
+    expect(bytes[0]).toBe(CommandType.CreateRigidBody);
+    expect(bytes[5]).toBe(0); // dynamic
+  });
+
+  it('should serialize destroyRigidBody', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.destroyRigidBody(1)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 0 payload = 5 bytes
+    expect(bytes.length).toBe(5);
+    expect(bytes[0]).toBe(CommandType.DestroyRigidBody);
+  });
+
+  it('should serialize createCollider with circle shape', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createCollider(1, 0, 16.0)).toBe(true); // circle, radius 16
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 16 payload = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.CreateCollider);
+    expect(bytes[5]).toBe(0); // shapeType = circle
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 6, 4);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(16.0);
+  });
+
+  it('should serialize destroyCollider', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.destroyCollider(1)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(5);
+    expect(bytes[0]).toBe(CommandType.DestroyCollider);
+  });
+
+  it('should serialize setLinearDamping', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setLinearDamping(1, 0.5)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload (1 x f32) = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetLinearDamping);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(0.5);
+  });
+
+  it('should serialize setAngularDamping', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setAngularDamping(1, 0.3)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetAngularDamping);
+  });
+
+  it('should serialize setGravityScale', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setGravityScale(1, 2.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetGravityScale);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(2.0);
+  });
+
+  it('should serialize setCCDEnabled', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setCCDEnabled(1, true)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 1 payload (u8) = 6 bytes
+    expect(bytes.length).toBe(6);
+    expect(bytes[0]).toBe(CommandType.SetCCDEnabled);
+    expect(bytes[5]).toBe(1); // enabled
+  });
+
+  it('should serialize applyForce', () => {
+    const { bp, sab } = createProducer();
+    bp.applyForce(1, 100, 200);
+    bp.applyForce(1, 50, 0);
+    expect(bp.pendingCount).toBe(2); // NOT coalesced (additive)
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // Two commands: 2 * (1 cmd + 4 entity_id + 8 payload) = 2 * 13 = 26 bytes
+    expect(bytes.length).toBe(26);
+    expect(bytes[0]).toBe(CommandType.ApplyForce);
+    expect(bytes[13]).toBe(CommandType.ApplyForce);
+  });
+
+  it('should serialize applyImpulse', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.applyImpulse(1, 10, 20)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.ApplyImpulse);
+  });
+
+  it('should serialize applyTorque', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.applyTorque(1, 5.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload (1 x f32) = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.ApplyTorque);
+  });
+
+  it('should serialize setColliderSensor', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setColliderSensor(1, true)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(6);
+    expect(bytes[0]).toBe(CommandType.SetColliderSensor);
+    expect(bytes[5]).toBe(1);
+  });
+
+  it('should serialize setColliderDensity', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setColliderDensity(1, 2.5)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetColliderDensity);
+  });
+
+  it('should serialize setColliderRestitution', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setColliderRestitution(1, 0.8)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetColliderRestitution);
+  });
+
+  it('should serialize setColliderFriction', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setColliderFriction(1, 0.4)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetColliderFriction);
+  });
+
+  it('should serialize setCollisionGroups', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setCollisionGroups(1, 0x0001, 0xFFFF)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload (2 x u16) = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetCollisionGroups);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
+    expect(dv.getUint16(0, true)).toBe(0x0001); // membership
+    expect(dv.getUint16(2, true)).toBe(0xFFFF); // filter
+  });
+
+  it('should serialize createRevoluteJoint', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createRevoluteJoint(1, 2, 0.5, 1.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 12 payload (u32 + 2 x f32) = 17 bytes
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.CreateRevoluteJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
+    expect(dv.getUint32(0, true)).toBe(2); // targetEntityId
+    expect(dv.getFloat32(4, true)).toBeCloseTo(0.5); // anchorAx
+    expect(dv.getFloat32(8, true)).toBeCloseTo(1.0); // anchorAy
+  });
+
+  it('should serialize createPrismaticJoint', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createPrismaticJoint(1, 2, 1.0, 0.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.CreatePrismaticJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
+    expect(dv.getUint32(0, true)).toBe(2);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(1.0);
+    expect(dv.getFloat32(8, true)).toBeCloseTo(0.0);
+  });
+
+  it('should serialize createFixedJoint', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createFixedJoint(1, 2)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload (u32) = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.CreateFixedJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
+    expect(dv.getUint32(0, true)).toBe(2);
+  });
+
+  it('should serialize createRopeJoint', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.createRopeJoint(1, 2, 50.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload (u32 + f32) = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.CreateRopeJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
+    expect(dv.getUint32(0, true)).toBe(2);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(50.0);
+  });
+
+  it('should serialize removeJoint', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.removeJoint(1)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(5);
+    expect(bytes[0]).toBe(CommandType.RemoveJoint);
+  });
+
+  it('should serialize setJointMotor', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setJointMotor(1, 10.0, 100.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.SetJointMotor);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(10.0);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(100.0);
+  });
+
+  it('should serialize setJointLimits', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setJointLimits(1, -1.0, 1.0)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.SetJointLimits);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(-1.0);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(1.0);
+  });
+
+  it('should serialize moveCharacter', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.moveCharacter(1, 1.0, 0.5)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.MoveCharacter);
+  });
+
+  it('should serialize setCharacterConfig', () => {
+    const { bp, sab } = createProducer();
+    expect(bp.setCharacterConfig(1, 0.3, 45.0, 0.1)).toBe(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 12 payload (3 x f32) = 17 bytes
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.SetCharacterConfig);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(0.3);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(45.0);
+    expect(dv.getFloat32(8, true)).toBeCloseTo(0.1);
+  });
+});

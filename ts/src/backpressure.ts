@@ -257,4 +257,140 @@ export class BackpressuredProducer {
   setDepth(entityId: number, z: number): boolean {
     return this.writeCommand(CommandType.SetDepth, entityId, new Float32Array([z]));
   }
+
+  // ── Physics: body ──
+
+  createRigidBody(entityId: number, bodyType: number): boolean {
+    return this.writeCommand(CommandType.CreateRigidBody, entityId, new Uint8Array([bodyType & 0xFF]));
+  }
+
+  destroyRigidBody(entityId: number): boolean {
+    return this.writeCommand(CommandType.DestroyRigidBody, entityId);
+  }
+
+  createCollider(entityId: number, shapeType: number, ...params: number[]): boolean {
+    const buf = new ArrayBuffer(16);
+    const u8 = new Uint8Array(buf);
+    const dv = new DataView(buf);
+    u8[0] = shapeType & 0xFF;
+    for (let i = 0; i < Math.min(params.length, 3); i++) {
+      dv.setFloat32(1 + i * 4, params[i], true);
+    }
+    return this.writeCommand(CommandType.CreateCollider, entityId, u8);
+  }
+
+  destroyCollider(entityId: number): boolean {
+    return this.writeCommand(CommandType.DestroyCollider, entityId);
+  }
+
+  setLinearDamping(entityId: number, damping: number): boolean {
+    return this.writeCommand(CommandType.SetLinearDamping, entityId, new Float32Array([damping]));
+  }
+
+  setAngularDamping(entityId: number, damping: number): boolean {
+    return this.writeCommand(CommandType.SetAngularDamping, entityId, new Float32Array([damping]));
+  }
+
+  setGravityScale(entityId: number, scale: number): boolean {
+    return this.writeCommand(CommandType.SetGravityScale, entityId, new Float32Array([scale]));
+  }
+
+  setCCDEnabled(entityId: number, enabled: boolean): boolean {
+    return this.writeCommand(CommandType.SetCCDEnabled, entityId, new Uint8Array([enabled ? 1 : 0]));
+  }
+
+  applyForce(entityId: number, fx: number, fy: number): boolean {
+    return this.writeCommand(CommandType.ApplyForce, entityId, new Float32Array([fx, fy]));
+  }
+
+  applyImpulse(entityId: number, ix: number, iy: number): boolean {
+    return this.writeCommand(CommandType.ApplyImpulse, entityId, new Float32Array([ix, iy]));
+  }
+
+  applyTorque(entityId: number, torque: number): boolean {
+    return this.writeCommand(CommandType.ApplyTorque, entityId, new Float32Array([torque]));
+  }
+
+  // ── Physics: collider overrides ──
+
+  setColliderSensor(entityId: number, sensor: boolean): boolean {
+    return this.writeCommand(CommandType.SetColliderSensor, entityId, new Uint8Array([sensor ? 1 : 0]));
+  }
+
+  setColliderDensity(entityId: number, density: number): boolean {
+    return this.writeCommand(CommandType.SetColliderDensity, entityId, new Float32Array([density]));
+  }
+
+  setColliderRestitution(entityId: number, restitution: number): boolean {
+    return this.writeCommand(CommandType.SetColliderRestitution, entityId, new Float32Array([restitution]));
+  }
+
+  setColliderFriction(entityId: number, friction: number): boolean {
+    return this.writeCommand(CommandType.SetColliderFriction, entityId, new Float32Array([friction]));
+  }
+
+  setCollisionGroups(entityId: number, membership: number, filter: number): boolean {
+    const buf = new Uint8Array(4);
+    const dv = new DataView(buf.buffer);
+    dv.setUint16(0, membership & 0xFFFF, true);
+    dv.setUint16(2, filter & 0xFFFF, true);
+    return this.writeCommand(CommandType.SetCollisionGroups, entityId, buf);
+  }
+
+  // ── Physics: joints ──
+
+  createRevoluteJoint(entityId: number, targetEntityId: number, anchorAx: number, anchorAy: number): boolean {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, targetEntityId, true);
+    dv.setFloat32(4, anchorAx, true);
+    dv.setFloat32(8, anchorAy, true);
+    return this.writeCommand(CommandType.CreateRevoluteJoint, entityId, new Uint8Array(buf));
+  }
+
+  createPrismaticJoint(entityId: number, targetEntityId: number, axisX: number, axisY: number): boolean {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, targetEntityId, true);
+    dv.setFloat32(4, axisX, true);
+    dv.setFloat32(8, axisY, true);
+    return this.writeCommand(CommandType.CreatePrismaticJoint, entityId, new Uint8Array(buf));
+  }
+
+  createFixedJoint(entityId: number, targetEntityId: number): boolean {
+    const buf = new Uint8Array(4);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, targetEntityId, true);
+    return this.writeCommand(CommandType.CreateFixedJoint, entityId, buf);
+  }
+
+  createRopeJoint(entityId: number, targetEntityId: number, maxDist: number): boolean {
+    const buf = new ArrayBuffer(8);
+    const dv = new DataView(buf);
+    dv.setUint32(0, targetEntityId, true);
+    dv.setFloat32(4, maxDist, true);
+    return this.writeCommand(CommandType.CreateRopeJoint, entityId, new Uint8Array(buf));
+  }
+
+  removeJoint(entityId: number): boolean {
+    return this.writeCommand(CommandType.RemoveJoint, entityId);
+  }
+
+  setJointMotor(entityId: number, targetVel: number, maxForce: number): boolean {
+    return this.writeCommand(CommandType.SetJointMotor, entityId, new Float32Array([targetVel, maxForce]));
+  }
+
+  setJointLimits(entityId: number, min: number, max: number): boolean {
+    return this.writeCommand(CommandType.SetJointLimits, entityId, new Float32Array([min, max]));
+  }
+
+  // ── Physics: character controller ──
+
+  moveCharacter(entityId: number, dx: number, dy: number): boolean {
+    return this.writeCommand(CommandType.MoveCharacter, entityId, new Float32Array([dx, dy]));
+  }
+
+  setCharacterConfig(entityId: number, autostepHeight: number, maxSlope: number, snapToGround: number): boolean {
+    return this.writeCommand(CommandType.SetCharacterConfig, entityId, new Float32Array([autostepHeight, maxSlope, snapToGround]));
+  }
 }
