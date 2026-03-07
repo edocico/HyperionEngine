@@ -689,6 +689,7 @@ dependencies = [
  "bytemuck",
  "glam 0.29.3",
  "hecs",
+ "rapier2d",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]

@@ -5,6 +5,8 @@ use wasm_bindgen::prelude::*;
 pub mod command_processor;
 pub mod components;
 pub mod engine;
+#[cfg(feature = "physics-2d")]
+pub mod physics;
 pub mod render_state;
 pub mod ring_buffer;
 pub mod systems;
