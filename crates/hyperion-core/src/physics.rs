@@ -115,12 +115,15 @@ mod world {
     use rapier2d::prelude::*;
 
     /// Collision event translated to external entity IDs.
-    #[derive(Debug, Clone, PartialEq)]
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct HyperionCollisionEvent {
-        pub entity_a: u32,
-        pub entity_b: u32,
-        pub started: bool,
-    }
+        pub entity_a: u32,       // 4B
+        pub entity_b: u32,       // 4B
+        pub event_type: u8,      // 1B (0=started, 1=stopped)
+        pub is_sensor: u8,       // 1B
+        pub _pad: [u8; 2],       // 2B alignment
+    }  // 12 bytes total, 4-byte aligned
 
     /// Contact force event translated to external entity IDs.
     #[derive(Debug, Clone, PartialEq)]
@@ -264,7 +267,9 @@ mod world {
                 self.frame_collision_events.push(HyperionCollisionEvent {
                     entity_a,
                     entity_b,
-                    started: event.started(),
+                    event_type: if event.started() { 0 } else { 1 },
+                    is_sensor: if event.sensor() { 1 } else { 0 },
+                    _pad: [0; 2],
                 });
             }
         }
@@ -646,7 +651,7 @@ mod tests {
         let ids = [evt.entity_a, evt.entity_b];
         assert!(ids.contains(&100));
         assert!(ids.contains(&200));
-        assert!(evt.started);
+        assert_eq!(evt.event_type, 0);
     }
 
     #[test]
@@ -883,5 +888,23 @@ mod tests {
         // Fixed body stays at same position
         assert!((t.x - 50.0).abs() < 0.01);
         assert!((t.y - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn collision_event_repr_c_size() {
+        assert_eq!(std::mem::size_of::<HyperionCollisionEvent>(), 12);
+    }
+
+    #[test]
+    fn collision_event_has_is_sensor_field() {
+        let evt = HyperionCollisionEvent {
+            entity_a: 1,
+            entity_b: 2,
+            event_type: 0,
+            is_sensor: 1,
+            _pad: [0; 2],
+        };
+        assert_eq!(evt.is_sensor, 1);
+        assert_eq!(evt.event_type, 0);
     }
 }
