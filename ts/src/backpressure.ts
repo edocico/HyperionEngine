@@ -23,6 +23,23 @@ export interface FlushStats {
  */
 const MAX_COMMAND_TYPE = 42; // CommandType values: 0..41
 
+/**
+ * Returns true for commands that must NOT be coalesced (last-write-wins).
+ * - Lifecycle: SpawnEntity, DespawnEntity
+ * - Physics create/destroy: CreateRigidBody, DestroyRigidBody, CreateCollider, DestroyCollider
+ * - Physics additive: ApplyForce, ApplyImpulse, ApplyTorque
+ * - Physics joints: CreateRevoluteJoint, CreatePrismaticJoint, CreateFixedJoint, CreateRopeJoint, RemoveJoint
+ * - Physics movement: MoveCharacter
+ */
+function isNonCoalescable(cmd: CommandType): boolean {
+  if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) return true;
+  if (cmd >= CommandType.CreateRigidBody && cmd <= CommandType.DestroyCollider) return true; // 17-20
+  if (cmd >= CommandType.ApplyForce && cmd <= CommandType.ApplyTorque) return true; // 25-27
+  if (cmd >= CommandType.CreateRevoluteJoint && cmd <= CommandType.RemoveJoint) return true; // 33-37
+  if (cmd === CommandType.MoveCharacter) return true; // 40
+  return false;
+}
+
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
   private overwrites = new Map<number, QueuedCommand>(); // key = entityId * 256 + cmd
@@ -33,7 +50,7 @@ export class PrioritizedCommandQueue {
   get overwriteCount(): number { return this.overwrites.size; }
 
   enqueue(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): void {
-    if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) {
+    if (isNonCoalescable(cmd)) {
       if (cmd === CommandType.DespawnEntity) {
         this.purgeEntity(entityId);
       }

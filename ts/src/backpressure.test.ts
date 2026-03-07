@@ -325,6 +325,100 @@ describe('Command coalescing', () => {
   });
 });
 
+describe('physics command coalescing', () => {
+  it('should NOT coalesce ApplyForce (both forces must execute)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.ApplyForce, 1, new Float32Array([0, 100]));
+    queue.enqueue(CommandType.ApplyForce, 1, new Float32Array([0, 100]));
+    expect(queue.criticalCount).toBe(2); // Both in critical queue
+  });
+
+  it('should coalesce SetGravityScale (last-write-wins)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetGravityScale, 1, new Float32Array([1.0]));
+    queue.enqueue(CommandType.SetGravityScale, 1, new Float32Array([2.0]));
+    expect(queue.overwriteCount).toBe(1); // Coalesced to one
+  });
+
+  it('should treat CreateRigidBody as critical', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.CreateRigidBody, 1, new Uint8Array([0]));
+    expect(queue.criticalCount).toBe(1);
+  });
+
+  it('should treat DestroyRigidBody as critical', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.DestroyRigidBody, 1);
+    expect(queue.criticalCount).toBe(1);
+  });
+
+  it('should treat CreateCollider as critical', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.CreateCollider, 1, new Float32Array([0, 0, 0, 0]));
+    expect(queue.criticalCount).toBe(1);
+  });
+
+  it('should treat DestroyCollider as critical', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.DestroyCollider, 1);
+    expect(queue.criticalCount).toBe(1);
+  });
+
+  it('should NOT coalesce ApplyImpulse (additive)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.ApplyImpulse, 1, new Float32Array([10, 0]));
+    queue.enqueue(CommandType.ApplyImpulse, 1, new Float32Array([0, 10]));
+    expect(queue.criticalCount).toBe(2);
+  });
+
+  it('should NOT coalesce ApplyTorque (additive)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.ApplyTorque, 1, new Float32Array([5.0]));
+    queue.enqueue(CommandType.ApplyTorque, 1, new Float32Array([3.0]));
+    expect(queue.criticalCount).toBe(2);
+  });
+
+  it('should treat joint creation as critical', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.CreateRevoluteJoint, 1, new Float32Array([0, 0, 0, 0]));
+    queue.enqueue(CommandType.CreatePrismaticJoint, 2, new Float32Array([0, 0, 0, 0]));
+    queue.enqueue(CommandType.CreateFixedJoint, 3, new Float32Array([0, 0, 0, 0]));
+    queue.enqueue(CommandType.CreateRopeJoint, 4, new Float32Array([0, 0, 0, 0]));
+    queue.enqueue(CommandType.RemoveJoint, 5, new Float32Array([1.0]));
+    expect(queue.criticalCount).toBe(5);
+  });
+
+  it('should treat MoveCharacter as critical (additive per frame)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.MoveCharacter, 1, new Float32Array([1, 0]));
+    queue.enqueue(CommandType.MoveCharacter, 1, new Float32Array([0, 1]));
+    expect(queue.criticalCount).toBe(2);
+  });
+
+  it('should coalesce SetJointMotor (last-write-wins)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetJointMotor, 1, new Float32Array([10.0]));
+    queue.enqueue(CommandType.SetJointMotor, 1, new Float32Array([20.0]));
+    expect(queue.overwriteCount).toBe(1);
+  });
+
+  it('should coalesce SetColliderDensity (last-write-wins)', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetColliderDensity, 1, new Float32Array([1.0]));
+    queue.enqueue(CommandType.SetColliderDensity, 1, new Float32Array([2.0]));
+    expect(queue.overwriteCount).toBe(1);
+  });
+
+  it('should purge physics overrides on DespawnEntity', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetGravityScale, 5, new Float32Array([2.0]));
+    queue.enqueue(CommandType.SetLinearDamping, 5, new Float32Array([0.5]));
+    expect(queue.overwriteCount).toBe(2);
+    queue.enqueue(CommandType.DespawnEntity, 5);
+    expect(queue.overwriteCount).toBe(0); // Purged
+  });
+});
+
 describe('BackpressuredProducer convenience methods', () => {
   const HEADER = 32;
 
