@@ -7,6 +7,11 @@ use hecs::World;
 
 use crate::components::{Active, ModelMatrix, Parent, Position, Rotation, Scale, Transform2D, Velocity};
 
+#[cfg(feature = "physics-2d")]
+use crate::physics::PhysicsControlled;
+#[cfg(feature = "physics-2d")]
+use hecs::Without;
+
 /// Apply velocity to position. Runs once per fixed-timestep tick.
 pub fn velocity_system(world: &mut World, dt: f32) {
     for (pos, vel) in world.query_mut::<(&mut Position, &Velocity)>() {
@@ -57,6 +62,27 @@ pub fn transform_system_2d(world: &mut World) {
         m[13] = transform.y;
         m[14] = 0.0;
         m[15] = 1.0;
+    }
+}
+
+/// Apply velocity to position, EXCLUDING PhysicsControlled entities.
+/// Used when physics-2d feature is enabled — Rapier drives those entities.
+#[cfg(feature = "physics-2d")]
+pub fn velocity_system_filtered(world: &mut World, dt: f32) {
+    for (pos, vel) in world.query_mut::<Without<(&mut Position, &Velocity), &PhysicsControlled>>()
+    {
+        pos.0 += vel.0 * dt;
+    }
+}
+
+/// Apply velocity to 2D entities, EXCLUDING PhysicsControlled entities.
+#[cfg(feature = "physics-2d")]
+pub fn velocity_system_2d_filtered(world: &mut World, dt: f32) {
+    for (transform, vel) in
+        world.query_mut::<Without<(&mut Transform2D, &Velocity), &PhysicsControlled>>()
+    {
+        transform.x += vel.0.x * dt;
+        transform.y += vel.0.y * dt;
     }
 }
 
@@ -345,5 +371,53 @@ mod tests {
         velocity_system_2d(&mut world, 1.0);
         let pos = world.get::<&Position>(e).unwrap();
         assert!((pos.0.x - 0.0).abs() < 1e-5); // unchanged
+    }
+
+    #[cfg(feature = "physics-2d")]
+    mod physics_filter_tests {
+        use super::*;
+        use crate::physics::PhysicsControlled;
+
+        #[test]
+        fn velocity_system_filtered_skips_physics_controlled() {
+            let mut world = World::new();
+            // Non-physics entity — should move
+            world.spawn((
+                Position(Vec3::ZERO),
+                Velocity(Vec3::new(60.0, 0.0, 0.0)),
+            ));
+            // Physics-controlled entity — should NOT move
+            let phys = world.spawn((
+                Position(Vec3::ZERO),
+                Velocity(Vec3::new(60.0, 0.0, 0.0)),
+                PhysicsControlled,
+            ));
+
+            velocity_system_filtered(&mut world, 1.0 / 60.0);
+
+            let phys_pos = world.get::<&Position>(phys).unwrap();
+            assert!((phys_pos.0.x - 0.0).abs() < 1e-5, "physics entity should not move");
+        }
+
+        #[test]
+        fn velocity_system_2d_filtered_skips_physics_controlled() {
+            let mut world = World::new();
+            // Non-physics 2D entity — should move
+            world.spawn((
+                Transform2D { x: 0.0, y: 0.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+                Velocity(Vec3::new(60.0, 120.0, 0.0)),
+            ));
+            // Physics-controlled 2D entity — should NOT move
+            let phys = world.spawn((
+                Transform2D { x: 0.0, y: 0.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+                Velocity(Vec3::new(60.0, 120.0, 0.0)),
+                PhysicsControlled,
+            ));
+
+            velocity_system_2d_filtered(&mut world, 1.0 / 60.0);
+
+            let t = world.get::<&Transform2D>(phys).unwrap();
+            assert!((t.x - 0.0).abs() < 1e-5, "physics 2D entity should not move");
+        }
     }
 }
