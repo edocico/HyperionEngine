@@ -212,6 +212,62 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
+  // ── Physics ──────────────────────────────────────
+
+  /** Create a rigid body for this entity. Returns `this` for chaining. */
+  rigidBody(type: 'dynamic' | 'static' | 'kinematic'): this {
+    this.check();
+    const bodyTypeMap: Record<string, number> = { dynamic: 0, static: 1, kinematic: 2 };
+    this._producer!.createRigidBody(this._id, bodyTypeMap[type]);
+    return this;
+  }
+
+  /** Create a collider for this entity. Returns `this` for chaining. */
+  collider(shape: 'circle', opts: { radius: number }): this;
+  collider(shape: 'box', opts: { width: number; height: number }): this;
+  collider(shape: 'capsule', opts: { halfHeight: number; radius: number }): this;
+  collider(shape: string, opts: Record<string, number>): this {
+    this.check();
+    const shapeMap: Record<string, number> = { circle: 0, box: 1, capsule: 2 };
+    const st = shapeMap[shape] ?? 0;
+    let p0 = 0, p1 = 0, p2 = 0;
+    switch (shape) {
+      case 'circle': p0 = opts.radius; break;
+      case 'box': p0 = opts.width; p1 = opts.height; break;
+      case 'capsule': p0 = opts.halfHeight; p1 = opts.radius; break;
+    }
+    this._producer!.createCollider(this._id, st, p0, p1, p2);
+    return this;
+  }
+
+  /** Set gravity scale for this entity's rigid body. Returns `this` for chaining. */
+  gravityScale(scale: number): this {
+    this.check();
+    this._producer!.setGravityScale(this._id, scale);
+    return this;
+  }
+
+  /** Set linear damping for this entity's rigid body. Returns `this` for chaining. */
+  linearDamping(damping: number): this {
+    this.check();
+    this._producer!.setLinearDamping(this._id, damping);
+    return this;
+  }
+
+  /** Apply a force (accumulated until next physics step). Returns `this` for chaining. */
+  applyForce(fx: number, fy: number): this {
+    this.check();
+    this._producer!.applyForce(this._id, fx, fy);
+    return this;
+  }
+
+  /** Apply an instantaneous impulse. Returns `this` for chaining. */
+  applyImpulse(ix: number, iy: number): this {
+    this.check();
+    this._producer!.applyImpulse(this._id, ix, iy);
+    return this;
+  }
+
   /**
    * Get or set plugin data on this entity handle.
    * Data is stored per-key and cleared on `init()` (pool reuse).

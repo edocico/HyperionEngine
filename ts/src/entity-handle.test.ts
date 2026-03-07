@@ -21,6 +21,12 @@ function mockProducer(): BackpressuredProducer {
     setPrimParams0: vi.fn(() => true),
     setPrimParams1: vi.fn(() => true),
     writeCommand: vi.fn(() => true),
+    createRigidBody: vi.fn(() => true),
+    createCollider: vi.fn(() => true),
+    applyForce: vi.fn(() => true),
+    applyImpulse: vi.fn(() => true),
+    setGravityScale: vi.fn(() => true),
+    setLinearDamping: vi.fn(() => true),
     flush: vi.fn(),
     pendingCount: 0,
     freeSpace: 1000,
@@ -315,6 +321,98 @@ describe('EntityHandle', () => {
       const h = new EntityHandle(1, p);
       h.destroy();
       expect(() => h.line(0, 0, 100, 100, 2)).toThrow('destroyed');
+    });
+  });
+
+  describe('physics methods', () => {
+    it('rigidBody sends CreateRigidBody command', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.rigidBody('dynamic');
+      expect(result).toBe(h);
+      expect(p.createRigidBody).toHaveBeenCalledWith(0, 0);
+    });
+
+    it('rigidBody maps static to body_type 1', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.rigidBody('static');
+      expect(p.createRigidBody).toHaveBeenCalledWith(0, 1);
+    });
+
+    it('rigidBody maps kinematic to body_type 2', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.rigidBody('kinematic');
+      expect(p.createRigidBody).toHaveBeenCalledWith(0, 2);
+    });
+
+    it('collider circle sends CreateCollider', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.collider('circle', { radius: 10 });
+      expect(result).toBe(h);
+      expect(p.createCollider).toHaveBeenCalledWith(0, 0, 10, 0, 0);
+    });
+
+    it('collider box sends CreateCollider', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.collider('box', { width: 32, height: 48 });
+      expect(p.createCollider).toHaveBeenCalledWith(0, 1, 32, 48, 0);
+    });
+
+    it('collider capsule sends CreateCollider', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.collider('capsule', { halfHeight: 20, radius: 5 });
+      expect(p.createCollider).toHaveBeenCalledWith(0, 2, 20, 5, 0);
+    });
+
+    it('applyForce sends ApplyForce command', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.applyForce(100, -50);
+      expect(result).toBe(h);
+      expect(p.applyForce).toHaveBeenCalledWith(0, 100, -50);
+    });
+
+    it('applyImpulse sends ApplyImpulse command', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.applyImpulse(200, 0);
+      expect(result).toBe(h);
+      expect(p.applyImpulse).toHaveBeenCalledWith(0, 200, 0);
+    });
+
+    it('gravityScale sends SetGravityScale', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.gravityScale(0.5);
+      expect(result).toBe(h);
+      expect(p.setGravityScale).toHaveBeenCalledWith(0, 0.5);
+    });
+
+    it('linearDamping sends SetLinearDamping', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      const result = h.linearDamping(0.8);
+      expect(result).toBe(h);
+      expect(p.setLinearDamping).toHaveBeenCalledWith(0, 0.8);
+    });
+
+    it('rigidBody throws after destroy', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.destroy();
+      expect(() => h.rigidBody('dynamic')).toThrow('destroyed');
+    });
+
+    it('collider throws after destroy', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(0, p);
+      h.destroy();
+      expect(() => h.collider('circle', { radius: 5 })).toThrow('destroyed');
     });
   });
 });
