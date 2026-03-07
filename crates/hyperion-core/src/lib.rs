@@ -491,6 +491,120 @@ pub fn engine_physics_body_count() -> u32 {
     }
 }
 
+/// Pointer to the collision events buffer.
+/// Buffer layout: N × 12 bytes (HyperionCollisionEvent, #[repr(C)]).
+/// Valid from engine_update() return until next engine_update() call.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_collision_events_ptr() -> *const u8 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| {
+                e.physics.frame_collision_events.as_ptr() as *const u8
+            })
+    }
+}
+
+/// Number of collision events in the current frame.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_collision_events_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.physics.frame_collision_events.len() as u32)
+    }
+}
+
+/// Pointer to the contact force events buffer.
+/// Buffer layout: N × 20 bytes (HyperionContactForceEvent, #[repr(C)]).
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_contact_force_events_ptr() -> *const u8 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| {
+                e.physics.frame_contact_force_events.as_ptr() as *const u8
+            })
+    }
+}
+
+/// Number of contact force events in the current frame.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_contact_force_events_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.physics.frame_contact_force_events.len() as u32)
+    }
+}
+
+/// Cast a ray and return the external entity ID of the closest hit, or -1.
+/// After a hit, read toi+normal from engine_physics_raycast_result_ptr().
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_raycast(ox: f32, oy: f32, dx: f32, dy: f32, max_toi: f32) -> i32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(-1, |e| e.physics.raycast(ox, oy, dx, dy, max_toi))
+    }
+}
+
+/// Pointer to the raycast result: 3 × f32 [toi, normal_x, normal_y].
+/// Only valid after a successful engine_physics_raycast() call.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_raycast_result_ptr() -> *const f32 {
+    addr_of_mut!(physics::RAYCAST_RESULT) as *const f32
+}
+
+/// Find all entities whose colliders overlap the given AABB.
+/// Returns the count. Read entity IDs from engine_physics_overlap_results_ptr().
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_overlap_aabb(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.physics.overlap_aabb(min_x, min_y, max_x, max_y))
+    }
+}
+
+/// Find all entities whose colliders overlap a circle at (cx, cy) with radius.
+/// Returns the count. Read entity IDs from engine_physics_overlap_results_ptr().
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_overlap_circle(cx: f32, cy: f32, radius: f32) -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.physics.overlap_circle(cx, cy, radius))
+    }
+}
+
+/// Pointer to the overlap results buffer (u32 entity IDs).
+/// Shared between overlap_aabb and overlap_circle — calling one invalidates the other.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_physics_overlap_results_ptr() -> *const u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        let results = &*addr_of_mut!(physics::OVERLAP_RESULTS);
+        results.as_ptr()
+    }
+}
+
 // ── Dev-tools WASM exports ──────────────────────────────────────
 
 /// Returns the number of active entities (dev-tools only).
