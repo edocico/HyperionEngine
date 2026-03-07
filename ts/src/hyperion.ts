@@ -38,6 +38,7 @@ import type { ParticleEmitterConfig, ParticleHandle } from './particle-types';
 import { PrefabRegistry } from './prefab/registry';
 import { CommandTapeRecorder } from './replay/command-tape';
 import type { CommandTape } from './replay/command-tape';
+import { PhysicsAPI } from './physics-api';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -64,6 +65,7 @@ export class Hyperion implements Disposable {
   private readonly immediateState: ImmediateState;
   private readonly audioManager: AudioManager;
   private readonly eventBus: EventBus;
+  private readonly physicsApi: PhysicsAPI;
   private readonly prefabRegistry: PrefabRegistry;
 
   private nextEntityId = 0;
@@ -91,6 +93,7 @@ export class Hyperion implements Disposable {
     this.immediateState = new ImmediateState();
     this.audioManager = new AudioManager();
     this.eventBus = new EventBus();
+    this.physicsApi = new PhysicsAPI();
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
@@ -220,6 +223,11 @@ export class Hyperion implements Disposable {
   /** Audio manager for loading and playing sounds with 2D spatial audio. */
   get audio(): AudioManager {
     return this.audioManager;
+  }
+
+  /** Physics API for collision events, sensor callbacks, and scene queries. */
+  get physics(): PhysicsAPI {
+    return this.physicsApi;
   }
 
   /**
@@ -455,6 +463,7 @@ export class Hyperion implements Disposable {
     this.immediateState.clearAll();
     this.eventBus.destroy();
     void this.audioManager.destroy();
+    this.physicsApi.destroy();
     this.bridge.destroy();
     this.renderer?.destroy();
   }
@@ -611,6 +620,7 @@ export class Hyperion implements Disposable {
     this.bridge.commandBuffer.setListenerPosition(this.cameraApi.x, this.cameraApi.y, 0);
 
     this.bridge.tick(dt);
+    this.physicsApi._dispatch();
     const state = this.bridge.latestRenderState;
 
     // Update SystemViews for plugin hooks.

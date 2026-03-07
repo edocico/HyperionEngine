@@ -88,6 +88,12 @@ describe('Hyperion', () => {
     expect(engine).toBeInstanceOf(Hyperion);
   });
 
+  it('has physics property', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    expect(engine.physics).toBeDefined();
+    expect(engine.physics.raycast(0, 0, 1, 0, 100)).toBeNull();
+  });
+
   it('spawn returns an EntityHandle', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
