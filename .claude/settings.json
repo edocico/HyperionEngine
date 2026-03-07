@@ -30,6 +30,14 @@
           {
             "type": "command",
             "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '(ring_buffer\\.rs|ring-buffer\\.ts|lib\\.rs|worker-bridge\\.ts|engine-worker\\.ts)'; then echo 'REMINDER: Cross-language protocol file modified. Run protocol-sync-checker agent before committing.'; fi"
+          },
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '(physics\\.rs|physics_commands\\.rs)'; then echo 'REMINDER: Physics file modified. Test with: cargo test -p hyperion-core --features physics-2d'; fi"
+          },
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -oP '(?<=\"file_path\":\\s*\")[^\"]+'); if echo \"$FILE\" | grep -qP '(lib\\.rs|index\\.ts|components\\.rs)$'; then echo 'REMINDER: Structural file modified. Update CLAUDE.md architecture tables and MEMORY.md if needed.'; fi"
           }
         ]
       }

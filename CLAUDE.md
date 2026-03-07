@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (157 tests, 198 with physics-2d)
+cargo test -p hyperion-core                  # All Rust unit tests (157 tests, 198 with physics-2d, 167 with dev-tools, 208 with both)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -145,7 +145,7 @@ cargo test -p hyperion-core --features physics-2d  # Includes physics simulation
 cargo clippy -p hyperion-core --features physics-2d
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (165 tests)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (167 tests)
 ```
 
 ### Development Workflow
@@ -584,23 +584,27 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 ### Hooks (`.claude/settings.json`)
 
 - **PreToolUse**: Blocks edits to `ts/wasm/` (generated files)
-- **PostToolUse**: Auto-runs `cargo clippy` on `.rs` edits, colocated vitest on `.ts` edits, WGSL bind group warning on `.wgsl` edits, protocol sync reminder on bridge files
+- **PostToolUse**: Auto-runs `cargo clippy` on `.rs` edits, colocated vitest on `.ts` edits, WGSL bind group warning on `.wgsl` edits, protocol sync reminder on bridge files, physics feature-flag reminder on physics files, CLAUDE.md sync reminder on structural files
 
 ### Skills
 
 - `/build-wasm` — Rebuild Rust→WASM and optionally start dev server
 - `/validate` — Full Rust + TypeScript validation pipeline (run before committing)
+- `/validate-physics` — Full validation pipeline including `--features physics-2d`
+- `/check-size` — Audit WASM binary sizes for both standard and physics builds
 - `/new-primitive` — Add a new RenderPrimitiveType (shader + pipeline + API, 7-step checklist)
 - `/start-phase` — Begin a new engine development phase from the masterplan (9-step workflow)
 
 ### Agents
 
 - `protocol-sync-checker` — Validates Rust↔TypeScript protocol consistency (CommandType, ring buffer layout, WASM exports)
-- `wgsl-validator` — Cross-validates all 16 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
+- `wgsl-validator` — Cross-validates all 18 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
+- `physics-integration-checker` — Validates Rapier2D integration consistency (component lifecycle, handle tracking, despawn cleanup, event ordering, command routing)
 
 ### MCP (`.mcp.json`)
 
 - **Context7** — Live documentation lookup for WebGPU, KTX2, wasm-bindgen, and other specs
+- **Playwright** — Browser automation for visual testing of demo harness and DOM-based checks
 
 ### Formatting
 
