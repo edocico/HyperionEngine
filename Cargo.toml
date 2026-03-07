@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hyperion-core", "crates/loro-spike"]
+members = ["crates/hyperion-core", "crates/loro-spike", "crates/rapier-spike"]
 
 [workspace.package]
 version = "0.1.0"
