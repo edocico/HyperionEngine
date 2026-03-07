@@ -44,6 +44,8 @@ pub mod types {
         pub friction: f32,
         pub is_sensor: bool,
         pub groups: u32,
+        /// bit 0=COLLISION_EVENTS, bit 1=CONTACT_FORCE_EVENTS
+        pub active_events: u8,
     }
 
     impl Default for PendingCollider {
@@ -56,6 +58,7 @@ pub mod types {
                 friction: 0.5,
                 is_sensor: false,
                 groups: 0xFFFF_FFFF,
+                active_events: 0,
             }
         }
     }
@@ -65,6 +68,26 @@ pub mod types {
             Self {
                 shape_type,
                 shape_params: params,
+                ..Default::default()
+            }
+        }
+
+        /// Construct from a 16-byte ring buffer payload.
+        /// Layout: `[shape_type: u8][param0: f32 LE][param1: f32 LE][param2: f32 LE]`
+        pub fn from_payload(payload: &[u8; 16]) -> Self {
+            let shape_type = payload[0];
+            let mut shape_params = [0.0f32; 4];
+            for (i, param) in shape_params.iter_mut().enumerate().take(3) {
+                let offset = 1 + i * 4;
+                if offset + 4 <= 16 {
+                    *param = f32::from_le_bytes(
+                        payload[offset..offset + 4].try_into().unwrap(),
+                    );
+                }
+            }
+            Self {
+                shape_type,
+                shape_params,
                 ..Default::default()
             }
         }
@@ -114,5 +137,24 @@ mod tests {
         let pending = PendingRigidBody::new(1); // fixed
         assert_eq!(pending.body_type, 1);
         assert_eq!(pending.gravity_scale, 1.0); // other fields default
+    }
+
+    #[test]
+    fn pending_collider_from_payload() {
+        let mut payload = [0u8; 16];
+        payload[0] = 0; // circle
+        payload[1..5].copy_from_slice(&10.0f32.to_le_bytes()); // radius
+        let pending = PendingCollider::from_payload(&payload);
+        assert_eq!(pending.shape_type, 0);
+        assert!((pending.shape_params[0] - 10.0).abs() < f32::EPSILON);
+        assert_eq!(pending.active_events, 0);
+    }
+
+    #[test]
+    fn pending_collider_has_active_events_field() {
+        let mut pending = PendingCollider::default();
+        assert_eq!(pending.active_events, 0);
+        pending.active_events = 0x01;
+        assert_eq!(pending.active_events, 0x01);
     }
 }
