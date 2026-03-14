@@ -64,82 +64,13 @@ cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
-# Run specific test files
-cd ts && npx vitest run src/ring-buffer.test.ts               # Ring buffer producer (18 tests)
-cd ts && npx vitest run src/ring-buffer-utils.test.ts         # extractUnread helper (4 tests)
-cd ts && npx vitest run src/camera.test.ts                    # Camera math + frustum + ray (19 tests)
-cd ts && npx vitest run src/capabilities.test.ts              # Capability detection + compressed format + subgroups + sized binding arrays (18 tests)
-cd ts && npx vitest run src/integration.test.ts               # E2E integration (5 tests)
-cd ts && npx vitest run src/frustum.test.ts                   # Frustum culling accuracy (7 tests)
-cd ts && npx vitest run src/texture-manager.test.ts           # Texture manager + KTX2/compressed (36 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # Backpressure queue + producer + physics coalescing (67 tests)
-cd ts && npx vitest run src/supervisor.test.ts                # Worker supervisor (5 tests)
-cd ts && npx vitest run src/render/render-pass.test.ts        # RenderPass + ResourcePool (6 tests)
-cd ts && npx vitest run src/render/render-graph.test.ts       # RenderGraph DAG (8 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # CullPass extraction + subgroup helpers + 2-bucket sort + temporal culling (32 tests)
-cd ts && npx vitest run src/render/passes/scatter-pass.test.ts # ScatterPass compute (2 tests)
-cd ts && npx vitest run src/render/passes/forward-pass.test.ts # ForwardPass multi-pipeline (2 tests)
-cd ts && npx vitest run src/render/passes/fxaa-tonemap-pass.test.ts  # FXAATonemapPass (3 tests)
-cd ts && npx vitest run src/render/passes/selection-seed-pass.test.ts # SelectionSeedPass (3 tests)
-cd ts && npx vitest run src/render/passes/jfa-pass.test.ts    # JFA pass iterations (9 tests)
-cd ts && npx vitest run src/render/passes/outline-composite-pass.test.ts # OutlineComposite (6 tests)
-cd ts && npx vitest run src/render/passes/prefix-sum.test.ts  # Blelloch prefix sum + subgroup sim (10 tests)
-cd ts && npx vitest run src/hyperion.test.ts                  # Hyperion facade (66 tests)
-cd ts && npx vitest run src/entity-handle.test.ts             # EntityHandle fluent API (46 tests)
-cd ts && npx vitest run src/entity-pool.test.ts               # EntityHandle pool recycling (5 tests)
-cd ts && npx vitest run src/game-loop.test.ts                 # GameLoop RAF lifecycle (12 tests)
-cd ts && npx vitest run src/raw-api.test.ts                   # RawAPI numeric interface (4 tests)
-cd ts && npx vitest run src/camera-api.test.ts                # CameraAPI zoom (3 tests)
-cd ts && npx vitest run src/system-views.test.ts              # SystemViews typed views (1 test)
-cd ts && npx vitest run src/plugin.test.ts                    # PluginRegistry + dependency resolution (13 tests)
-cd ts && npx vitest run src/leak-detector.test.ts             # LeakDetector backstop (2 tests)
-cd ts && npx vitest run src/types.test.ts                     # Config types + defaults (4 tests)
-cd ts && npx vitest run src/selection.test.ts                 # SelectionManager (10 tests)
-cd ts && npx vitest run src/input-manager.test.ts             # InputManager keyboard+pointer+callbacks (27 tests)
-cd ts && npx vitest run src/hit-tester.test.ts                # CPU ray-sphere hit testing + spatial grid (9 tests)
-cd ts && npx vitest run src/immediate-state.test.ts           # Immediate mode shadow state + bounds patching (10 tests)
-cd ts && npx vitest run src/input-picking.test.ts             # Input→picking integration (3 tests)
-cd ts && npx vitest run src/text/text-layout.test.ts          # MSDF text layout (3 tests)
-cd ts && npx vitest run src/audio-types.test.ts               # Audio branded types + defaults (3 tests)
-cd ts && npx vitest run src/sound-registry.test.ts            # SoundRegistry load/decode/dedup (13 tests)
-cd ts && npx vitest run src/playback-engine.test.ts           # PlaybackEngine play/stop/spatial (26 tests)
-cd ts && npx vitest run src/audio-manager.test.ts             # AudioManager facade + lifecycle (25 tests)
-cd ts && npx vitest run src/event-bus.test.ts                 # EventBus pub/sub (5 tests)
-cd ts && npx vitest run src/plugin-context.test.ts            # PluginContext + sub-APIs (10 tests)
-cd ts && npx vitest run src/profiler.test.ts                  # ProfilerOverlay DOM management (4 tests)
-cd ts && npx vitest run src/plugins/fps-counter.test.ts       # Example FPS counter plugin (3 tests)
-cd ts && npx vitest run src/render/passes/bloom-pass.test.ts   # BloomPass (7 tests)
-cd ts && npx vitest run src/particle-types.test.ts              # Particle types (3 tests)
-cd ts && npx vitest run src/particle-system.test.ts             # ParticleSystem (5 tests)
-cd ts && npx vitest run src/ktx2-parser.test.ts                # KTX2 container parser (10 tests)
-cd ts && npx vitest run src/basis-transcoder.test.ts            # Basis Universal transcoder (11 tests)
-cd ts && npx vitest run src/debug/tlv-parser.test.ts            # TLV binary parser (4 tests)
-cd ts && npx vitest run src/debug/ecs-inspector.test.ts         # ECS Inspector plugin (3 tests)
-cd ts && npx vitest run src/debug/debug-camera.test.ts          # Debug Camera plugin (3 tests)
-cd ts && npx vitest run src/debug/bounds-visualizer.test.ts    # Bounds visualizer plugin (6 tests)
-cd ts && npx vitest run src/prim-params-schema.test.ts         # Prim params schema (9 tests)
-cd ts && npx vitest run src/prefab/types.test.ts               # Prefab types + validation (6 tests)
-cd ts && npx vitest run src/prefab/instance.test.ts            # PrefabInstance (8 tests)
-cd ts && npx vitest run src/prefab/registry.test.ts            # PrefabRegistry (15 tests)
-cd ts && npx vitest run src/prefab/integration.test.ts         # Prefab facade integration (3 tests)
-cd ts && npx vitest run src/replay/command-tape.test.ts        # CommandTapeRecorder circular buffer (7 tests)
-cd ts && npx vitest run src/replay/replay-player.test.ts       # ReplayPlayer deterministic replay (6 tests)
-cd ts && npx vitest run src/replay/snapshot-manager.test.ts    # SnapshotManager periodic capture (5 tests)
-cd ts && npx vitest run src/hmr/hot-system.test.ts             # createHotSystem HMR helper (6 tests)
-cd ts && npx vitest run src/asset-pipeline/ktx2-node.test.ts   # Node.js KTX2 parser (4 tests)
-cd ts && npx vitest run src/asset-pipeline/scanner.test.ts     # Texture scanner (5 tests)
-cd ts && npx vitest run src/asset-pipeline/codegen.test.ts     # Code generator (3 tests)
-cd ts && npx vitest run src/asset-pipeline/vite-plugin.test.ts # Vite plugin (4 tests)
-cd ts && npx vitest run src/spatial-grid.test.ts               # SpatialGrid broadphase (8 tests)
-cd ts && npx vitest run src/texture-priority.test.ts           # TexturePriorityQueue (10 tests)
-cd ts && npx vitest run src/ring-buffer-bench.test.ts          # Ring buffer saturation benchmark (2 tests)
-cd ts && npx vitest run src/render/passes/radix-sort-pass.test.ts  # Radix sort pass + CPU reference (20 tests)
-cd ts && npx vitest run src/ktx2-stream-loader.test.ts             # KTX2 Range-based streaming loader (13 tests)
-cd ts && npx vitest run src/texture-streaming.test.ts              # StreamingScheduler progressive textures (17 tests)
-cd ts && npx vitest run src/loro-bench.test.ts                     # Loro CRDT feasibility spike (1 test + 5 skipped)
-cd ts && npx vitest run src/physics-api.test.ts                    # PhysicsAPI events + queries (14 tests)
-cd ts && npx vitest run src/demo/types.test.ts                 # Demo types + TestReporter (4 tests)
-cd ts && npx vitest run src/demo/report.test.ts                # ReportBuilder JSON export (2 tests)
+# Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
+# 60+ test files colocated with source across src/, src/render/passes/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/
+cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (66 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (67 tests)
+cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (46 tests)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (32 tests)
+cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (14 tests)
 
 # Physics tests (requires feature flag)
 cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (208 tests)
@@ -228,18 +159,6 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])`, `Transform2D { x, y, rot, sx, sy }` (20 bytes, compact 2D archetype), `Depth(f32)` (opt-in 2.5D), `Transparent(u8)` (blend mode flag) — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
 | `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
-
-### Crate: loro-spike (feasibility spike only)
-
-| Module | Role |
-|---|---|
-| `lib.rs` | Minimal WASM surface: `create_doc`, `apply_operations`, `export_updates`, `import_updates`. Thread-local LoroDoc storage. NOT a production dependency. |
-
-### Crate: rapier-spike (feasibility spike only)
-
-| Module | Role |
-|---|---|
-| `lib.rs` | `spike_validate_all()` — validates 10 Rapier 0.32 API assumptions (step signature, types, events, joints, character controller). `spike_wasm_bindgen_check()` — vestigial. NOT a production dependency. |
 
 ### TypeScript: ts/src/
 
