@@ -858,7 +858,7 @@ fn process_single_command_physics(
 /// Clears reverse-map entries for all colliders attached to the body,
 /// then removes the body (which cascades collider + joint removal in Rapier).
 #[cfg(feature = "physics-2d")]
-fn despawn_physics_cleanup(
+pub fn despawn_physics_cleanup(
     world: &hecs::World,
     entity: hecs::Entity,
     physics: &mut crate::physics::PhysicsWorld,
@@ -875,6 +875,15 @@ fn despawn_physics_cleanup(
                 }
             }
         }
+        // Clean up joint_map entries referencing this entity
+        if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
+            let eid = ext_id.0;
+            drop(ext_id);
+            physics.joint_map.retain(|_, entry| {
+                entry.entity_a != eid && entry.entity_b != eid
+            });
+        }
+
         // Remove body (cascades collider + joint removal)
         physics.rigid_body_set.remove(
             body_handle,
