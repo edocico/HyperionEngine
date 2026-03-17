@@ -51,7 +51,7 @@ export const enum CommandType {
   SetColliderFriction = 31,
   SetCollisionGroups = 32,
 
-  // Physics: joints
+  // Physics: joints (handle-based, joint_id in every payload)
   CreateRevoluteJoint = 33,
   CreatePrismaticJoint = 34,
   CreateFixedJoint = 35,
@@ -59,10 +59,10 @@ export const enum CommandType {
   RemoveJoint = 37,
   SetJointMotor = 38,
   SetJointLimits = 39,
-
-  // Physics: character controller
-  MoveCharacter = 40,
-  SetCharacterConfig = 41,
+  CreateSpringJoint = 40,
+  SetSpringParams = 41,
+  SetJointAnchorB = 42,
+  SetJointAnchorA = 43,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -105,18 +105,18 @@ export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetColliderFriction]: 4,
   [CommandType.SetCollisionGroups]: 4,
 
-  // Physics: joints
-  [CommandType.CreateRevoluteJoint]: 12,
-  [CommandType.CreatePrismaticJoint]: 12,
-  [CommandType.CreateFixedJoint]: 4,
-  [CommandType.CreateRopeJoint]: 8,
-  [CommandType.RemoveJoint]: 0,
-  [CommandType.SetJointMotor]: 8,
-  [CommandType.SetJointLimits]: 8,
-
-  // Physics: character controller
-  [CommandType.MoveCharacter]: 8,
-  [CommandType.SetCharacterConfig]: 12,
+  // Physics: joints (handle-based)
+  [CommandType.CreateRevoluteJoint]: 16,
+  [CommandType.CreatePrismaticJoint]: 16,
+  [CommandType.CreateFixedJoint]: 8,
+  [CommandType.CreateRopeJoint]: 12,
+  [CommandType.RemoveJoint]: 4,
+  [CommandType.SetJointMotor]: 12,
+  [CommandType.SetJointLimits]: 12,
+  [CommandType.CreateSpringJoint]: 12,
+  [CommandType.SetSpringParams]: 12,
+  [CommandType.SetJointAnchorB]: 12,
+  [CommandType.SetJointAnchorA]: 12,
 };
 
 export class RingBufferProducer {

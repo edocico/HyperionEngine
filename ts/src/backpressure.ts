@@ -21,22 +21,24 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 42; // CommandType values: 0..41
+const MAX_COMMAND_TYPE = 44; // CommandType values: 0..43
 
 /**
  * Returns true for commands that must NOT be coalesced (last-write-wins).
  * - Lifecycle: SpawnEntity, DespawnEntity
  * - Physics create/destroy: CreateRigidBody, DestroyRigidBody, CreateCollider, DestroyCollider
  * - Physics additive: ApplyForce, ApplyImpulse, ApplyTorque
- * - Physics joints: CreateRevoluteJoint, CreatePrismaticJoint, CreateFixedJoint, CreateRopeJoint, RemoveJoint
- * - Physics movement: MoveCharacter
+ * - Physics joints: ALL joint commands (33-43) are non-coalescable
  */
 function isNonCoalescable(cmd: CommandType): boolean {
   if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) return true;
   if (cmd >= CommandType.CreateRigidBody && cmd <= CommandType.DestroyCollider) return true; // 17-20
   if (cmd >= CommandType.ApplyForce && cmd <= CommandType.ApplyTorque) return true; // 25-27
-  if (cmd >= CommandType.CreateRevoluteJoint && cmd <= CommandType.RemoveJoint) return true; // 33-37
-  if (cmd === CommandType.MoveCharacter) return true; // 40
+  // Joint commands (33-43) — ALL non-coalescable.
+  // Entity-based coalescing key doesn't work for joints:
+  // same entity with two joints + same cmdType = same key = silent overwrite.
+  // Character Controller (15e) starts at 44 — do not extend this range.
+  if (cmd >= CommandType.CreateRevoluteJoint && cmd <= CommandType.SetJointAnchorA) return true; // 33-43
   return false;
 }
 
@@ -337,60 +339,6 @@ export class BackpressuredProducer {
     return this.writeCommand(CommandType.SetCollisionGroups, entityId, buf);
   }
 
-  // ── Physics: joints ──
-
-  createRevoluteJoint(entityId: number, targetEntityId: number, anchorAx: number, anchorAy: number): boolean {
-    const buf = new ArrayBuffer(12);
-    const dv = new DataView(buf);
-    dv.setUint32(0, targetEntityId, true);
-    dv.setFloat32(4, anchorAx, true);
-    dv.setFloat32(8, anchorAy, true);
-    return this.writeCommand(CommandType.CreateRevoluteJoint, entityId, new Uint8Array(buf));
-  }
-
-  createPrismaticJoint(entityId: number, targetEntityId: number, axisX: number, axisY: number): boolean {
-    const buf = new ArrayBuffer(12);
-    const dv = new DataView(buf);
-    dv.setUint32(0, targetEntityId, true);
-    dv.setFloat32(4, axisX, true);
-    dv.setFloat32(8, axisY, true);
-    return this.writeCommand(CommandType.CreatePrismaticJoint, entityId, new Uint8Array(buf));
-  }
-
-  createFixedJoint(entityId: number, targetEntityId: number): boolean {
-    const buf = new Uint8Array(4);
-    const dv = new DataView(buf.buffer);
-    dv.setUint32(0, targetEntityId, true);
-    return this.writeCommand(CommandType.CreateFixedJoint, entityId, buf);
-  }
-
-  createRopeJoint(entityId: number, targetEntityId: number, maxDist: number): boolean {
-    const buf = new ArrayBuffer(8);
-    const dv = new DataView(buf);
-    dv.setUint32(0, targetEntityId, true);
-    dv.setFloat32(4, maxDist, true);
-    return this.writeCommand(CommandType.CreateRopeJoint, entityId, new Uint8Array(buf));
-  }
-
-  removeJoint(entityId: number): boolean {
-    return this.writeCommand(CommandType.RemoveJoint, entityId);
-  }
-
-  setJointMotor(entityId: number, targetVel: number, maxForce: number): boolean {
-    return this.writeCommand(CommandType.SetJointMotor, entityId, new Float32Array([targetVel, maxForce]));
-  }
-
-  setJointLimits(entityId: number, min: number, max: number): boolean {
-    return this.writeCommand(CommandType.SetJointLimits, entityId, new Float32Array([min, max]));
-  }
-
-  // ── Physics: character controller ──
-
-  moveCharacter(entityId: number, dx: number, dy: number): boolean {
-    return this.writeCommand(CommandType.MoveCharacter, entityId, new Float32Array([dx, dy]));
-  }
-
-  setCharacterConfig(entityId: number, autostepHeight: number, maxSlope: number, snapToGround: number): boolean {
-    return this.writeCommand(CommandType.SetCharacterConfig, entityId, new Float32Array([autostepHeight, maxSlope, snapToGround]));
-  }
+  // NOTE: Joint producer methods (createRevoluteJoint, etc.) will be added in Task 8
+  // with proper JointHandle-based signatures.
 }

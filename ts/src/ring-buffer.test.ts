@@ -303,12 +303,13 @@ describe('physics CommandTypes', () => {
       CommandType.CreateRevoluteJoint, CommandType.CreatePrismaticJoint,
       CommandType.CreateFixedJoint, CommandType.CreateRopeJoint,
       CommandType.RemoveJoint, CommandType.SetJointMotor, CommandType.SetJointLimits,
-      CommandType.MoveCharacter, CommandType.SetCharacterConfig,
+      CommandType.CreateSpringJoint, CommandType.SetSpringParams,
+      CommandType.SetJointAnchorB, CommandType.SetJointAnchorA,
     ];
-    expect(physicsCommands).toHaveLength(25);
+    expect(physicsCommands).toHaveLength(27);
     for (const cmd of physicsCommands) {
       expect(cmd).toBeGreaterThanOrEqual(17);
-      expect(cmd).toBeLessThanOrEqual(41);
+      expect(cmd).toBeLessThanOrEqual(43);
       expect(PAYLOAD_SIZES[cmd]).toBeLessThanOrEqual(16);
     }
   });

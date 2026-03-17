@@ -388,18 +388,19 @@ describe('physics command coalescing', () => {
     expect(queue.criticalCount).toBe(5);
   });
 
-  it('should treat MoveCharacter as critical (additive per frame)', () => {
+  it('should treat ALL joint commands (33-43) as non-coalescable', () => {
     const queue = new PrioritizedCommandQueue();
-    queue.enqueue(CommandType.MoveCharacter, 1, new Float32Array([1, 0]));
-    queue.enqueue(CommandType.MoveCharacter, 1, new Float32Array([0, 1]));
-    expect(queue.criticalCount).toBe(2);
-  });
-
-  it('should coalesce SetJointMotor (last-write-wins)', () => {
-    const queue = new PrioritizedCommandQueue();
+    // SetJointMotor is now non-coalescable (same entity + two joints = different joint_ids)
     queue.enqueue(CommandType.SetJointMotor, 1, new Float32Array([10.0]));
     queue.enqueue(CommandType.SetJointMotor, 1, new Float32Array([20.0]));
-    expect(queue.overwriteCount).toBe(1);
+    expect(queue.criticalCount).toBe(2);
+    expect(queue.overwriteCount).toBe(0);
+    // New commands: CreateSpringJoint, SetSpringParams, SetJointAnchorB, SetJointAnchorA
+    queue.enqueue(CommandType.CreateSpringJoint, 2, new Float32Array([1, 2, 3]));
+    queue.enqueue(CommandType.SetSpringParams, 2, new Float32Array([1, 2, 3]));
+    queue.enqueue(CommandType.SetJointAnchorB, 2, new Float32Array([1, 2, 3]));
+    queue.enqueue(CommandType.SetJointAnchorA, 2, new Float32Array([1, 2, 3]));
+    expect(queue.criticalCount).toBe(6);
   });
 
   it('should coalesce SetColliderDensity (last-write-wins)', () => {
@@ -667,113 +668,6 @@ describe('physics producer methods', () => {
     expect(dv.getUint16(2, true)).toBe(0xFFFF); // filter
   });
 
-  it('should serialize createRevoluteJoint', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.createRevoluteJoint(1, 2, 0.5, 1.0)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 12 payload (u32 + 2 x f32) = 17 bytes
-    expect(bytes.length).toBe(17);
-    expect(bytes[0]).toBe(CommandType.CreateRevoluteJoint);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
-    expect(dv.getUint32(0, true)).toBe(2); // targetEntityId
-    expect(dv.getFloat32(4, true)).toBeCloseTo(0.5); // anchorAx
-    expect(dv.getFloat32(8, true)).toBeCloseTo(1.0); // anchorAy
-  });
-
-  it('should serialize createPrismaticJoint', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.createPrismaticJoint(1, 2, 1.0, 0.0)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    expect(bytes.length).toBe(17);
-    expect(bytes[0]).toBe(CommandType.CreatePrismaticJoint);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
-    expect(dv.getUint32(0, true)).toBe(2);
-    expect(dv.getFloat32(4, true)).toBeCloseTo(1.0);
-    expect(dv.getFloat32(8, true)).toBeCloseTo(0.0);
-  });
-
-  it('should serialize createFixedJoint', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.createFixedJoint(1, 2)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 4 payload (u32) = 9 bytes
-    expect(bytes.length).toBe(9);
-    expect(bytes[0]).toBe(CommandType.CreateFixedJoint);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
-    expect(dv.getUint32(0, true)).toBe(2);
-  });
-
-  it('should serialize createRopeJoint', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.createRopeJoint(1, 2, 50.0)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 8 payload (u32 + f32) = 13 bytes
-    expect(bytes.length).toBe(13);
-    expect(bytes[0]).toBe(CommandType.CreateRopeJoint);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
-    expect(dv.getUint32(0, true)).toBe(2);
-    expect(dv.getFloat32(4, true)).toBeCloseTo(50.0);
-  });
-
-  it('should serialize removeJoint', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.removeJoint(1)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    expect(bytes.length).toBe(5);
-    expect(bytes[0]).toBe(CommandType.RemoveJoint);
-  });
-
-  it('should serialize setJointMotor', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.setJointMotor(1, 10.0, 100.0)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
-    expect(bytes.length).toBe(13);
-    expect(bytes[0]).toBe(CommandType.SetJointMotor);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
-    expect(dv.getFloat32(0, true)).toBeCloseTo(10.0);
-    expect(dv.getFloat32(4, true)).toBeCloseTo(100.0);
-  });
-
-  it('should serialize setJointLimits', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.setJointLimits(1, -1.0, 1.0)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    expect(bytes.length).toBe(13);
-    expect(bytes[0]).toBe(CommandType.SetJointLimits);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
-    expect(dv.getFloat32(0, true)).toBeCloseTo(-1.0);
-    expect(dv.getFloat32(4, true)).toBeCloseTo(1.0);
-  });
-
-  it('should serialize moveCharacter', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.moveCharacter(1, 1.0, 0.5)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
-    expect(bytes.length).toBe(13);
-    expect(bytes[0]).toBe(CommandType.MoveCharacter);
-  });
-
-  it('should serialize setCharacterConfig', () => {
-    const { bp, sab } = createProducer();
-    expect(bp.setCharacterConfig(1, 0.3, 45.0, 0.1)).toBe(true);
-    bp.flush();
-    const { bytes } = extractUnread(sab);
-    // 1 cmd + 4 entity_id + 12 payload (3 x f32) = 17 bytes
-    expect(bytes.length).toBe(17);
-    expect(bytes[0]).toBe(CommandType.SetCharacterConfig);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
-    expect(dv.getFloat32(0, true)).toBeCloseTo(0.3);
-    expect(dv.getFloat32(4, true)).toBeCloseTo(45.0);
-    expect(dv.getFloat32(8, true)).toBeCloseTo(0.1);
-  });
+  // Joint producer method serialization tests will be added in Task 8
+  // when JointHandle-based signatures are implemented.
 });
