@@ -71,17 +71,19 @@ pub enum CommandType {
     SetCollisionGroups = 32,    // 4B: membership(u16) + filter(u16)
 
     // ── Physics: joints ──
-    CreateRevoluteJoint = 33,   // 12B: entity_b(u32) + anchor_a(f32,f32)
-    CreatePrismaticJoint = 34,  // 12B: entity_b(u32) + axis(f32,f32)
-    CreateFixedJoint = 35,      // 4B: entity_b(u32)
-    CreateRopeJoint = 36,       // 8B: entity_b(u32) + max_dist(f32)
-    RemoveJoint = 37,           // 0B
-    SetJointMotor = 38,         // 8B: target_vel(f32) + max_force(f32)
-    SetJointLimits = 39,        // 8B: min(f32) + max(f32)
+    CreateRevoluteJoint = 33,   // 16B: joint_id(u32) + entity_b(u32) + anchor_ax(f32) + anchor_ay(f32)
+    CreatePrismaticJoint = 34,  // 16B: joint_id(u32) + entity_b(u32) + axis_x(f32) + axis_y(f32)
+    CreateFixedJoint = 35,      // 8B: joint_id(u32) + entity_b(u32)
+    CreateRopeJoint = 36,       // 12B: joint_id(u32) + entity_b(u32) + max_dist(f32)
+    RemoveJoint = 37,           // 4B: joint_id(u32)
+    SetJointMotor = 38,         // 12B: joint_id(u32) + target_vel(f32) + max_force(f32)
+    SetJointLimits = 39,        // 12B: joint_id(u32) + min(f32) + max(f32)
 
-    // ── Physics: character controller ──
-    MoveCharacter = 40,         // 8B: dx(f32) + dy(f32)
-    SetCharacterConfig = 41,    // 12B: autostep_h(f32) + max_slope(f32) + snap(f32)
+    // ── Physics: spring joints & anchor overrides ──
+    CreateSpringJoint = 40,     // 12B: joint_id(u32) + entity_b(u32) + rest_length(f32)
+    SetSpringParams = 41,       // 12B: joint_id(u32) + stiffness(f32) + damping(f32)
+    SetJointAnchorB = 42,       // 12B: joint_id(u32) + bx(f32) + by(f32)
+    SetJointAnchorA = 43,       // 12B: joint_id(u32) + ax(f32) + ay(f32)
 }
 
 impl CommandType {
@@ -131,9 +133,11 @@ impl CommandType {
             37 => Some(Self::RemoveJoint),
             38 => Some(Self::SetJointMotor),
             39 => Some(Self::SetJointLimits),
-            // Physics: character controller
-            40 => Some(Self::MoveCharacter),
-            41 => Some(Self::SetCharacterConfig),
+            // Physics: spring joints & anchor overrides
+            40 => Some(Self::CreateSpringJoint),
+            41 => Some(Self::SetSpringParams),
+            42 => Some(Self::SetJointAnchorB),
+            43 => Some(Self::SetJointAnchorA),
             _ => None,
         }
     }
@@ -156,7 +160,7 @@ impl CommandType {
             Self::SetDepth => 4,            // 1 × f32
             // Physics: body commands
             Self::CreateRigidBody => 1,     // body_type u8
-            Self::DestroyRigidBody | Self::DestroyCollider | Self::RemoveJoint => 0,
+            Self::DestroyRigidBody | Self::DestroyCollider => 0,
             Self::CreateCollider => 16,     // shape_type(1B) + params(up to 12B)
             Self::SetLinearDamping | Self::SetAngularDamping | Self::SetGravityScale
             | Self::ApplyTorque => 4,       // 1 × f32
@@ -166,13 +170,14 @@ impl CommandType {
             Self::SetColliderDensity | Self::SetColliderRestitution
             | Self::SetColliderFriction | Self::SetCollisionGroups => 4, // f32 or 2×u16
             // Physics: joints
-            Self::CreateRevoluteJoint | Self::CreatePrismaticJoint => 12, // u32 + 2×f32
-            Self::CreateFixedJoint => 4,    // u32
-            Self::CreateRopeJoint => 8,     // u32 + f32
-            Self::SetJointMotor | Self::SetJointLimits => 8, // 2 × f32
-            // Physics: character controller
-            Self::MoveCharacter => 8,       // 2 × f32
-            Self::SetCharacterConfig => 12, // 3 × f32
+            Self::CreateRevoluteJoint | Self::CreatePrismaticJoint => 16, // joint_id + entity_b + 2×f32
+            Self::CreateFixedJoint => 8,    // joint_id + entity_b
+            Self::CreateRopeJoint => 12,    // joint_id + entity_b + f32
+            Self::RemoveJoint => 4,         // joint_id
+            Self::SetJointMotor | Self::SetJointLimits => 12, // joint_id + 2×f32
+            // Physics: spring joints & anchor overrides
+            Self::CreateSpringJoint | Self::SetSpringParams
+            | Self::SetJointAnchorB | Self::SetJointAnchorA => 12, // joint_id + 2×f32
         }
     }
 
@@ -891,7 +896,7 @@ mod tests {
     #[test]
     fn physics_command_types_round_trip() {
         // All 25 physics commands should survive from_u8 round-trip
-        for val in 17..=41u8 {
+        for val in 17..=43u8 {
             let ct = CommandType::from_u8(val);
             assert!(ct.is_some(), "CommandType::from_u8({val}) should be Some");
         }
@@ -899,7 +904,7 @@ mod tests {
 
     #[test]
     fn physics_payload_sizes_within_limit() {
-        for val in 17..=41u8 {
+        for val in 17..=43u8 {
             if let Some(ct) = CommandType::from_u8(val) {
                 assert!(ct.payload_size() <= 16,
                     "CommandType {val} payload {} exceeds 16-byte limit",

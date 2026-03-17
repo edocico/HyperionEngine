@@ -699,8 +699,10 @@ fn process_single_command(
         | CommandType::RemoveJoint
         | CommandType::SetJointMotor
         | CommandType::SetJointLimits
-        | CommandType::MoveCharacter
-        | CommandType::SetCharacterConfig => {}
+        | CommandType::CreateSpringJoint
+        | CommandType::SetSpringParams
+        | CommandType::SetJointAnchorB
+        | CommandType::SetJointAnchorA => {}
     }
 }
 
