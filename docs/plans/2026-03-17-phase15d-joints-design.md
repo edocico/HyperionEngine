@@ -345,23 +345,24 @@ engine.physics.removeJoint(spring);
 | Glam version | Same | rapier2d=0.30, hyperion-core=0.29 | Workaround: `rapier2d::math::Vector` |
 | CommandTypes range | 14-39 | 17-41 (15a), now 33-43 (15d joints) | Updated |
 | Joint anchors | `point![x,y]` | `point![x,y].into()` (nalgebra→glam) | For 15d |
+| JointAxis::AngZ | Used for 2D rotation | **Does NOT exist** in 2D. Use `JointAxis::AngX` (AngX=2 is rotation in 2D) | Spike-verified 15d |
+| SpringJointBuilder | `::new(rest_length)` | `::new(rest_length, stiffness, damping)` — 3 required args | Spike-verified 15d |
+| PrismaticJointBuilder | `::new(UnitVector)` | `::new(Vector)` — takes glam Vec2, not UnitVector | Spike-verified 15d |
+| `get_mut(handle)` | 1 arg | `get_mut(handle, wake_up)` — 2 args | Spike-verified 15d |
+| `set_motor_velocity` 3rd param | `damping` | `factor` (same semantics, different name) | Spike-verified 15d |
+| `set_local_anchor1/2` | Takes Point | Takes `Vector` (glam Vec2) | Spike-verified 15d |
+| `insert()` joint | Unknown args | 4 args: `(body1, body2, joint.into(), wake_up)` | Spike-verified 15d |
+| Double joint removal | Unknown | Safe — remove joint then remove body = no panic | Spike-verified 15d |
 
-### 4.2 Spike Pre-Implementation Checklist
+### 4.2 Spike Results (verified 2026-03-17)
 
-All hard blockers must be verified before writing any implementation code.
+All 8 hard blockers verified. 6 API divergences found and documented above. Key implementation changes required:
 
-| # | Verify | Blocker | Method |
-|---|--------|---------|--------|
-| 1 | `JointAxis::AngZ` exists in rapier2d 0.32 | **Hard** | Compile test in rapier-spike |
-| 2 | `joint.data.set_motor_velocity(JointAxis::AngZ, vel, damping)` signature | **Hard** | Compile test |
-| 3 | `joint.data.set_limits(JointAxis::AngZ, [min, max])` signature | **Hard** | Compile test |
-| 4 | `joint.data.set_local_anchor1(point)` / `set_local_anchor2(point)` exist | **Hard** | Compile test |
-| 5 | `impulse_joint_set.insert(body_a, body_b, joint, wake_up)` — 3 or 4 args | **Hard** | Compile test |
-| 6 | `impulse_joint_set.remove(handle, wake_up)` + body cascade = no panic | Medium | Runtime test |
-| 7 | `SpringJointBuilder::new(rest_length)` exists in rapier2d 0.32 | Medium | Compile test |
-| 8 | `SpringJointBuilder` default stiffness/damping values — if zero, set sensible defaults | Medium | Runtime test |
-
-If any hard blocker fails, the affected Set command's Rapier API call must be adapted before implementation.
+- Use `JointAxis::AngX` everywhere the design says `JointAxis::AngZ`
+- `SpringJointBuilder::new(rest_length, stiffness, damping)` — `CreateSpringJoint` payload already carries `rest_length`; `stiffness` and `damping` use sensible defaults (e.g., 100.0, 5.0) overridable via `SetSpringParams`
+- `PrismaticJointBuilder::new(vector![axis_x, axis_y])` — no UnitVector wrapping needed
+- `impulse_joint_set.get_mut(handle, true)` — always pass `wake_up=true`
+- `set_local_anchor1/2` take `Vector` not `Point`
 
 ---
 
