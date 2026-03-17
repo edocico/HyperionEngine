@@ -421,7 +421,7 @@ pub use world::*;
 pub fn physics_sync_pre(
     world: &mut hecs::World,
     physics: &mut PhysicsWorld,
-    _entity_map: &crate::command_processor::EntityMap,
+    entity_map: &crate::command_processor::EntityMap,
 ) {
     use rapier2d::prelude::*;
     use crate::components::*;
@@ -503,6 +503,56 @@ pub fn physics_sync_pre(
         if body.body_type() == RigidBodyType::KinematicPositionBased {
             body.set_next_kinematic_translation(Vector::new(pos.0.x, pos.0.y));
         }
+    }
+
+    // Pass 4: Consume pending joints (AFTER all bodies exist in Rapier)
+    for pending in physics.pending_joints.drain(..) {
+        let entity_a = match entity_map.get(pending.entity_a_ext) {
+            Some(e) => e,
+            None => continue,
+        };
+        let handle_a = match world.get::<&PhysicsBodyHandle>(entity_a) {
+            Ok(h) => h.0,
+            Err(_) => continue,
+        };
+        let entity_b = match entity_map.get(pending.entity_b_ext) {
+            Some(e) => e,
+            None => continue,
+        };
+        let handle_b = match world.get::<&PhysicsBodyHandle>(entity_b) {
+            Ok(h) => h.0,
+            Err(_) => continue,
+        };
+
+        let joint: GenericJoint = match pending.joint_type {
+            PendingJointType::Revolute { anchor_ax, anchor_ay } => {
+                RevoluteJointBuilder::new()
+                    .local_anchor1(point![anchor_ax, anchor_ay].into())
+                    .build()
+                    .into()
+            }
+            PendingJointType::Prismatic { axis_x, axis_y } => {
+                PrismaticJointBuilder::new(vector![axis_x, axis_y].into())
+                    .build()
+                    .into()
+            }
+            PendingJointType::Fixed => {
+                FixedJointBuilder::new().build().into()
+            }
+            PendingJointType::Rope { max_dist } => {
+                RopeJointBuilder::new(max_dist).build().into()
+            }
+            PendingJointType::Spring { rest_length } => {
+                SpringJointBuilder::new(rest_length, 100.0, 5.0).build().into()
+            }
+        };
+
+        let jh = physics.impulse_joint_set.insert(handle_a, handle_b, joint, true);
+        physics.joint_map.insert(pending.joint_id, JointEntry {
+            handle: jh,
+            entity_a: pending.entity_a_ext,
+            entity_b: pending.entity_b_ext,
+        });
     }
 }
 
@@ -1277,5 +1327,185 @@ mod tests {
         assert_eq!(pw.pending_joints[0].joint_id, 1);
         assert_eq!(pw.pending_joints[0].entity_a_ext, 100);
         assert_eq!(pw.pending_joints[0].entity_b_ext, 200);
+    }
+
+    // --- Joint consumption tests (physics_sync_pre step 4) ---
+
+    /// Helper: create two entities with bodies+colliders, register in entity_map.
+    fn setup_two_body_entities() -> (
+        hecs::World,
+        PhysicsWorld,
+        crate::command_processor::EntityMap,
+    ) {
+        use crate::components::*;
+
+        let mut world = hecs::World::new();
+        let mut physics = PhysicsWorld::new();
+        let mut entity_map = crate::command_processor::EntityMap::new();
+
+        // Entity A (ext_id=0)
+        let ea = world.spawn((
+            Transform2D::default(),
+            PendingRigidBody::new(0),
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]),
+            ExternalId(0),
+        ));
+        entity_map.insert(0, ea);
+
+        // Entity B (ext_id=1)
+        let eb = world.spawn((
+            Transform2D::default(),
+            PendingRigidBody::new(0),
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]),
+            ExternalId(1),
+        ));
+        entity_map.insert(1, eb);
+
+        // Consume bodies + colliders (passes 1-3)
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        assert_eq!(physics.rigid_body_set.len(), 2);
+        assert_eq!(physics.collider_set.len(), 2);
+
+        (world, physics, entity_map)
+    }
+
+    #[test]
+    fn revolute_joint_creates_rapier_joint() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 1,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 0.0 },
+        });
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        assert!(physics.pending_joints.is_empty(), "pending_joints should be drained");
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&1));
+        let entry = &physics.joint_map[&1];
+        assert_eq!(entry.entity_a, 0);
+        assert_eq!(entry.entity_b, 1);
+        assert!(physics.impulse_joint_set.get(entry.handle).is_some());
+    }
+
+    #[test]
+    fn prismatic_joint_creation() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 2,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Prismatic { axis_x: 1.0, axis_y: 0.0 },
+        });
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&2));
+        assert!(physics.impulse_joint_set.get(physics.joint_map[&2].handle).is_some());
+    }
+
+    #[test]
+    fn fixed_joint_creation() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 3,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Fixed,
+        });
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&3));
+        assert!(physics.impulse_joint_set.get(physics.joint_map[&3].handle).is_some());
+    }
+
+    #[test]
+    fn rope_joint_creation() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 4,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Rope { max_dist: 50.0 },
+        });
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&4));
+        assert!(physics.impulse_joint_set.get(physics.joint_map[&4].handle).is_some());
+    }
+
+    #[test]
+    fn spring_joint_creation() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 5,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Spring { rest_length: 30.0 },
+        });
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&5));
+        assert!(physics.impulse_joint_set.get(physics.joint_map[&5].handle).is_some());
+    }
+
+    #[test]
+    fn joint_consumption_order() {
+        use crate::components::*;
+
+        // Stage pending bodies, colliders, AND joints all at once,
+        // then run physics_sync_pre — bodies must be consumed (step 1)
+        // before joints can look up PhysicsBodyHandle (step 4).
+        let mut world = hecs::World::new();
+        let mut physics = PhysicsWorld::new();
+        let mut entity_map = crate::command_processor::EntityMap::new();
+
+        let ea = world.spawn((
+            Transform2D::default(),
+            PendingRigidBody::new(0),
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]),
+            ExternalId(0),
+        ));
+        entity_map.insert(0, ea);
+
+        let eb = world.spawn((
+            Transform2D::default(),
+            PendingRigidBody::new(0),
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]),
+            ExternalId(1),
+        ));
+        entity_map.insert(1, eb);
+
+        // Stage joint BEFORE bodies are consumed
+        physics.pending_joints.push(PendingJoint {
+            joint_id: 99,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 0.0 },
+        });
+
+        // Single call should handle bodies (step 1), colliders (step 2),
+        // kinematic sync (step 3), then joints (step 4).
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        // Bodies created
+        assert_eq!(physics.rigid_body_set.len(), 2);
+        // Joint created (depends on bodies existing first)
+        assert_eq!(physics.joint_map.len(), 1);
+        assert!(physics.joint_map.contains_key(&99));
     }
 }
