@@ -101,6 +101,30 @@ pub mod types {
 
     /// Marker: entity position/rotation driven by Rapier. velocity_system skips these.
     pub struct PhysicsControlled;
+
+    /// A live joint tracked in PhysicsWorld.joint_map.
+    pub struct JointEntry {
+        pub handle: rapier2d::prelude::ImpulseJointHandle,
+        pub entity_a: u32,
+        pub entity_b: u32,
+    }
+
+    /// The type of joint to create, parsed from ring buffer payloads.
+    pub enum PendingJointType {
+        Revolute { anchor_ax: f32, anchor_ay: f32 },
+        Prismatic { axis_x: f32, axis_y: f32 },
+        Fixed,
+        Rope { max_dist: f32 },
+        Spring { rest_length: f32 },
+    }
+
+    /// A pending joint creation. Consumed in physics_sync_pre() step 4.
+    pub struct PendingJoint {
+        pub joint_id: u32,
+        pub entity_a_ext: u32,
+        pub entity_b_ext: u32,
+        pub joint_type: PendingJointType,
+    }
 }
 
 #[cfg(feature = "physics-2d")]
@@ -179,6 +203,10 @@ mod world {
 
         // Reverse map: ColliderHandle index -> external entity ID (for event translation)
         pub collider_to_entity: Vec<Option<u32>>,
+
+        // Joint tracking
+        pub joint_map: std::collections::HashMap<u32, super::types::JointEntry>,
+        pub pending_joints: Vec<super::types::PendingJoint>,
     }
 
     impl PhysicsWorld {
@@ -212,6 +240,8 @@ mod world {
                 frame_collision_events: Vec::new(),
                 frame_contact_force_events: Vec::new(),
                 collider_to_entity: Vec::new(),
+                joint_map: std::collections::HashMap::new(),
+                pending_joints: Vec::new(),
             }
         }
 
@@ -1206,5 +1236,46 @@ mod tests {
 
         let count = pw.overlap_circle(0.0, 0.0, 10.0);
         assert_eq!(count, 0, "expected 0 entities, got {}", count);
+    }
+
+    // --- Joint type tests ---
+
+    #[test]
+    fn joint_entry_fields() {
+        use rapier2d::prelude::*;
+        let mut pw = PhysicsWorld::new();
+        // Create two bodies so we can get a real ImpulseJointHandle
+        let rb_a = RigidBodyBuilder::dynamic().build();
+        let h_a = pw.rigid_body_set.insert(rb_a);
+        let rb_b = RigidBodyBuilder::dynamic().build();
+        let h_b = pw.rigid_body_set.insert(rb_b);
+        let joint = RevoluteJointBuilder::new().build();
+        let jh = pw.impulse_joint_set.insert(h_a, h_b, joint, true);
+
+        let entry = JointEntry {
+            handle: jh,
+            entity_a: 10,
+            entity_b: 20,
+        };
+        assert_eq!(entry.entity_a, 10);
+        assert_eq!(entry.entity_b, 20);
+        assert_eq!(entry.handle, jh);
+    }
+
+    #[test]
+    fn pending_joint_staging_buffer() {
+        let mut pw = PhysicsWorld::new();
+        assert!(pw.pending_joints.is_empty());
+
+        pw.pending_joints.push(PendingJoint {
+            joint_id: 1,
+            entity_a_ext: 100,
+            entity_b_ext: 200,
+            joint_type: PendingJointType::Revolute { anchor_ax: 5.0, anchor_ay: 10.0 },
+        });
+        assert_eq!(pw.pending_joints.len(), 1);
+        assert_eq!(pw.pending_joints[0].joint_id, 1);
+        assert_eq!(pw.pending_joints[0].entity_a_ext, 100);
+        assert_eq!(pw.pending_joints[0].entity_b_ext, 200);
     }
 }
