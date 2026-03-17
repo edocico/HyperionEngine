@@ -1,6 +1,7 @@
 import type { BackpressuredProducer } from './backpressure';
 import type { ImmediateState } from './immediate-state';
 import type { TextureHandle } from './types';
+import type { JointHandle } from './physics-api';
 
 /** Render primitive type enum (must match Rust RenderPrimitive values). */
 export const enum RenderPrimitiveType {
@@ -266,6 +267,42 @@ export class EntityHandle implements Disposable {
     this.check();
     this._producer!.applyImpulse(this._id, ix, iy);
     return this;
+  }
+
+  // ── Joint API ───────────────────────────────────────
+
+  /** Create a revolute (pin) joint. this=entityA, target=entityB. Returns JointHandle for motor/limits. */
+  revoluteJoint(target: EntityHandle, opts?: { anchorAx?: number; anchorAy?: number }): JointHandle {
+    this.check();
+    return this._producer!.createRevoluteJoint(
+      this._id, target.id, opts?.anchorAx ?? 0, opts?.anchorAy ?? 0,
+    );
+  }
+
+  /** Create a prismatic (slider) joint. this=entityA, target=entityB. Returns JointHandle. */
+  prismaticJoint(target: EntityHandle, opts?: { axisX?: number; axisY?: number }): JointHandle {
+    this.check();
+    return this._producer!.createPrismaticJoint(
+      this._id, target.id, opts?.axisX ?? 1, opts?.axisY ?? 0,
+    );
+  }
+
+  /** Create a fixed (weld) joint. this=entityA, target=entityB. Returns JointHandle. */
+  fixedJoint(target: EntityHandle): JointHandle {
+    this.check();
+    return this._producer!.createFixedJoint(this._id, target.id);
+  }
+
+  /** Create a rope joint (max distance constraint). Returns JointHandle. */
+  ropeJoint(target: EntityHandle, maxDist: number): JointHandle {
+    this.check();
+    return this._producer!.createRopeJoint(this._id, target.id, maxDist);
+  }
+
+  /** Create a spring joint (rest length constraint). Returns JointHandle. */
+  springJoint(target: EntityHandle, restLength: number): JointHandle {
+    this.check();
+    return this._producer!.createSpringJoint(this._id, target.id, restLength);
   }
 
   /**

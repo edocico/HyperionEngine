@@ -27,6 +27,21 @@ function mockProducer(): BackpressuredProducer {
     applyImpulse: vi.fn(() => true),
     setGravityScale: vi.fn(() => true),
     setLinearDamping: vi.fn(() => true),
+    createRevoluteJoint: vi.fn((_eA: number, _eB: number, _ax: number, _ay: number) => ({
+      __brand: 'JointHandle' as const, _jointId: 1, _entityA: _eA,
+    })),
+    createPrismaticJoint: vi.fn((_eA: number, _eB: number, _axX: number, _axY: number) => ({
+      __brand: 'JointHandle' as const, _jointId: 2, _entityA: _eA,
+    })),
+    createFixedJoint: vi.fn((_eA: number, _eB: number) => ({
+      __brand: 'JointHandle' as const, _jointId: 3, _entityA: _eA,
+    })),
+    createRopeJoint: vi.fn((_eA: number, _eB: number, _maxDist: number) => ({
+      __brand: 'JointHandle' as const, _jointId: 4, _entityA: _eA,
+    })),
+    createSpringJoint: vi.fn((_eA: number, _eB: number, _restLen: number) => ({
+      __brand: 'JointHandle' as const, _jointId: 5, _entityA: _eA,
+    })),
     flush: vi.fn(),
     pendingCount: 0,
     freeSpace: 1000,
@@ -413,6 +428,70 @@ describe('EntityHandle', () => {
       const h = new EntityHandle(0, p);
       h.destroy();
       expect(() => h.collider('circle', { radius: 5 })).toThrow('destroyed');
+    });
+  });
+
+  describe('joint methods', () => {
+    it('revoluteJoint returns JointHandle with correct brand and entityA', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(10, p);
+      const b = new EntityHandle(20, p);
+      const joint = a.revoluteJoint(b, { anchorAx: 1, anchorAy: 2 });
+      expect(joint.__brand).toBe('JointHandle');
+      expect(joint._entityA).toBe(10);
+      expect(p.createRevoluteJoint).toHaveBeenCalledWith(10, 20, 1, 2);
+    });
+
+    it('revoluteJoint defaults anchor to 0,0', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(10, p);
+      const b = new EntityHandle(20, p);
+      a.revoluteJoint(b);
+      expect(p.createRevoluteJoint).toHaveBeenCalledWith(10, 20, 0, 0);
+    });
+
+    it('prismaticJoint defaults axis to 1,0', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(1, p);
+      const b = new EntityHandle(2, p);
+      const joint = a.prismaticJoint(b);
+      expect(joint.__brand).toBe('JointHandle');
+      expect(p.createPrismaticJoint).toHaveBeenCalledWith(1, 2, 1, 0);
+    });
+
+    it('fixedJoint returns JointHandle', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(1, p);
+      const b = new EntityHandle(2, p);
+      const joint = a.fixedJoint(b);
+      expect(joint.__brand).toBe('JointHandle');
+      expect(p.createFixedJoint).toHaveBeenCalledWith(1, 2);
+    });
+
+    it('ropeJoint sends maxDist', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(1, p);
+      const b = new EntityHandle(2, p);
+      const joint = a.ropeJoint(b, 50);
+      expect(joint.__brand).toBe('JointHandle');
+      expect(p.createRopeJoint).toHaveBeenCalledWith(1, 2, 50);
+    });
+
+    it('springJoint sends restLength', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(1, p);
+      const b = new EntityHandle(2, p);
+      const joint = a.springJoint(b, 30);
+      expect(joint.__brand).toBe('JointHandle');
+      expect(p.createSpringJoint).toHaveBeenCalledWith(1, 2, 30);
+    });
+
+    it('revoluteJoint throws after destroy', () => {
+      const p = mockProducer();
+      const a = new EntityHandle(1, p);
+      const b = new EntityHandle(2, p);
+      a.destroy();
+      expect(() => a.revoluteJoint(b)).toThrow('destroyed');
     });
   });
 });
