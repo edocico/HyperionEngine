@@ -229,6 +229,56 @@ describe('PhysicsAPI', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 
+  it('joint convenience methods delegate to producer', () => {
+    const api = new PhysicsAPI();
+    const mockProducer = {
+      removeJoint: vi.fn(),
+      setJointMotor: vi.fn(),
+      setJointLimits: vi.fn(),
+      setSpringParams: vi.fn(),
+      setJointAnchorA: vi.fn(),
+      setJointAnchorB: vi.fn(),
+    };
+    api._initProducer(mockProducer as any);
+    const joint = { __brand: 'JointHandle' as const, _jointId: 7, _entityA: 10 };
+
+    api.removeJoint(joint);
+    expect(mockProducer.removeJoint).toHaveBeenCalledWith(joint);
+
+    api.setJointMotor(joint, 3.14, 100);
+    expect(mockProducer.setJointMotor).toHaveBeenCalledWith(joint, 3.14, 100);
+
+    api.setJointLimits(joint, -1, 1);
+    expect(mockProducer.setJointLimits).toHaveBeenCalledWith(joint, -1, 1);
+
+    api.setSpringParams(joint, 200, 10);
+    expect(mockProducer.setSpringParams).toHaveBeenCalledWith(joint, 200, 10);
+
+    api.setJointAnchorA(joint, 5, 6);
+    expect(mockProducer.setJointAnchorA).toHaveBeenCalledWith(joint, 5, 6);
+
+    api.setJointAnchorB(joint, 7, 8);
+    expect(mockProducer.setJointAnchorB).toHaveBeenCalledWith(joint, 7, 8);
+  });
+
+  it('joint convenience methods no-op without producer', () => {
+    const api = new PhysicsAPI();
+    const joint = { __brand: 'JointHandle' as const, _jointId: 1, _entityA: 1 };
+    // Should not throw
+    expect(() => api.removeJoint(joint)).not.toThrow();
+    expect(() => api.setJointMotor(joint, 0, 0)).not.toThrow();
+  });
+
+  it('destroy clears producer', () => {
+    const api = new PhysicsAPI();
+    const mockProducer = { removeJoint: vi.fn() };
+    api._initProducer(mockProducer as any);
+    api.destroy();
+    const joint = { __brand: 'JointHandle' as const, _jointId: 1, _entityA: 1 };
+    api.removeJoint(joint); // should no-op, not throw
+    expect(mockProducer.removeJoint).not.toHaveBeenCalled();
+  });
+
   it('dispatch survives WASM call in callback', () => {
     const api = new PhysicsAPI();
 

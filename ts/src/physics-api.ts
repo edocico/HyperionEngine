@@ -1,3 +1,12 @@
+import type { BackpressuredProducer } from './backpressure';
+
+/** Opaque handle to a physics joint. */
+export interface JointHandle {
+  readonly __brand: 'JointHandle';
+  readonly _jointId: number;
+  readonly _entityA: number;
+}
+
 // ── Types ──────────────────────────────────────────────────────
 
 export interface CollisionEvent {
@@ -87,6 +96,7 @@ export function drainContactForceEvents(
 
 export class PhysicsAPI {
   private _wasm: PhysicsWasmExports | null = null;
+  private _producer: BackpressuredProducer | null = null;
   private _startCbs: CollisionCallback[] = [];
   private _endCbs: CollisionCallback[] = [];
   private _forceCbs: ContactForceCallback[] = [];
@@ -96,6 +106,43 @@ export class PhysicsAPI {
   /** @internal Called by Hyperion when physics WASM build is loaded. */
   _init(wasm: PhysicsWasmExports): void {
     this._wasm = wasm;
+  }
+
+  /** @internal Called by Hyperion to wire the command producer for joint convenience methods. */
+  _initProducer(producer: BackpressuredProducer): void {
+    this._producer = producer;
+  }
+
+  // ── Joint convenience methods ──────────────────────────────
+
+  /** Remove a joint. */
+  removeJoint(joint: JointHandle): void {
+    this._producer?.removeJoint(joint);
+  }
+
+  /** Set motor target velocity and max force on a joint. */
+  setJointMotor(joint: JointHandle, targetVel: number, maxForce: number): void {
+    this._producer?.setJointMotor(joint, targetVel, maxForce);
+  }
+
+  /** Set angular limits on a joint. */
+  setJointLimits(joint: JointHandle, min: number, max: number): void {
+    this._producer?.setJointLimits(joint, min, max);
+  }
+
+  /** Set spring stiffness and damping on a spring joint. */
+  setSpringParams(joint: JointHandle, stiffness: number, damping: number): void {
+    this._producer?.setSpringParams(joint, stiffness, damping);
+  }
+
+  /** Set anchor point on entity A of a joint. */
+  setJointAnchorA(joint: JointHandle, ax: number, ay: number): void {
+    this._producer?.setJointAnchorA(joint, ax, ay);
+  }
+
+  /** Set anchor point on entity B of a joint. */
+  setJointAnchorB(joint: JointHandle, bx: number, by: number): void {
+    this._producer?.setJointAnchorB(joint, bx, by);
   }
 
   onCollisionStart(cb: CollisionCallback): () => void {
@@ -214,6 +261,7 @@ export class PhysicsAPI {
 
   destroy(): void {
     this._wasm = null;
+    this._producer = null;
     this._startCbs.length = 0;
     this._endCbs.length = 0;
     this._forceCbs.length = 0;

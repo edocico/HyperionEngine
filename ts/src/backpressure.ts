@@ -1,4 +1,5 @@
 import { RingBufferProducer, CommandType } from './ring-buffer';
+import type { JointHandle } from './physics-api';
 
 export type BackpressureMode = 'retry-queue' | 'drop';
 
@@ -339,6 +340,114 @@ export class BackpressuredProducer {
     return this.writeCommand(CommandType.SetCollisionGroups, entityId, buf);
   }
 
-  // NOTE: Joint producer methods (createRevoluteJoint, etc.) will be added in Task 8
-  // with proper JointHandle-based signatures.
+  // ── Physics: joints ──
+
+  private _nextJointId = 1;
+
+  createRevoluteJoint(entityA: number, entityB: number, anchorAx: number, anchorAy: number): JointHandle {
+    const jointId = this._nextJointId++;
+    const buf = new ArrayBuffer(16);
+    const dv = new DataView(buf);
+    dv.setUint32(0, jointId, true);
+    dv.setUint32(4, entityB, true);
+    dv.setFloat32(8, anchorAx, true);
+    dv.setFloat32(12, anchorAy, true);
+    this.writeCommand(CommandType.CreateRevoluteJoint, entityA, new Uint8Array(buf));
+    return { __brand: 'JointHandle' as const, _jointId: jointId, _entityA: entityA };
+  }
+
+  createPrismaticJoint(entityA: number, entityB: number, axisX: number, axisY: number): JointHandle {
+    const jointId = this._nextJointId++;
+    const buf = new ArrayBuffer(16);
+    const dv = new DataView(buf);
+    dv.setUint32(0, jointId, true);
+    dv.setUint32(4, entityB, true);
+    dv.setFloat32(8, axisX, true);
+    dv.setFloat32(12, axisY, true);
+    this.writeCommand(CommandType.CreatePrismaticJoint, entityA, new Uint8Array(buf));
+    return { __brand: 'JointHandle' as const, _jointId: jointId, _entityA: entityA };
+  }
+
+  createFixedJoint(entityA: number, entityB: number): JointHandle {
+    const jointId = this._nextJointId++;
+    const buf = new ArrayBuffer(8);
+    const dv = new DataView(buf);
+    dv.setUint32(0, jointId, true);
+    dv.setUint32(4, entityB, true);
+    this.writeCommand(CommandType.CreateFixedJoint, entityA, new Uint8Array(buf));
+    return { __brand: 'JointHandle' as const, _jointId: jointId, _entityA: entityA };
+  }
+
+  createRopeJoint(entityA: number, entityB: number, maxDist: number): JointHandle {
+    const jointId = this._nextJointId++;
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, jointId, true);
+    dv.setUint32(4, entityB, true);
+    dv.setFloat32(8, maxDist, true);
+    this.writeCommand(CommandType.CreateRopeJoint, entityA, new Uint8Array(buf));
+    return { __brand: 'JointHandle' as const, _jointId: jointId, _entityA: entityA };
+  }
+
+  createSpringJoint(entityA: number, entityB: number, restLength: number): JointHandle {
+    const jointId = this._nextJointId++;
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, jointId, true);
+    dv.setUint32(4, entityB, true);
+    dv.setFloat32(8, restLength, true);
+    this.writeCommand(CommandType.CreateSpringJoint, entityA, new Uint8Array(buf));
+    return { __brand: 'JointHandle' as const, _jointId: jointId, _entityA: entityA };
+  }
+
+  removeJoint(joint: JointHandle): void {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setUint32(0, joint._jointId, true);
+    this.writeCommand(CommandType.RemoveJoint, joint._entityA, new Uint8Array(buf));
+  }
+
+  setJointMotor(joint: JointHandle, targetVel: number, maxForce: number): void {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, joint._jointId, true);
+    dv.setFloat32(4, targetVel, true);
+    dv.setFloat32(8, maxForce, true);
+    this.writeCommand(CommandType.SetJointMotor, joint._entityA, new Uint8Array(buf));
+  }
+
+  setJointLimits(joint: JointHandle, min: number, max: number): void {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, joint._jointId, true);
+    dv.setFloat32(4, min, true);
+    dv.setFloat32(8, max, true);
+    this.writeCommand(CommandType.SetJointLimits, joint._entityA, new Uint8Array(buf));
+  }
+
+  setSpringParams(joint: JointHandle, stiffness: number, damping: number): void {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, joint._jointId, true);
+    dv.setFloat32(4, stiffness, true);
+    dv.setFloat32(8, damping, true);
+    this.writeCommand(CommandType.SetSpringParams, joint._entityA, new Uint8Array(buf));
+  }
+
+  setJointAnchorA(joint: JointHandle, ax: number, ay: number): void {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, joint._jointId, true);
+    dv.setFloat32(4, ax, true);
+    dv.setFloat32(8, ay, true);
+    this.writeCommand(CommandType.SetJointAnchorA, joint._entityA, new Uint8Array(buf));
+  }
+
+  setJointAnchorB(joint: JointHandle, bx: number, by: number): void {
+    const buf = new ArrayBuffer(12);
+    const dv = new DataView(buf);
+    dv.setUint32(0, joint._jointId, true);
+    dv.setFloat32(4, bx, true);
+    dv.setFloat32(8, by, true);
+    this.writeCommand(CommandType.SetJointAnchorB, joint._entityA, new Uint8Array(buf));
+  }
 }

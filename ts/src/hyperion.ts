@@ -94,6 +94,7 @@ export class Hyperion implements Disposable {
     this.audioManager = new AudioManager();
     this.eventBus = new EventBus();
     this.physicsApi = new PhysicsAPI();
+    this.physicsApi._initProducer(bridge.commandBuffer);
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }

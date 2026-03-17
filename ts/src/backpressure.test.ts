@@ -668,6 +668,87 @@ describe('physics producer methods', () => {
     expect(dv.getUint16(2, true)).toBe(0xFFFF); // filter
   });
 
-  // Joint producer method serialization tests will be added in Task 8
-  // when JointHandle-based signatures are implemented.
+  it('joint_handle_branded_type: createRevoluteJoint returns correct JointHandle shape', () => {
+    const { bp } = createProducer();
+    const joint = bp.createRevoluteJoint(10, 20, 1.5, 2.5);
+    expect(joint.__brand).toBe('JointHandle');
+    expect(joint._entityA).toBe(10);
+    expect(typeof joint._jointId).toBe('number');
+    expect(joint._jointId).toBeGreaterThan(0);
+  });
+
+  it('joint_id_monotonic: sequential creates produce incrementing IDs', () => {
+    const { bp } = createProducer();
+    const j1 = bp.createRevoluteJoint(1, 2, 0, 0);
+    const j2 = bp.createFixedJoint(3, 4);
+    const j3 = bp.createSpringJoint(5, 6, 10);
+    expect(j2._jointId).toBe(j1._jointId + 1);
+    expect(j3._jointId).toBe(j2._jointId + 1);
+  });
+
+  it('createRevoluteJoint_serialization: verify ring buffer bytes (16B payload)', () => {
+    const { bp, sab } = createProducer();
+    const joint = bp.createRevoluteJoint(10, 20, 1.5, 2.5);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 16 payload = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.CreateRevoluteJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 16);
+    expect(dv.getUint32(0, true)).toBe(joint._jointId);
+    expect(dv.getUint32(4, true)).toBe(20); // entityB
+    expect(dv.getFloat32(8, true)).toBeCloseTo(1.5);
+    expect(dv.getFloat32(12, true)).toBeCloseTo(2.5);
+    // entity_id in header is entityA
+    const headerDv = new DataView(bytes.buffer, bytes.byteOffset + 1, 4);
+    expect(headerDv.getUint32(0, true)).toBe(10);
+  });
+
+  it('createFixedJoint_serialization: verify 8B payload', () => {
+    const { bp, sab } = createProducer();
+    const joint = bp.createFixedJoint(5, 6);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.CreateFixedJoint);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
+    expect(dv.getUint32(0, true)).toBe(joint._jointId);
+    expect(dv.getUint32(4, true)).toBe(6); // entityB
+  });
+
+  it('removeJoint_serialization: verify 4B payload', () => {
+    const { bp, sab } = createProducer();
+    const joint = bp.createRevoluteJoint(10, 20, 0, 0);
+    bp.flush();
+    // Clear previous write
+    extractUnread(sab);
+    bp.removeJoint(joint);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.RemoveJoint);
+    const headerDv = new DataView(bytes.buffer, bytes.byteOffset + 1, 4);
+    expect(headerDv.getUint32(0, true)).toBe(10); // entityA from joint
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 4);
+    expect(dv.getUint32(0, true)).toBe(joint._jointId);
+  });
+
+  it('setJointMotor_serialization: verify 12B payload', () => {
+    const { bp, sab } = createProducer();
+    const joint = bp.createRevoluteJoint(7, 8, 0, 0);
+    bp.flush();
+    extractUnread(sab);
+    bp.setJointMotor(joint, 3.14, 100.0);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 12 payload = 17 bytes
+    expect(bytes.length).toBe(17);
+    expect(bytes[0]).toBe(CommandType.SetJointMotor);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 12);
+    expect(dv.getUint32(0, true)).toBe(joint._jointId);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(3.14);
+    expect(dv.getFloat32(8, true)).toBeCloseTo(100.0);
+  });
 });
