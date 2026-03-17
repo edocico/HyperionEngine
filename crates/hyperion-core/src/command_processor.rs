@@ -780,6 +780,72 @@ fn process_single_command_physics(
             }
         }
 
+        // CreateRevoluteJoint: stage a revolute PendingJoint
+        CommandType::CreateRevoluteJoint => {
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+            let anchor_ax = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+            let anchor_ay = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+            physics.pending_joints.push(crate::physics::PendingJoint {
+                joint_id,
+                entity_a_ext: cmd.entity_id,
+                entity_b_ext,
+                joint_type: crate::physics::PendingJointType::Revolute { anchor_ax, anchor_ay },
+            });
+        }
+
+        // CreatePrismaticJoint: stage a prismatic PendingJoint
+        CommandType::CreatePrismaticJoint => {
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+            let axis_x = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+            let axis_y = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+            physics.pending_joints.push(crate::physics::PendingJoint {
+                joint_id,
+                entity_a_ext: cmd.entity_id,
+                entity_b_ext,
+                joint_type: crate::physics::PendingJointType::Prismatic { axis_x, axis_y },
+            });
+        }
+
+        // CreateFixedJoint: stage a fixed PendingJoint
+        CommandType::CreateFixedJoint => {
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+            physics.pending_joints.push(crate::physics::PendingJoint {
+                joint_id,
+                entity_a_ext: cmd.entity_id,
+                entity_b_ext,
+                joint_type: crate::physics::PendingJointType::Fixed,
+            });
+        }
+
+        // CreateRopeJoint: stage a rope PendingJoint
+        CommandType::CreateRopeJoint => {
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+            let max_dist = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+            physics.pending_joints.push(crate::physics::PendingJoint {
+                joint_id,
+                entity_a_ext: cmd.entity_id,
+                entity_b_ext,
+                joint_type: crate::physics::PendingJointType::Rope { max_dist },
+            });
+        }
+
+        // CreateSpringJoint: stage a spring PendingJoint
+        CommandType::CreateSpringJoint => {
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+            let rest_length = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+            physics.pending_joints.push(crate::physics::PendingJoint {
+                joint_id,
+                entity_a_ext: cmd.entity_id,
+                entity_b_ext,
+                joint_type: crate::physics::PendingJointType::Spring { rest_length },
+            });
+        }
+
         // All other commands: delegate to the base (non-physics) handler
         _ => {
             process_single_command(cmd, world, entity_map, render_state);
@@ -1647,5 +1713,48 @@ mod tests {
         assert!(map.is_entity_2d(1));
         assert!(!map.is_entity_2d(2));
         assert!(map.is_entity_2d(3));
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn create_revolute_joint_stages_pending() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut physics = crate::physics::PhysicsWorld::new();
+
+        // Spawn entity 0 (entity_a for the joint)
+        let spawn = Command {
+            cmd_type: CommandType::SpawnEntity,
+            entity_id: 0,
+            payload: [0; 16],
+        };
+        process_commands(&[spawn], &mut world, &mut map, &mut rs, &mut physics);
+
+        // CreateRevoluteJoint: joint_id=42, entity_b=1, anchor=(5.0, 10.0)
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&42u32.to_le_bytes());  // joint_id
+        payload[4..8].copy_from_slice(&1u32.to_le_bytes());   // entity_b
+        payload[8..12].copy_from_slice(&5.0f32.to_le_bytes()); // anchor_ax
+        payload[12..16].copy_from_slice(&10.0f32.to_le_bytes()); // anchor_ay
+        let cmd = Command {
+            cmd_type: CommandType::CreateRevoluteJoint,
+            entity_id: 0,
+            payload,
+        };
+        process_commands(&[cmd], &mut world, &mut map, &mut rs, &mut physics);
+
+        assert_eq!(physics.pending_joints.len(), 1);
+        let pj = &physics.pending_joints[0];
+        assert_eq!(pj.joint_id, 42);
+        assert_eq!(pj.entity_a_ext, 0);
+        assert_eq!(pj.entity_b_ext, 1);
+        match &pj.joint_type {
+            crate::physics::PendingJointType::Revolute { anchor_ax, anchor_ay } => {
+                assert!((anchor_ax - 5.0).abs() < f32::EPSILON);
+                assert!((anchor_ay - 10.0).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Revolute joint type"),
+        }
     }
 }
