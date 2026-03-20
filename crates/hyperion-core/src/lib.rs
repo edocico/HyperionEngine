@@ -605,6 +605,38 @@ pub fn engine_physics_overlap_results_ptr() -> *const u32 {
     }
 }
 
+/// Query whether a character controller entity is currently grounded.
+/// Returns: 1=grounded, 0=airborne, 255=entity has no character controller.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_character_grounded(entity_id: u32) -> u8 {
+    // SAFETY: wasm32 is single-threaded.
+    let engine = unsafe { &*addr_of_mut!(ENGINE) }.as_ref();
+    match engine.map(|e| &e.physics) {
+        Some(p) => match p.character_map.get(&entity_id) {
+            Some(entry) => u8::from(entry.state.grounded),
+            None => 255,
+        },
+        None => 255,
+    }
+}
+
+/// Query whether a character controller entity is currently sliding down a slope.
+/// Returns: 1=sliding, 0=not sliding, 255=entity has no character controller.
+#[cfg(feature = "physics-2d")]
+#[wasm_bindgen]
+pub fn engine_character_sliding(entity_id: u32) -> u8 {
+    // SAFETY: wasm32 is single-threaded.
+    let engine = unsafe { &*addr_of_mut!(ENGINE) }.as_ref();
+    match engine.map(|e| &e.physics) {
+        Some(p) => match p.character_map.get(&entity_id) {
+            Some(entry) => u8::from(entry.state.is_sliding_down_slope),
+            None => 255,
+        },
+        None => 255,
+    }
+}
+
 // ── Dev-tools WASM exports ──────────────────────────────────────
 
 /// Returns the number of active entities (dev-tools only).
