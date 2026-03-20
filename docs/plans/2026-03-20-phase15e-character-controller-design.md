@@ -92,7 +92,15 @@ exactly one CC per entity — no multi-instance risk like joints.
 
 **`MAX_COMMAND_TYPE`** → 47
 
-**`isNonCoalescable`** — add: `cmd === CommandType.CreateCharacterController`
+**`isNonCoalescable`** — add: `cmd === CommandType.CreateCharacterController`.
+Update stale comment on line 41 ("Character Controller (15e) starts at 44 —
+do not extend this range") to reflect the implemented commands.
+
+**Rust `ring_buffer.rs`** — `from_u8()` and `payload_size()` must be extended
+with variants 44/45/46 **before** any command routing. Without this, `drain()`
+returns `None` for unknown discriminants and stops processing — breaking all
+subsequent commands in the frame. This is a **prerequisite** for all other
+changes.
 
 ### 3.2 SetCharacterConfig Packing (16 bytes)
 
@@ -251,7 +259,13 @@ CommandType::MoveCharacter => {
 
 ### 4.5 physics_sync_pre — Pass 5
 
-After Pass 4 (joints), before `step()`:
+After Pass 4 (joints), before `step()`.
+
+**`FIXED_DT` resolution**: Pass `dt: f32` as parameter to `physics_sync_pre`
+from `engine.rs` (where `FIXED_DT` is defined). This avoids a circular
+dependency from `physics.rs` → `engine.rs`. The existing `physics_sync_pre`
+signature changes from `(&mut self, entity_map, world)` to
+`(&mut self, dt: f32, entity_map, world)`.
 
 ```rust
 // Pass 5: Character controller moves
@@ -261,12 +275,13 @@ for (ext_id, dx, dy) in self.pending_moves.drain(..) {
     let Ok(body_handle) = world.get::<&PhysicsBodyHandle>(*entity) else { continue };
 
     let body = &self.rigid_body_set[body_handle.0];
+    if !body.is_kinematic() { continue; } // CC only valid on kinematic bodies
     let colliders_slice = body.colliders();
     if colliders_slice.is_empty() { continue; } // no collider → no-op
 
     let collider = &self.collider_set[colliders_slice[0]];
     let shape = collider.shape();
-    let pos = Pose::from_parts(*body.translation(), *body.rotation());
+    let pos = body.position(); // &Pose — already contains translation + rotation
 
     let qp = self.broad_phase.as_query_pipeline(
         self.narrow_phase.query_dispatcher(),
@@ -278,7 +293,7 @@ for (ext_id, dx, dy) in self.pending_moves.drain(..) {
     let desired = Vector::new(dx, dy);
     let corrected = entry.controller.move_shape(
         FIXED_DT,  // always fixed timestep, not frame dt
-        &qp, shape, &pos, desired, |_| {},
+        &qp, shape, pos, desired, |_| {},
     );
 
     // Apply corrected movement to kinematic body
@@ -484,12 +499,22 @@ Add `CharacterControllerConfig` to `index.ts`.
 3. **Shape from first collider.** `body.colliders()[0]` is the "main" collider.
    No collider → `MoveCharacter` is a no-op.
 
-4. **No explicit destroy.** Cleanup via despawn cascade
+4. **Kinematic bodies only.** `move_shape()` + `set_next_kinematic_translation()`
+   are only meaningful on kinematic bodies. Pass 5 guards with
+   `body.is_kinematic()` — non-kinematic bodies skip silently.
+
+5. **No explicit destroy.** Cleanup via despawn cascade
    (`character_map.remove(&ext_id)`). Inactive CC (no `MoveCharacter` sent)
    has negligible cost.
 
-5. **`corrected_translation` not exposed via WASM.** TS computes movement
-   delta as `position_post - position_pre` if needed (animation triggers, etc.).
+6. **`corrected_translation` not exposed via WASM.** TS can approximate
+   movement delta, but note that `position_pre` must be captured before
+   `engine.update()` and the position in SystemViews may have 1-frame lag.
+   If precise corrected translation is needed in future, add a dedicated
+   WASM export without breaking changes.
+
+7. **`CharacterControllerConfig` defined in `physics-api.ts`.** Imported by
+   `backpressure.ts` (same pattern as `JointHandle`).
 
 ---
 
@@ -516,10 +541,12 @@ Add `CharacterControllerConfig` to `index.ts`.
 
 ## 8. Files Modified
 
-### Rust (4 files)
-- `crates/hyperion-core/src/ring_buffer.rs` — 3 new CommandType variants
+### Rust (5 files)
+
+- `crates/hyperion-core/src/ring_buffer.rs` — 3 new CommandType variants + `from_u8()` + `payload_size()` (**prerequisite for all other changes**)
 - `crates/hyperion-core/src/physics.rs` — CharacterEntry, CharacterState, character_map, pending_moves, Pass 5
 - `crates/hyperion-core/src/physics_commands.rs` — route 44/45/46 commands
+- `crates/hyperion-core/src/engine.rs` — pass `FIXED_DT` to `physics_sync_pre()` (signature change)
 - `crates/hyperion-core/src/lib.rs` — 2 new WASM exports
 
 ### TypeScript (5 files)
@@ -548,14 +575,23 @@ Both spike blockers identified during brainstorming are **resolved**:
 3. **`KinematicCharacterController` location**: `rapier2d::control` module,
    not re-exported in prelude. Confirmed in spike (`crates/rapier-spike/src/lib.rs:16`).
 
-**New spike items for implementation** (verify empirically before writing code):
+**Spike items resolved during spec review:**
 
-4. **`Pose::from_parts(translation, rotation)`** — verify exact signature.
-   May be `Isometry::new(translation, angle)` in rapier2d 0.32's glam types.
+4. **`body.position()` returns `&Pose`** — confirmed via rapier2d 0.32 docs.
+   No need for `Pose::from_parts()`. Pass 5 uses `body.position()` directly.
 
-5. **`body.colliders()` return type** — verify it returns `&[ColliderHandle]`
+5. **`move_shape()` signature confirmed** — 6 args + self:
+   `(dt, &QueryPipeline, &dyn Shape, &Pose, Vector, FnMut)`. The reviewer
+   hallucinated a different signature with `RigidBodySet`/`ColliderSet` args
+   (older Rapier API). Verified against actual rapier2d 0.32 source.
+
+**Remaining spike items** (verify empirically in implementation Task 1):
+
+6. **`body.colliders()` return type** — verify it returns `&[ColliderHandle]`
    (slice, not `Vec` or iterator).
 
-6. **`set_next_kinematic_translation` vs `set_translation`** — verify
-   `set_next_kinematic_translation` exists for kinematic bodies and takes
-   `Vector` (not `Pose`/`Isometry`).
+7. **`set_next_kinematic_translation`** — verify it exists for kinematic bodies
+   and takes `Vector` (not `Pose`/`Isometry`). Confirmed present in RigidBody
+   method list via generated docs.
+
+8. **`body.is_kinematic()` guard** — confirmed present in RigidBody method list.
