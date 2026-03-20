@@ -443,6 +443,7 @@ pub fn physics_sync_pre(
     world: &mut hecs::World,
     physics: &mut PhysicsWorld,
     entity_map: &crate::command_processor::EntityMap,
+    dt: f32,
 ) {
     use rapier2d::prelude::*;
     use crate::components::*;
@@ -574,6 +575,51 @@ pub fn physics_sync_pre(
             entity_a: pending.entity_a_ext,
             entity_b: pending.entity_b_ext,
         });
+    }
+
+    // Pass 5: Character controller moves.
+    // Invariant: CC moves once per frame. pending_moves is populated by
+    // process_commands (1x/frame) and drained here on the first tick.
+    for (ext_id, dx, dy) in physics.pending_moves.drain(..) {
+        let Some(entry) = physics.character_map.get_mut(&ext_id) else { continue };
+        let Some(entity) = entity_map.get(ext_id) else { continue };
+        let Ok(body_handle) = world.get::<&PhysicsBodyHandle>(entity) else { continue };
+
+        let body = &physics.rigid_body_set[body_handle.0];
+        if !body.is_kinematic() { continue; }
+        let colliders_slice = body.colliders();
+        if colliders_slice.is_empty() { continue; }
+
+        // Copy shape + pos out of borrowed state BEFORE creating QueryPipeline.
+        // as_query_pipeline() borrows rigid_body_set + collider_set — overlapping
+        // borrows with shape/pos would fail the borrow checker.
+        let collider = &physics.collider_set[colliders_slice[0]];
+        let shape = collider.shared_shape().clone();
+        let pos = *body.position(); // Isometry is Copy
+
+        let qp = physics.broad_phase.as_query_pipeline(
+            physics.narrow_phase.query_dispatcher(),
+            &physics.rigid_body_set,
+            &physics.collider_set,
+            QueryFilter::default().exclude_rigid_body(body_handle.0),
+        );
+
+        let desired = Vector::new(dx, dy);
+        let corrected = entry.controller.move_shape(
+            dt,
+            &qp, &*shape, &pos, desired, |_| {},
+        );
+
+        let body_mut = &mut physics.rigid_body_set[body_handle.0];
+        let cur_translation = body_mut.translation();
+        let new_pos = Vector::new(
+            cur_translation.x + corrected.translation.x,
+            cur_translation.y + corrected.translation.y,
+        );
+        body_mut.set_next_kinematic_translation(new_pos);
+
+        entry.state.grounded = corrected.grounded;
+        entry.state.is_sliding_down_slope = corrected.is_sliding_down_slope;
     }
 }
 
@@ -944,7 +990,7 @@ mod tests {
             crate::components::ExternalId(0),
         ));
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // PendingRigidBody consumed
         assert!(world.get::<&PendingRigidBody>(entity).is_err());
@@ -970,7 +1016,7 @@ mod tests {
             crate::components::ExternalId(42),
         ));
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert!(world.get::<&PendingRigidBody>(entity).is_err());
         assert!(world.get::<&PendingCollider>(entity).is_err());
@@ -992,7 +1038,7 @@ mod tests {
             crate::components::ExternalId(0),
         ));
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert!(world.get::<&PhysicsColliderHandle>(entity).is_ok());
         assert_eq!(physics.collider_set.len(), 1);
@@ -1012,7 +1058,7 @@ mod tests {
             crate::components::ExternalId(0),
         ));
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert!(world.get::<&PhysicsColliderHandle>(entity).is_ok());
         assert_eq!(physics.collider_set.len(), 1);
@@ -1037,7 +1083,7 @@ mod tests {
         ));
 
         // Consume pending -> create Rapier body + collider
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Step physics (gravity should move the body)
         for _ in 0..10 {
@@ -1066,7 +1112,7 @@ mod tests {
             PendingRigidBody::new(1), // fixed
             ExternalId(0),
         ));
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
         physics.step();
         super::physics_sync_post(&mut world, &physics);
 
@@ -1383,7 +1429,7 @@ mod tests {
         entity_map.insert(1, eb);
 
         // Consume bodies + colliders (passes 1-3)
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
         assert_eq!(physics.rigid_body_set.len(), 2);
         assert_eq!(physics.collider_set.len(), 2);
 
@@ -1401,7 +1447,7 @@ mod tests {
             joint_type: PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 0.0 },
         });
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert!(physics.pending_joints.is_empty(), "pending_joints should be drained");
         assert_eq!(physics.joint_map.len(), 1);
@@ -1423,7 +1469,7 @@ mod tests {
             joint_type: PendingJointType::Prismatic { axis_x: 1.0, axis_y: 0.0 },
         });
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert_eq!(physics.joint_map.len(), 1);
         assert!(physics.joint_map.contains_key(&2));
@@ -1441,7 +1487,7 @@ mod tests {
             joint_type: PendingJointType::Fixed,
         });
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert_eq!(physics.joint_map.len(), 1);
         assert!(physics.joint_map.contains_key(&3));
@@ -1459,7 +1505,7 @@ mod tests {
             joint_type: PendingJointType::Rope { max_dist: 50.0 },
         });
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert_eq!(physics.joint_map.len(), 1);
         assert!(physics.joint_map.contains_key(&4));
@@ -1477,7 +1523,7 @@ mod tests {
             joint_type: PendingJointType::Spring { rest_length: 30.0 },
         });
 
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         assert_eq!(physics.joint_map.len(), 1);
         assert!(physics.joint_map.contains_key(&5));
@@ -1521,7 +1567,7 @@ mod tests {
 
         // Single call should handle bodies (step 1), colliders (step 2),
         // kinematic sync (step 3), then joints (step 4).
-        super::physics_sync_pre(&mut world, &mut physics, &entity_map);
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Bodies created
         assert_eq!(physics.rigid_body_set.len(), 2);

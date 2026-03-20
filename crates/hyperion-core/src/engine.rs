@@ -212,7 +212,7 @@ impl Engine {
     fn fixed_tick(&mut self) {
         // Physics sync: consume pending bodies/colliders, sync kinematic positions.
         #[cfg(feature = "physics-2d")]
-        crate::physics::physics_sync_pre(&mut self.world, &mut self.physics, &self.entity_map);
+        crate::physics::physics_sync_pre(&mut self.world, &mut self.physics, &self.entity_map, FIXED_DT);
 
         // Physics step.
         #[cfg(feature = "physics-2d")]
@@ -1254,5 +1254,123 @@ mod tests {
             engine.reset();
             assert_eq!(engine.physics.body_count(), 0);
         }
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn character_controller_grounded_on_floor() {
+        let mut engine = Engine::new();
+
+        // Floor at y=-50 (below), character at y=0 (above).
+        // Rapier2D default KCC up=(0,1), so "down" is -Y.
+        // Moving character in -Y should land on the floor.
+
+        // Create static floor at y=-50
+        engine.process_commands(&[spawn_2d_cmd(100)]);
+        let mut floor_pos = [0u8; 16];
+        floor_pos[0..4].copy_from_slice(&0.0f32.to_le_bytes());    // x=0
+        floor_pos[4..8].copy_from_slice(&(-50.0f32).to_le_bytes()); // y=-50
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetPosition,
+            entity_id: 100,
+            payload: floor_pos,
+        }]);
+        engine.process_commands(&[create_rigid_body_cmd(100, 1)]); // 1=fixed
+        let mut floor_col = [0u8; 16];
+        floor_col[0] = 1; // box shape
+        floor_col[1..5].copy_from_slice(&1000.0f32.to_le_bytes()); // width=1000
+        floor_col[5..9].copy_from_slice(&20.0f32.to_le_bytes());   // height=20
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::CreateCollider,
+            entity_id: 100,
+            payload: floor_col,
+        }]);
+
+        // Create kinematic character at y=0 (above floor)
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 2)]); // 2=kinematic
+        engine.process_commands(&[create_circle_collider_cmd(0, 10.0)]);
+
+        // Create character controller
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::CreateCharacterController,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+
+        // Initial update to create bodies + step physics (builds BVH)
+        engine.update(FIXED_DT);
+
+        // Move character downward (toward floor), large movement
+        let mut move_payload = [0u8; 16];
+        move_payload[0..4].copy_from_slice(&0.0f32.to_le_bytes());    // dx=0
+        move_payload[4..8].copy_from_slice(&(-200.0f32).to_le_bytes()); // dy=-200 (down)
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::MoveCharacter,
+            entity_id: 0,
+            payload: move_payload,
+        }]);
+
+        engine.update(FIXED_DT);
+
+        // Character should be grounded
+        assert!(engine.physics.character_map.get(&0).unwrap().state.grounded);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn character_controller_move_without_floor() {
+        let mut engine = Engine::new();
+        engine.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0); // no gravity
+        engine.physics.integration_parameters.length_unit = 100.0;
+
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 2)]);
+        engine.process_commands(&[create_circle_collider_cmd(0, 10.0)]);
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::CreateCharacterController,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+        engine.update(FIXED_DT);
+
+        let mut move_payload = [0u8; 16];
+        move_payload[0..4].copy_from_slice(&50.0f32.to_le_bytes());
+        move_payload[4..8].copy_from_slice(&0.0f32.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::MoveCharacter,
+            entity_id: 0,
+            payload: move_payload,
+        }]);
+        engine.update(FIXED_DT);
+
+        assert!(!engine.physics.character_map.get(&0).unwrap().state.grounded);
+    }
+
+    #[cfg(feature = "physics-2d")]
+    #[test]
+    fn character_controller_despawn_cleanup() {
+        let mut engine = Engine::new();
+        engine.physics.gravity = rapier2d::math::Vector::new(0.0, -980.0);
+        engine.physics.integration_parameters.length_unit = 100.0;
+
+        engine.process_commands(&[spawn_2d_cmd(0)]);
+        engine.process_commands(&[create_rigid_body_cmd(0, 2)]);
+        engine.process_commands(&[create_circle_collider_cmd(0, 10.0)]);
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::CreateCharacterController,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+        engine.update(FIXED_DT);
+        assert!(engine.physics.character_map.contains_key(&0));
+
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::DespawnEntity,
+            entity_id: 0,
+            payload: [0; 16],
+        }]);
+        engine.update(FIXED_DT);
+        assert!(!engine.physics.character_map.contains_key(&0));
     }
 }

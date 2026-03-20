@@ -218,7 +218,7 @@ mod tests {
         entity_map.insert(0, entity);
 
         // Create body
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Apply force via command
         let mut payload = [0u8; 16];
@@ -252,7 +252,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Set gravity scale to 0
         let mut payload = [0u8; 16];
@@ -289,7 +289,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&0.0f32.to_le_bytes());
@@ -322,7 +322,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&1000.0f32.to_le_bytes());
@@ -353,7 +353,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&5.0f32.to_le_bytes());
@@ -382,7 +382,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&3.0f32.to_le_bytes());
@@ -411,7 +411,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let mut payload = [0u8; 16];
         payload[0] = 1;
@@ -478,7 +478,7 @@ mod tests {
             ExternalId(0),
         ));
         entity_map.insert(0, entity);
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         let cmd = Command {
             cmd_type: CommandType::SetPosition,
@@ -514,7 +514,7 @@ mod tests {
         entity_map.insert(1, _eb);
 
         // Create bodies + colliders
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Add a revolute joint
         physics.pending_joints.push(PendingJoint {
@@ -523,7 +523,7 @@ mod tests {
             entity_b_ext: 1,
             joint_type: PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 0.0 },
         });
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
         assert_eq!(physics.joint_map.len(), 1);
 
         (world, entity_map, physics)
@@ -606,7 +606,7 @@ mod tests {
             ));
             entity_map.insert(i, e);
         }
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         // Joint 1: A(0) <-> B(1)
         physics.pending_joints.push(PendingJoint {
@@ -622,7 +622,7 @@ mod tests {
             entity_b_ext: 2,
             joint_type: PendingJointType::Revolute { anchor_ax: 1.0, anchor_ay: 0.0 },
         });
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
         assert_eq!(physics.joint_map.len(), 2);
 
         // Remove joint 1 only
@@ -778,7 +778,7 @@ mod tests {
         ));
         entity_map.insert(0, entity);
 
-        physics_sync_pre(&mut world, &mut physics, &entity_map);
+        physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
 
         (world, entity_map, physics)
     }
