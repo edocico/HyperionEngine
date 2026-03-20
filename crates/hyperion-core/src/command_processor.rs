@@ -702,7 +702,11 @@ fn process_single_command(
         | CommandType::CreateSpringJoint
         | CommandType::SetSpringParams
         | CommandType::SetJointAnchorB
-        | CommandType::SetJointAnchorA => {}
+        | CommandType::SetJointAnchorA
+        // Physics: character controller — handled by physics command processor
+        | CommandType::CreateCharacterController
+        | CommandType::SetCharacterConfig
+        | CommandType::MoveCharacter => {}
     }
 }
 

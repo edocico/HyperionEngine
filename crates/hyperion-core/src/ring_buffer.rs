@@ -84,6 +84,11 @@ pub enum CommandType {
     SetSpringParams = 41,       // 12B: joint_id(u32) + stiffness(f32) + damping(f32)
     SetJointAnchorB = 42,       // 12B: joint_id(u32) + bx(f32) + by(f32)
     SetJointAnchorA = 43,       // 12B: joint_id(u32) + ax(f32) + ay(f32)
+
+    // ── Physics: character controller ──
+    CreateCharacterController = 44, // 1B: reserved flags
+    SetCharacterConfig = 45,        // 16B: packed config
+    MoveCharacter = 46,             // 8B: dx(f32) + dy(f32)
 }
 
 impl CommandType {
@@ -138,6 +143,10 @@ impl CommandType {
             41 => Some(Self::SetSpringParams),
             42 => Some(Self::SetJointAnchorB),
             43 => Some(Self::SetJointAnchorA),
+            // Physics: character controller
+            44 => Some(Self::CreateCharacterController),
+            45 => Some(Self::SetCharacterConfig),
+            46 => Some(Self::MoveCharacter),
             _ => None,
         }
     }
@@ -178,6 +187,10 @@ impl CommandType {
             // Physics: spring joints & anchor overrides
             Self::CreateSpringJoint | Self::SetSpringParams
             | Self::SetJointAnchorB | Self::SetJointAnchorA => 12, // joint_id + 2×f32
+            // Physics: character controller
+            Self::CreateCharacterController => 1,  // reserved flags
+            Self::SetCharacterConfig => 16,        // packed config (see spec §3.2)
+            Self::MoveCharacter => 8,              // dx(f32) + dy(f32)
         }
     }
 
@@ -911,5 +924,21 @@ mod tests {
                     ct.payload_size());
             }
         }
+    }
+
+    #[test]
+    fn character_controller_command_types_round_trip() {
+        for val in 44..=46u8 {
+            let ct = CommandType::from_u8(val);
+            assert!(ct.is_some(), "CommandType::from_u8({val}) should be Some");
+        }
+        assert!(CommandType::from_u8(47).is_none(), "47 should be None");
+    }
+
+    #[test]
+    fn character_controller_payload_sizes() {
+        assert_eq!(CommandType::CreateCharacterController.payload_size(), 1);
+        assert_eq!(CommandType::SetCharacterConfig.payload_size(), 16);
+        assert_eq!(CommandType::MoveCharacter.payload_size(), 8);
     }
 }
