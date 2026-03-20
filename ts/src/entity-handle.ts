@@ -1,7 +1,7 @@
 import type { BackpressuredProducer } from './backpressure';
 import type { ImmediateState } from './immediate-state';
 import type { TextureHandle } from './types';
-import type { JointHandle } from './physics-api';
+import type { JointHandle, CharacterControllerConfig } from './physics-api';
 
 /** Render primitive type enum (must match Rust RenderPrimitive values). */
 export const enum RenderPrimitiveType {
@@ -303,6 +303,29 @@ export class EntityHandle implements Disposable {
   springJoint(target: EntityHandle, restLength: number): JointHandle {
     this.check();
     return this._producer!.createSpringJoint(this._id, target.id, restLength);
+  }
+
+  // ── Character Controller API ─────────────────────────────────
+
+  /** Mark this entity as character-controlled. Returns `this`. */
+  characterController(): this {
+    this.check();
+    this._producer!.createCharacterController(this._id);
+    return this;
+  }
+
+  /** Configure the character controller. Returns `this`. */
+  characterConfig(config: CharacterControllerConfig): this {
+    this.check();
+    this._producer!.setCharacterConfig(this._id, config);
+    return this;
+  }
+
+  /** Move the character by desired translation. Returns `this`. */
+  moveCharacter(dx: number, dy: number): this {
+    this.check();
+    this._producer!.moveCharacter(this._id, dx, dy);
+    return this;
   }
 
   /**

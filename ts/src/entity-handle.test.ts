@@ -42,6 +42,9 @@ function mockProducer(): BackpressuredProducer {
     createSpringJoint: vi.fn((_eA: number, _eB: number, _restLen: number) => ({
       __brand: 'JointHandle' as const, _jointId: 5, _entityA: _eA,
     })),
+    createCharacterController: vi.fn(() => true),
+    setCharacterConfig: vi.fn(() => true),
+    moveCharacter: vi.fn(() => true),
     flush: vi.fn(),
     pendingCount: 0,
     freeSpace: 1000,
@@ -492,6 +495,40 @@ describe('EntityHandle', () => {
       const b = new EntityHandle(2, p);
       a.destroy();
       expect(() => a.revoluteJoint(b)).toThrow('destroyed');
+    });
+  });
+
+  describe('character controller methods', () => {
+    it('characterController() sends CreateCharacterController and returns this', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(5, p);
+      const result = h.characterController();
+      expect(result).toBe(h);
+      expect(p.createCharacterController).toHaveBeenCalledWith(5);
+    });
+
+    it('characterConfig() sends SetCharacterConfig and returns this', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(5, p);
+      const config = { maxSlopeClimbAngle: Math.PI / 3 };
+      const result = h.characterConfig(config);
+      expect(result).toBe(h);
+      expect(p.setCharacterConfig).toHaveBeenCalledWith(5, config);
+    });
+
+    it('moveCharacter() sends MoveCharacter and returns this', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(5, p);
+      const result = h.moveCharacter(10, -5);
+      expect(result).toBe(h);
+      expect(p.moveCharacter).toHaveBeenCalledWith(5, 10, -5);
+    });
+
+    it('characterController() throws after destroy', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(5, p);
+      h.destroy();
+      expect(() => h.characterController()).toThrow('destroyed');
     });
   });
 });

@@ -269,6 +269,16 @@ describe('PhysicsAPI', () => {
     expect(() => api.setJointMotor(joint, 0, 0)).not.toThrow();
   });
 
+  it('isGrounded returns false when WASM not loaded', () => {
+    const api = new PhysicsAPI();
+    expect(api.isGrounded(1)).toBe(false);
+  });
+
+  it('isSlidingDownSlope returns false when WASM not loaded', () => {
+    const api = new PhysicsAPI();
+    expect(api.isSlidingDownSlope(1)).toBe(false);
+  });
+
   it('destroy clears producer', () => {
     const api = new PhysicsAPI();
     const mockProducer = { removeJoint: vi.fn() };

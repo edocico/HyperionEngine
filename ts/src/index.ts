@@ -75,5 +75,5 @@ export type { HotSystemConfig } from './hmr/hot-system';
 
 // Physics API (Phase 15c)
 export { PhysicsAPI } from './physics-api';
-export type { CollisionEvent, ContactForceEvent, RaycastHit, JointHandle } from './physics-api';
+export type { CollisionEvent, ContactForceEvent, RaycastHit, JointHandle, CharacterControllerConfig } from './physics-api';
 export { drainCollisionEvents, drainContactForceEvents } from './physics-api';

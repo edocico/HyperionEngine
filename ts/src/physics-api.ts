@@ -69,6 +69,8 @@ interface PhysicsWasmExports {
   engine_physics_overlap_aabb(min_x: number, min_y: number, max_x: number, max_y: number): number;
   engine_physics_overlap_circle(cx: number, cy: number, radius: number): number;
   engine_physics_overlap_results_ptr(): number;
+  engine_character_grounded(entity_id: number): number;
+  engine_character_sliding(entity_id: number): number;
 }
 
 // ── Drain functions (Mode B/A seam) ────────────────────────────
@@ -164,6 +166,20 @@ export class PhysicsAPI {
   /** Set anchor point on entity B of a joint. */
   setJointAnchorB(joint: JointHandle, bx: number, by: number): void {
     this._producer?.setJointAnchorB(joint, bx, by);
+  }
+
+  // ── Character Controller queries ───────────────────────────
+
+  /** Returns true if the character is touching the ground. */
+  isGrounded(entityId: number): boolean {
+    if (!this._wasm) return false;
+    return this._wasm.engine_character_grounded(entityId) === 1;
+  }
+
+  /** Returns true if the character is sliding down a slope. */
+  isSlidingDownSlope(entityId: number): boolean {
+    if (!this._wasm) return false;
+    return this._wasm.engine_character_sliding(entityId) === 1;
   }
 
   onCollisionStart(cb: CollisionCallback): () => void {
