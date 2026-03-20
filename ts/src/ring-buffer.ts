@@ -63,6 +63,11 @@ export const enum CommandType {
   SetSpringParams = 41,
   SetJointAnchorB = 42,
   SetJointAnchorA = 43,
+
+  // Physics: character controller
+  CreateCharacterController = 44,
+  SetCharacterConfig = 45,
+  MoveCharacter = 46,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -117,6 +122,11 @@ export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetSpringParams]: 12,
   [CommandType.SetJointAnchorB]: 12,
   [CommandType.SetJointAnchorA]: 12,
+
+  // Physics: character controller
+  [CommandType.CreateCharacterController]: 1,
+  [CommandType.SetCharacterConfig]: 16,
+  [CommandType.MoveCharacter]: 8,
 };
 
 export class RingBufferProducer {
