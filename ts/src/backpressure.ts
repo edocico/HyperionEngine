@@ -1,5 +1,5 @@
 import { RingBufferProducer, CommandType } from './ring-buffer';
-import type { JointHandle } from './physics-api';
+import type { JointHandle, CharacterControllerConfig } from './physics-api';
 
 export type BackpressureMode = 'retry-queue' | 'drop';
 
@@ -22,7 +22,7 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 44; // CommandType values: 0..43
+const MAX_COMMAND_TYPE = 47; // CommandType values: 0..46
 
 /**
  * Returns true for commands that must NOT be coalesced (last-write-wins).
@@ -35,11 +35,11 @@ function isNonCoalescable(cmd: CommandType): boolean {
   if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) return true;
   if (cmd >= CommandType.CreateRigidBody && cmd <= CommandType.DestroyCollider) return true; // 17-20
   if (cmd >= CommandType.ApplyForce && cmd <= CommandType.ApplyTorque) return true; // 25-27
-  // Joint commands (33-43) — ALL non-coalescable.
+  // Joint commands 33-43 are ALL non-coalescable.
   // Entity-based coalescing key doesn't work for joints:
   // same entity with two joints + same cmdType = same key = silent overwrite.
-  // Character Controller (15e) starts at 44 — do not extend this range.
   if (cmd >= CommandType.CreateRevoluteJoint && cmd <= CommandType.SetJointAnchorA) return true; // 33-43
+  if (cmd === CommandType.CreateCharacterController) return true; // 44
   return false;
 }
 
@@ -449,5 +449,50 @@ export class BackpressuredProducer {
     dv.setFloat32(4, bx, true);
     dv.setFloat32(8, by, true);
     this.writeCommand(CommandType.SetJointAnchorB, joint._entityA, new Uint8Array(buf));
+  }
+
+  // ── Physics: character controller ──
+
+  createCharacterController(entityId: number): void {
+    const buf = new Uint8Array(1);
+    buf[0] = 0;
+    this.writeCommand(CommandType.CreateCharacterController, entityId, buf);
+  }
+
+  setCharacterConfig(entityId: number, config: CharacterControllerConfig): void {
+    const slide = config.slide ?? true;
+    const climbAngle = config.maxSlopeClimbAngle ?? Math.PI / 4;
+    const slideAngle = config.minSlopeSlideAngle ?? Math.PI / 4;
+    const autostep = config.autostep === undefined ? false : config.autostep;
+    const snap = config.snapToGround === undefined ? 0.2 : config.snapToGround;
+    const snapRel = config.snapRelative ?? true;
+
+    let flags = 0;
+    if (slide) flags |= 0x01;
+    if (autostep !== false) {
+      flags |= 0x02;
+      if (autostep.includeDynamic ?? true) flags |= 0x04;
+      const rel = autostep.relative ? 1 : 0;
+      flags |= (rel << 4) | (rel << 5);
+    }
+    if (snap !== false) flags |= 0x08;
+    if (snapRel) flags |= 0x40;
+
+    const buf = new Uint8Array(16);
+    const dv = new DataView(buf.buffer);
+    buf[0] = flags;
+    dv.setFloat32(1, climbAngle, true);
+    dv.setFloat32(5, slideAngle, true);
+    dv.setUint16(9, autostep !== false ? Math.round(autostep.maxHeight * 100) : 0, true);
+    dv.setUint16(11, autostep !== false ? Math.round(autostep.minWidth * 100) : 0, true);
+    dv.setUint16(13, snap !== false ? Math.round(snap * 100) : 0, true);
+    buf[15] = 0;
+
+    this.writeCommand(CommandType.SetCharacterConfig, entityId, buf);
+  }
+
+  moveCharacter(entityId: number, dx: number, dy: number): void {
+    const buf = new Float32Array([dx, dy]);
+    this.writeCommand(CommandType.MoveCharacter, entityId, new Uint8Array(buf.buffer));
   }
 }

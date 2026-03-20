@@ -7,6 +7,27 @@ export interface JointHandle {
   readonly _entityA: number;
 }
 
+/** Configuration for a character controller. All fields optional with defaults. */
+export interface CharacterControllerConfig {
+  /** Enable wall sliding. Default: true. */
+  slide?: boolean;
+  /** Max climbable slope angle in radians. Default: π/4 (45°). */
+  maxSlopeClimbAngle?: number;
+  /** Min slope angle before auto-sliding. Default: π/4 (45°). */
+  minSlopeSlideAngle?: number;
+  /** Autostep config, or false to disable. Default: disabled. */
+  autostep?: {
+    maxHeight: number;
+    minWidth: number;
+    includeDynamic?: boolean;
+    relative?: boolean;
+  } | false;
+  /** Snap-to-ground distance, or false to disable. Default: 0.2 relative. */
+  snapToGround?: number | false;
+  /** Whether snapToGround distance is relative to shape. Default: true. */
+  snapRelative?: boolean;
+}
+
 // ── Types ──────────────────────────────────────────────────────
 
 export interface CollisionEvent {

@@ -752,3 +752,82 @@ describe('physics producer methods', () => {
     expect(dv.getFloat32(8, true)).toBeCloseTo(100.0);
   });
 });
+
+describe('character controller commands', () => {
+  const HEADER = 32;
+
+  function createProducer(): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const bp = new BackpressuredProducer(new RingBufferProducer(sab));
+    return { bp, sab };
+  }
+
+  it('CreateCharacterController (44) is non-coalescable — two calls produce two commands', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.CreateCharacterController, 1, new Uint8Array([0]));
+    queue.enqueue(CommandType.CreateCharacterController, 1, new Uint8Array([0]));
+    expect(queue.criticalCount).toBe(2);
+    expect(queue.overwriteCount).toBe(0);
+  });
+
+  it('SetCharacterConfig (45) is coalescable — two calls produce one command', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetCharacterConfig, 1, new Uint8Array(16));
+    queue.enqueue(CommandType.SetCharacterConfig, 1, new Uint8Array(16));
+    expect(queue.overwriteCount).toBe(1);
+    expect(queue.criticalCount).toBe(0);
+  });
+
+  it('MoveCharacter (46) is coalescable — two calls produce one command', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.MoveCharacter, 1, new Uint8Array(8));
+    queue.enqueue(CommandType.MoveCharacter, 1, new Uint8Array(8));
+    expect(queue.overwriteCount).toBe(1);
+    expect(queue.criticalCount).toBe(0);
+  });
+
+  it('createCharacterController serializes 1B payload and writes correct command type', () => {
+    const { bp, sab } = createProducer();
+    bp.createCharacterController(1);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 1 payload = 6 bytes
+    expect(bytes.length).toBe(6);
+    expect(bytes[0]).toBe(CommandType.CreateCharacterController);
+    expect(bytes[5]).toBe(0);
+  });
+
+  it('setCharacterConfig serializes 16B payload and writes correct command type', () => {
+    const { bp, sab } = createProducer();
+    bp.setCharacterConfig(1, { slide: true });
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 16 payload = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.SetCharacterConfig);
+    // slide=true sets bit 0x01 in flags byte
+    expect(bytes[5] & 0x01).toBe(1);
+  });
+
+  it('setCharacterConfig slide=false clears the slide flag', () => {
+    const { bp, sab } = createProducer();
+    bp.setCharacterConfig(1, { slide: false });
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes[0]).toBe(CommandType.SetCharacterConfig);
+    expect(bytes[5] & 0x01).toBe(0);
+  });
+
+  it('moveCharacter serializes dx/dy as two f32 (8B payload)', () => {
+    const { bp, sab } = createProducer();
+    bp.moveCharacter(1, 1.5, -2.5);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 8 payload (2 x f32) = 13 bytes
+    expect(bytes.length).toBe(13);
+    expect(bytes[0]).toBe(CommandType.MoveCharacter);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
+    expect(dv.getFloat32(0, true)).toBeCloseTo(1.5);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(-2.5);
+  });
+});
