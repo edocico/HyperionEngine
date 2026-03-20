@@ -102,6 +102,19 @@ pub mod types {
     /// Marker: entity position/rotation driven by Rapier. velocity_system skips these.
     pub struct PhysicsControlled;
 
+    /// State result from the last `move_shape()` call.
+    #[derive(Default)]
+    pub struct CharacterState {
+        pub grounded: bool,
+        pub is_sliding_down_slope: bool,
+    }
+
+    /// A character controller entry: Rapier KCC + last-frame state.
+    pub struct CharacterEntry {
+        pub controller: rapier2d::control::KinematicCharacterController,
+        pub state: CharacterState,
+    }
+
     /// A live joint tracked in PhysicsWorld.joint_map.
     pub struct JointEntry {
         pub handle: rapier2d::prelude::ImpulseJointHandle,
@@ -207,6 +220,12 @@ mod world {
         // Joint tracking
         pub joint_map: std::collections::HashMap<u32, super::types::JointEntry>,
         pub pending_joints: Vec<super::types::PendingJoint>,
+
+        /// Character controller entries keyed by external entity ID.
+        pub character_map: std::collections::HashMap<u32, super::types::CharacterEntry>,
+        /// Pending MoveCharacter commands: (ext_id, dx, dy).
+        /// Populated by process_commands, consumed in physics_sync_pre Pass 5.
+        pub pending_moves: Vec<(u32, f32, f32)>,
     }
 
     impl PhysicsWorld {
@@ -242,6 +261,8 @@ mod world {
                 collider_to_entity: Vec::new(),
                 joint_map: std::collections::HashMap::new(),
                 pending_joints: Vec::new(),
+                character_map: std::collections::HashMap::new(),
+                pending_moves: Vec::new(),
             }
         }
 

@@ -886,6 +886,7 @@ pub fn despawn_physics_cleanup(
             physics.joint_map.retain(|_, entry| {
                 entry.entity_a != eid && entry.entity_b != eid
             });
+            physics.character_map.remove(&eid);
         }
 
         // Remove body (cascades collider + joint removal)
