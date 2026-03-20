@@ -7,6 +7,8 @@ use crate::command_processor::EntityMap;
 #[cfg(feature = "physics-2d")]
 use crate::physics::{PhysicsBodyHandle, PhysicsWorld};
 #[cfg(feature = "physics-2d")]
+use crate::physics::types::{CharacterEntry, CharacterState};
+#[cfg(feature = "physics-2d")]
 use crate::ring_buffer::{Command, CommandType};
 
 #[cfg(feature = "physics-2d")]
@@ -80,6 +82,62 @@ pub fn process_physics_commands(
                 {
                     joint.data.set_local_anchor2(rapier2d::math::Vector::new(bx, by));
                 }
+                continue;
+            }
+            // ── Character controller ──
+            CommandType::CreateCharacterController => {
+                physics.character_map.entry(cmd.entity_id).or_insert(CharacterEntry {
+                    controller: rapier2d::control::KinematicCharacterController::default(),
+                    state: CharacterState::default(),
+                });
+                continue;
+            }
+            CommandType::SetCharacterConfig => {
+                if let Some(entry) = physics.character_map.get_mut(&cmd.entity_id) {
+                    let flags = cmd.payload[0];
+                    let climb = f32::from_le_bytes(cmd.payload[1..5].try_into().unwrap());
+                    let slide_angle = f32::from_le_bytes(cmd.payload[5..9].try_into().unwrap());
+                    let step_h = u16::from_le_bytes(cmd.payload[9..11].try_into().unwrap());
+                    let step_w = u16::from_le_bytes(cmd.payload[11..13].try_into().unwrap());
+                    let snap_d = u16::from_le_bytes(cmd.payload[13..15].try_into().unwrap());
+
+                    entry.controller.slide = flags & 0x01 != 0;
+                    entry.controller.max_slope_climb_angle = climb;
+                    entry.controller.min_slope_slide_angle = slide_angle;
+
+                    entry.controller.autostep = if flags & 0x02 != 0 {
+                        use rapier2d::control::CharacterAutostep;
+                        use rapier2d::control::CharacterLength;
+                        Some(CharacterAutostep {
+                            max_height: if flags & 0x10 != 0 {
+                                CharacterLength::Relative(f32::from(step_h) / 100.0)
+                            } else {
+                                CharacterLength::Absolute(f32::from(step_h) / 100.0)
+                            },
+                            min_width: if flags & 0x20 != 0 {
+                                CharacterLength::Relative(f32::from(step_w) / 100.0)
+                            } else {
+                                CharacterLength::Absolute(f32::from(step_w) / 100.0)
+                            },
+                            include_dynamic_bodies: flags & 0x04 != 0,
+                        })
+                    } else { None };
+
+                    entry.controller.snap_to_ground = if flags & 0x08 != 0 {
+                        use rapier2d::control::CharacterLength;
+                        Some(if flags & 0x40 != 0 {
+                            CharacterLength::Relative(f32::from(snap_d) / 100.0)
+                        } else {
+                            CharacterLength::Absolute(f32::from(snap_d) / 100.0)
+                        })
+                    } else { None };
+                }
+                continue;
+            }
+            CommandType::MoveCharacter => {
+                let dx = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let dy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                physics.pending_moves.push((cmd.entity_id, dx, dy));
                 continue;
             }
             _ => {}
@@ -702,5 +760,89 @@ mod tests {
             };
             process_physics_commands(&[cmd], &mut world, &entity_map, &mut physics);
         }
+    }
+
+    // -- Helper: single kinematic entity ---------------------------------
+
+    fn setup_kinematic_entity() -> (hecs::World, EntityMap, PhysicsWorld) {
+        let mut world = hecs::World::new();
+        let mut entity_map = EntityMap::new();
+        let mut physics = PhysicsWorld::new();
+        physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+
+        let entity = world.spawn((
+            Transform2D::default(),
+            PendingRigidBody::new(2), // 2 = kinematic
+            PendingCollider::new(0, [5.0, 0.0, 0.0, 0.0]), // circle r=5
+            ExternalId(0),
+        ));
+        entity_map.insert(0, entity);
+
+        physics_sync_pre(&mut world, &mut physics, &entity_map);
+
+        (world, entity_map, physics)
+    }
+
+    // -- Task 4 tests: character controller commands ----------------------
+
+    #[test]
+    fn create_character_controller_inserts_entry() {
+        let (mut world, entity_map, mut physics) = setup_kinematic_entity();
+        let cmd = Command {
+            cmd_type: CommandType::CreateCharacterController,
+            entity_id: 0,
+            payload: [0; 16],
+        };
+        process_physics_commands(&[cmd], &mut world, &entity_map, &mut physics);
+        assert!(physics.character_map.contains_key(&0));
+    }
+
+    #[test]
+    fn set_character_config_updates_kcc_fields() {
+        let (mut world, entity_map, mut physics) = setup_kinematic_entity();
+        let create = Command {
+            cmd_type: CommandType::CreateCharacterController,
+            entity_id: 0,
+            payload: [0; 16],
+        };
+        process_physics_commands(&[create], &mut world, &entity_map, &mut physics);
+
+        let mut payload = [0u8; 16];
+        payload[0] = 0x01 | 0x02 | 0x04 | 0x08 | 0x40; // slide + autostep + dyn + snap + snap_rel
+        payload[1..5].copy_from_slice(&(std::f32::consts::FRAC_PI_3).to_le_bytes());
+        payload[5..9].copy_from_slice(&(std::f32::consts::FRAC_PI_6).to_le_bytes());
+        payload[9..11].copy_from_slice(&800u16.to_le_bytes());
+        payload[11..13].copy_from_slice(&400u16.to_le_bytes());
+        payload[13..15].copy_from_slice(&50u16.to_le_bytes());
+
+        let config_cmd = Command {
+            cmd_type: CommandType::SetCharacterConfig,
+            entity_id: 0,
+            payload,
+        };
+        process_physics_commands(&[config_cmd], &mut world, &entity_map, &mut physics);
+
+        let entry = physics.character_map.get(&0).unwrap();
+        assert!(entry.controller.slide);
+        assert!((entry.controller.max_slope_climb_angle - std::f32::consts::FRAC_PI_3).abs() < 1e-5);
+        assert!((entry.controller.min_slope_slide_angle - std::f32::consts::FRAC_PI_6).abs() < 1e-5);
+        assert!(entry.controller.autostep.is_some());
+        assert!(entry.controller.snap_to_ground.is_some());
+    }
+
+    #[test]
+    fn move_character_pushes_pending_move() {
+        let (mut world, entity_map, mut physics) = setup_kinematic_entity();
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&10.0f32.to_le_bytes());
+        payload[4..8].copy_from_slice(&(-5.0f32).to_le_bytes());
+        let cmd = Command {
+            cmd_type: CommandType::MoveCharacter,
+            entity_id: 0,
+            payload,
+        };
+        process_physics_commands(&[cmd], &mut world, &entity_map, &mut physics);
+        assert_eq!(physics.pending_moves.len(), 1);
+        assert_eq!(physics.pending_moves[0], (0, 10.0, -5.0));
     }
 }
