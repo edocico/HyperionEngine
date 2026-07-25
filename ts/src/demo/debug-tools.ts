@@ -5,6 +5,7 @@ import type { EntityHandle } from '../entity-handle';
 import { boundsVisualizerPlugin } from '../debug/bounds-visualizer';
 import { debugCameraPlugin } from '../debug/debug-camera';
 import { ecsInspectorPlugin } from '../debug/ecs-inspector';
+import { physicsDebugPlugin } from '../debug/physics-debug';
 
 const entities: EntityHandle[] = [];
 const pluginNames: string[] = [];
@@ -97,6 +98,48 @@ const section: DemoSection = {
     } catch (err) {
       reporter.check(
         'Time-travel record',
+        false,
+        `threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // ── 6. Physics debug render (Phase 16, F3) ─────────────────────────
+    try {
+      const plugin = physicsDebugPlugin({ startEnabled: true });
+      engine.use(plugin);
+      pluginNames.push('physics-debug');
+      reporter.check(
+        'Physics debug render',
+        true,
+        'plugin installed (F3 toggle; lines appear on physics-debug WASM builds)',
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('renderer')) {
+        reporter.skip('Physics debug render', 'no renderer available');
+      } else {
+        reporter.check('Physics debug render', false, `threw: ${msg}`);
+      }
+    }
+
+    // ── 7. Determinism hash (Phase 16) ─────────────────────────────────
+    try {
+      const hash = await engine.debug?.stateHash();
+      if (hash === null || hash === undefined) {
+        reporter.skip('Determinism hash', 'engine_state_hash unavailable (non-dev-tools WASM build)');
+      } else {
+        // The hash value itself is scenario-dependent; the check verifies the
+        // export works and reports the value for cross-browser comparison
+        // (same scenario + same tick count must match across browsers).
+        reporter.check(
+          'Determinism hash',
+          typeof hash === 'bigint',
+          `state hash: 0x${hash.toString(16)} (compare across browsers at equal tick counts)`,
+        );
+      }
+    } catch (err) {
+      reporter.check(
+        'Determinism hash',
         false,
         `threw: ${err instanceof Error ? err.message : String(err)}`,
       );

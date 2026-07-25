@@ -89,6 +89,7 @@ pub enum CommandType {
     CreateCharacterController = 44, // 1B: reserved flags
     SetCharacterConfig = 45,        // 16B: packed config
     MoveCharacter = 46,             // 8B: dx(f32) + dy(f32)
+    SetPhysicsDebugRender = 47,     // 1B: enabled(u8 0/1)
 }
 
 impl CommandType {
@@ -147,6 +148,7 @@ impl CommandType {
             44 => Some(Self::CreateCharacterController),
             45 => Some(Self::SetCharacterConfig),
             46 => Some(Self::MoveCharacter),
+            47 => Some(Self::SetPhysicsDebugRender),
             _ => None,
         }
     }
@@ -191,6 +193,7 @@ impl CommandType {
             Self::CreateCharacterController => 1,  // reserved flags
             Self::SetCharacterConfig => 16,        // packed config (see spec §3.2)
             Self::MoveCharacter => 8,              // dx(f32) + dy(f32)
+            Self::SetPhysicsDebugRender => 1,      // enabled(u8)
         }
     }
 
@@ -932,7 +935,13 @@ mod tests {
             let ct = CommandType::from_u8(val);
             assert!(ct.is_some(), "CommandType::from_u8({val}) should be Some");
         }
-        assert!(CommandType::from_u8(47).is_none(), "47 should be None");
+    }
+
+    #[test]
+    fn physics_debug_command_type_round_trip() {
+        let ct = CommandType::from_u8(47);
+        assert_eq!(ct, Some(CommandType::SetPhysicsDebugRender));
+        assert!(CommandType::from_u8(48).is_none(), "48 should be None");
     }
 
     #[test]
@@ -940,5 +949,6 @@ mod tests {
         assert_eq!(CommandType::CreateCharacterController.payload_size(), 1);
         assert_eq!(CommandType::SetCharacterConfig.payload_size(), 16);
         assert_eq!(CommandType::MoveCharacter.payload_size(), 8);
+        assert_eq!(CommandType::SetPhysicsDebugRender.payload_size(), 1);
     }
 }

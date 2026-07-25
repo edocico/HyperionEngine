@@ -36,6 +36,11 @@ interface WasmEngine {
   engine_listener_x(): number;
   engine_listener_y(): number;
   engine_listener_z(): number;
+  // Physics debug exports (physics-debug builds only)
+  engine_physics_debug_ptr?(): number;
+  engine_physics_debug_f32_len?(): number;
+  // Determinism harness export (dev-tools builds only)
+  engine_state_hash?(): bigint;
   engine_memory(): WebAssembly.Memory;
 }
 
@@ -47,12 +52,17 @@ interface InitMessage {
   commandBuffer: SharedArrayBuffer;
 }
 
+interface StateHashMessage {
+  type: "state-hash";
+  requestId: number;
+}
+
 interface TickMessage {
   type: "tick";
   dt: number;
 }
 
-type WorkerMessage = InitMessage | TickMessage;
+type WorkerMessage = InitMessage | TickMessage | StateHashMessage;
 
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const msg = event.data;
@@ -71,6 +81,19 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       } catch (e) {
         self.postMessage({ type: "error", error: String(e) });
       }
+      break;
+    }
+
+    case "state-hash": {
+      // Determinism harness (Phase 16): dev-tools builds only.
+      const hash = wasm?.engine_state_hash?.() ?? null;
+      self.postMessage({
+        type: "state-hash-result",
+        requestId: msg.requestId,
+        // BigInt does not survive structured clone limits in all targets —
+        // ship as string, parse bridge-side.
+        hash: hash === null ? null : hash.toString(),
+      });
       break;
     }
 
@@ -101,6 +124,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         listenerX: number;
         listenerY: number;
         listenerZ: number;
+        physicsDebugLines?: ArrayBuffer;
       } | null = null;
 
       if (count > 0) {
@@ -136,6 +160,15 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         const entityIds = new Uint32Array(eidLen);
         if (eidPtr) entityIds.set(new Uint32Array(wasm.engine_memory().buffer, eidPtr, eidLen));
 
+        // Physics debug lines (physics-debug builds only, empty when disabled)
+        let physicsDebugLines: Float32Array | null = null;
+        const dbgLen = wasm.engine_physics_debug_f32_len?.() ?? 0;
+        if (dbgLen > 0) {
+          const dbgPtr = wasm.engine_physics_debug_ptr!();
+          physicsDebugLines = new Float32Array(dbgLen);
+          if (dbgPtr) physicsDebugLines.set(new Float32Array(wasm.engine_memory().buffer, dbgPtr, dbgLen));
+        }
+
         renderState = {
           entityCount: count,
           transforms: transforms.buffer as ArrayBuffer,
@@ -147,13 +180,16 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
           listenerX: wasm!.engine_listener_x(),
           listenerY: wasm!.engine_listener_y(),
           listenerZ: wasm!.engine_listener_z(),
+          ...(physicsDebugLines ? { physicsDebugLines: physicsDebugLines.buffer as ArrayBuffer } : {}),
         };
       }
 
       if (renderState) {
+        const transfer = [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams, renderState.entityIds];
+        if (renderState.physicsDebugLines) transfer.push(renderState.physicsDebugLines);
         self.postMessage(
           { type: "tick-done", dt: msg.dt, tickCount, renderState },
-          [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams, renderState.entityIds]
+          transfer
         );
       } else {
         self.postMessage({

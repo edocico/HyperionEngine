@@ -1,8 +1,7 @@
 import type { HyperionPlugin, PluginCleanup } from '../plugin';
 import type { PluginContext } from '../plugin-context';
-import type { RenderPass, FrameState } from '../render/render-pass';
-import type { ResourcePool } from '../render/resource-pool';
 import type { HookFn } from '../game-loop';
+import { LineBatchPass } from '../render/passes/debug-line-pass';
 
 export interface BoundsVisualizerOptions {
   /** Keyboard key to toggle visualization. Default: 'F2'. */
@@ -20,38 +19,13 @@ const DEFAULT_OPTIONS: Required<BoundsVisualizerOptions> = {
  * Bounds Visualizer RenderPass — draws circle wireframes for bounding spheres.
  *
  * Uses the existing SystemViews bounds data (from GPU SoA buffers) to generate
- * circle vertices on the TS side. No WASM call in the critical path when
- * TS-side bounds data is available.
- *
- * When WASM dev-tools are available, can optionally use engine_debug_generate_lines
- * for WASM-side frustum-culled generation with color coding.
+ * circle vertices on the TS side. Drawing is inherited from LineBatchPass
+ * (Phase 16), which closed the Phase 10b stub with a real line-list pipeline.
  */
-class BoundsVisualizerPass implements RenderPass {
-  readonly name = 'bounds-visualizer';
-  readonly reads: string[] = ['scene-hdr'];
-  readonly writes: string[] = ['swapchain'];
-  readonly optional = true;
-
-  private pipeline: GPURenderPipeline | null = null;
-  private vertexBuffer: GPUBuffer | null = null;
-  private colorBuffer: GPUBuffer | null = null;
-  private vertexCount = 0;
-  private maxVerts: number;
-  private enabled = true;
-
-  // CPU staging buffers
-  private vertStaging: Float32Array;
-  private colorStaging: Float32Array;
-
+class BoundsVisualizerPass extends LineBatchPass {
   constructor(maxEntities: number) {
     const VERTS_PER_ENTITY = 32; // 16 segments * 2 endpoints
-    this.maxVerts = maxEntities * VERTS_PER_ENTITY;
-    this.vertStaging = new Float32Array(this.maxVerts * 3);
-    this.colorStaging = new Float32Array(this.maxVerts * 4);
-  }
-
-  setEnabled(enabled: boolean): void {
-    this.enabled = enabled;
+    super('bounds-visualizer', maxEntities * VERTS_PER_ENTITY);
   }
 
   /** Generate circle vertices from SystemViews bounds data (TS-side). */
@@ -98,45 +72,6 @@ class BoundsVisualizerPass implements RenderPass {
     this.vertexCount = written;
   }
 
-  setup(device: GPUDevice, _resources: ResourcePool): void {
-    this.vertexBuffer = device.createBuffer({
-      size: this.maxVerts * 3 * 4,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    this.colorBuffer = device.createBuffer({
-      size: this.maxVerts * 4 * 4,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-
-    // Pipeline creation deferred to first execute (needs swapchain format)
-  }
-
-  prepare(device: GPUDevice, _frame: FrameState): void {
-    if (!this.enabled || this.vertexCount === 0) return;
-    if (this.vertexBuffer) {
-      device.queue.writeBuffer(this.vertexBuffer, 0, this.vertStaging as Float32Array<ArrayBuffer>, 0, this.vertexCount * 3);
-    }
-    if (this.colorBuffer) {
-      device.queue.writeBuffer(this.colorBuffer, 0, this.colorStaging as Float32Array<ArrayBuffer>, 0, this.vertexCount * 4);
-    }
-  }
-
-  execute(_encoder: GPUCommandEncoder, _frame: FrameState, _resources: ResourcePool): void {
-    if (!this.enabled || this.vertexCount === 0 || !this.pipeline) return;
-    // Line rendering would happen here — actual GPU draw calls
-    // Deferred: requires camera uniform bind group setup matching the line shader
-  }
-
-  resize(_width: number, _height: number): void {
-    // No resize-dependent resources
-  }
-
-  destroy(): void {
-    this.vertexBuffer?.destroy();
-    this.colorBuffer?.destroy();
-    this.vertexBuffer = null;
-    this.colorBuffer = null;
-  }
 }
 
 /**

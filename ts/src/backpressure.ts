@@ -22,7 +22,7 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 47; // CommandType values: 0..46
+const MAX_COMMAND_TYPE = 48; // CommandType values: 0..47
 
 /**
  * Returns true for commands that must NOT be coalesced (last-write-wins).
@@ -494,5 +494,13 @@ export class BackpressuredProducer {
   moveCharacter(entityId: number, dx: number, dy: number): void {
     const buf = new Float32Array([dx, dy]);
     this.writeCommand(CommandType.MoveCharacter, entityId, new Uint8Array(buf.buffer));
+  }
+
+  /**
+   * Toggle physics debug rendering (Phase 16). Coalescable last-write-wins;
+   * only effective on physics-debug WASM builds (no-op otherwise).
+   */
+  setPhysicsDebugRender(enabled: boolean): void {
+    this.writeCommand(CommandType.SetPhysicsDebugRender, 0, new Uint8Array([enabled ? 1 : 0]));
   }
 }

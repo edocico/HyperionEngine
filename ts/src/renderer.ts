@@ -8,6 +8,7 @@ import cullShaderCode from './shaders/cull.wgsl?raw';
 import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
 import jfaShaderCode from './shaders/jfa.wgsl?raw';
+import debugLineShaderCode from './shaders/debug-line.wgsl?raw';
 import outlineCompositeShaderCode from './shaders/outline-composite.wgsl?raw';
 import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
@@ -23,6 +24,7 @@ import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
 import { OutlineCompositePass } from './render/passes/outline-composite-pass';
+import { LineBatchPass } from './render/passes/debug-line-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
@@ -196,6 +198,7 @@ export async function createRenderer(
   SelectionSeedPass.SHADER_SOURCE = selectionSeedShaderCode;
   JFAPass.SHADER_SOURCE = jfaShaderCode;
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
+  LineBatchPass.SHADER_SOURCE = debugLineShaderCode;
 
   const cullPass = new CullPass();
   const forwardPass = new ForwardPass();
@@ -506,6 +509,9 @@ export async function createRenderer(
         case 'fxaa-tonemap':
           FXAATonemapPass.SHADER_SOURCE = shaderCode;
           break;
+        case 'debug-line':
+          LineBatchPass.SHADER_SOURCE = shaderCode;
+          break;
         case 'selection-seed':
           SelectionSeedPass.SHADER_SOURCE = shaderCode;
           break;
@@ -655,6 +661,7 @@ export async function createRenderer(
         canvasHeight: canvas.height,
         deltaTime: dt ?? 0,
         dirtyBits: state.dirtyBits ?? undefined,
+        physicsDebugLines: state.physicsDebugLines ?? undefined,
       };
 
       graph.render(device, frameState, resources);

@@ -233,6 +233,11 @@ mod world {
         pub joint_map: std::collections::HashMap<u32, super::types::JointEntry>,
         pub pending_joints: Vec<super::types::PendingJoint>,
 
+        /// Persistent rapier debug-render pipeline (Phase 16 Track A).
+        /// Kept across frames: construction tessellates instance meshes.
+        #[cfg(feature = "physics-debug")]
+        pub debug_pipeline: rapier2d::pipeline::DebugRenderPipeline,
+
         /// Character controller entries keyed by external entity ID.
         pub character_map: std::collections::HashMap<u32, super::types::CharacterEntry>,
         /// Pending MoveCharacter commands: (ext_id, dx, dy).
@@ -273,6 +278,8 @@ mod world {
                 collider_to_entity: Vec::new(),
                 joint_map: std::collections::HashMap::new(),
                 pending_joints: Vec::new(),
+                #[cfg(feature = "physics-debug")]
+                debug_pipeline: rapier2d::pipeline::DebugRenderPipeline::default(),
                 character_map: std::collections::HashMap::new(),
                 pending_moves: Vec::new(),
             }
@@ -704,6 +711,68 @@ pub fn physics_sync_post(world: &mut hecs::World, physics: &PhysicsWorld) {
         pos.0.x = t.x;
         pos.0.y = t.y;
         rot.0 = glam::Quat::from_rotation_z(body.rotation().angle());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// debug — rapier debug-render line extraction (Phase 16 Track A)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "physics-debug")]
+pub mod debug {
+    use super::PhysicsWorld;
+    use rapier2d::math::Vector;
+    use rapier2d::pipeline::{DebugColor, DebugRenderBackend, DebugRenderObject};
+
+    /// Converts rapier's HSLA debug colors (hue in degrees) to RGBA 0-1.
+    fn hsla_to_rgba(c: DebugColor) -> [f32; 4] {
+        let [h, s, l, a] = c;
+        let c1 = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let hp = (h / 60.0).rem_euclid(6.0);
+        let x = c1 * (1.0 - (hp % 2.0 - 1.0).abs());
+        let (r, g, b) = match hp as u32 {
+            0 => (c1, x, 0.0),
+            1 => (x, c1, 0.0),
+            2 => (0.0, c1, x),
+            3 => (0.0, x, c1),
+            4 => (x, 0.0, c1),
+            _ => (c1, 0.0, x),
+        };
+        let m = l - c1 / 2.0;
+        [r + m, g + m, b + m, a]
+    }
+
+    /// DebugRenderBackend that flattens lines into 8-f32 records:
+    /// `[ax, ay, bx, by, r, g, b, a]` per line (RGBA, ready for the GPU).
+    struct LineCollector<'a> {
+        out: &'a mut Vec<f32>,
+    }
+
+    impl DebugRenderBackend for LineCollector<'_> {
+        fn draw_line(&mut self, _object: DebugRenderObject, a: Vector, b: Vector, color: DebugColor) {
+            let rgba = hsla_to_rgba(color);
+            self.out
+                .extend_from_slice(&[a.x, a.y, b.x, b.y, rgba[0], rgba[1], rgba[2], rgba[3]]);
+        }
+    }
+
+    impl PhysicsWorld {
+        /// Run the rapier debug pipeline (collider shapes + joints + body
+        /// axes, the `DebugRenderMode` default) and fill `out` with 8-f32
+        /// line records. Called once per FRAME when enabled (Invariant I-1),
+        /// never per tick.
+        pub fn debug_render(&mut self, out: &mut Vec<f32>) {
+            out.clear();
+            let mut backend = LineCollector { out };
+            self.debug_pipeline.render(
+                &mut backend,
+                &self.rigid_body_set,
+                &self.collider_set,
+                &self.impulse_joint_set,
+                &self.multibody_joint_set,
+                &self.narrow_phase,
+            );
+        }
     }
 }
 

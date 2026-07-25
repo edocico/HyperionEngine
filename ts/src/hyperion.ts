@@ -265,6 +265,20 @@ export class Hyperion implements Disposable {
         self.bridge.commandBuffer.setRecordingTap(null);
         return tape;
       },
+      /**
+       * Toggle physics debug rendering (Phase 16). Sends CommandType 47;
+       * only effective on physics-debug WASM builds (no-op otherwise).
+       */
+      setPhysicsDebugRender(enabled: boolean): void {
+        self.bridge.commandBuffer.setPhysicsDebugRender(enabled);
+      },
+      /**
+       * Determinism harness (Phase 16): canonical FNV-1a 64 state hash.
+       * Resolves null on non-dev-tools WASM builds.
+       */
+      stateHash(): Promise<bigint | null> {
+        return self.bridge.getStateHash?.() ?? Promise.resolve(null);
+      },
     };
   }
 

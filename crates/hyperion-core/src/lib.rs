@@ -743,6 +743,33 @@ pub fn engine_snapshot_restore(data: &[u8]) -> bool {
     }
 }
 
+/// Pointer to the physics debug line buffer (physics-debug builds only).
+/// Layout: 8 f32 per line — [ax, ay, bx, by, r, g, b, a] (RGBA 0-1).
+/// Regenerated once per frame while enabled via CommandType 47.
+#[cfg(feature = "physics-debug")]
+#[wasm_bindgen]
+pub fn engine_physics_debug_ptr() -> *const f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(std::ptr::null(), |e| e.debug_lines.as_ptr())
+    }
+}
+
+/// Length in f32 elements of the physics debug line buffer
+/// (= line_count * 8). 0 when disabled or no physics objects exist.
+#[cfg(feature = "physics-debug")]
+#[wasm_bindgen]
+pub fn engine_physics_debug_f32_len() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.debug_lines.len() as u32)
+    }
+}
+
 /// Canonical FNV-1a 64 hash of the simulation state (dev-tools only).
 /// Determinism harness: identical command streams + tick counts must yield
 /// identical hashes. NOTE: u64 arrives as BigInt on the JS side.

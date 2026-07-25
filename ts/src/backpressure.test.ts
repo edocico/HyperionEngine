@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PrioritizedCommandQueue, BackpressuredProducer } from './backpressure';
-import { RingBufferProducer, CommandType, extractUnread } from './ring-buffer';
+import { RingBufferProducer, CommandType, extractUnread, PAYLOAD_SIZES } from './ring-buffer';
 
 describe('PrioritizedCommandQueue', () => {
   it('should enqueue critical commands and never drop them', () => {
@@ -829,5 +829,47 @@ describe('character controller commands', () => {
     const dv = new DataView(bytes.buffer, bytes.byteOffset + 5, 8);
     expect(dv.getFloat32(0, true)).toBeCloseTo(1.5);
     expect(dv.getFloat32(4, true)).toBeCloseTo(-2.5);
+  });
+
+});
+
+describe('physics debug render command (Phase 16)', () => {
+  const HEADER = 32;
+
+  function createProducer(): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const bp = new BackpressuredProducer(new RingBufferProducer(sab));
+    return { bp, sab };
+  }
+
+  it('SetPhysicsDebugRender (47) is coalescable — last write wins', () => {
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetPhysicsDebugRender, 0, new Uint8Array([1]));
+    queue.enqueue(CommandType.SetPhysicsDebugRender, 0, new Uint8Array([0]));
+    expect(queue.overwriteCount).toBe(1);
+    expect(queue.criticalCount).toBe(0);
+  });
+
+  it('setPhysicsDebugRender serializes 1B payload with the enabled flag', () => {
+    const { bp, sab } = createProducer();
+    bp.setPhysicsDebugRender(true);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 1 payload = 6 bytes
+    expect(bytes.length).toBe(6);
+    expect(bytes[0]).toBe(CommandType.SetPhysicsDebugRender);
+    expect(bytes[5]).toBe(1);
+  });
+
+  it('setPhysicsDebugRender(false) writes 0', () => {
+    const { bp, sab } = createProducer();
+    bp.setPhysicsDebugRender(false);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes[5]).toBe(0);
+  });
+
+  it('PAYLOAD_SIZES covers CommandType 47 with 1 byte', () => {
+    expect(PAYLOAD_SIZES[CommandType.SetPhysicsDebugRender]).toBe(1);
   });
 });

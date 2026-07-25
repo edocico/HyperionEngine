@@ -59,6 +59,9 @@ export { fpsCounterPlugin } from './plugins/fps-counter';
 
 // Debug tools
 export { boundsVisualizerPlugin } from './debug/bounds-visualizer';
+export { physicsDebugPlugin } from './debug/physics-debug';
+export type { PhysicsDebugOptions } from './debug/physics-debug';
+export { DebugLinePass, LineBatchPass } from './render/passes/debug-line-pass';
 export type { BoundsVisualizerOptions } from './debug/bounds-visualizer';
 
 // Replay / Time-Travel (Phase 10c)

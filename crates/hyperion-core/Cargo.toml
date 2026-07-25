@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 default = []
 dev-tools = []
 physics-2d = ["dep:rapier2d"]
+physics-debug = ["physics-2d", "rapier2d/debug-render"]
 
 [dependencies]
 wasm-bindgen = "0.2"

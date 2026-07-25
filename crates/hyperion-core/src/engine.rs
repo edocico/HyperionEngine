@@ -25,6 +25,13 @@ pub struct Engine {
     pub render_state: RenderState,
     #[cfg(feature = "physics-2d")]
     pub physics: crate::physics::PhysicsWorld,
+    /// Physics debug rendering toggle (CommandType 47, Phase 16 Track A).
+    #[cfg(feature = "physics-debug")]
+    pub debug_render_enabled: bool,
+    /// Debug line records, 8 f32 per line: [ax, ay, bx, by, r, g, b, a].
+    /// Regenerated once per frame when enabled; empty otherwise.
+    #[cfg(feature = "physics-debug")]
+    pub debug_lines: Vec<f32>,
     accumulator: f32,
     tick_count: u64,
     listener_pos: [f32; 3],
@@ -46,6 +53,10 @@ impl Engine {
             render_state: RenderState::new(),
             #[cfg(feature = "physics-2d")]
             physics: crate::physics::PhysicsWorld::new(),
+            #[cfg(feature = "physics-debug")]
+            debug_render_enabled: false,
+            #[cfg(feature = "physics-debug")]
+            debug_lines: Vec::new(),
             accumulator: 0.0,
             tick_count: 0,
             listener_pos: [0.0; 3],
@@ -58,6 +69,16 @@ impl Engine {
     /// Called before `update()` each frame.
     pub fn process_commands(&mut self, commands: &[Command]) {
         // Handle listener position (engine-level state, not entity-specific)
+        #[cfg(feature = "physics-debug")]
+        for cmd in commands {
+            if cmd.cmd_type == CommandType::SetPhysicsDebugRender {
+                self.debug_render_enabled = cmd.payload[0] != 0;
+                if !self.debug_render_enabled {
+                    self.debug_lines.clear();
+                }
+            }
+        }
+
         for cmd in commands {
             if cmd.cmd_type == CommandType::SetListenerPosition {
                 let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
@@ -152,6 +173,14 @@ impl Engine {
         // This replaces the legacy collect_gpu() — the retained slot mapping
         // keeps SoA buffers up-to-date incrementally via write_slot().
         self.render_state.collect_and_cache_dirty(&self.world);
+
+        // 5. Physics debug lines: once per FRAME, not per tick (I-1).
+        #[cfg(feature = "physics-debug")]
+        if self.debug_render_enabled {
+            let mut lines = std::mem::take(&mut self.debug_lines);
+            self.physics.debug_render(&mut lines);
+            self.debug_lines = lines;
+        }
     }
 
     /// Mark entities whose SoA data changed due to systems (not commands).
@@ -276,6 +305,11 @@ impl Engine {
         #[cfg(feature = "physics-2d")]
         {
             self.physics = crate::physics::PhysicsWorld::new();
+        }
+        #[cfg(feature = "physics-debug")]
+        {
+            self.debug_render_enabled = false;
+            self.debug_lines.clear();
         }
         self.accumulator = 0.0;
         self.tick_count = 0;
@@ -1845,6 +1879,130 @@ mod tests {
         }]);
         engine.update(FIXED_DT);
         assert!(!engine.physics.character_map.contains_key(&0));
+    }
+
+    // ── Physics debug rendering tests (Phase 16, Task 7) ───────────────
+
+    #[cfg(feature = "physics-debug")]
+    fn set_debug_render_cmd(enabled: bool) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = u8::from(enabled);
+        Command {
+            cmd_type: CommandType::SetPhysicsDebugRender,
+            entity_id: 0,
+            payload,
+        }
+    }
+
+    #[cfg(feature = "physics-debug")]
+    #[test]
+    fn physics_debug_lines_generated_when_enabled() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+            set_debug_render_cmd(true),
+        ]);
+        engine.update(FIXED_DT);
+
+        assert!(!engine.debug_lines.is_empty(), "collider should emit debug lines");
+        assert_eq!(engine.debug_lines.len() % 8, 0, "8 f32 per line record");
+    }
+
+    #[cfg(feature = "physics-debug")]
+    #[test]
+    fn physics_debug_lines_cover_joints() {
+        use crate::physics::{PendingJoint, PendingJointType};
+
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+        ]);
+        engine.update(FIXED_DT);
+        let baseline = {
+            engine.process_commands(&[set_debug_render_cmd(true)]);
+            engine.update(FIXED_DT);
+            engine.debug_lines.len()
+        };
+
+        engine.process_commands(&[
+            spawn_2d_cmd(1),
+            create_rigid_body_cmd(1, 0),
+            create_circle_collider_cmd(1, 10.0),
+        ]);
+        engine.physics.pending_joints.push(PendingJoint {
+            joint_id: 1,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Fixed,
+        });
+        engine.update(FIXED_DT);
+        assert!(
+            engine.debug_lines.len() > baseline,
+            "second collider + joint should add debug lines"
+        );
+    }
+
+    #[cfg(feature = "physics-debug")]
+    #[test]
+    fn physics_debug_disabled_clears_lines() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+            set_debug_render_cmd(true),
+        ]);
+        engine.update(FIXED_DT);
+        assert!(!engine.debug_lines.is_empty());
+
+        engine.process_commands(&[set_debug_render_cmd(false)]);
+        engine.update(FIXED_DT);
+        assert!(engine.debug_lines.is_empty(), "disable must clear the buffer");
+        assert!(!engine.debug_render_enabled);
+    }
+
+    #[cfg(feature = "physics-debug")]
+    #[test]
+    fn physics_debug_line_colors_are_rgba_in_unit_range() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+            set_debug_render_cmd(true),
+        ]);
+        engine.update(FIXED_DT);
+
+        for record in engine.debug_lines.chunks_exact(8) {
+            for &c in &record[4..8] {
+                assert!(
+                    (0.0..=1.0).contains(&c),
+                    "color component {c} out of RGBA unit range (HSLA leak?)"
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "physics-debug", feature = "dev-tools"))]
+    #[test]
+    fn physics_debug_reset_clears_state() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+            set_debug_render_cmd(true),
+        ]);
+        engine.update(FIXED_DT);
+        assert!(!engine.debug_lines.is_empty());
+
+        engine.reset();
+        assert!(engine.debug_lines.is_empty());
+        assert!(!engine.debug_render_enabled);
     }
 
     // ── State hash tests (Phase 16, Task 5) ────────────────────────────

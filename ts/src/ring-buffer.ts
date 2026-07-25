@@ -68,6 +68,7 @@ export const enum CommandType {
   CreateCharacterController = 44,
   SetCharacterConfig = 45,
   MoveCharacter = 46,
+  SetPhysicsDebugRender = 47,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -127,6 +128,7 @@ export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.CreateCharacterController]: 1,
   [CommandType.SetCharacterConfig]: 16,
   [CommandType.MoveCharacter]: 8,
+  [CommandType.SetPhysicsDebugRender]: 1,
 };
 
 export class RingBufferProducer {

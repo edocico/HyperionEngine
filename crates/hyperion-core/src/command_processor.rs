@@ -707,6 +707,9 @@ fn process_single_command(
         | CommandType::CreateCharacterController
         | CommandType::SetCharacterConfig
         | CommandType::MoveCharacter => {}
+
+        // Handled in Engine::process_commands (engine-level flag, Phase 16)
+        CommandType::SetPhysicsDebugRender => {}
     }
 }
 

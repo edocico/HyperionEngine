@@ -29,6 +29,9 @@ export interface GPURenderState {
   dirtyIndices: Uint32Array | null;   // slot index per dirty entity
   // Dirty bitfield for temporal culling (1 bit per entity slot, packed u32)
   dirtyBits: Uint32Array | null;
+  // Physics debug lines (Phase 16): 8 f32 per line [ax,ay,bx,by,r,g,b,a].
+  // Non-null only on physics-debug builds while debug rendering is enabled.
+  physicsDebugLines?: Float32Array | null;
 }
 
 export interface EngineBridge {
@@ -44,6 +47,12 @@ export interface EngineBridge {
   latestRenderState: GPURenderState | null;
   /** Resize the rendering surface. Only needed for Mode A (render worker). */
   resize?(width: number, height: number): void;
+  /**
+   * Determinism harness (Phase 16): canonical FNV-1a 64 state hash.
+   * Resolves null on non-dev-tools WASM builds. Optional: present on all
+   * built-in bridges.
+   */
+  getStateHash?(): Promise<bigint | null>;
 }
 
 /**
@@ -69,6 +78,9 @@ export function createWorkerBridge(
     { type: "module" }
   );
 
+  const hashRequests = new Map<number, (hash: bigint | null) => void>();
+  let nextHashRequestId = 1;
+
   let readyResolve: () => void;
   const readyPromise = new Promise<void>((resolve) => {
     readyResolve = resolve;
@@ -82,6 +94,12 @@ export function createWorkerBridge(
       readyResolve();
     } else if (msg.type === "error") {
       console.error("Engine Worker error:", msg.error);
+    } else if (msg.type === "state-hash-result") {
+      const pending = hashRequests.get(msg.requestId);
+      if (pending) {
+        hashRequests.delete(msg.requestId);
+        pending(msg.hash === null || msg.hash === undefined ? null : BigInt(msg.hash));
+      }
     } else if (msg.type === "tick-done" && msg.renderState) {
       const rs = msg.renderState;
       latestRenderState = {
@@ -101,6 +119,7 @@ export function createWorkerBridge(
         stagingData: rs.stagingData ? new Uint32Array(rs.stagingData) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(rs.dirtyIndices) : null,
         dirtyBits: rs.dirtyBits ? new Uint32Array(rs.dirtyBits) : null,
+        physicsDebugLines: rs.physicsDebugLines ? new Float32Array(rs.physicsDebugLines) : null,
       };
     }
   };
@@ -123,6 +142,13 @@ export function createWorkerBridge(
     },
     get latestRenderState() {
       return latestRenderState;
+    },
+    getStateHash() {
+      return new Promise<bigint | null>((resolve) => {
+        const requestId = nextHashRequestId++;
+        hashRequests.set(requestId, resolve);
+        worker.postMessage({ type: "state-hash", requestId });
+      });
     },
   };
 }
@@ -147,6 +173,9 @@ export function createFullIsolationBridge(
   const supervisorInterval = setInterval(() => supervisor.check(), 1000);
 
   const offscreen = canvas.transferControlToOffscreen();
+
+  const hashRequestsA = new Map<number, (hash: bigint | null) => void>();
+  let nextHashRequestIdA = 1;
 
   const ecsWorker = new Worker(
     new URL("./engine-worker.ts", import.meta.url),
@@ -183,6 +212,12 @@ export function createFullIsolationBridge(
     } else if (msg.type === "error") {
       console.error("ECS Worker error:", msg.error);
       readyReject(new Error(`ECS Worker failed: ${msg.error}`));
+    } else if (msg.type === "state-hash-result") {
+      const pending = hashRequestsA.get(msg.requestId);
+      if (pending) {
+        hashRequestsA.delete(msg.requestId);
+        pending(msg.hash === null || msg.hash === undefined ? null : BigInt(msg.hash));
+      }
     } else if (msg.type === "tick-done" && msg.renderState && msg.renderState.entityCount > 0) {
       const rs = msg.renderState;
 
@@ -205,6 +240,7 @@ export function createFullIsolationBridge(
         stagingData: rs.stagingData ? new Uint32Array(new Uint32Array(rs.stagingData)) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(new Uint32Array(rs.dirtyIndices)) : null,
         dirtyBits: rs.dirtyBits ? new Uint32Array(new Uint32Array(rs.dirtyBits)) : null,
+        physicsDebugLines: rs.physicsDebugLines ? new Float32Array(new Float32Array(rs.physicsDebugLines)) : null,
       };
 
       // Forward full render state to Render Worker.
@@ -249,6 +285,13 @@ export function createFullIsolationBridge(
     tick(dt: number) {
       commandBuffer.flush();
       ecsWorker.postMessage({ type: "tick", dt });
+    },
+    getStateHash() {
+      return new Promise<bigint | null>((resolve) => {
+        const requestId = nextHashRequestIdA++;
+        hashRequestsA.set(requestId, resolve);
+        ecsWorker.postMessage({ type: "state-hash", requestId });
+      });
     },
     async ready() {
       await readyPromise;
@@ -315,6 +358,11 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     // Dirty bitfield exports (temporal culling)
     engine_dirty_bits_ptr(): number;
     engine_dirty_bits_u32_len(): number;
+    // Physics debug exports (physics-debug builds only)
+    engine_physics_debug_ptr?(): number;
+    engine_physics_debug_f32_len?(): number;
+    // Determinism harness export (dev-tools builds only)
+    engine_state_hash?(): bigint;
   };
 
   engine.engine_init();
@@ -324,6 +372,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
   return {
     mode: ExecutionMode.SingleThread,
     commandBuffer,
+    getStateHash() {
+      return Promise.resolve(engine.engine_state_hash?.() ?? null);
+    },
     tick(dt: number) {
       commandBuffer.flush();
       const { bytes } = extractUnread(buffer as SharedArrayBuffer);
@@ -399,6 +450,12 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           stagingData,
           dirtyIndices: dirtyIndicesArr,
           dirtyBits: dirtyBitsArr,
+          physicsDebugLines: (() => {
+            const len = engine.engine_physics_debug_f32_len?.() ?? 0;
+            if (len === 0) return null;
+            const ptr = engine.engine_physics_debug_ptr!();
+            return ptr ? new Float32Array(new Float32Array(engine.engine_memory().buffer, ptr, len)) : null;
+          })(),
         };
       } else {
         latestRenderState = {
