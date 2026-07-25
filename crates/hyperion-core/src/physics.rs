@@ -120,7 +120,19 @@ pub mod types {
         pub handle: rapier2d::prelude::ImpulseJointHandle,
         pub entity_a: u32,
         pub entity_b: u32,
+        /// Joint kind, recorded at creation (Phase 16, snapshot readback).
+        /// 0=Revolute, 1=Prismatic, 2=Fixed, 3=Rope, 4=Spring.
+        /// Deriving the kind from a live `GenericJoint`'s locked-axes mask is
+        /// fragile; one byte at creation time is not.
+        pub kind: u8,
     }
+
+    /// `JointEntry.kind` discriminants.
+    pub const JOINT_KIND_REVOLUTE: u8 = 0;
+    pub const JOINT_KIND_PRISMATIC: u8 = 1;
+    pub const JOINT_KIND_FIXED: u8 = 2;
+    pub const JOINT_KIND_ROPE: u8 = 3;
+    pub const JOINT_KIND_SPRING: u8 = 4;
 
     /// The type of joint to create, parsed from ring buffer payloads.
     pub enum PendingJointType {
@@ -546,27 +558,28 @@ pub fn physics_sync_pre(
             Err(_) => continue,
         };
 
-        let joint: GenericJoint = match pending.joint_type {
-            PendingJointType::Revolute { anchor_ax, anchor_ay } => {
+        let (joint, kind): (GenericJoint, u8) = match pending.joint_type {
+            PendingJointType::Revolute { anchor_ax, anchor_ay } => (
                 RevoluteJointBuilder::new()
                     .local_anchor1(point![anchor_ax, anchor_ay].into())
                     .build()
-                    .into()
-            }
-            PendingJointType::Prismatic { axis_x, axis_y } => {
+                    .into(),
+                JOINT_KIND_REVOLUTE,
+            ),
+            PendingJointType::Prismatic { axis_x, axis_y } => (
                 PrismaticJointBuilder::new(vector![axis_x, axis_y].into())
                     .build()
-                    .into()
-            }
-            PendingJointType::Fixed => {
-                FixedJointBuilder::new().build().into()
-            }
+                    .into(),
+                JOINT_KIND_PRISMATIC,
+            ),
+            PendingJointType::Fixed => (FixedJointBuilder::new().build().into(), JOINT_KIND_FIXED),
             PendingJointType::Rope { max_dist } => {
-                RopeJointBuilder::new(max_dist).build().into()
+                (RopeJointBuilder::new(max_dist).build().into(), JOINT_KIND_ROPE)
             }
-            PendingJointType::Spring { rest_length } => {
-                SpringJointBuilder::new(rest_length, 100.0, 5.0).build().into()
-            }
+            PendingJointType::Spring { rest_length } => (
+                SpringJointBuilder::new(rest_length, 100.0, 5.0).build().into(),
+                JOINT_KIND_SPRING,
+            ),
         };
 
         let jh = physics.impulse_joint_set.insert(handle_a, handle_b, joint, true);
@@ -574,6 +587,7 @@ pub fn physics_sync_pre(
             handle: jh,
             entity_a: pending.entity_a_ext,
             entity_b: pending.entity_b_ext,
+            kind,
         });
     }
 
@@ -690,6 +704,523 @@ pub fn physics_sync_post(world: &mut hecs::World, physics: &PhysicsWorld) {
         pos.0.x = t.x;
         pos.0.y = t.y;
         rot.0 = glam::Quat::from_rotation_z(body.rotation().angle());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// snapshot — physics section serialization (Phase 16 Track C)
+//
+// Rebuild-from-state: records are read back from the live Rapier sets at
+// snapshot time and the world is rebuilt from them on restore. Solver caches
+// (warm-start impulses, manifolds, islands) are intentionally NOT serialized:
+// two restores of the same snapshot are identical to each other, but not to
+// the uninterrupted original run (design doc §3.6, Invariant I-5).
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+pub mod snapshot {
+    use super::*;
+    use crate::command_processor::EntityMap;
+    use crate::components::ExternalId;
+    use hecs::World;
+    use rapier2d::control::{CharacterAutostep, CharacterLength};
+    use rapier2d::prelude::*;
+
+    // Per-axis serialized joint state: motor (5 f32) + limits (2 f32).
+    const AXES: usize = 3; // 2D: LinX, LinY, AngX
+
+    fn push_f32(buf: &mut Vec<u8>, v: f32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_u32(buf: &mut Vec<u8>, v: u32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    struct Reader<'a> {
+        data: &'a [u8],
+        cursor: usize,
+    }
+    impl<'a> Reader<'a> {
+        fn u8(&mut self) -> Option<u8> {
+            let v = *self.data.get(self.cursor)?;
+            self.cursor += 1;
+            Some(v)
+        }
+        fn u32(&mut self) -> Option<u32> {
+            let s = self.data.get(self.cursor..self.cursor + 4)?;
+            self.cursor += 4;
+            Some(u32::from_le_bytes(s.try_into().unwrap()))
+        }
+        fn f32(&mut self) -> Option<f32> {
+            let s = self.data.get(self.cursor..self.cursor + 4)?;
+            self.cursor += 4;
+            Some(f32::from_le_bytes(s.try_into().unwrap()))
+        }
+    }
+
+    fn character_length_parts(cl: &CharacterLength) -> (bool, f32) {
+        match cl {
+            CharacterLength::Relative(v) => (true, *v),
+            CharacterLength::Absolute(v) => (false, *v),
+        }
+    }
+
+    /// Serialize the physics section (bodies, colliders, joints, character
+    /// controllers) into `buf`. Records are ordered by external ID / joint ID
+    /// so the byte stream is deterministic (Invariant I-2).
+    pub fn serialize_physics(
+        buf: &mut Vec<u8>,
+        world: &World,
+        physics: &PhysicsWorld,
+    ) {
+        // ── World config (engine_physics_configure knobs) ──
+        push_f32(buf, physics.gravity.x);
+        push_f32(buf, physics.gravity.y);
+        push_f32(buf, physics.integration_parameters.length_unit);
+
+        // ── Bodies ──
+        let mut bodies: Vec<(u32, RigidBodyHandle)> = world
+            .query::<(&ExternalId, &PhysicsBodyHandle)>()
+            .iter()
+            .map(|(ext, h)| (ext.0, h.0))
+            .collect();
+        bodies.sort_unstable_by_key(|(ext, _)| *ext);
+
+        push_u32(buf, bodies.len() as u32);
+        for (ext_id, handle) in &bodies {
+            let body = &physics.rigid_body_set[*handle];
+            push_u32(buf, *ext_id);
+            let body_type: u8 = match body.body_type() {
+                RigidBodyType::Dynamic => 0,
+                RigidBodyType::Fixed => 1,
+                RigidBodyType::KinematicPositionBased => 2,
+                RigidBodyType::KinematicVelocityBased => 3,
+            };
+            buf.push(body_type);
+            let mut flags = 0u8;
+            if body.is_sleeping() {
+                flags |= 1;
+            }
+            if body.is_ccd_enabled() {
+                flags |= 2;
+            }
+            buf.push(flags);
+            let t = body.translation();
+            push_f32(buf, t.x);
+            push_f32(buf, t.y);
+            push_f32(buf, body.rotation().angle());
+            let lv = body.linvel();
+            push_f32(buf, lv.x);
+            push_f32(buf, lv.y);
+            push_f32(buf, body.angvel());
+            push_f32(buf, body.gravity_scale());
+            push_f32(buf, body.linear_damping());
+            push_f32(buf, body.angular_damping());
+        }
+
+        // ── Colliders ──
+        let mut colliders: Vec<(u32, ColliderHandle)> = world
+            .query::<(&ExternalId, &PhysicsColliderHandle)>()
+            .iter()
+            .map(|(ext, h)| (ext.0, h.0))
+            .collect();
+        colliders.sort_unstable_by_key(|(ext, _)| *ext);
+
+        push_u32(buf, colliders.len() as u32);
+        for (ext_id, handle) in &colliders {
+            let collider = &physics.collider_set[*handle];
+            push_u32(buf, *ext_id);
+            let (shape_type, params): (u8, [f32; 3]) = match collider.shape().as_typed_shape() {
+                TypedShape::Ball(b) => (0, [b.radius, 0.0, 0.0]),
+                TypedShape::Cuboid(c) => (1, [c.half_extents.x, c.half_extents.y, 0.0]),
+                TypedShape::Capsule(c) => (2, [c.half_height(), c.radius, 0.0]),
+                // Unreachable today: build_collider_shape only creates the
+                // three shapes above. Serialize as a zero-size ball rather
+                // than corrupting the stream.
+                _ => (0, [0.0, 0.0, 0.0]),
+            };
+            buf.push(shape_type);
+            buf.push(u8::from(collider.is_sensor()));
+            for p in params {
+                push_f32(buf, p);
+            }
+            push_f32(buf, collider.density());
+            push_f32(buf, collider.friction());
+            push_f32(buf, collider.restitution());
+            let groups = collider.collision_groups();
+            push_u32(buf, groups.memberships.bits());
+            push_u32(buf, groups.filter.bits());
+            push_u32(buf, collider.active_events().bits());
+        }
+
+        // ── Joints ──
+        let mut joint_ids: Vec<u32> = physics.joint_map.keys().copied().collect();
+        joint_ids.sort_unstable();
+
+        push_u32(buf, joint_ids.len() as u32);
+        for joint_id in &joint_ids {
+            let entry = &physics.joint_map[joint_id];
+            push_u32(buf, *joint_id);
+            buf.push(entry.kind);
+            push_u32(buf, entry.entity_a);
+            push_u32(buf, entry.entity_b);
+
+            // A removed Rapier joint with a stale map entry is a bug, but
+            // serialize defaults rather than panicking inside a snapshot.
+            let data: GenericJoint = physics
+                .impulse_joint_set
+                .get(entry.handle)
+                .map(|j| j.data)
+                .unwrap_or_default();
+
+            let f1 = &data.local_frame1;
+            push_f32(buf, f1.translation.x);
+            push_f32(buf, f1.translation.y);
+            push_f32(buf, f1.rotation.angle());
+            let f2 = &data.local_frame2;
+            push_f32(buf, f2.translation.x);
+            push_f32(buf, f2.translation.y);
+            push_f32(buf, f2.rotation.angle());
+
+            buf.push(data.locked_axes.bits());
+            buf.push(data.limit_axes.bits());
+            buf.push(data.motor_axes.bits());
+            buf.push(data.coupled_axes.bits());
+            buf.push(u8::from(data.contacts_enabled));
+
+            for i in 0..AXES {
+                let m = &data.motors[i];
+                push_f32(buf, m.target_vel);
+                push_f32(buf, m.target_pos);
+                push_f32(buf, m.stiffness);
+                push_f32(buf, m.damping);
+                push_f32(buf, m.max_force);
+                buf.push(match m.model {
+                    MotorModel::AccelerationBased => 0,
+                    MotorModel::ForceBased => 1,
+                });
+                let l = &data.limits[i];
+                push_f32(buf, l.min);
+                push_f32(buf, l.max);
+            }
+        }
+
+        // ── Character controllers ──
+        let mut cc_ids: Vec<u32> = physics.character_map.keys().copied().collect();
+        cc_ids.sort_unstable();
+
+        push_u32(buf, cc_ids.len() as u32);
+        for ext_id in &cc_ids {
+            let entry = &physics.character_map[ext_id];
+            let c = &entry.controller;
+            push_u32(buf, *ext_id);
+
+            let mut flags = 0u8;
+            if c.slide {
+                flags |= 0x01;
+            }
+            let (mut step_h, mut step_w) = (0.0f32, 0.0f32);
+            if let Some(autostep) = &c.autostep {
+                flags |= 0x02;
+                if autostep.include_dynamic_bodies {
+                    flags |= 0x04;
+                }
+                let (rel_h, h) = character_length_parts(&autostep.max_height);
+                let (rel_w, w) = character_length_parts(&autostep.min_width);
+                if rel_h {
+                    flags |= 0x10;
+                }
+                if rel_w {
+                    flags |= 0x20;
+                }
+                step_h = h;
+                step_w = w;
+            }
+            let mut snap_d = 0.0f32;
+            if let Some(snap) = &c.snap_to_ground {
+                flags |= 0x08;
+                let (rel_s, s) = character_length_parts(snap);
+                if rel_s {
+                    flags |= 0x40;
+                }
+                snap_d = s;
+            }
+            buf.push(flags);
+            push_f32(buf, c.max_slope_climb_angle);
+            push_f32(buf, c.min_slope_slide_angle);
+            push_f32(buf, step_h);
+            push_f32(buf, step_w);
+            push_f32(buf, snap_d);
+
+            let mut state = 0u8;
+            if entry.state.grounded {
+                state |= 1;
+            }
+            if entry.state.is_sliding_down_slope {
+                state |= 2;
+            }
+            buf.push(state);
+        }
+    }
+
+    /// Rebuild a fresh `PhysicsWorld` from a serialized physics section and
+    /// re-insert handle components on the restored entities.
+    ///
+    /// Returns `false` on malformed data. `physics` must be a fresh
+    /// `PhysicsWorld::new()` (the caller replaces the old one wholesale —
+    /// this is what fixes the pre-Phase-16 orphan-body bug).
+    pub fn restore_physics(
+        section: &[u8],
+        world: &mut World,
+        entity_map: &EntityMap,
+        physics: &mut PhysicsWorld,
+    ) -> bool {
+        let mut r = Reader { data: section, cursor: 0 };
+        macro_rules! read {
+            ($m:ident) => {
+                match r.$m() {
+                    Some(v) => v,
+                    None => return false,
+                }
+            };
+        }
+
+        // ── World config ──
+        let gx = read!(f32);
+        let gy = read!(f32);
+        let length_unit = read!(f32);
+        physics.gravity = Vector::new(gx, gy);
+        physics.integration_parameters.length_unit = length_unit;
+
+        // ── Bodies ──
+        let body_count = read!(u32);
+        for _ in 0..body_count {
+            let ext_id = read!(u32);
+            let body_type = read!(u8);
+            let flags = read!(u8);
+            let tx = read!(f32);
+            let ty = read!(f32);
+            let rot = read!(f32);
+            let lvx = read!(f32);
+            let lvy = read!(f32);
+            let angv = read!(f32);
+            let gravity_scale = read!(f32);
+            let lin_damping = read!(f32);
+            let ang_damping = read!(f32);
+
+            let Some(entity) = entity_map.get(ext_id) else {
+                continue;
+            };
+
+            let builder = match body_type {
+                0 => RigidBodyBuilder::dynamic(),
+                1 => RigidBodyBuilder::fixed(),
+                2 => RigidBodyBuilder::kinematic_position_based(),
+                3 => RigidBodyBuilder::kinematic_velocity_based(),
+                _ => return false,
+            };
+            let rb = builder
+                .translation(Vector::new(tx, ty))
+                .rotation(rot)
+                .linvel(Vector::new(lvx, lvy))
+                .angvel(angv)
+                .gravity_scale(gravity_scale)
+                .linear_damping(lin_damping)
+                .angular_damping(ang_damping)
+                .ccd_enabled(flags & 2 != 0)
+                .build();
+
+            let handle = physics.rigid_body_set.insert(rb);
+            if flags & 1 != 0 {
+                physics.rigid_body_set[handle].sleep();
+            }
+            let _ = world.insert(entity, (PhysicsBodyHandle(handle), PhysicsControlled));
+        }
+
+        // ── Colliders ──
+        let collider_count = read!(u32);
+        for _ in 0..collider_count {
+            let ext_id = read!(u32);
+            let shape_type = read!(u8);
+            let is_sensor = read!(u8);
+            let p0 = read!(f32);
+            let p1 = read!(f32);
+            let _p2 = read!(f32);
+            let density = read!(f32);
+            let friction = read!(f32);
+            let restitution = read!(f32);
+            let memberships = read!(u32);
+            let filter = read!(u32);
+            let active_events = read!(u32);
+
+            let Some(entity) = entity_map.get(ext_id) else {
+                continue;
+            };
+            let Ok(body_handle) = world.get::<&PhysicsBodyHandle>(entity).map(|h| h.0) else {
+                continue;
+            };
+
+            let builder = match shape_type {
+                0 => ColliderBuilder::ball(p0),
+                1 => ColliderBuilder::cuboid(p0, p1),
+                2 => ColliderBuilder::capsule_y(p0, p1),
+                _ => return false,
+            };
+            let collider = builder
+                .sensor(is_sensor != 0)
+                .density(density)
+                .friction(friction)
+                .restitution(restitution)
+                .collision_groups(InteractionGroups::new(
+                    Group::from_bits_truncate(memberships),
+                    Group::from_bits_truncate(filter),
+                    InteractionTestMode::And,
+                ))
+                .active_events(ActiveEvents::from_bits_truncate(active_events))
+                .build();
+
+            let col_handle = physics.collider_set.insert_with_parent(
+                collider,
+                body_handle,
+                &mut physics.rigid_body_set,
+            );
+
+            // Reverse map for event translation (mirrors physics_sync_pre).
+            let idx = col_handle.0.into_raw_parts().0 as usize;
+            if idx >= physics.collider_to_entity.len() {
+                physics.collider_to_entity.resize(idx + 1, None);
+            }
+            physics.collider_to_entity[idx] = Some(ext_id);
+
+            let _ = world.insert_one(entity, PhysicsColliderHandle(col_handle));
+        }
+
+        // ── Joints ──
+        let joint_count = read!(u32);
+        for _ in 0..joint_count {
+            let joint_id = read!(u32);
+            let kind = read!(u8);
+            let entity_a = read!(u32);
+            let entity_b = read!(u32);
+            let f1x = read!(f32);
+            let f1y = read!(f32);
+            let f1a = read!(f32);
+            let f2x = read!(f32);
+            let f2y = read!(f32);
+            let f2a = read!(f32);
+            let locked = read!(u8);
+            let limit_axes = read!(u8);
+            let motor_axes = read!(u8);
+            let coupled = read!(u8);
+            let contacts = read!(u8);
+
+            let mut motors = [JointMotor::default(); AXES];
+            let mut limits = [JointLimits::default(); AXES];
+            for i in 0..AXES {
+                motors[i].target_vel = read!(f32);
+                motors[i].target_pos = read!(f32);
+                motors[i].stiffness = read!(f32);
+                motors[i].damping = read!(f32);
+                motors[i].max_force = read!(f32);
+                motors[i].model = match read!(u8) {
+                    0 => MotorModel::AccelerationBased,
+                    1 => MotorModel::ForceBased,
+                    _ => return false,
+                };
+                limits[i].min = read!(f32);
+                limits[i].max = read!(f32);
+            }
+
+            let (Some(ea), Some(eb)) = (entity_map.get(entity_a), entity_map.get(entity_b))
+            else {
+                continue;
+            };
+            let (Ok(ha), Ok(hb)) = (
+                world.get::<&PhysicsBodyHandle>(ea).map(|h| h.0),
+                world.get::<&PhysicsBodyHandle>(eb).map(|h| h.0),
+            ) else {
+                continue;
+            };
+
+            let Some(locked_axes) = JointAxesMask::from_bits(locked) else {
+                return false;
+            };
+            let mut data = GenericJoint::new(locked_axes);
+            data.local_frame1 = Pose::new(Vector::new(f1x, f1y), f1a);
+            data.local_frame2 = Pose::new(Vector::new(f2x, f2y), f2a);
+            data.limit_axes = JointAxesMask::from_bits(limit_axes).unwrap_or(locked_axes);
+            data.motor_axes = JointAxesMask::from_bits(motor_axes).unwrap_or(locked_axes);
+            data.coupled_axes = JointAxesMask::from_bits(coupled).unwrap_or(locked_axes);
+            data.contacts_enabled = contacts != 0;
+            data.motors = motors;
+            data.limits = limits;
+
+            let handle = physics.impulse_joint_set.insert(ha, hb, data, true);
+            physics.joint_map.insert(
+                joint_id,
+                JointEntry { handle, entity_a, entity_b, kind },
+            );
+        }
+
+        // ── Character controllers ──
+        let cc_count = read!(u32);
+        for _ in 0..cc_count {
+            let ext_id = read!(u32);
+            let flags = read!(u8);
+            let climb = read!(f32);
+            let slide_angle = read!(f32);
+            let step_h = read!(f32);
+            let step_w = read!(f32);
+            let snap_d = read!(f32);
+            let state = read!(u8);
+
+            let controller = rapier2d::control::KinematicCharacterController {
+                slide: flags & 0x01 != 0,
+                max_slope_climb_angle: climb,
+                min_slope_slide_angle: slide_angle,
+                autostep: if flags & 0x02 != 0 {
+                    Some(CharacterAutostep {
+                        max_height: if flags & 0x10 != 0 {
+                            CharacterLength::Relative(step_h)
+                        } else {
+                            CharacterLength::Absolute(step_h)
+                        },
+                        min_width: if flags & 0x20 != 0 {
+                            CharacterLength::Relative(step_w)
+                        } else {
+                            CharacterLength::Absolute(step_w)
+                        },
+                        include_dynamic_bodies: flags & 0x04 != 0,
+                    })
+                } else {
+                    None
+                },
+                snap_to_ground: if flags & 0x08 != 0 {
+                    Some(if flags & 0x40 != 0 {
+                        CharacterLength::Relative(snap_d)
+                    } else {
+                        CharacterLength::Absolute(snap_d)
+                    })
+                } else {
+                    None
+                },
+                ..Default::default()
+            };
+
+            physics.character_map.insert(
+                ext_id,
+                CharacterEntry {
+                    controller,
+                    state: CharacterState {
+                        grounded: state & 1 != 0,
+                        is_sliding_down_slope: state & 2 != 0,
+                    },
+                },
+            );
+        }
+
+        // The entire section must have been consumed.
+        r.cursor == section.len()
     }
 }
 
@@ -1373,6 +1904,7 @@ mod tests {
             handle: jh,
             entity_a: 10,
             entity_b: 20,
+            kind: JOINT_KIND_REVOLUTE,
         };
         assert_eq!(entry.entity_a, 10);
         assert_eq!(entry.entity_b, 20);
@@ -1528,6 +2060,36 @@ mod tests {
         assert_eq!(physics.joint_map.len(), 1);
         assert!(physics.joint_map.contains_key(&5));
         assert!(physics.impulse_joint_set.get(physics.joint_map[&5].handle).is_some());
+    }
+
+    #[test]
+    fn joint_entry_records_kind_per_type() {
+        let (mut world, mut physics, entity_map) = setup_two_body_entities();
+
+        let types = [
+            PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 0.0 },
+            PendingJointType::Prismatic { axis_x: 1.0, axis_y: 0.0 },
+            PendingJointType::Fixed,
+            PendingJointType::Rope { max_dist: 50.0 },
+            PendingJointType::Spring { rest_length: 30.0 },
+        ];
+        for (i, joint_type) in types.into_iter().enumerate() {
+            physics.pending_joints.push(PendingJoint {
+                joint_id: i as u32 + 1,
+                entity_a_ext: 0,
+                entity_b_ext: 1,
+                joint_type,
+            });
+        }
+
+        super::physics_sync_pre(&mut world, &mut physics, &entity_map, 1.0 / 60.0);
+
+        assert_eq!(physics.joint_map.len(), 5);
+        assert_eq!(physics.joint_map[&1].kind, JOINT_KIND_REVOLUTE);
+        assert_eq!(physics.joint_map[&2].kind, JOINT_KIND_PRISMATIC);
+        assert_eq!(physics.joint_map[&3].kind, JOINT_KIND_FIXED);
+        assert_eq!(physics.joint_map[&4].kind, JOINT_KIND_ROPE);
+        assert_eq!(physics.joint_map[&5].kind, JOINT_KIND_SPRING);
     }
 
     #[test]

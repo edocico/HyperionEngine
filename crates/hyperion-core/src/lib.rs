@@ -742,3 +742,17 @@ pub fn engine_snapshot_restore(data: &[u8]) -> bool {
         }
     }
 }
+
+/// Canonical FNV-1a 64 hash of the simulation state (dev-tools only).
+/// Determinism harness: identical command streams + tick counts must yield
+/// identical hashes. NOTE: u64 arrives as BigInt on the JS side.
+#[cfg(feature = "dev-tools")]
+#[wasm_bindgen]
+pub fn engine_state_hash() -> u64 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.state_hash())
+    }
+}

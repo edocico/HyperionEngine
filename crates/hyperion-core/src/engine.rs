@@ -286,12 +286,18 @@ impl Engine {
 
     /// Serialize the entire engine state into a binary snapshot.
     ///
-    /// Format:
+    /// Format (HSNP v2):
     /// ```text
-    /// [magic: 4B "HSNP"][version: u32][tick: u64][entity_count: u32]
-    /// [entity_map_len: u32][entity_map: (ext_id: u32, hecs_id: u64) x N]
-    /// [per entity: hecs_id: u64, component_mask: u16, component_data...]
+    /// [magic: 4B "HSNP"][version: u32 = 2][tick: u64][entity_count: u32]
+    /// [entity_map_len: u32][entity_map: (ext_id: u32, hecs_id: u64, flags: u8) x N]
+    ///                                   // flags bit0 = is_2d
+    /// [per entity: hecs_id: u64, component_mask: u32, component_data...]
+    /// [physics_present: u8]             // 0 = no physics section
+    /// [physics section — only if physics_present == 1]
     /// ```
+    ///
+    /// v1 (mask u16, no map flags, no physics byte) is still accepted by
+    /// `snapshot_restore` for backward compatibility, but never written.
     pub fn snapshot_create(&self) -> Vec<u8> {
         use crate::components::*;
 
@@ -299,19 +305,21 @@ impl Engine {
 
         // Header
         buf.extend_from_slice(b"HSNP");
-        buf.extend_from_slice(&1u32.to_le_bytes()); // version
+        buf.extend_from_slice(&2u32.to_le_bytes()); // version
         buf.extend_from_slice(&self.tick_count.to_le_bytes());
 
         // Entity count — we'll come back and patch this
         let entity_count_offset = buf.len();
         buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder
 
-        // Entity map: length + entries
+        // Entity map: length + entries (ext_id, hecs bits, flags)
         let mapped: Vec<(u32, hecs::Entity)> = self.entity_map.iter_mapped().collect();
         buf.extend_from_slice(&(mapped.len() as u32).to_le_bytes());
         for &(ext_id, entity) in &mapped {
             buf.extend_from_slice(&ext_id.to_le_bytes());
             buf.extend_from_slice(&entity.to_bits().get().to_le_bytes());
+            let flags: u8 = if self.entity_map.is_entity_2d(ext_id) { 1 } else { 0 };
+            buf.push(flags);
         }
 
         // Per-entity component data
@@ -323,8 +331,8 @@ impl Engine {
             buf.extend_from_slice(&e.to_bits().get().to_le_bytes());
 
             let mask_offset = buf.len();
-            buf.extend_from_slice(&0u16.to_le_bytes()); // placeholder mask
-            let mut mask: u16 = 0;
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder mask
+            let mut mask: u32 = 0;
 
             // bit 0: Position (12 bytes)
             if let Ok(v) = self.world.get::<&Position>(e) {
@@ -404,14 +412,52 @@ impl Engine {
                     buf.extend_from_slice(&v.slots[i].to_le_bytes());
                 }
             }
+            // bit 15: Transform2D (20 bytes) — v2
+            if let Ok(v) = self.world.get::<&Transform2D>(e) {
+                mask |= 1 << 15;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 16: Depth (4 bytes) — v2
+            if let Ok(v) = self.world.get::<&Depth>(e) {
+                mask |= 1 << 16;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 17: Transparent (1 byte) — v2
+            if let Ok(v) = self.world.get::<&Transparent>(e) {
+                mask |= 1 << 17;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
+            // bit 18: OverflowChildren (u32 count + count*4 bytes) — v2
+            if let Ok(v) = self.world.get::<&OverflowChildren>(e) {
+                mask |= 1 << 18;
+                buf.extend_from_slice(&(v.items.len() as u32).to_le_bytes());
+                for id in &v.items {
+                    buf.extend_from_slice(&id.to_le_bytes());
+                }
+            }
 
             // Patch mask
-            buf[mask_offset..mask_offset + 2].copy_from_slice(&mask.to_le_bytes());
+            buf[mask_offset..mask_offset + 4].copy_from_slice(&mask.to_le_bytes());
         }
 
         // Patch entity count
         buf[entity_count_offset..entity_count_offset + 4]
             .copy_from_slice(&entity_count.to_le_bytes());
+
+        // Physics section: [present: u8][section_len: u32][section...].
+        // The length prefix makes the section skippable by readers compiled
+        // without physics-2d (Invariant I-4).
+        #[cfg(feature = "physics-2d")]
+        {
+            buf.push(1u8);
+            let len_offset = buf.len();
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder
+            crate::physics::snapshot::serialize_physics(&mut buf, &self.world, &self.physics);
+            let section_len = (buf.len() - len_offset - 4) as u32;
+            buf[len_offset..len_offset + 4].copy_from_slice(&section_len.to_le_bytes());
+        }
+        #[cfg(not(feature = "physics-2d"))]
+        buf.push(0u8);
 
         buf
     }
@@ -444,20 +490,22 @@ impl Engine {
         }
 
         let version = read_pod!(u32);
-        if version != 1 {
+        if version != 1 && version != 2 {
             return false;
         }
+        let v2 = version == 2;
 
         let tick = read_pod!(u64);
         let entity_count = read_pod!(u32);
 
-        // Entity map
+        // Entity map. v2 entries carry a flags byte (bit0 = is_2d).
         let map_len = read_pod!(u32);
-        let mut ext_to_old_hecs: Vec<(u32, u64)> = Vec::with_capacity(map_len as usize);
+        let mut ext_to_old_hecs: Vec<(u32, u64, u8)> = Vec::with_capacity(map_len as usize);
         for _ in 0..map_len {
             let ext_id = read_pod!(u32);
             let hecs_bits = read_pod!(u64);
-            ext_to_old_hecs.push((ext_id, hecs_bits));
+            let flags = if v2 { read_pod!(u8) } else { 0u8 };
+            ext_to_old_hecs.push((ext_id, hecs_bits, flags));
         }
 
         // Rebuild world and entity map
@@ -470,7 +518,12 @@ impl Engine {
 
         for _ in 0..entity_count {
             let old_hecs_bits = read_pod!(u64);
-            let mask = read_pod!(u16);
+            // v1 masks are u16 (bits 0-14); v2 masks are u32 (bits 0-18).
+            let mask: u32 = if v2 {
+                read_pod!(u32)
+            } else {
+                read_pod!(u16) as u32
+            };
 
             // Read component data
             let position = if mask & (1 << 0) != 0 { read_pod!(Position) } else { Position::default() };
@@ -524,22 +577,73 @@ impl Engine {
                 None
             };
 
-            // Spawn entity with baseline components
-            let new_entity = new_world.spawn((
-                position,
-                velocity,
-                rotation,
-                scale,
-                model_matrix,
-                bounding_radius,
-                texture_layer,
-                mesh_handle,
-                render_prim,
-                prim_params,
-                external_id,
-                parent,
-                children.unwrap_or_default(),
-            ));
+            // v2-only components (bits 15-18); never set in v1 masks.
+            let transform_2d = if mask & (1 << 15) != 0 {
+                Some(read_pod!(Transform2D))
+            } else {
+                None
+            };
+            let depth = if mask & (1 << 16) != 0 {
+                Some(read_pod!(Depth))
+            } else {
+                None
+            };
+            let transparent = if mask & (1 << 17) != 0 {
+                Some(read_pod!(Transparent))
+            } else {
+                None
+            };
+            let overflow_children = if mask & (1 << 18) != 0 {
+                let count = read_pod!(u32) as usize;
+                if cursor + count * 4 > data.len() {
+                    return false;
+                }
+                let mut items = Vec::with_capacity(count);
+                for i in 0..count {
+                    items.push(u32::from_le_bytes(
+                        data[cursor + i * 4..cursor + i * 4 + 4].try_into().unwrap(),
+                    ));
+                }
+                cursor += count * 4;
+                Some(OverflowChildren { items })
+            } else {
+                None
+            };
+
+            // Spawn with the archetype matching the original entity:
+            // Transform2D present => compact 2D archetype (mirrors SpawnEntity
+            // with payload[0]=1), otherwise the 3D archetype.
+            let new_entity = if let Some(t2d) = transform_2d {
+                new_world.spawn((
+                    t2d,
+                    velocity,
+                    model_matrix,
+                    bounding_radius,
+                    texture_layer,
+                    mesh_handle,
+                    render_prim,
+                    prim_params,
+                    external_id,
+                    parent,
+                    children.unwrap_or_default(),
+                ))
+            } else {
+                new_world.spawn((
+                    position,
+                    velocity,
+                    rotation,
+                    scale,
+                    model_matrix,
+                    bounding_radius,
+                    texture_layer,
+                    mesh_handle,
+                    render_prim,
+                    prim_params,
+                    external_id,
+                    parent,
+                    children.unwrap_or_default(),
+                ))
+            };
 
             // Optionally add Active
             if is_active {
@@ -551,20 +655,99 @@ impl Engine {
                 let _ = new_world.insert_one(new_entity, lm);
             }
 
+            // Optionally add v2 components
+            if let Some(d) = depth {
+                let _ = new_world.insert_one(new_entity, d);
+            }
+            if let Some(t) = transparent {
+                let _ = new_world.insert_one(new_entity, t);
+            }
+            if let Some(oc) = overflow_children {
+                let _ = new_world.insert_one(new_entity, oc);
+            }
+
             old_to_new.insert(old_hecs_bits, new_entity);
         }
 
-        // Rebuild entity map with new hecs entities
-        for (ext_id, old_bits) in ext_to_old_hecs {
+        // v2: physics section [present: u8][section_len: u32][section...].
+        // Bounds are validated here; the section itself is parsed after the
+        // entity map is rebuilt (it needs ext_id -> entity lookups).
+        let mut physics_section: Option<(usize, usize)> = None; // (start, len)
+        if v2 {
+            if cursor >= data.len() {
+                return false;
+            }
+            let physics_present = data[cursor];
+            cursor += 1;
+            match physics_present {
+                0 => {}
+                1 => {
+                    if cursor + 4 > data.len() {
+                        return false;
+                    }
+                    let section_len =
+                        u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
+                    cursor += 4;
+                    if cursor + section_len > data.len() {
+                        return false;
+                    }
+                    physics_section = Some((cursor, section_len));
+                    cursor += section_len;
+                }
+                _ => return false,
+            }
+        }
+        let _ = cursor; // final cursor position — trailing bytes are ignored
+        #[cfg(not(feature = "physics-2d"))]
+        let _ = physics_section; // skipped-by-length on non-physics builds (I-4)
+
+        // Rebuild entity map with new hecs entities (+ is_2d flags in v2)
+        for (ext_id, old_bits, flags) in ext_to_old_hecs {
             if let Some(&new_entity) = old_to_new.get(&old_bits) {
                 new_entity_map.insert(ext_id, new_entity);
+                new_entity_map.set_2d_flag(ext_id, flags & 1 != 0);
+            }
+        }
+
+        // Rebuild the physics world. Always replaced wholesale — restoring
+        // any snapshot on a physics build must not leak old Rapier bodies
+        // (the pre-Phase-16 orphan-body bug).
+        #[cfg(feature = "physics-2d")]
+        let new_physics = {
+            let mut new_physics = crate::physics::PhysicsWorld::new();
+            if let Some((start, len)) = physics_section
+                && !crate::physics::snapshot::restore_physics(
+                    &data[start..start + len],
+                    &mut new_world,
+                    &new_entity_map,
+                    &mut new_physics,
+                )
+            {
+                return false;
+            }
+            new_physics
+        };
+
+        // Rebuild render state: restored entities need GPU slots, otherwise
+        // they are invisible in the retained-slot upload path.
+        let mut new_render_state = RenderState::new();
+        for (ext_id, entity) in new_entity_map.iter_mapped().collect::<Vec<_>>() {
+            let slot = new_render_state.assign_slot(entity);
+            if new_entity_map.is_entity_2d(ext_id) {
+                new_render_state.write_slot_2d(slot, &new_world, entity);
+            } else {
+                new_render_state.write_slot(slot, &new_world, entity);
             }
         }
 
         // Replace engine state
         self.world = new_world;
         self.entity_map = new_entity_map;
-        self.render_state = RenderState::new();
+        self.render_state = new_render_state;
+        #[cfg(feature = "physics-2d")]
+        {
+            self.physics = new_physics;
+        }
         self.accumulator = 0.0;
         self.tick_count = tick;
         self.listener_pos = [0.0; 3];
@@ -572,6 +755,136 @@ impl Engine {
         self.listener_vel = [0.0; 3];
 
         true
+    }
+
+    /// Canonical 64-bit FNV-1a hash of the simulation state (Phase 16
+    /// Track B). Two engines that processed the same commands for the same
+    /// number of ticks produce the same hash; any state divergence changes it.
+    ///
+    /// Invariant I-2: every collection is ordered by external ID / joint ID —
+    /// hecs archetype iteration order must never leak into the hash. Floats
+    /// are hashed by bit pattern (`to_bits`), so -0.0 vs 0.0 and NaN payload
+    /// differences count as differences.
+    pub fn state_hash(&self) -> u64 {
+        use crate::components::*;
+
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        struct Fnv(u64);
+        impl Fnv {
+            fn byte(&mut self, b: u8) {
+                self.0 ^= u64::from(b);
+                self.0 = self.0.wrapping_mul(FNV_PRIME);
+            }
+            fn u32(&mut self, v: u32) {
+                for b in v.to_le_bytes() {
+                    self.byte(b);
+                }
+            }
+            fn u64(&mut self, v: u64) {
+                for b in v.to_le_bytes() {
+                    self.byte(b);
+                }
+            }
+            fn f32(&mut self, v: f32) {
+                self.u32(v.to_bits());
+            }
+        }
+
+        let mut h = Fnv(FNV_OFFSET);
+        h.u64(self.tick_count);
+
+        // ── ECS state, ordered by external ID ──
+        let mut mapped: Vec<(u32, hecs::Entity)> = self.entity_map.iter_mapped().collect();
+        mapped.sort_unstable_by_key(|(ext, _)| *ext);
+
+        for (ext_id, entity) in mapped {
+            h.u32(ext_id);
+            if let Ok(t2d) = self.world.get::<&Transform2D>(entity) {
+                h.byte(1); // archetype tag
+                h.f32(t2d.x);
+                h.f32(t2d.y);
+                h.f32(t2d.rot);
+                h.f32(t2d.sx);
+                h.f32(t2d.sy);
+            } else {
+                h.byte(0);
+                if let Ok(p) = self.world.get::<&Position>(entity) {
+                    h.f32(p.0.x);
+                    h.f32(p.0.y);
+                    h.f32(p.0.z);
+                }
+                if let Ok(r) = self.world.get::<&Rotation>(entity) {
+                    h.f32(r.0.x);
+                    h.f32(r.0.y);
+                    h.f32(r.0.z);
+                    h.f32(r.0.w);
+                }
+                if let Ok(sc) = self.world.get::<&Scale>(entity) {
+                    h.f32(sc.0.x);
+                    h.f32(sc.0.y);
+                    h.f32(sc.0.z);
+                }
+            }
+            if let Ok(v) = self.world.get::<&Velocity>(entity) {
+                h.f32(v.0.x);
+                h.f32(v.0.y);
+                h.f32(v.0.z);
+            }
+            if let Ok(d) = self.world.get::<&Depth>(entity) {
+                h.f32(d.0);
+            }
+        }
+
+        // ── Physics state, ordered by external ID / joint ID ──
+        #[cfg(feature = "physics-2d")]
+        {
+            use crate::physics::PhysicsBodyHandle;
+
+            let mut bodies: Vec<(u32, rapier2d::prelude::RigidBodyHandle)> = self
+                .world
+                .query::<(&ExternalId, &PhysicsBodyHandle)>()
+                .iter()
+                .map(|(ext, handle)| (ext.0, handle.0))
+                .collect();
+            bodies.sort_unstable_by_key(|(ext, _)| *ext);
+
+            for (ext_id, handle) in bodies {
+                let body = &self.physics.rigid_body_set[handle];
+                h.u32(ext_id);
+                let t = body.translation();
+                h.f32(t.x);
+                h.f32(t.y);
+                h.f32(body.rotation().angle());
+                let lv = body.linvel();
+                h.f32(lv.x);
+                h.f32(lv.y);
+                h.f32(body.angvel());
+                h.byte(u8::from(body.is_sleeping()));
+            }
+
+            let mut joint_ids: Vec<u32> = self.physics.joint_map.keys().copied().collect();
+            joint_ids.sort_unstable();
+            for joint_id in joint_ids {
+                let entry = &self.physics.joint_map[&joint_id];
+                h.u32(joint_id);
+                h.byte(entry.kind);
+                h.u32(entry.entity_a);
+                h.u32(entry.entity_b);
+            }
+
+            let mut cc_ids: Vec<u32> = self.physics.character_map.keys().copied().collect();
+            cc_ids.sort_unstable();
+            for ext_id in cc_ids {
+                let entry = &self.physics.character_map[&ext_id];
+                h.u32(ext_id);
+                h.byte(u8::from(entry.state.grounded));
+                h.byte(u8::from(entry.state.is_sliding_down_slope));
+            }
+        }
+
+        h.0
     }
 
     /// Returns the number of active entities in the ECS world.
@@ -1058,7 +1371,7 @@ mod tests {
         assert!(!snapshot.is_empty());
         assert_eq!(&snapshot[0..4], b"HSNP");
         let version = u32::from_le_bytes(snapshot[4..8].try_into().unwrap());
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         let tick = u64::from_le_bytes(snapshot[8..16].try_into().unwrap());
         assert!(tick > 0);
         let entity_count = u32::from_le_bytes(snapshot[16..20].try_into().unwrap());
@@ -1095,6 +1408,166 @@ mod tests {
         let mut engine = Engine::new();
         let bad_data = b"BADDxxxxxxxxxxxxxxxxxxxxxxxx";
         assert!(!engine.snapshot_restore(bad_data));
+    }
+
+    // ── Snapshot v2 tests (Phase 16) ────────────────────────────────
+
+    #[cfg(feature = "dev-tools")]
+    fn spawn_2d_cmd_dt(id: u32) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = 1; // 2D archetype
+        Command {
+            cmd_type: CommandType::SpawnEntity,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v2_2d_entity_roundtrip() {
+        use crate::components::{Position, Transform2D};
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_2d_cmd_dt(0), make_position_cmd(0, 7.0, 8.0, 0.0)]);
+        let snapshot = engine.snapshot_create();
+
+        // Mutate, then restore.
+        engine.process_commands(&[make_position_cmd(0, 999.0, 999.0, 0.0)]);
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let e = engine.entity_map.get(0).unwrap();
+        let t2d = engine.world.get::<&Transform2D>(e).unwrap();
+        assert_eq!(t2d.x, 7.0);
+        assert_eq!(t2d.y, 8.0);
+        assert_eq!(t2d.sx, 1.0);
+        // 2D archetype: no Position component (would be a phantom 3D leak).
+        drop(t2d);
+        assert!(engine.world.get::<&Position>(e).is_err());
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v2_preserves_is_2d_flag_and_command_routing() {
+        use crate::components::Transform2D;
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_2d_cmd_dt(0), spawn_cmd(1)]);
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        assert!(engine.entity_map.is_entity_2d(0));
+        assert!(!engine.entity_map.is_entity_2d(1));
+
+        // Post-restore commands must still route to Transform2D for 2D entities.
+        engine.process_commands(&[make_position_cmd(0, 42.0, 43.0, 0.0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        let t2d = engine.world.get::<&Transform2D>(e).unwrap();
+        assert_eq!(t2d.x, 42.0);
+        assert_eq!(t2d.y, 43.0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v2_depth_and_transparent_roundtrip() {
+        use crate::components::{Depth, Transparent};
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        engine.world.insert_one(e, Depth(3.5)).unwrap();
+        engine.world.insert_one(e, Transparent(1)).unwrap();
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let e = engine.entity_map.get(0).unwrap();
+        assert_eq!(engine.world.get::<&Depth>(e).unwrap().0, 3.5);
+        assert_eq!(engine.world.get::<&Transparent>(e).unwrap().0, 1);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v2_overflow_children_roundtrip() {
+        use crate::components::OverflowChildren;
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        let items: Vec<u32> = (100..140).collect(); // 40 overflow children
+        engine
+            .world
+            .insert_one(e, OverflowChildren { items: items.clone() })
+            .unwrap();
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let e = engine.entity_map.get(0).unwrap();
+        let oc = engine.world.get::<&OverflowChildren>(e).unwrap();
+        assert_eq!(oc.items, items);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v1_backward_compat() {
+        // Hand-built v1 snapshot: 1 entity with Position + ExternalId.
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"HSNP");
+        buf.extend_from_slice(&1u32.to_le_bytes()); // version 1
+        buf.extend_from_slice(&77u64.to_le_bytes()); // tick
+        buf.extend_from_slice(&1u32.to_le_bytes()); // entity_count
+        buf.extend_from_slice(&1u32.to_le_bytes()); // map_len
+        buf.extend_from_slice(&0u32.to_le_bytes()); // ext_id 0
+        let old_bits: u64 = (1 << 32) | 42;
+        buf.extend_from_slice(&old_bits.to_le_bytes());
+        // NOTE: v1 has no flags byte here.
+        buf.extend_from_slice(&old_bits.to_le_bytes()); // per-entity hecs bits
+        let mask: u16 = (1 << 0) | (1 << 11); // Position + ExternalId
+        buf.extend_from_slice(&mask.to_le_bytes()); // v1: u16 mask
+        buf.extend_from_slice(&5.0f32.to_le_bytes()); // Position.x
+        buf.extend_from_slice(&6.0f32.to_le_bytes()); // Position.y
+        buf.extend_from_slice(&7.0f32.to_le_bytes()); // Position.z
+        buf.extend_from_slice(&0u32.to_le_bytes()); // ExternalId(0)
+        // NOTE: v1 has no physics_present byte.
+
+        let mut engine = Engine::new();
+        assert!(engine.snapshot_restore(&buf));
+        assert_eq!(engine.tick_count(), 77);
+        let e = engine.entity_map.get(0).unwrap();
+        let pos = engine.world.get::<&crate::components::Position>(e).unwrap();
+        assert_eq!(pos.0.x, 5.0);
+        assert_eq!(pos.0.z, 7.0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_restore_rejects_future_version() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let mut snapshot = engine.snapshot_create();
+        snapshot[4..8].copy_from_slice(&3u32.to_le_bytes()); // version 3
+        assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v2_rejects_unknown_physics_section() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let mut snapshot = engine.snapshot_create();
+        let last = snapshot.len() - 1;
+        snapshot[last] = 1; // claim a physics section that isn't there
+        assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_restore_reassigns_render_slots() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0), spawn_cmd(1), spawn_2d_cmd_dt(2)]);
+        let snapshot = engine.snapshot_create();
+
+        let mut fresh = Engine::new();
+        assert!(fresh.snapshot_restore(&snapshot));
+        // Restored entities must be visible in the retained-slot GPU path.
+        assert_eq!(fresh.render_state.gpu_entity_count(), 3);
     }
 
     // ── Physics integration tests ──────────────────────────────────
@@ -1372,5 +1845,412 @@ mod tests {
         }]);
         engine.update(FIXED_DT);
         assert!(!engine.physics.character_map.contains_key(&0));
+    }
+
+    // ── State hash tests (Phase 16, Task 5) ────────────────────────────
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn state_hash_run_to_run_deterministic() {
+        let run = || {
+            let mut engine = Engine::new();
+            engine.process_commands(&[
+                spawn_cmd(0),
+                make_position_cmd(0, 5.0, 10.0, 0.0),
+                velocity_cmd(0, 3.0, -2.0, 0.0),
+                spawn_2d_cmd_dt(1),
+                make_position_cmd(1, 7.0, 8.0, 0.0),
+            ]);
+            for _ in 0..30 {
+                engine.update(FIXED_DT);
+            }
+            engine.state_hash()
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn state_hash_sensitive_to_state_changes() {
+        let mut a = Engine::new();
+        a.process_commands(&[spawn_cmd(0), make_position_cmd(0, 5.0, 10.0, 0.0)]);
+        let mut b = Engine::new();
+        b.process_commands(&[spawn_cmd(0), make_position_cmd(0, 5.0, 10.0, 0.0)]);
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        // One extra command diverges the hash.
+        b.process_commands(&[make_position_cmd(0, 5.0001, 10.0, 0.0)]);
+        assert_ne!(a.state_hash(), b.state_hash());
+
+        // Tick count is part of the state.
+        let before = a.state_hash();
+        a.update(FIXED_DT);
+        assert_ne!(before, a.state_hash());
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn state_hash_independent_of_spawn_order() {
+        // Same final state reached through different spawn order must hash
+        // identically (collections are ordered by external ID, I-2).
+        let mut a = Engine::new();
+        a.process_commands(&[spawn_cmd(0), spawn_cmd(1)]);
+        a.process_commands(&[
+            make_position_cmd(0, 1.0, 2.0, 0.0),
+            make_position_cmd(1, 3.0, 4.0, 0.0),
+        ]);
+
+        let mut b = Engine::new();
+        b.process_commands(&[spawn_cmd(1), spawn_cmd(0)]);
+        b.process_commands(&[
+            make_position_cmd(1, 3.0, 4.0, 0.0),
+            make_position_cmd(0, 1.0, 2.0, 0.0),
+        ]);
+
+        assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn state_hash_distinguishes_negative_zero() {
+        let mut a = Engine::new();
+        a.process_commands(&[spawn_cmd(0), make_position_cmd(0, 0.0, 0.0, 0.0)]);
+        let mut b = Engine::new();
+        b.process_commands(&[spawn_cmd(0), make_position_cmd(0, -0.0, 0.0, 0.0)]);
+        // Bit-pattern hashing: -0.0 != 0.0.
+        assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    // ── Snapshot v2 physics section tests (Phase 16, Tasks 3-4) ────────
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    fn setup_falling_body_engine() -> Engine {
+        let mut engine = Engine::new();
+        engine.physics.gravity = rapier2d::math::Vector::new(0.0, -980.0);
+        engine.physics.integration_parameters.length_unit = 100.0;
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0), // dynamic
+            create_circle_collider_cmd(0, 10.0),
+        ]);
+        // Let it fall for a few frames so it has velocity + displacement.
+        for _ in 0..5 {
+            engine.update(FIXED_DT);
+        }
+        engine
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_body_roundtrip() {
+        use crate::physics::{PhysicsBodyHandle, PhysicsColliderHandle, PhysicsControlled};
+
+        let mut engine = setup_falling_body_engine();
+        assert_eq!(engine.physics.body_count(), 1);
+
+        let e = engine.entity_map.get(0).unwrap();
+        let handle = engine.world.get::<&PhysicsBodyHandle>(e).unwrap().0;
+        let body = &engine.physics.rigid_body_set[handle];
+        let snap_y = body.translation().y;
+        let snap_vy = body.linvel().y;
+        assert!(snap_vy < 0.0, "body should be falling");
+
+        let snapshot = engine.snapshot_create();
+
+        // Keep simulating, then restore.
+        for _ in 0..10 {
+            engine.update(FIXED_DT);
+        }
+        assert!(engine.snapshot_restore(&snapshot));
+
+        assert_eq!(engine.physics.body_count(), 1);
+        let e = engine.entity_map.get(0).unwrap();
+        assert!(engine.world.get::<&PhysicsControlled>(e).is_ok());
+        assert!(engine.world.get::<&PhysicsColliderHandle>(e).is_ok());
+        let handle = engine.world.get::<&PhysicsBodyHandle>(e).unwrap().0;
+        let body = &engine.physics.rigid_body_set[handle];
+        assert_eq!(body.translation().y, snap_y);
+        assert_eq!(body.linvel().y, snap_vy);
+        assert_eq!(body.body_type(), rapier2d::prelude::RigidBodyType::Dynamic);
+
+        // The restored world must keep simulating: the body keeps falling.
+        engine.update(FIXED_DT);
+        let body = &engine.physics.rigid_body_set[handle];
+        assert!(body.translation().y < snap_y);
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_restore_clears_orphan_bodies() {
+        // Snapshot an EMPTY engine, then create a body, then restore the
+        // empty snapshot: the pre-Phase-16 bug left the Rapier body alive.
+        let mut engine = Engine::new();
+        let empty_snapshot = engine.snapshot_create();
+
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+        ]);
+        engine.update(FIXED_DT);
+        assert_eq!(engine.physics.body_count(), 1);
+
+        assert!(engine.snapshot_restore(&empty_snapshot));
+        assert_eq!(engine.physics.body_count(), 0);
+        assert_eq!(engine.physics.collider_set.len(), 0);
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_collider_properties_roundtrip() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 1), // fixed
+            create_circle_collider_cmd(0, 25.0),
+        ]);
+        engine.update(FIXED_DT);
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let e = engine.entity_map.get(0).unwrap();
+        let col_handle = engine
+            .world
+            .get::<&crate::physics::PhysicsColliderHandle>(e)
+            .unwrap()
+            .0;
+        let collider = &engine.physics.collider_set[col_handle];
+        match collider.shape().as_typed_shape() {
+            rapier2d::prelude::TypedShape::Ball(b) => assert_eq!(b.radius, 25.0),
+            other => panic!("expected ball, got {other:?}"),
+        }
+        // collider_to_entity reverse map rebuilt for event translation
+        let idx = col_handle.0.into_raw_parts().0 as usize;
+        assert_eq!(engine.physics.collider_to_entity[idx], Some(0));
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_joint_roundtrip() {
+        use crate::physics::{PendingJoint, PendingJointType, JOINT_KIND_REVOLUTE};
+
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 0),
+            create_circle_collider_cmd(0, 10.0),
+            spawn_2d_cmd(1),
+            create_rigid_body_cmd(1, 0),
+            create_circle_collider_cmd(1, 10.0),
+        ]);
+        engine.physics.pending_joints.push(PendingJoint {
+            joint_id: 7,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Revolute { anchor_ax: 3.0, anchor_ay: 4.0 },
+        });
+        engine.update(FIXED_DT);
+        assert_eq!(engine.physics.joint_map.len(), 1);
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        assert_eq!(engine.physics.joint_map.len(), 1);
+        let entry = &engine.physics.joint_map[&7];
+        assert_eq!(entry.kind, JOINT_KIND_REVOLUTE);
+        assert_eq!(entry.entity_a, 0);
+        assert_eq!(entry.entity_b, 1);
+        let joint = engine.physics.impulse_joint_set.get(entry.handle).unwrap();
+        assert_eq!(joint.data.local_frame1.translation.x, 3.0);
+        assert_eq!(joint.data.local_frame1.translation.y, 4.0);
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_character_controller_roundtrip() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 2), // kinematic
+            create_circle_collider_cmd(0, 10.0),
+            Command {
+                cmd_type: CommandType::CreateCharacterController,
+                entity_id: 0,
+                payload: [0; 16],
+            },
+        ]);
+        // Config: slide on, autostep on (absolute 0.35 / 0.12), snap on (0.5)
+        let mut payload = [0u8; 16];
+        payload[0] = 0x01 | 0x02 | 0x08;
+        payload[1..5].copy_from_slice(&0.9f32.to_le_bytes());
+        payload[5..9].copy_from_slice(&0.6f32.to_le_bytes());
+        payload[9..11].copy_from_slice(&35u16.to_le_bytes());
+        payload[11..13].copy_from_slice(&12u16.to_le_bytes());
+        payload[13..15].copy_from_slice(&50u16.to_le_bytes());
+        engine.process_commands(&[Command {
+            cmd_type: CommandType::SetCharacterConfig,
+            entity_id: 0,
+            payload,
+        }]);
+        engine.update(FIXED_DT);
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let entry = engine.physics.character_map.get(&0).unwrap();
+        assert!(entry.controller.slide);
+        assert_eq!(entry.controller.max_slope_climb_angle, 0.9);
+        assert_eq!(entry.controller.min_slope_slide_angle, 0.6);
+        let autostep = entry.controller.autostep.unwrap();
+        match autostep.max_height {
+            rapier2d::control::CharacterLength::Absolute(v) => assert_eq!(v, 0.35),
+            other => panic!("expected absolute, got {other:?}"),
+        }
+        assert!(entry.controller.snap_to_ground.is_some());
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_preserves_world_config() {
+        let engine = setup_falling_body_engine();
+        let snapshot = engine.snapshot_create();
+
+        let mut fresh = Engine::new();
+        assert!(fresh.snapshot_restore(&snapshot));
+        assert_eq!(fresh.physics.gravity.y, -980.0);
+        assert_eq!(fresh.physics.integration_parameters.length_unit, 100.0);
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn snapshot_physics_restore_twice_is_deterministic() {
+        // Two independent restores of the same snapshot, stepped the same
+        // number of ticks, must produce identical body states (I-5).
+        let engine = setup_falling_body_engine();
+        let snapshot = engine.snapshot_create();
+
+        let run = |snapshot: &[u8]| -> (f32, f32) {
+            let mut e = Engine::new();
+            assert!(e.snapshot_restore(snapshot));
+            for _ in 0..30 {
+                e.update(FIXED_DT);
+            }
+            let ent = e.entity_map.get(0).unwrap();
+            let handle = e.world.get::<&crate::physics::PhysicsBodyHandle>(ent).unwrap().0;
+            let body = &e.physics.rigid_body_set[handle];
+            (body.translation().y, body.linvel().y)
+        };
+
+        let (y1, vy1) = run(&snapshot);
+        let (y2, vy2) = run(&snapshot);
+        assert_eq!(y1.to_bits(), y2.to_bits(), "restore-replay must be bit-identical");
+        assert_eq!(vy1.to_bits(), vy2.to_bits());
+    }
+
+    // ── Restore-replay determinism via state hash (Phase 16, Task 6) ───
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    fn restore_and_run_hash(snapshot: &[u8], ticks: u32) -> u64 {
+        let mut e = Engine::new();
+        assert!(e.snapshot_restore(snapshot));
+        for _ in 0..ticks {
+            e.update(FIXED_DT);
+        }
+        e.state_hash()
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn restore_replay_hash_deterministic_bodies() {
+        let engine = setup_falling_body_engine();
+        let snapshot = engine.snapshot_create();
+        assert_eq!(
+            restore_and_run_hash(&snapshot, 30),
+            restore_and_run_hash(&snapshot, 30)
+        );
+        // Different tick counts must diverge (sanity: hash is not degenerate).
+        assert_ne!(
+            restore_and_run_hash(&snapshot, 30),
+            restore_and_run_hash(&snapshot, 31)
+        );
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn restore_replay_hash_deterministic_joints() {
+        use crate::physics::{PendingJoint, PendingJointType};
+
+        let mut engine = Engine::new();
+        engine.physics.gravity = rapier2d::math::Vector::new(0.0, -980.0);
+        engine.physics.integration_parameters.length_unit = 100.0;
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 1), // fixed anchor
+            create_circle_collider_cmd(0, 5.0),
+            spawn_2d_cmd(1),
+            create_rigid_body_cmd(1, 0), // dynamic pendulum bob
+            create_circle_collider_cmd(1, 5.0),
+        ]);
+        engine.physics.pending_joints.push(PendingJoint {
+            joint_id: 1,
+            entity_a_ext: 0,
+            entity_b_ext: 1,
+            joint_type: PendingJointType::Revolute { anchor_ax: 0.0, anchor_ay: 30.0 },
+        });
+        for _ in 0..5 {
+            engine.update(FIXED_DT);
+        }
+        let snapshot = engine.snapshot_create();
+
+        assert_eq!(
+            restore_and_run_hash(&snapshot, 60),
+            restore_and_run_hash(&snapshot, 60)
+        );
+    }
+
+    #[cfg(all(feature = "physics-2d", feature = "dev-tools"))]
+    #[test]
+    fn restore_replay_hash_deterministic_character_controller() {
+        let mut engine = Engine::new();
+        engine.physics.gravity = rapier2d::math::Vector::new(0.0, -980.0);
+        engine.physics.integration_parameters.length_unit = 100.0;
+        // Ground + kinematic character standing on it.
+        engine.process_commands(&[
+            spawn_2d_cmd(0),
+            create_rigid_body_cmd(0, 1), // fixed ground
+            create_circle_collider_cmd(0, 50.0),
+            spawn_2d_cmd(1),
+            create_rigid_body_cmd(1, 2), // kinematic character
+            create_circle_collider_cmd(1, 10.0),
+            Command {
+                cmd_type: CommandType::CreateCharacterController,
+                entity_id: 1,
+                payload: [0; 16],
+            },
+        ]);
+        engine.update(FIXED_DT);
+        let snapshot = engine.snapshot_create();
+
+        let run = |snapshot: &[u8]| -> u64 {
+            let mut e = Engine::new();
+            assert!(e.snapshot_restore(snapshot));
+            for i in 0..30u32 {
+                // Scripted movement: same MoveCharacter stream on both runs.
+                let mut payload = [0u8; 16];
+                let dx = if i % 2 == 0 { 5.0f32 } else { -3.0f32 };
+                payload[0..4].copy_from_slice(&dx.to_le_bytes());
+                payload[4..8].copy_from_slice(&(-2.0f32).to_le_bytes());
+                e.process_commands(&[Command {
+                    cmd_type: CommandType::MoveCharacter,
+                    entity_id: 1,
+                    payload,
+                }]);
+                e.update(FIXED_DT);
+            }
+            e.state_hash()
+        };
+
+        assert_eq!(run(&snapshot), run(&snapshot));
     }
 }
