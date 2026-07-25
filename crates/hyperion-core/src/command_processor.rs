@@ -252,7 +252,7 @@ fn flush_spawn_batch(
             )
         });
         let spawned: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
-        for ((orig_idx, _), entity) in batch_3d.iter().zip(spawned.into_iter()) {
+        for ((orig_idx, _), entity) in batch_3d.iter().zip(spawned) {
             entities.push((*orig_idx, entity, false));
         }
     } else {
@@ -296,7 +296,7 @@ fn flush_spawn_batch(
             )
         });
         let spawned: Vec<hecs::Entity> = world.spawn_batch(archetypes).collect();
-        for ((orig_idx, _), entity) in batch_2d.iter().zip(spawned.into_iter()) {
+        for ((orig_idx, _), entity) in batch_2d.iter().zip(spawned) {
             entities.push((*orig_idx, entity, true));
         }
     } else {

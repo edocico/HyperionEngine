@@ -17,7 +17,7 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (159 tests, 236 with physics-2d, 167 with dev-tools, 238 with both)
+cargo test -p hyperion-core                  # All Rust unit tests (159 tests, 236 with physics-2d, 169 with dev-tools, 246 with both)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -77,7 +77,7 @@ cargo test -p hyperion-core --features physics-2d  # Includes physics simulation
 cargo clippy -p hyperion-core --features physics-2d
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (167 tests)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (169 tests)
 ```
 
 ### Development Workflow
