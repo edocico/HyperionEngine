@@ -22,7 +22,7 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 48; // CommandType values: 0..47
+const MAX_COMMAND_TYPE = 53; // CommandType values: 0..52 — keep in sync with ring_buffer.rs MAX_COMMAND_TYPE
 
 /**
  * Returns true for commands that must NOT be coalesced (last-write-wins).
@@ -40,6 +40,14 @@ function isNonCoalescable(cmd: CommandType): boolean {
   // same entity with two joints + same cmdType = same key = silent overwrite.
   if (cmd >= CommandType.CreateRevoluteJoint && cmd <= CommandType.SetJointAnchorA) return true; // 33-43
   if (cmd === CommandType.CreateCharacterController) return true; // 44
+  // Audit 2026-07: lifecycle commands must not be coalesced.
+  // TeleportBody (49) is a discrete event — two teleports in one frame are two
+  // distinct repositionings and the intermediate one may matter (e.g. respawn
+  // then nudge). DestroyCharacterController (51) is a lifecycle edge.
+  // SetColliderEvents (48), SetBoundingRadius (50) and SetCharacterUp (52) are
+  // pure state and coalesce with last-write-wins.
+  if (cmd === CommandType.TeleportBody) return true; // 49
+  if (cmd === CommandType.DestroyCharacterController) return true; // 51
   return false;
 }
 
@@ -502,5 +510,55 @@ export class BackpressuredProducer {
    */
   setPhysicsDebugRender(enabled: boolean): void {
     this.writeCommand(CommandType.SetPhysicsDebugRender, 0, new Uint8Array([enabled ? 1 : 0]));
+  }
+
+  // ── Audit 2026-07 additions ──────────────────────────────────
+
+  /**
+   * Enable Rapier event reporting on this entity's collider.
+   * Colliders are created with events OFF, so without this call no
+   * `onCollisionStart` / `onContactForce` callback can ever fire.
+   * Works before the collider exists (staged onto the pending collider).
+   */
+  setColliderEvents(entityId: number, collision: boolean, contactForce = false): boolean {
+    const mask = (collision ? 0x01 : 0) | (contactForce ? 0x02 : 0);
+    return this.writeCommand(CommandType.SetColliderEvents, entityId, new Uint8Array([mask]));
+  }
+
+  /**
+   * Reposition a physics body. This is the only way to move a dynamic or
+   * fixed body — `setPosition` alone is overwritten by the next physics step
+   * for bodies Rapier owns.
+   */
+  teleportBody(entityId: number, x: number, y: number, rot = 0, zeroVelocity = true): boolean {
+    const buf = new Uint8Array(13);
+    const dv = new DataView(buf.buffer);
+    dv.setFloat32(0, x, true);
+    dv.setFloat32(4, y, true);
+    dv.setFloat32(8, rot, true);
+    buf[12] = zeroVelocity ? 0x01 : 0x00;
+    return this.writeCommand(CommandType.TeleportBody, entityId, buf);
+  }
+
+  /**
+   * Pin an explicit culling / hit-test radius, disabling the automatic
+   * derivation from the world matrix. Pass a negative value to restore it.
+   */
+  setBoundingRadius(entityId: number, radius: number): boolean {
+    return this.writeCommand(CommandType.SetBoundingRadius, entityId, new Float32Array([radius]));
+  }
+
+  /** Remove this entity's character controller without destroying the entity. */
+  destroyCharacterController(entityId: number): boolean {
+    return this.writeCommand(CommandType.DestroyCharacterController, entityId);
+  }
+
+  /**
+   * Explicit "up" axis for the character controller. When unset the engine
+   * derives it from gravity (`up = -normalize(gravity)`), falling back to
+   * +Y when gravity is zero.
+   */
+  setCharacterUp(entityId: number, ux: number, uy: number): boolean {
+    return this.writeCommand(CommandType.SetCharacterUp, entityId, new Float32Array([ux, uy]));
   }
 }

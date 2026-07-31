@@ -90,7 +90,25 @@ pub enum CommandType {
     SetCharacterConfig = 45,        // 16B: packed config
     MoveCharacter = 46,             // 8B: dx(f32) + dy(f32)
     SetPhysicsDebugRender = 47,     // 1B: enabled(u8 0/1)
+
+    // ── Audit 2026-07: commands added to close unreachable behaviour ──
+    /// Enable Rapier event reporting on an entity's collider.
+    /// Without this no collision or contact-force event can ever be emitted.
+    SetColliderEvents = 48,     // 1B: bit0=collision, bit1=contact force
+    /// Reposition a physics body (the only way to move a dynamic/fixed body).
+    TeleportBody = 49,          // 13B: x(f32) + y(f32) + rot(f32) + flags(u8 bit0=zero velocity)
+    /// Pin an explicit culling/pick radius, disabling the automatic derivation.
+    /// A negative value restores automatic derivation from the world matrix.
+    SetBoundingRadius = 50,     // 4B: f32
+    /// Remove an entity's character controller without destroying the entity.
+    DestroyCharacterController = 51, // 0B
+    /// Explicit "up" axis for the character controller (overrides the gravity-derived default).
+    SetCharacterUp = 52,        // 8B: ux(f32) + uy(f32)
 }
+
+/// One past the highest `CommandType` discriminant.
+/// Must stay in sync with `MAX_COMMAND_TYPE` in `ts/src/backpressure.ts`.
+pub const MAX_COMMAND_TYPE: u8 = 53;
 
 impl CommandType {
     /// Try to convert a raw byte into a `CommandType`.
@@ -149,6 +167,12 @@ impl CommandType {
             45 => Some(Self::SetCharacterConfig),
             46 => Some(Self::MoveCharacter),
             47 => Some(Self::SetPhysicsDebugRender),
+            // Audit 2026-07 additions
+            48 => Some(Self::SetColliderEvents),
+            49 => Some(Self::TeleportBody),
+            50 => Some(Self::SetBoundingRadius),
+            51 => Some(Self::DestroyCharacterController),
+            52 => Some(Self::SetCharacterUp),
             _ => None,
         }
     }
@@ -194,6 +218,12 @@ impl CommandType {
             Self::SetCharacterConfig => 16,        // packed config (see spec §3.2)
             Self::MoveCharacter => 8,              // dx(f32) + dy(f32)
             Self::SetPhysicsDebugRender => 1,      // enabled(u8)
+            // Audit 2026-07 additions
+            Self::SetColliderEvents => 1,          // event bitmask (u8)
+            Self::TeleportBody => 13,              // x + y + rot (3 × f32) + flags(u8)
+            Self::SetBoundingRadius => 4,          // 1 × f32
+            Self::DestroyCharacterController => 0,
+            Self::SetCharacterUp => 8,             // ux(f32) + uy(f32)
         }
     }
 
@@ -221,22 +251,53 @@ pub struct Command {
 // parse_commands (flat byte-slice parser)
 // ---------------------------------------------------------------------------
 
+/// Outcome of parsing a flat command batch.
+pub struct ParseResult {
+    pub commands: Vec<Command>,
+    /// Bytes consumed before parsing stopped.
+    pub consumed: usize,
+    /// Bytes discarded because an unknown opcode made the rest of the batch
+    /// unframeable. Non-zero means commands were LOST — the batch cannot be
+    /// resynchronised, because an unknown opcode has an unknown length.
+    pub dropped_bytes: usize,
+}
+
 /// Parse commands from a flat byte slice.
 ///
 /// This is the non-circular counterpart to `RingBufferConsumer::drain()`.
 /// Used when the Worker extracts bytes from the SharedArrayBuffer and passes
 /// them to WASM as a contiguous `&[u8]`.
+///
+/// Kept for source compatibility; prefer [`parse_commands_checked`], which
+/// reports what it had to throw away.
 pub fn parse_commands(data: &[u8]) -> Vec<Command> {
+    parse_commands_checked(data).commands
+}
+
+/// Parse a command batch and report what could not be parsed.
+///
+/// An unknown opcode is unframeable (its length is unknown), so everything after
+/// it is discarded — including any `DespawnEntity`, which leaks entities. Before
+/// the 2026-07 audit (P2-2) this happened with no return value, no counter and
+/// no log: the batch silently shrank. The counts are now surfaced to JS through
+/// `engine_dropped_command_bytes()`.
+pub fn parse_commands_checked(data: &[u8]) -> ParseResult {
     let mut commands = Vec::new();
     let mut pos = 0;
 
     while pos < data.len() {
         let cmd_byte = data[pos];
         let Some(cmd_type) = CommandType::from_u8(cmd_byte) else {
-            break;
+            return ParseResult {
+                commands,
+                consumed: pos,
+                dropped_bytes: data.len() - pos,
+            };
         };
 
         let msg_size = cmd_type.message_size();
+        // A partial trailing message is NOT an error: the producer simply has
+        // not finished writing it. It is not counted as dropped.
         if pos + msg_size > data.len() {
             break;
         }
@@ -260,7 +321,11 @@ pub fn parse_commands(data: &[u8]) -> Vec<Command> {
         pos += msg_size;
     }
 
-    commands
+    ParseResult {
+        commands,
+        consumed: pos,
+        dropped_bytes: 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +347,8 @@ pub struct RingBufferConsumer {
     base: *mut u8,
     /// Ring capacity in bytes (read once at construction time).
     capacity: usize,
+    /// Bytes discarded because of an unknown opcode.
+    dropped_bytes: usize,
 }
 
 // The struct is !Send by default because of the raw pointer.  We assert Send
@@ -298,7 +365,30 @@ impl RingBufferConsumer {
         Self {
             base: ptr,
             capacity,
+            dropped_bytes: 0,
         }
+    }
+
+    /// Bytes discarded so far because of an unknown opcode.
+    pub fn dropped_bytes(&self) -> usize {
+        self.dropped_bytes
+    }
+
+    /// True when the header is self-consistent enough to drain from.
+    ///
+    /// `new()` takes `capacity` as an argument and never read the authoritative
+    /// `capacity` field the header documents at offset 8, so a JS/Rust mismatch
+    /// (or a producer that forgot to wrap `write_head`) produced a `write_head`
+    /// past the end of the ring. `drain()` then spun forever, because `rh` is
+    /// always reduced modulo capacity and could never equal `wh`
+    /// (audit 2026-07, P2-2).
+    fn header_is_sane(&self) -> bool {
+        if self.capacity == 0 {
+            return false;
+        }
+        let wh = self.write_head() as usize;
+        let rh = self.read_head() as usize;
+        wh < self.capacity && rh < self.capacity
     }
 
     // -- atomic accessors ---------------------------------------------------
@@ -354,9 +444,19 @@ impl RingBufferConsumer {
     // -- public API ---------------------------------------------------------
 
     /// How many unread bytes are available in the buffer right now?
+    /// NOTE: `write_head == read_head` means EMPTY, so the usable capacity is
+    /// `capacity - 1` bytes: a producer that writes exactly `capacity` bytes
+    /// wraps `write_head` onto `read_head` and the whole buffer reads as empty.
+    /// The producer must never fill the final byte.
     pub fn available(&self) -> usize {
+        if self.capacity == 0 {
+            return 0;
+        }
         let wh = self.write_head() as usize;
         let rh = self.read_head() as usize;
+        if wh >= self.capacity || rh >= self.capacity {
+            return 0;
+        }
         if wh >= rh {
             wh - rh
         } else {
@@ -367,8 +467,13 @@ impl RingBufferConsumer {
     /// Read **all** available commands and advance `read_head` atomically.
     ///
     /// Returns an empty `Vec` when no data is available.
-    pub fn drain(&self) -> Vec<Command> {
+    pub fn drain(&mut self) -> Vec<Command> {
         let mut commands = Vec::new();
+        // Reject an inconsistent header instead of spinning forever or dividing
+        // by a zero capacity (audit 2026-07, P2-2).
+        if !self.header_is_sane() {
+            return commands;
+        }
         let mut rh = self.read_head() as usize;
         let wh = self.write_head() as usize;
 
@@ -377,7 +482,21 @@ impl RingBufferConsumer {
             let type_byte = self.read_byte(rh);
             let cmd_type = match CommandType::from_u8(type_byte) {
                 Some(ct) => ct,
-                None => break, // Unknown command — stop draining.
+                None => {
+                    // Unknown opcode: its length is unknown, so the stream
+                    // cannot be reframed. Resynchronise by jumping to
+                    // `write_head` and record what was thrown away.
+                    //
+                    // Previously this `break`-ed BEFORE advancing `rh`, then
+                    // wrote the unchanged read head back — parking the consumer
+                    // on the bad byte forever. Every later drain re-read it and
+                    // broke again: the engine went permanently deaf
+                    // (audit 2026-07, P2-2).
+                    let lost = if wh >= rh { wh - rh } else { self.capacity - rh + wh };
+                    self.dropped_bytes = self.dropped_bytes.saturating_add(lost);
+                    rh = wh;
+                    break;
+                }
             };
 
             let msg_size = cmd_type.message_size();
@@ -462,7 +581,7 @@ mod tests {
     #[test]
     fn empty_buffer_drains_nothing() {
         let (buf, ptr) = make_buffer(64);
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
         let commands = consumer.drain();
         assert!(commands.is_empty());
         // Keep buf alive.
@@ -481,7 +600,7 @@ mod tests {
         write_data(&mut buf, 0, &msg);
         set_write_head(&mut buf, msg.len() as u32);
 
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
         let commands = consumer.drain();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].cmd_type, CommandType::SpawnEntity);
@@ -501,7 +620,7 @@ mod tests {
         write_data(&mut buf, 0, &msg);
         set_write_head(&mut buf, msg.len() as u32);
 
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
         let commands = consumer.drain();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].cmd_type, CommandType::SpawnEntity);
@@ -526,7 +645,7 @@ mod tests {
         write_data(&mut buf, 0, &msg);
         set_write_head(&mut buf, msg.len() as u32);
 
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 128) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 128) };
         let commands = consumer.drain();
 
         assert_eq!(commands.len(), 1);
@@ -570,7 +689,7 @@ mod tests {
 
         set_write_head(&mut buf, offset as u32);
 
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 256) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 256) };
         let commands = consumer.drain();
 
         assert_eq!(commands.len(), 3);
@@ -750,7 +869,7 @@ mod tests {
         write_data(&mut buf, 0, &msg);
         set_write_head(&mut buf, msg.len() as u32);
 
-        let consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
+        let mut consumer = unsafe { RingBufferConsumer::new(ptr, 64) };
 
         // Before drain, read_head should be 0.
         assert_eq!(consumer.read_head(), 0);
@@ -941,7 +1060,49 @@ mod tests {
     fn physics_debug_command_type_round_trip() {
         let ct = CommandType::from_u8(47);
         assert_eq!(ct, Some(CommandType::SetPhysicsDebugRender));
-        assert!(CommandType::from_u8(48).is_none(), "48 should be None");
+    }
+
+    /// Audit 2026-07: commands 48-52 close behaviour that had no reachable
+    /// command at all (collider events, body teleport, explicit bounds,
+    /// character-controller teardown, explicit character up-axis).
+    #[test]
+    fn audit_2026_07_command_types_round_trip() {
+        assert_eq!(CommandType::from_u8(48), Some(CommandType::SetColliderEvents));
+        assert_eq!(CommandType::from_u8(49), Some(CommandType::TeleportBody));
+        assert_eq!(CommandType::from_u8(50), Some(CommandType::SetBoundingRadius));
+        assert_eq!(
+            CommandType::from_u8(51),
+            Some(CommandType::DestroyCharacterController)
+        );
+        assert_eq!(CommandType::from_u8(52), Some(CommandType::SetCharacterUp));
+    }
+
+    #[test]
+    fn audit_2026_07_payload_sizes() {
+        assert_eq!(CommandType::SetColliderEvents.payload_size(), 1);
+        assert_eq!(CommandType::TeleportBody.payload_size(), 13);
+        assert_eq!(CommandType::SetBoundingRadius.payload_size(), 4);
+        assert_eq!(CommandType::DestroyCharacterController.payload_size(), 0);
+        assert_eq!(CommandType::SetCharacterUp.payload_size(), 8);
+        // Every payload must still fit the 16-byte Command::payload array.
+        for v in 0..MAX_COMMAND_TYPE {
+            if let Some(ct) = CommandType::from_u8(v) {
+                assert!(
+                    ct.payload_size() <= 16,
+                    "{ct:?} payload {} exceeds the 16-byte wire limit",
+                    ct.payload_size()
+                );
+            }
+        }
+    }
+
+    /// `MAX_COMMAND_TYPE` must be exactly one past the last valid discriminant —
+    /// it is mirrored by `MAX_COMMAND_TYPE` in `ts/src/backpressure.ts`, which
+    /// uses it to bound the coalescing-map purge loop.
+    #[test]
+    fn max_command_type_matches_last_discriminant() {
+        assert!(CommandType::from_u8(MAX_COMMAND_TYPE - 1).is_some());
+        assert!(CommandType::from_u8(MAX_COMMAND_TYPE).is_none());
     }
 
     #[test]

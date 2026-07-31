@@ -6,6 +6,52 @@ use crate::components::*;
 use crate::render_state::RenderState;
 use crate::ring_buffer::{Command, CommandType};
 
+/// Read three consecutive little-endian f32s, rejecting non-finite input.
+///
+/// NaN and infinity used to flow straight from the wire into components and from
+/// there into `ModelMatrix`, `gpu_bounds`, `gpu_depths` (which feeds the GPU
+/// radix sort — a NaN key corrupts the whole back-to-front order) and, through
+/// `propagate_transforms`, into every descendant's matrix
+/// (audit 2026-07, P2-3).
+fn read_vec3(payload: &[u8; 16]) -> Option<(f32, f32, f32)> {
+    let x = f32::from_le_bytes(payload[0..4].try_into().unwrap());
+    let y = f32::from_le_bytes(payload[4..8].try_into().unwrap());
+    let z = f32::from_le_bytes(payload[8..12].try_into().unwrap());
+    (x.is_finite() && y.is_finite() && z.is_finite()).then_some((x, y, z))
+}
+
+/// Read four consecutive little-endian f32s, rejecting non-finite input.
+fn read_vec4(payload: &[u8; 16], offset: usize) -> Option<[f32; 4]> {
+    let mut out = [0.0f32; 4];
+    for (i, v) in out.iter_mut().enumerate() {
+        let o = offset + i * 4;
+        *v = f32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
+        if !v.is_finite() {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// Read a single little-endian f32, rejecting non-finite input.
+fn read_f32(payload: &[u8; 16]) -> Option<f32> {
+    let v = f32::from_le_bytes(payload[0..4].try_into().unwrap());
+    v.is_finite().then_some(v)
+}
+
+/// Maximum ancestor chain length walked by hierarchy operations.
+/// Bounds both cycle detection here and world-matrix propagation in
+/// `systems::propagate_transforms`, which uses the same limit.
+pub const MAX_HIERARCHY_DEPTH: usize = 64;
+
+/// Highest accepted external entity id.
+///
+/// `EntityMap` is a sparse `Vec` indexed by the id, so an unbounded id is an
+/// unbounded allocation driven straight from the wire. 1 M entities is far past
+/// anything the engine can simulate (the ring-buffer benchmark tops out at 10 k)
+/// while keeping the worst-case map at 8 MB instead of 34 GB.
+pub const MAX_EXTERNAL_ID: u32 = 1_048_575; // 2^20 - 1
+
 /// Maps external entity IDs (from TypeScript) to internal hecs entities.
 pub struct EntityMap {
     /// Sparse map: external ID -> hecs Entity.
@@ -18,6 +64,8 @@ pub struct EntityMap {
     /// Tracks whether each external ID is a 2D entity (Transform2D) vs 3D (Position+Rotation+Scale).
     /// Indexed by external ID. Default `false` = 3D.
     is_2d: Vec<bool>,
+    /// Count of `insert` calls rejected for exceeding `MAX_EXTERNAL_ID`.
+    rejected_ids: u32,
 }
 
 impl Default for EntityMap {
@@ -33,6 +81,7 @@ impl EntityMap {
             free_list: Vec::new(),
             next_id: 0,
             is_2d: Vec::new(),
+            rejected_ids: 0,
         }
     }
 
@@ -48,13 +97,50 @@ impl EntityMap {
     }
 
     /// Register a mapping from external ID to hecs entity.
-    pub fn insert(&mut self, external_id: u32, entity: hecs::Entity) {
+    ///
+    /// Returns `false` when `external_id` exceeds [`MAX_EXTERNAL_ID`] — the
+    /// mapping is then not created and the caller must treat the spawn as
+    /// rejected.
+    ///
+    /// The sparse `Vec` is indexed directly by the id, so before the 2026-07
+    /// audit (P0-4) six bytes on the wire (`SpawnEntity` with id 10_000_000)
+    /// allocated ~85 MB of WASM heap, and on wasm32 — where `usize` is 32-bit
+    /// and release builds have `overflow-checks` off — `idx + 1` for
+    /// `id == u32::MAX` wrapped to 0, wiping every mapping and then indexing
+    /// out of bounds. The cap makes both unreachable.
+    pub fn insert(&mut self, external_id: u32, entity: hecs::Entity) -> bool {
         let idx = external_id as usize;
+        if external_id > MAX_EXTERNAL_ID {
+            self.rejected_ids = self.rejected_ids.saturating_add(1);
+            return false;
+        }
         if idx >= self.map.len() {
-            self.map.resize(idx + 1, None);
-            self.is_2d.resize(idx + 1, false);
+            // Grow geometrically rather than exactly to the requested index, so
+            // a sparse-but-legal id pattern doesn't rebuild the Vec each time.
+            let new_len = (idx + 1).max(self.map.len() * 2).min(MAX_EXTERNAL_ID as usize + 1);
+            self.map.resize(new_len, None);
+            self.is_2d.resize(new_len, false);
         }
         self.map[idx] = Some(entity);
+        true
+    }
+
+    /// Number of `insert` calls rejected because the external id exceeded
+    /// [`MAX_EXTERNAL_ID`]. Surfaced to JS via `engine_rejected_command_count`.
+    pub fn rejected_ids(&self) -> u32 {
+        self.rejected_ids
+    }
+
+    /// True when `external_id` is within the accepted range. Spawn paths check
+    /// this *before* creating the hecs entity, so a rejected id never leaves an
+    /// unmapped entity behind in the world.
+    pub fn accepts_id(&self, external_id: u32) -> bool {
+        external_id <= MAX_EXTERNAL_ID
+    }
+
+    /// Record a rejected command for an out-of-range id.
+    pub(crate) fn note_rejected_id(&mut self) {
+        self.rejected_ids = self.rejected_ids.saturating_add(1);
     }
 
     /// Mark an external ID as 2D or 3D. Must be called after `insert()`.
@@ -98,6 +184,18 @@ impl EntityMap {
         if external_id < self.next_id {
             self.free_list.push(external_id);
         }
+    }
+
+    /// Advance `next_id` past every currently bound external id.
+    ///
+    /// `insert()` binds ids chosen by the TypeScript side and deliberately does
+    /// not touch `next_id`, so after a snapshot restore `allocate()` would hand
+    /// back id 0 — already bound to a live entity (audit 2026-07, P3-11).
+    pub fn reserve_ids_up_to_highest(&mut self) {
+        if let Some(idx) = self.map.iter().rposition(|opt| opt.is_some()) {
+            self.next_id = self.next_id.max(idx as u32 + 1);
+        }
+        self.free_list.retain(|&id| self.map.get(id as usize).is_none_or(|s| s.is_none()));
     }
 
     /// Current allocated capacity (length of the sparse map).
@@ -206,6 +304,164 @@ fn process_commands_inner(
     }
 }
 
+// ── Hierarchy helpers (audit 2026-07, P2-1) ─────────────────────
+//
+// Before the audit the scene graph had no lifecycle at all: `DespawnEntity`
+// left dangling `Parent` links and stale `Children` entries, `SetParent`
+// accepted self-parenting and A↔B cycles, and a despawn/respawn round trip
+// could put the same child id in `Children` twice — after which no command
+// could remove it. These four helpers are the single place link bookkeeping
+// happens.
+
+/// Detach `child_ext_id` from the parent it currently records, keeping both
+/// directions of the link consistent.
+fn detach_from_parent(world: &mut World, entity_map: &EntityMap, child_entity: hecs::Entity) {
+    let child_ext_id = match world.get::<&ExternalId>(child_entity) {
+        Ok(e) => e.0,
+        Err(_) => return,
+    };
+    let old_parent_id = world.get::<&Parent>(child_entity).ok().map(|p| p.0);
+    let Some(old_id) = old_parent_id else { return };
+    if old_id == u32::MAX {
+        return;
+    }
+    if let Some(old_parent_entity) = entity_map.get(old_id) {
+        remove_child_id(world, old_parent_entity, child_ext_id);
+    }
+    if let Ok(mut parent) = world.get::<&mut Parent>(child_entity) {
+        parent.0 = u32::MAX;
+    }
+}
+
+/// Remove `child_ext_id` from a parent's inline `Children` and, if present,
+/// from its `OverflowChildren` heap list.
+fn remove_child_id(world: &mut World, parent_entity: hecs::Entity, child_ext_id: u32) {
+    if let Ok(mut children) = world.get::<&mut Children>(parent_entity) {
+        children.remove(child_ext_id);
+    }
+    let overflow_now_empty = if let Ok(mut overflow) =
+        world.get::<&mut OverflowChildren>(parent_entity)
+    {
+        overflow.items.retain(|&id| id != child_ext_id);
+        overflow.items.is_empty()
+    } else {
+        false
+    };
+    if overflow_now_empty {
+        let _ = world.remove_one::<OverflowChildren>(parent_entity);
+    }
+}
+
+/// Add `child_ext_id` to a parent's child list, spilling to `OverflowChildren`
+/// past 32 entries. Never inserts a duplicate.
+fn add_child_id(world: &mut World, parent_entity: hecs::Entity, child_ext_id: u32) {
+    let mut needs_overflow = false;
+    if let Ok(mut children) = world.get::<&mut Children>(parent_entity) {
+        if children.contains(child_ext_id) {
+            return;
+        }
+        if !children.add(child_ext_id) {
+            needs_overflow = true;
+        }
+    }
+    if !needs_overflow {
+        return;
+    }
+    if let Ok(mut overflow) = world.get::<&mut OverflowChildren>(parent_entity) {
+        if !overflow.items.contains(&child_ext_id) {
+            overflow.items.push(child_ext_id);
+        }
+    } else {
+        let _ = world.insert_one(parent_entity, OverflowChildren { items: vec![child_ext_id] });
+    }
+}
+
+/// True when parenting `child_ext_id` under `new_parent_id` would create a
+/// cycle (including self-parenting). Walks the ancestor chain with a hard cap
+/// so an already-corrupt graph can never spin forever.
+fn would_create_cycle(
+    world: &World,
+    entity_map: &EntityMap,
+    child_ext_id: u32,
+    new_parent_id: u32,
+) -> bool {
+    if new_parent_id == child_ext_id {
+        return true;
+    }
+    let mut cursor = new_parent_id;
+    for _ in 0..MAX_HIERARCHY_DEPTH {
+        if cursor == u32::MAX {
+            return false;
+        }
+        let Some(entity) = entity_map.get(cursor) else {
+            return false;
+        };
+        let Ok(parent) = world.get::<&Parent>(entity) else {
+            return false;
+        };
+        let next = parent.0;
+        drop(parent);
+        if next == child_ext_id {
+            return true;
+        }
+        cursor = next;
+    }
+    // Depth cap hit: treat as a cycle rather than accepting an unbounded chain.
+    true
+}
+
+/// Remove every hierarchy link touching `entity`, in both directions.
+///
+/// Called before the entity leaves the world so its parent stops listing it and
+/// its children become roots instead of pointing at a dead — and later recycled
+/// — external id (audit 2026-07, P2-1b, P2-1c).
+fn unlink_hierarchy(world: &mut World, entity_map: &EntityMap, entity: hecs::Entity) {
+    detach_from_parent(world, entity_map, entity);
+
+    let mut child_ids: Vec<u32> = world
+        .get::<&Children>(entity)
+        .map(|c| c.as_slice().to_vec())
+        .unwrap_or_default();
+    if let Ok(overflow) = world.get::<&OverflowChildren>(entity) {
+        child_ids.extend_from_slice(&overflow.items);
+    }
+    for child_id in child_ids {
+        if let Some(child_entity) = entity_map.get(child_id)
+            && let Ok(mut parent) = world.get::<&mut Parent>(child_entity)
+        {
+            parent.0 = u32::MAX;
+        }
+    }
+}
+
+/// Retire the entity currently mapped to `external_id`, if any, before a new
+/// spawn reuses that id.
+///
+/// Before the 2026-07 audit (P2-4) `entity_map.insert` simply overwrote the
+/// mapping: the previous entity stayed alive, `Active`, with a `ModelMatrix`
+/// and a GPU slot, but became unreachable from the map — so no `DespawnEntity`
+/// could ever remove it and it rendered forever. Any external-id reuse from the
+/// TS side (reconnect, hot-reload, pool churn) leaked one entity per spawn.
+///
+/// Returns `true` when a previous entity was retired.
+fn retire_previous_binding(
+    external_id: u32,
+    world: &mut World,
+    entity_map: &mut EntityMap,
+    render_state: &mut RenderState,
+) -> bool {
+    match entity_map.get(external_id) {
+        Some(previous) => {
+            render_state.queue_despawn(previous);
+            unlink_hierarchy(world, entity_map, previous);
+            let _ = world.despawn(previous);
+            entity_map.remove(external_id);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Flush a batch of consecutive SpawnEntity commands using `spawn_batch()`.
 ///
 /// 3D and 2D entities have different archetypes, so the batch is split
@@ -217,10 +473,23 @@ fn flush_spawn_batch(
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
 ) {
-    // Partition into 3D and 2D sub-batches, preserving original indices
+    // Retire any live binding for the ids about to be (re)spawned, so a
+    // duplicate spawn cannot orphan an entity (audit 2026-07, P2-4).
+    for cmd in batch {
+        if entity_map.accepts_id(cmd.entity_id) {
+            retire_previous_binding(cmd.entity_id, world, entity_map, render_state);
+        }
+    }
+
+    // Partition into 3D and 2D sub-batches, preserving original indices.
+    // Out-of-range ids are dropped here (audit 2026-07, P0-4).
     let mut batch_3d: Vec<(usize, &Command)> = Vec::new();
     let mut batch_2d: Vec<(usize, &Command)> = Vec::new();
     for (i, cmd) in batch.iter().enumerate() {
+        if !entity_map.accepts_id(cmd.entity_id) {
+            entity_map.note_rejected_id();
+            continue;
+        }
         if cmd.payload[0] == 1 {
             batch_2d.push((i, cmd));
         } else {
@@ -325,7 +594,7 @@ fn flush_spawn_batch(
     // Wire up entity map and render state
     for (orig_idx, entity, is_2d) in &entities {
         let cmd = &batch[*orig_idx];
-        entity_map.insert(cmd.entity_id, *entity);
+        let _ = entity_map.insert(cmd.entity_id, *entity);
         entity_map.set_2d_flag(cmd.entity_id, *is_2d);
         let slot = render_state.assign_slot(*entity);
         if *is_2d {
@@ -345,6 +614,16 @@ fn process_single_command(
 ) {
     match cmd.cmd_type {
         CommandType::SpawnEntity => {
+            // Out-of-range ids are rejected before anything is created, so no
+            // unmapped entity is ever left in the world (audit 2026-07, P0-4).
+            if !entity_map.accepts_id(cmd.entity_id) {
+                entity_map.note_rejected_id();
+                return;
+            }
+            // A spawn for an id that is still bound retires the old entity
+            // first, otherwise it stays alive and rendering but unreachable
+            // from the map (audit 2026-07, P2-4).
+            retire_previous_binding(cmd.entity_id, world, entity_map, render_state);
             let is_2d = cmd.payload[0] == 1;
             let entity = if is_2d {
                 world.spawn((
@@ -379,7 +658,7 @@ fn process_single_command(
                     Active,
                 ))
             };
-            entity_map.insert(cmd.entity_id, entity);
+            let _ = entity_map.insert(cmd.entity_id, entity);
             entity_map.set_2d_flag(cmd.entity_id, is_2d);
             let slot = render_state.assign_slot(entity);
             if is_2d {
@@ -391,7 +670,8 @@ fn process_single_command(
 
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                render_state.pending_despawns.push(entity);
+                render_state.queue_despawn(entity);
+                unlink_hierarchy(world, entity_map, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
@@ -399,9 +679,7 @@ fn process_single_command(
 
         CommandType::SetPosition => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let Some((x, y, z)) = read_vec3(&cmd.payload) else { return };
                 if entity_map.is_entity_2d(cmd.entity_id) {
                     if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
                         t.x = x;
@@ -420,10 +698,7 @@ fn process_single_command(
 
         CommandType::SetRotation => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                let w = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                let Some([x, y, z, w]) = read_vec4(&cmd.payload, 0) else { return };
                 if entity_map.is_entity_2d(cmd.entity_id) {
                     // Compatibility fallback: extract z-axis angle from quaternion
                     let angle = f32::atan2(
@@ -445,9 +720,7 @@ fn process_single_command(
 
         CommandType::SetScale => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let Some((x, y, z)) = read_vec3(&cmd.payload) else { return };
                 if entity_map.is_entity_2d(cmd.entity_id) {
                     if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
                         t.sx = x;
@@ -466,9 +739,7 @@ fn process_single_command(
 
         CommandType::SetVelocity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let Some((x, y, z)) = read_vec3(&cmd.payload) else { return };
                 if let Ok(mut vel) = world.get::<&mut Velocity>(entity) {
                     vel.0 = glam::Vec3::new(x, y, z);
                 }
@@ -516,75 +787,36 @@ fn process_single_command(
                 let new_parent_id =
                     u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
 
-                // Remove from old parent's Children (or OverflowChildren) if currently parented.
-                // Two-phase: extract old_id first (drops the Parent borrow), then mutate.
-                let old_parent_id = world
-                    .get::<&Parent>(child_entity)
-                    .ok()
-                    .map(|p| p.0);
-                if let Some(old_id) = old_parent_id
-                    && old_id != u32::MAX
-                    && let Some(old_parent_entity) = entity_map.get(old_id)
+                // Reject self-parenting and cycles. Accepting them produced a
+                // permanently wrong world matrix (`M * M` for a self-parent) and
+                // left a structure that any depth-first walk would loop on
+                // (audit 2026-07, P2-1a).
+                if new_parent_id != u32::MAX
+                    && would_create_cycle(world, entity_map, cmd.entity_id, new_parent_id)
                 {
-                    let removed_from_inline =
-                        if let Ok(mut children) =
-                            world.get::<&mut Children>(old_parent_entity)
-                        {
-                            children.remove(cmd.entity_id)
-                        } else {
-                            false
-                        };
-
-                    if !removed_from_inline {
-                        // Try OverflowChildren
-                        let should_remove_component =
-                            if let Ok(mut overflow) =
-                                world.get::<&mut OverflowChildren>(old_parent_entity)
-                            {
-                                overflow.items.retain(|&id| id != cmd.entity_id);
-                                overflow.items.is_empty()
-                            } else {
-                                false
-                            };
-                        if should_remove_component {
-                            let _ =
-                                world.remove_one::<OverflowChildren>(old_parent_entity);
-                        }
-                    }
+                    return;
                 }
 
-                // Update child's Parent component
+                // Reject a parent that does not exist: writing `Parent`
+                // unconditionally while skipping the reciprocal `Children`
+                // insert left a half-link that silently completed itself if the
+                // id was spawned later (audit 2026-07, P2-1 note).
+                if new_parent_id != u32::MAX && entity_map.get(new_parent_id).is_none() {
+                    return;
+                }
+
+                detach_from_parent(world, entity_map, child_entity);
+
                 if let Ok(mut parent) = world.get::<&mut Parent>(child_entity) {
                     parent.0 = new_parent_id;
                 }
 
-                // Add to new parent's Children (if not u32::MAX = unparent).
-                // Two-phase approach: try inline add, then handle overflow
-                // separately. We can't use a single if-let chain because the
-                // RefMut<Children> borrow would keep `world` borrowed, blocking
-                // the insert_one call needed for OverflowChildren.
-                let mut overflow_child: Option<(hecs::Entity, u32)> = None;
                 if new_parent_id != u32::MAX
                     && let Some(parent_entity) = entity_map.get(new_parent_id)
-                    && let Ok(mut children) =
-                        world.get::<&mut Children>(parent_entity)
-                    && !children.add(cmd.entity_id)
                 {
-                    overflow_child = Some((parent_entity, cmd.entity_id));
+                    add_child_id(world, parent_entity, cmd.entity_id);
                 }
-                // Phase 2: handle overflow outside the Children borrow scope
-                if let Some((parent_entity, child_id)) = overflow_child {
-                    if let Ok(mut overflow) =
-                        world.get::<&mut OverflowChildren>(parent_entity)
-                    {
-                        overflow.items.push(child_id);
-                    } else {
-                        let _ = world.insert_one(
-                            parent_entity,
-                            OverflowChildren { items: vec![child_id] },
-                        );
-                    }
-                }
+
                 if let Some(slot) = render_state.get_slot(child_entity) {
                     render_state.dirty_tracker.mark_transform_dirty(slot as usize);
                     render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
@@ -594,10 +826,7 @@ fn process_single_command(
 
         CommandType::SetPrimParams0 => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let p0 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let p1 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let p2 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                let p3 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                let Some([p0, p1, p2, p3]) = read_vec4(&cmd.payload, 0) else { return };
                 if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
                     pp.0[0] = p0;
                     pp.0[1] = p1;
@@ -612,10 +841,7 @@ fn process_single_command(
 
         CommandType::SetPrimParams1 => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let p4 = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let p5 = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let p6 = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                let p7 = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
+                let Some([p4, p5, p6, p7]) = read_vec4(&cmd.payload, 0) else { return };
                 if let Ok(mut pp) = world.get::<&mut PrimitiveParams>(entity) {
                     pp.0[4] = p4;
                     pp.0[5] = p5;
@@ -634,7 +860,7 @@ fn process_single_command(
 
         CommandType::SetRotation2D => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let angle = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let Some(angle) = read_f32(&cmd.payload) else { return };
                 if entity_map.is_entity_2d(cmd.entity_id) {
                     if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
                         t.rot = angle;
@@ -666,7 +892,9 @@ fn process_single_command(
 
         CommandType::SetDepth => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let z = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                // A NaN depth is a poisoned GPU radix-sort key: it corrupts the
+                // whole back-to-front transparency order, not just this entity.
+                let Some(z) = read_f32(&cmd.payload) else { return };
                 let _ = world.insert_one(entity, Depth(z));
                 if let Some(slot) = render_state.get_slot(entity) {
                     render_state.dirty_tracker.mark_meta_dirty(slot as usize);
@@ -674,8 +902,28 @@ fn process_single_command(
             }
         }
 
-        // Physics commands (17-41) — handled in process_single_command_physics
-        // when physics-2d is enabled. Without physics, they are no-ops.
+        // Pin an explicit cull/pick radius (audit 2026-07, P1-17).
+        // A negative value clears the override and restores automatic
+        // derivation from the entity's world matrix.
+        CommandType::SetBoundingRadius => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let r = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if r.is_finite() && r >= 0.0 {
+                    let _ = world.insert_one(entity, BoundingRadius(r));
+                    let _ = world.insert_one(entity, BoundsOverride);
+                } else {
+                    // Negative / non-finite: back to automatic derivation.
+                    let _ = world.remove_one::<BoundsOverride>(entity);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                }
+            }
+        }
+
+        // Physics commands (17-41, 48-52) — handled in process_single_command_physics
+        // and process_physics_commands when physics-2d is enabled.
+        // Without physics, they are no-ops.
         CommandType::CreateRigidBody
         | CommandType::DestroyRigidBody
         | CommandType::CreateCollider
@@ -706,7 +954,12 @@ fn process_single_command(
         // Physics: character controller — handled by physics command processor
         | CommandType::CreateCharacterController
         | CommandType::SetCharacterConfig
-        | CommandType::MoveCharacter => {}
+        | CommandType::MoveCharacter
+        // Audit 2026-07 physics additions
+        | CommandType::SetColliderEvents
+        | CommandType::TeleportBody
+        | CommandType::DestroyCharacterController
+        | CommandType::SetCharacterUp => {}
 
         // Handled in Engine::process_commands (engine-level flag, Phase 16)
         CommandType::SetPhysicsDebugRender => {}
@@ -731,7 +984,8 @@ fn process_single_command_physics(
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 despawn_physics_cleanup(world, entity, physics);
-                render_state.pending_despawns.push(entity);
+                render_state.queue_despawn(entity);
+                unlink_hierarchy(world, entity_map, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
@@ -740,6 +994,15 @@ fn process_single_command_physics(
         // CreateRigidBody: insert PendingRigidBody component (consumed by physics_sync_pre)
         CommandType::CreateRigidBody => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
+                // Replacing a live body must tear the old one down first.
+                // Without this the second call inserted a SECOND Rapier body and
+                // just overwrote the component, leaving the first body and its
+                // collider unreachable from the ECS — still simulating, still
+                // colliding, and surviving the entity's despawn forever
+                // (audit 2026-07, P1-5).
+                if world.get::<&crate::physics::PhysicsBodyHandle>(entity).is_ok() {
+                    physics_detach_body(world, entity, physics);
+                }
                 let body_type = cmd.payload[0];
                 let _ = world.insert_one(entity, crate::physics::PendingRigidBody::new(body_type));
             }
@@ -748,48 +1011,45 @@ fn process_single_command_physics(
         // CreateCollider: insert PendingCollider component (consumed by physics_sync_pre)
         CommandType::CreateCollider => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
+                // Same overwrite hazard as CreateRigidBody: drop the previous
+                // collider instead of orphaning it on the body (P1-5).
+                remove_live_collider(world, entity, physics);
                 let pending = crate::physics::PendingCollider::from_payload(&cmd.payload);
                 let _ = world.insert_one(entity, pending);
             }
         }
 
-        // DestroyRigidBody: remove Rapier body + ECS handles
+        // DestroyRigidBody: remove Rapier body + ECS handles.
+        //
+        // The entity survives, so its character controller must too: reusing the
+        // full despawn cleanup here silently deregistered it, which broke the
+        // natural "swap body type" sequence DestroyRigidBody + CreateRigidBody
+        // (audit 2026-07, P1-12).
         CommandType::DestroyRigidBody => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                despawn_physics_cleanup(world, entity, physics);
-                let _ = world.remove_one::<crate::physics::PhysicsBodyHandle>(entity);
-                let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
-                let _ = world.remove_one::<crate::physics::PhysicsControlled>(entity);
+                physics_detach_body(world, entity, physics);
             }
         }
 
         // DestroyCollider: remove a single collider from Rapier
         CommandType::DestroyCollider => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                // Extract the handle value before dropping the borrow on `world`.
-                let col_h = world
-                    .get::<&crate::physics::PhysicsColliderHandle>(entity)
-                    .ok()
-                    .map(|c| c.0);
-                if let Some(h) = col_h {
-                    let idx = h.0.into_raw_parts().0 as usize;
-                    if idx < physics.collider_to_entity.len() {
-                        physics.collider_to_entity[idx] = None;
-                    }
-                    physics.collider_set.remove(
-                        h,
-                        &mut physics.island_manager,
-                        &mut physics.rigid_body_set,
-                        true,
-                    );
-                    let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
-                }
+                remove_live_collider(world, entity, physics);
+                let _ = world.remove_one::<crate::physics::PendingCollider>(entity);
             }
         }
 
         // CreateRevoluteJoint: stage a revolute PendingJoint
         CommandType::CreateRevoluteJoint => {
             let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            // Reusing a live joint id used to overwrite the map entry and drop
+            // the only handle to the previous Rapier joint, which kept
+            // constraining its bodies with no way to remove it (P1-10).
+            if physics.joint_map.contains_key(&joint_id)
+                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+            {
+                return;
+            }
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let anchor_ax = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let anchor_ay = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -804,6 +1064,14 @@ fn process_single_command_physics(
         // CreatePrismaticJoint: stage a prismatic PendingJoint
         CommandType::CreatePrismaticJoint => {
             let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            // Reusing a live joint id used to overwrite the map entry and drop
+            // the only handle to the previous Rapier joint, which kept
+            // constraining its bodies with no way to remove it (P1-10).
+            if physics.joint_map.contains_key(&joint_id)
+                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+            {
+                return;
+            }
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let axis_x = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let axis_y = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -818,6 +1086,14 @@ fn process_single_command_physics(
         // CreateFixedJoint: stage a fixed PendingJoint
         CommandType::CreateFixedJoint => {
             let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            // Reusing a live joint id used to overwrite the map entry and drop
+            // the only handle to the previous Rapier joint, which kept
+            // constraining its bodies with no way to remove it (P1-10).
+            if physics.joint_map.contains_key(&joint_id)
+                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+            {
+                return;
+            }
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
                 joint_id,
@@ -830,6 +1106,14 @@ fn process_single_command_physics(
         // CreateRopeJoint: stage a rope PendingJoint
         CommandType::CreateRopeJoint => {
             let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            // Reusing a live joint id used to overwrite the map entry and drop
+            // the only handle to the previous Rapier joint, which kept
+            // constraining its bodies with no way to remove it (P1-10).
+            if physics.joint_map.contains_key(&joint_id)
+                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+            {
+                return;
+            }
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let max_dist = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -843,6 +1127,14 @@ fn process_single_command_physics(
         // CreateSpringJoint: stage a spring PendingJoint
         CommandType::CreateSpringJoint => {
             let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            // Reusing a live joint id used to overwrite the map entry and drop
+            // the only handle to the previous Rapier joint, which kept
+            // constraining its bodies with no way to remove it (P1-10).
+            if physics.joint_map.contains_key(&joint_id)
+                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+            {
+                return;
+            }
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let rest_length = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -851,6 +1143,31 @@ fn process_single_command_physics(
                 entity_b_ext,
                 joint_type: crate::physics::PendingJointType::Spring { rest_length },
             });
+        }
+
+        // Position/rotation writes on a Rapier-owned body must also reposition
+        // the body, otherwise the ECS value is silently reverted by the next
+        // write-back — there was no reposition path for dynamic or fixed bodies
+        // at all (audit 2026-07, P1-9).
+        CommandType::SetPosition | CommandType::SetRotation2D => {
+            process_single_command(cmd, world, entity_map, render_state);
+            if let Some(entity) = entity_map.get(cmd.entity_id)
+                && world.get::<&crate::physics::PhysicsControlled>(entity).is_ok()
+            {
+                let (x, y, rot) = read_entity_pose(world, entity);
+                if x.is_finite() && y.is_finite() {
+                    physics.pending_teleports.retain(|t| t.ext_id != cmd.entity_id);
+                    physics.pending_teleports.push(crate::physics::PendingTeleport {
+                        ext_id: cmd.entity_id,
+                        x,
+                        y,
+                        rot,
+                        // A plain SetPosition is a reposition, not a respawn:
+                        // momentum is preserved. Use TeleportBody to clear it.
+                        zero_velocity: false,
+                    });
+                }
+            }
         }
 
         // All other commands: delegate to the base (non-physics) handler
@@ -870,38 +1187,119 @@ pub fn despawn_physics_cleanup(
     entity: hecs::Entity,
     physics: &mut crate::physics::PhysicsWorld,
 ) {
-    if let Ok(handle) = world.get::<&crate::physics::PhysicsBodyHandle>(entity) {
-        let body_handle = handle.0;
-        drop(handle);
-        // Clear reverse map entries for all attached colliders
-        if let Some(body) = physics.rigid_body_set.get(body_handle) {
-            for &col_handle in body.colliders() {
-                let idx = col_handle.0.into_raw_parts().0 as usize;
-                if idx < physics.collider_to_entity.len() {
-                    physics.collider_to_entity[idx] = None;
-                }
-            }
-        }
-        // Clean up joint_map entries referencing this entity
-        if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
-            let eid = ext_id.0;
-            drop(ext_id);
-            physics.joint_map.retain(|_, entry| {
-                entry.entity_a != eid && entry.entity_b != eid
-            });
-            physics.character_map.remove(&eid);
-        }
-
-        // Remove body (cascades collider + joint removal)
-        physics.rigid_body_set.remove(
-            body_handle,
-            &mut physics.island_manager,
-            &mut physics.collider_set,
-            &mut physics.impulse_joint_set,
-            &mut physics.multibody_joint_set,
-            true, // remove_attached_colliders
-        );
+    // External-id-keyed cleanup runs UNCONDITIONALLY.
+    //
+    // It used to sit inside the `PhysicsBodyHandle` guard, but bodies only
+    // materialise during `update()`: an entity created and destroyed in the same
+    // batch left a live `character_map` entry keyed by an external id the map
+    // immediately recycled, so a later, unrelated entity inherited a controller
+    // the game never created (audit 2026-07, P1-12).
+    if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
+        let eid = ext_id.0;
+        drop(ext_id);
+        physics.joint_map.retain(|_, entry| entry.entity_a != eid && entry.entity_b != eid);
+        physics.pending_joints.retain(|p| p.entity_a_ext != eid && p.entity_b_ext != eid);
+        physics.character_map.remove(&eid);
+        physics.pending_moves.retain(|(id, _, _)| *id != eid);
+        physics.pending_teleports.retain(|t| t.ext_id != eid);
     }
+    remove_body_and_colliders(world, entity, physics);
+}
+
+/// Remove the entity's Rapier body (and its colliders) plus the ECS handles,
+/// leaving every external-id-keyed registration (character controller) intact.
+#[cfg(feature = "physics-2d")]
+fn physics_detach_body(
+    world: &mut World,
+    entity: hecs::Entity,
+    physics: &mut crate::physics::PhysicsWorld,
+) -> bool {
+    // A body carries its joints: Rapier cascades their removal, so the joint
+    // bookkeeping has to follow even though the entity itself survives.
+    if let Ok(ext_id) = world.get::<&ExternalId>(entity) {
+        let eid = ext_id.0;
+        drop(ext_id);
+        physics.joint_map.retain(|_, entry| entry.entity_a != eid && entry.entity_b != eid);
+        physics.pending_joints.retain(|p| p.entity_a_ext != eid && p.entity_b_ext != eid);
+    }
+    let removed = remove_body_and_colliders(world, entity, physics);
+    let _ = world.remove_one::<crate::physics::PhysicsBodyHandle>(entity);
+    let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
+    let _ = world.remove_one::<crate::physics::PhysicsControlled>(entity);
+    let _ = world.remove_one::<crate::physics::PendingRigidBody>(entity);
+    let _ = world.remove_one::<crate::physics::PendingCollider>(entity);
+    removed
+}
+
+/// Current pose of an entity, from whichever transform archetype it uses.
+#[cfg(feature = "physics-2d")]
+fn read_entity_pose(world: &World, entity: hecs::Entity) -> (f32, f32, Option<f32>) {
+    if let Ok(t) = world.get::<&Transform2D>(entity) {
+        return (t.x, t.y, Some(t.rot));
+    }
+    if let Ok(p) = world.get::<&Position>(entity) {
+        return (p.0.x, p.0.y, None);
+    }
+    (0.0, 0.0, None)
+}
+
+/// Drop the entity's live collider (if any) without touching its body.
+#[cfg(feature = "physics-2d")]
+fn remove_live_collider(
+    world: &mut World,
+    entity: hecs::Entity,
+    physics: &mut crate::physics::PhysicsWorld,
+) {
+    let col_h = world
+        .get::<&crate::physics::PhysicsColliderHandle>(entity)
+        .ok()
+        .map(|c| c.0);
+    if let Some(h) = col_h {
+        // Reverse-map entry intentionally left in place — see
+        // `remove_body_and_colliders` for why (P1-14c).
+        physics.collider_set.remove(
+            h,
+            &mut physics.island_manager,
+            &mut physics.rigid_body_set,
+            true,
+        );
+        let _ = world.remove_one::<crate::physics::PhysicsColliderHandle>(entity);
+    }
+}
+
+/// Shared body teardown: clears the collider reverse map, then removes the body
+/// (which cascades collider and joint removal inside Rapier).
+#[cfg(feature = "physics-2d")]
+fn remove_body_and_colliders(
+    world: &hecs::World,
+    entity: hecs::Entity,
+    physics: &mut crate::physics::PhysicsWorld,
+) -> bool {
+    let Ok(handle) = world.get::<&crate::physics::PhysicsBodyHandle>(entity) else {
+        return false;
+    };
+    let body_handle = handle.0;
+    drop(handle);
+    // The collider -> entity reverse map is deliberately NOT cleared here.
+    //
+    // Rapier emits the matching `CollisionEvent::Stopped` on the *next* step,
+    // after the body is gone. Wiping the map first made that lookup fail, so the
+    // event was dropped — including the notification the surviving entity needs,
+    // which left client-side "who am I overlapping" state leaking forever
+    // (audit 2026-07, P1-14c).
+    //
+    // Stale entries are harmless: a removed collider can never be referenced by
+    // a later event, and if Rapier recycles its arena index the insert path in
+    // `physics_sync_pre` overwrites the slot unconditionally before any step.
+    physics.rigid_body_set.remove(
+        body_handle,
+        &mut physics.island_manager,
+        &mut physics.collider_set,
+        &mut physics.impulse_joint_set,
+        &mut physics.multibody_joint_set,
+        true, // remove_attached_colliders
+    );
+    true
 }
 
 #[cfg(test)]

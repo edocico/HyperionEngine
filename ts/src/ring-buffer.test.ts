@@ -314,3 +314,33 @@ describe('physics CommandTypes', () => {
     }
   });
 });
+
+// ── Audit 2026-07: protocol extension ──────────────────────────
+//
+// Commands 48-52 close behaviour that had no reachable command at all.
+// These tests pin the wire contract that ring_buffer.rs mirrors.
+describe('audit 2026-07 command types', () => {
+  it('declares payload sizes for every new command', () => {
+    expect(PAYLOAD_SIZES[CommandType.SetColliderEvents]).toBe(1);
+    expect(PAYLOAD_SIZES[CommandType.TeleportBody]).toBe(13);
+    expect(PAYLOAD_SIZES[CommandType.SetBoundingRadius]).toBe(4);
+    expect(PAYLOAD_SIZES[CommandType.DestroyCharacterController]).toBe(0);
+    expect(PAYLOAD_SIZES[CommandType.SetCharacterUp]).toBe(8);
+  });
+
+  it('keeps every payload within the 16-byte wire limit', () => {
+    for (let t = 0; t <= CommandType.SetCharacterUp; t++) {
+      const size = PAYLOAD_SIZES[t as CommandType];
+      expect(size, `command ${t}`).toBeLessThanOrEqual(16);
+      expect(size, `command ${t}`).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('has a payload size declared for every discriminant up to the last one', () => {
+    // A missing entry would make writeCommand emit a malformed message and
+    // desynchronise the whole stream from that byte onwards.
+    for (let t = 0; t <= CommandType.SetCharacterUp; t++) {
+      expect(PAYLOAD_SIZES[t as CommandType], `command ${t}`).toBeTypeOf('number');
+    }
+  });
+});

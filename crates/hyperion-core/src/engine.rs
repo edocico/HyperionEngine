@@ -18,6 +18,11 @@ use crate::command_processor::EntityMap;
 /// Fixed timestep: 60 ticks per second.
 pub const FIXED_DT: f32 = 1.0 / 60.0;
 
+/// Snapshot format version written by `snapshot_create`.
+/// v1 and v2 are still accepted on restore.
+#[cfg(feature = "dev-tools")]
+pub const SNAPSHOT_VERSION: u32 = 3;
+
 /// The core engine state.
 pub struct Engine {
     pub world: World,
@@ -34,6 +39,10 @@ pub struct Engine {
     pub debug_lines: Vec<f32>,
     accumulator: f32,
     tick_count: u64,
+    /// Bytes discarded because an unknown opcode made a batch unframeable.
+    /// Surfaced to JS via `engine_dropped_command_bytes()` — before the
+    /// 2026-07 audit (P2-2) this loss was completely silent.
+    dropped_command_bytes: u32,
     listener_pos: [f32; 3],
     listener_prev_pos: [f32; 3],
     listener_vel: [f32; 3],
@@ -59,6 +68,7 @@ impl Engine {
             debug_lines: Vec::new(),
             accumulator: 0.0,
             tick_count: 0,
+            dropped_command_bytes: 0,
             listener_pos: [0.0; 3],
             listener_prev_pos: [0.0; 3],
             listener_vel: [0.0; 3],
@@ -84,6 +94,11 @@ impl Engine {
                 let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let z = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                // A non-finite listener position poisons the derived velocity
+                // and, through extrapolation, every later frame (P2-3).
+                if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                    continue;
+                }
                 let new_pos = [x, y, z];
                 let dt = FIXED_DT;
                 for ((vel, &np), &prev) in self.listener_vel.iter_mut()
@@ -146,9 +161,7 @@ impl Engine {
             self.tick_count += 1;
         }
 
-        // 1b. After all ticks, sync Rapier state back to ECS.
-        #[cfg(feature = "physics-2d")]
-        crate::physics::physics_sync_post(&mut self.world, &self.physics);
+        // (physics_sync_post now runs inside fixed_tick — see below)
 
         // 2. Recompute model matrices after all ticks.
         transform_system(&mut self.world);
@@ -160,6 +173,9 @@ impl Engine {
                 self.entity_map.iter_mapped().collect();
             propagate_transforms(&mut self.world, &ext_to_entity);
         }
+
+        // 2b-bis. Derive bounding radii from the finished world matrices.
+        crate::systems::update_bounding_radii(&mut self.world);
 
         // 2c. Mark velocity-driven and hierarchy-propagated entities as dirty.
         // Systems (velocity_system, transform_system, propagate_transforms) modify
@@ -201,19 +217,35 @@ impl Engine {
             }
         }
 
-        // Pass 2: children whose parent's transform is dirty
-        // (single level — matches propagate_transforms depth)
-        for (entity, parent, _active) in
-            self.world.query::<(hecs::Entity, &Parent, &Active)>().iter()
-        {
-            if parent.0 != u32::MAX
-                && let Some(parent_entity) = self.entity_map.get(parent.0)
-                && let Some(parent_slot) = self.render_state.get_slot(parent_entity)
-                && self.render_state.dirty_tracker.is_transform_dirty(parent_slot as usize)
-                && let Some(slot) = self.render_state.get_slot(entity)
+        // Pass 2: descendants of dirty parents, at ANY depth.
+        //
+        // `propagate_transforms` composes the whole ancestor chain (audit
+        // 2026-07, P1-18), so marking only direct children left grandchildren
+        // stale on the GPU while their world matrix had in fact changed. The
+        // loop repeats until nothing new is marked; each iteration marks at
+        // least one more level, so it terminates in at most
+        // MAX_HIERARCHY_DEPTH rounds — and `SetParent` rejects cycles.
+        let mut rounds = 0;
+        loop {
+            let mut newly_marked = 0usize;
+            for (entity, parent, _active) in
+                self.world.query::<(hecs::Entity, &Parent, &Active)>().iter()
             {
-                self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                if parent.0 != u32::MAX
+                    && let Some(parent_entity) = self.entity_map.get(parent.0)
+                    && let Some(parent_slot) = self.render_state.get_slot(parent_entity)
+                    && self.render_state.dirty_tracker.is_transform_dirty(parent_slot as usize)
+                    && let Some(slot) = self.render_state.get_slot(entity)
+                    && !self.render_state.dirty_tracker.is_transform_dirty(slot as usize)
+                {
+                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                    newly_marked += 1;
+                }
+            }
+            rounds += 1;
+            if newly_marked == 0 || rounds >= crate::command_processor::MAX_HIERARCHY_DEPTH {
+                break;
             }
         }
 
@@ -247,6 +279,18 @@ impl Engine {
         #[cfg(feature = "physics-2d")]
         self.physics.step();
 
+        // Write Rapier state back to the ECS after EVERY tick, not once per
+        // frame.
+        //
+        // `physics_sync_pre` pass 3 pushes the ECS position of kinematic bodies
+        // into Rapier on every tick. With the write-back running only once per
+        // frame, tick 2+ of a multi-tick frame read a stale `Transform2D` and
+        // teleported the body back to where it started — so a character
+        // controller moved zero net distance on any frame that ran more than
+        // one fixed tick, i.e. on every 30 fps frame (audit 2026-07, P1-6).
+        #[cfg(feature = "physics-2d")]
+        crate::physics::physics_sync_post(&mut self.world, &self.physics);
+
         // Velocity integration: use filtered versions when physics is enabled
         // so PhysicsControlled entities are not double-moved.
         #[cfg(feature = "physics-2d")]
@@ -264,6 +308,28 @@ impl Engine {
         for (pos, &vel) in self.listener_pos.iter_mut().zip(self.listener_vel.iter()) {
             *pos += vel * FIXED_DT;
         }
+    }
+
+    /// Record bytes that could not be parsed out of a command batch.
+    pub fn note_dropped_command_bytes(&mut self, bytes: usize) {
+        self.dropped_command_bytes = self
+            .dropped_command_bytes
+            .saturating_add(bytes.min(u32::MAX as usize) as u32);
+    }
+
+    /// Total command bytes discarded since engine start (or the last reset).
+    ///
+    /// Non-zero means the Rust and TypeScript command tables have diverged, or
+    /// the stream was corrupted: everything after an unknown opcode in that
+    /// batch was lost, including any `DespawnEntity`.
+    pub fn dropped_command_bytes(&self) -> u32 {
+        self.dropped_command_bytes
+    }
+
+    /// Commands rejected for an out-of-range external entity id
+    /// (see `command_processor::MAX_EXTERNAL_ID`).
+    pub fn rejected_command_count(&self) -> u32 {
+        self.entity_map.rejected_ids()
     }
 
     /// How many fixed ticks have elapsed since engine start.
@@ -313,6 +379,7 @@ impl Engine {
         }
         self.accumulator = 0.0;
         self.tick_count = 0;
+        self.dropped_command_bytes = 0;
         self.listener_pos = [0.0; 3];
         self.listener_prev_pos = [0.0; 3];
         self.listener_vel = [0.0; 3];
@@ -320,18 +387,24 @@ impl Engine {
 
     /// Serialize the entire engine state into a binary snapshot.
     ///
-    /// Format (HSNP v2):
+    /// Format (HSNP v3):
     /// ```text
-    /// [magic: 4B "HSNP"][version: u32 = 2][tick: u64][entity_count: u32]
+    /// [magic: 4B "HSNP"][version: u32 = 3][tick: u64][entity_count: u32]
     /// [entity_map_len: u32][entity_map: (ext_id: u32, hecs_id: u64, flags: u8) x N]
     ///                                   // flags bit0 = is_2d
     /// [per entity: hecs_id: u64, component_mask: u32, component_data...]
-    /// [physics_present: u8]             // 0 = no physics section
+    /// [physics_present: u8][section_len: u32]  // section_len only when present == 1
     /// [physics section — only if physics_present == 1]
+    /// [trailer — v3 only: accumulator: f32, listener_pos/prev/vel: 9 x f32]
     /// ```
     ///
-    /// v1 (mask u16, no map flags, no physics byte) is still accepted by
+    /// The v3 trailer is appended after the physics section, so a v2 reader
+    /// simply ignores it and a v3 reader restores defaults when it is absent.
+    /// v1 (mask u16, no map flags, no physics byte) and v2 are still accepted by
     /// `snapshot_restore` for backward compatibility, but never written.
+    ///
+    /// The `section_len` field was missing from the v2 doc block even though the
+    /// writer always emitted it (audit 2026-07, P3-8).
     pub fn snapshot_create(&self) -> Vec<u8> {
         use crate::components::*;
 
@@ -339,7 +412,7 @@ impl Engine {
 
         // Header
         buf.extend_from_slice(b"HSNP");
-        buf.extend_from_slice(&2u32.to_le_bytes()); // version
+        buf.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.tick_count.to_le_bytes());
 
         // Entity count — we'll come back and patch this
@@ -493,6 +566,22 @@ impl Engine {
         #[cfg(not(feature = "physics-2d"))]
         buf.push(0u8);
 
+        // v3 trailer — frame-timing and audio-listener state.
+        //
+        // Neither was serialized before the 2026-07 audit (P2-6), so a restored
+        // engine started with accumulator 0 and a listener at the origin: fed
+        // the identical dt stream it drifted up to one full tick out of phase
+        // from the engine it was cloned from, and 2D audio panning jumped.
+        buf.extend_from_slice(&self.accumulator.to_le_bytes());
+        for v in self
+            .listener_pos
+            .iter()
+            .chain(self.listener_prev_pos.iter())
+            .chain(self.listener_vel.iter())
+        {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+
         buf
     }
 
@@ -524,17 +613,27 @@ impl Engine {
         }
 
         let version = read_pod!(u32);
-        if version != 1 && version != 2 {
+        if version != 1 && version != 2 && version != SNAPSHOT_VERSION {
             return false;
         }
-        let v2 = version == 2;
+        // v2 and v3 share the entity/physics layout; v3 only appends a trailer.
+        let v2 = version >= 2;
 
         let tick = read_pod!(u64);
         let entity_count = read_pod!(u32);
 
         // Entity map. v2 entries carry a flags byte (bit0 = is_2d).
-        let map_len = read_pod!(u32);
-        let mut ext_to_old_hecs: Vec<(u32, u64, u8)> = Vec::with_capacity(map_len as usize);
+        let map_len = read_pod!(u32) as usize;
+        // Validate the claimed length against the bytes actually present BEFORE
+        // sizing the allocation. `Vec::with_capacity(map_len)` on an unvalidated
+        // u32 turned a 24-byte hostile buffer into a 64 GiB allocation request,
+        // i.e. an abort rather than the documented `false` (audit 2026-07, P0-3b).
+        let entry_size = if v2 { 13 } else { 12 }; // ext_id(4) + hecs(8) [+ flags(1)]
+        match map_len.checked_mul(entry_size) {
+            Some(needed) if data.len().saturating_sub(cursor) >= needed => {}
+            _ => return false,
+        }
+        let mut ext_to_old_hecs: Vec<(u32, u64, u8)> = Vec::with_capacity(map_len);
         for _ in 0..map_len {
             let ext_id = read_pod!(u32);
             let hecs_bits = read_pod!(u64);
@@ -584,9 +683,15 @@ impl Engine {
 
             let local_matrix = if mask & (1 << 13) != 0 {
                 if cursor + 64 > data.len() { return false; }
-                let floats: &[f32] = bytemuck::cast_slice(&data[cursor..cursor + 64]);
+                // `bytemuck::cast_slice` PANICS on a misaligned &[u8], and
+                // `cursor` is content-dependent, so 3 alignments out of 4
+                // trapped instead of returning false (audit 2026-07, P0-3c).
                 let mut arr = [0.0f32; 16];
-                arr.copy_from_slice(floats);
+                for (i, v) in arr.iter_mut().enumerate() {
+                    *v = f32::from_le_bytes(
+                        data[cursor + i * 4..cursor + i * 4 + 4].try_into().unwrap(),
+                    );
+                }
                 cursor += 64;
                 Some(LocalMatrix(arr))
             } else {
@@ -597,6 +702,12 @@ impl Engine {
                 if cursor >= data.len() { return false; }
                 let count = data[cursor];
                 cursor += 1;
+                // `count` is an unvalidated u8 (0-255) written into a
+                // [u32; 32]: anything above MAX_CHILDREN indexed out of
+                // bounds, i.e. a WASM trap (audit 2026-07, P0-3a).
+                if count as usize > Children::MAX_CHILDREN {
+                    return false;
+                }
                 let needed = count as usize * 4;
                 if cursor + needed > data.len() { return false; }
                 let mut slots = [0u32; Children::MAX_CHILDREN];
@@ -629,8 +740,11 @@ impl Engine {
             };
             let overflow_children = if mask & (1 << 18) != 0 {
                 let count = read_pod!(u32) as usize;
-                if cursor + count * 4 > data.len() {
-                    return false;
+                // On wasm32 `usize` is 32-bit, so `count * 4` wraps and the
+                // guard passes for count >= 0x4000_0000 (audit 2026-07, P2-10).
+                match count.checked_mul(4) {
+                    Some(needed) if data.len().saturating_sub(cursor) >= needed => {}
+                    _ => return false,
                 }
                 let mut items = Vec::with_capacity(count);
                 for i in 0..count {
@@ -722,13 +836,39 @@ impl Engine {
                     let section_len =
                         u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
                     cursor += 4;
-                    if cursor + section_len > data.len() {
+                    // 32-bit wrap: `cursor + section_len` overflowed on wasm32
+                    // and let `&data[start..start + len]` panic with an
+                    // inverted range (audit 2026-07, P2-10).
+                    if data.len().saturating_sub(cursor) < section_len {
                         return false;
                     }
                     physics_section = Some((cursor, section_len));
                     cursor += section_len;
                 }
                 _ => return false,
+            }
+        }
+        // v3 trailer: accumulator + listener state. Absent in v1/v2 (and in a
+        // truncated v3), in which case the defaults below are used.
+        let mut accumulator = 0.0f32;
+        let mut listener_pos = [0.0f32; 3];
+        let mut listener_prev_pos = [0.0f32; 3];
+        let mut listener_vel = [0.0f32; 3];
+        if version >= SNAPSHOT_VERSION && data.len().saturating_sub(cursor) >= 40 {
+            let mut read_f32 = || {
+                let v = f32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap());
+                cursor += 4;
+                v
+            };
+            accumulator = read_f32();
+            for v in listener_pos.iter_mut() {
+                *v = read_f32();
+            }
+            for v in listener_prev_pos.iter_mut() {
+                *v = read_f32();
+            }
+            for v in listener_vel.iter_mut() {
+                *v = read_f32();
             }
         }
         let _ = cursor; // final cursor position — trailing bytes are ignored
@@ -738,10 +878,14 @@ impl Engine {
         // Rebuild entity map with new hecs entities (+ is_2d flags in v2)
         for (ext_id, old_bits, flags) in ext_to_old_hecs {
             if let Some(&new_entity) = old_to_new.get(&old_bits) {
-                new_entity_map.insert(ext_id, new_entity);
+                let _ = new_entity_map.insert(ext_id, new_entity);
                 new_entity_map.set_2d_flag(ext_id, flags & 1 != 0);
             }
         }
+        // `insert` never advances `next_id`, so a restored map used to report
+        // next_id == 0 and `allocate()` handed back an id already bound to a
+        // live entity (audit 2026-07, P3-11).
+        new_entity_map.reserve_ids_up_to_highest();
 
         // Rebuild the physics world. Always replaced wholesale — restoring
         // any snapshot on a physics build must not leak old Rapier bodies
@@ -773,6 +917,10 @@ impl Engine {
                 new_render_state.write_slot(slot, &new_world, entity);
             }
         }
+        // Also rebuild the legacy flat matrix buffer: a host rendering through
+        // it between restore and the next update() drew nothing before
+        // (audit 2026-07, P3-11 sibling).
+        new_render_state.collect(&new_world);
 
         // Replace engine state
         self.world = new_world;
@@ -782,11 +930,17 @@ impl Engine {
         {
             self.physics = new_physics;
         }
-        self.accumulator = 0.0;
+        self.accumulator = accumulator;
         self.tick_count = tick;
-        self.listener_pos = [0.0; 3];
-        self.listener_prev_pos = [0.0; 3];
-        self.listener_vel = [0.0; 3];
+        self.listener_pos = listener_pos;
+        self.listener_prev_pos = listener_prev_pos;
+        self.listener_vel = listener_vel;
+        #[cfg(feature = "physics-debug")]
+        {
+            // A restored world has no relation to the previous frame's debug
+            // geometry; `reset()` already cleared it, restore did not.
+            self.debug_lines.clear();
+        }
 
         true
     }
@@ -868,6 +1022,38 @@ impl Engine {
             }
             if let Ok(d) = self.world.get::<&Depth>(entity) {
                 h.f32(d.0);
+            }
+
+            // Hierarchy and activation.
+            //
+            // Omitting these made the determinism harness blind to exactly the
+            // divergences it exists to catch: `propagate_transforms` writes only
+            // `ModelMatrix`, never `Position`, so a re-parent changed nothing
+            // this hash could see — permanently, not just on the first tick.
+            // Losing `Active` was invisible for the same reason
+            // (audit 2026-07, P2-7).
+            h.byte(u8::from(self.world.get::<&Active>(entity).is_ok()));
+            let parent = self
+                .world
+                .get::<&Parent>(entity)
+                .map(|p| p.0)
+                .unwrap_or(u32::MAX);
+            h.u32(parent);
+            // Children are hashed in sorted order: the inline array's swap-remove
+            // makes the stored order depend on removal history, which is NOT
+            // simulation state and must never leak into the hash (Invariant I-2).
+            let mut kids: Vec<u32> = self
+                .world
+                .get::<&Children>(entity)
+                .map(|c| c.as_slice().to_vec())
+                .unwrap_or_default();
+            if let Ok(ov) = self.world.get::<&OverflowChildren>(entity) {
+                kids.extend_from_slice(&ov.items);
+            }
+            kids.sort_unstable();
+            h.u32(kids.len() as u32);
+            for k in kids {
+                h.u32(k);
             }
         }
 
@@ -956,7 +1142,7 @@ impl Engine {
         color_out: &mut [f32],
         max_verts: u32,
     ) -> u32 {
-        use crate::components::{Active, BoundingRadius, Position};
+        use crate::components::{Active, BoundingRadius, ModelMatrix};
         use std::f32::consts::TAU;
 
         const SEGMENTS: usize = 16;
@@ -965,7 +1151,18 @@ impl Engine {
         let max = max_verts as usize;
         let mut written = 0usize;
 
-        for (entity, pos, radius) in self.world.query::<(hecs::Entity, &Position, &BoundingRadius)>().iter() {
+        // Driven by the WORLD MATRIX, not `Position`.
+        //
+        // The old query required `Position`, which the `Transform2D` archetype
+        // does not have — so the bounding-sphere overlay was completely empty in
+        // a 2D scene, the primary archetype (audit 2026-07, P2-8). Reading the
+        // matrix also puts the circle where the entity actually renders,
+        // inherited parent transforms included.
+        for (entity, matrix, radius) in self
+            .world
+            .query::<(hecs::Entity, &ModelMatrix, &BoundingRadius)>()
+            .iter()
+        {
             if written + VERTS_PER_ENTITY > max {
                 break;
             }
@@ -977,9 +1174,10 @@ impl Engine {
                 break;
             }
 
-            let cx = pos.0.x;
-            let cy = pos.0.y;
-            let cz = pos.0.z;
+            // Translation column of the world matrix.
+            let cx = matrix.0[12];
+            let cy = matrix.0[13];
+            let cz = matrix.0[14];
             let r = radius.0;
 
             // Color: green for active, yellow for inactive
@@ -1105,6 +1303,28 @@ impl Engine {
                 data[1 + i * 4..1 + i * 4 + 4].copy_from_slice(&v.slots[i].to_le_bytes());
             }
             if !write_tlv(15, &data, out, &mut cursor) { return cursor as u32; }
+        }
+
+        // v2 archetype components (audit 2026-07, P2-8).
+        //
+        // These had no TLV type at all, so a 2D entity — the archetype the
+        // codebase itself calls "99% of entities" — was exported with NO
+        // positional data whatsoever: it has no `Position`, and `Transform2D`
+        // was not emitted. `snapshot_create` and `state_hash` were both extended
+        // for v2; this exporter was not.
+        if let Ok(v) = self.world.get::<&Transform2D>(entity)
+            && !write_tlv(16, bytemuck::bytes_of(&*v), out, &mut cursor) { return cursor as u32; }
+        if let Ok(v) = self.world.get::<&Depth>(entity)
+            && !write_tlv(17, bytemuck::bytes_of(&*v), out, &mut cursor) { return cursor as u32; }
+        if let Ok(v) = self.world.get::<&Transparent>(entity)
+            && !write_tlv(18, bytemuck::bytes_of(&*v), out, &mut cursor) { return cursor as u32; }
+        if let Ok(v) = self.world.get::<&OverflowChildren>(entity) {
+            let mut data = Vec::with_capacity(4 + v.items.len() * 4);
+            data.extend_from_slice(&(v.items.len() as u32).to_le_bytes());
+            for id in &v.items {
+                data.extend_from_slice(&id.to_le_bytes());
+            }
+            if !write_tlv(19, &data, out, &mut cursor) { return cursor as u32; }
         }
 
         cursor as u32
@@ -1339,7 +1559,7 @@ mod tests {
         // First TLV entry is decodable
         let comp_type = out[0];
         let data_len = u16::from_le_bytes([out[1], out[2]]) as usize;
-        assert!(comp_type >= 1 && comp_type <= 15);
+        assert!((1..=19).contains(&comp_type));
         assert!(data_len > 0);
     }
 
@@ -1405,7 +1625,7 @@ mod tests {
         assert!(!snapshot.is_empty());
         assert_eq!(&snapshot[0..4], b"HSNP");
         let version = u32::from_le_bytes(snapshot[4..8].try_into().unwrap());
-        assert_eq!(version, 2);
+        assert_eq!(version, SNAPSHOT_VERSION);
         let tick = u64::from_le_bytes(snapshot[8..16].try_into().unwrap());
         assert!(tick > 0);
         let entity_count = u32::from_le_bytes(snapshot[16..20].try_into().unwrap());
@@ -1576,19 +1796,106 @@ mod tests {
         let mut engine = Engine::new();
         engine.process_commands(&[spawn_cmd(0)]);
         let mut snapshot = engine.snapshot_create();
-        snapshot[4..8].copy_from_slice(&3u32.to_le_bytes()); // version 3
+        snapshot[4..8].copy_from_slice(&(SNAPSHOT_VERSION + 1).to_le_bytes());
         assert!(!engine.snapshot_restore(&snapshot));
     }
 
     #[cfg(feature = "dev-tools")]
     #[test]
     fn snapshot_v2_rejects_unknown_physics_section() {
+        // Hand-built snapshot claiming a physics section that isn't there.
+        // Layout-independent so it keeps working across format revisions.
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"HSNP");
+        snapshot.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        snapshot.extend_from_slice(&0u64.to_le_bytes()); // tick
+        snapshot.extend_from_slice(&0u32.to_le_bytes()); // entity_count
+        snapshot.extend_from_slice(&0u32.to_le_bytes()); // map_len
+        snapshot.push(1u8); // physics_present
+        snapshot.extend_from_slice(&100u32.to_le_bytes()); // section_len, but no bytes follow
         let mut engine = Engine::new();
-        engine.process_commands(&[spawn_cmd(0)]);
-        let mut snapshot = engine.snapshot_create();
-        let last = snapshot.len() - 1;
-        snapshot[last] = 1; // claim a physics section that isn't there
         assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    /// A `section_len` that overflows 32-bit `usize` arithmetic must be
+    /// rejected, not accepted into an inverted slice range (audit 2026-07,
+    /// P2-10 — only reachable on wasm32, but the guard is target-independent).
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_rejects_overflowing_physics_section_len() {
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"HSNP");
+        snapshot.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        snapshot.extend_from_slice(&0u64.to_le_bytes());
+        snapshot.extend_from_slice(&0u32.to_le_bytes());
+        snapshot.extend_from_slice(&0u32.to_le_bytes());
+        snapshot.push(1u8);
+        snapshot.extend_from_slice(&u32::MAX.to_le_bytes());
+        snapshot.extend_from_slice(&[0u8; 32]);
+        let mut engine = Engine::new();
+        assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    /// A hostile `map_len` must be rejected against the bytes actually present
+    /// instead of sizing a `Vec::with_capacity` allocation (audit 2026-07, P0-3b).
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_rejects_oversized_entity_map_len() {
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"HSNP");
+        snapshot.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        snapshot.extend_from_slice(&0u64.to_le_bytes());
+        snapshot.extend_from_slice(&0u32.to_le_bytes());
+        snapshot.extend_from_slice(&u32::MAX.to_le_bytes()); // map_len
+        let mut engine = Engine::new();
+        assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    /// `Children.count` is an unvalidated byte from the wire written into a
+    /// `[u32; 32]`; anything above the cap must be rejected, not indexed
+    /// out of bounds (audit 2026-07, P0-3a).
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_rejects_oversized_children_count() {
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"HSNP");
+        snapshot.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        snapshot.extend_from_slice(&0u64.to_le_bytes());
+        snapshot.extend_from_slice(&1u32.to_le_bytes()); // entity_count
+        snapshot.extend_from_slice(&0u32.to_le_bytes()); // map_len
+        snapshot.extend_from_slice(&7u64.to_le_bytes()); // hecs id
+        snapshot.extend_from_slice(&(1u32 << 14).to_le_bytes()); // Children only
+        snapshot.push(200); // count > MAX_CHILDREN
+        snapshot.extend_from_slice(&[0u8; 800]);
+        let mut engine = Engine::new();
+        assert!(!engine.snapshot_restore(&snapshot));
+    }
+
+    /// `LocalMatrix` used `bytemuck::cast_slice`, which panics when the byte
+    /// slice is not 4-byte aligned. The cursor is content-dependent, so 3
+    /// alignments out of 4 trapped (audit 2026-07, P0-3c).
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_local_matrix_survives_every_alignment() {
+        for pad in 0..4u32 {
+            let mut snapshot = Vec::new();
+            snapshot.extend_from_slice(b"HSNP");
+            snapshot.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+            snapshot.extend_from_slice(&0u64.to_le_bytes());
+            snapshot.extend_from_slice(&1u32.to_le_bytes());
+            snapshot.extend_from_slice(&pad.to_le_bytes()); // map_len shifts alignment
+            for i in 0..pad {
+                snapshot.extend_from_slice(&i.to_le_bytes());
+                snapshot.extend_from_slice(&0u64.to_le_bytes());
+                snapshot.push(0);
+            }
+            snapshot.extend_from_slice(&7u64.to_le_bytes());
+            snapshot.extend_from_slice(&(1u32 << 13).to_le_bytes()); // LocalMatrix
+            snapshot.extend_from_slice(&[0u8; 64]);
+            let mut engine = Engine::new();
+            // Must not panic; the value returned is irrelevant.
+            let _ = engine.snapshot_restore(&snapshot);
+        }
     }
 
     #[cfg(feature = "dev-tools")]
@@ -1768,15 +2075,18 @@ mod tests {
     fn character_controller_grounded_on_floor() {
         let mut engine = Engine::new();
 
-        // Floor at y=-50 (below), character at y=0 (above).
-        // Rapier2D default KCC up=(0,1), so "down" is -Y.
-        // Moving character in -Y should land on the floor.
+        // Pixel-space convention (the one PhysicsWorld::new documents): gravity
+        // is (0, +980), so "down" is +Y and the floor sits BELOW the character
+        // at y=+50. The character controller derives its `up` from gravity
+        // (audit 2026-07, P1-11), so this is now the coherent layout — before
+        // the fix `up` was hardcoded to +Y, i.e. the direction gravity pulls,
+        // and `grounded` could never become true in a scene built this way.
 
-        // Create static floor at y=-50
+        // Create static floor at y=+50
         engine.process_commands(&[spawn_2d_cmd(100)]);
         let mut floor_pos = [0u8; 16];
         floor_pos[0..4].copy_from_slice(&0.0f32.to_le_bytes());    // x=0
-        floor_pos[4..8].copy_from_slice(&(-50.0f32).to_le_bytes()); // y=-50
+        floor_pos[4..8].copy_from_slice(&50.0f32.to_le_bytes()); // y=+50 (below)
         engine.process_commands(&[Command {
             cmd_type: CommandType::SetPosition,
             entity_id: 100,
@@ -1810,8 +2120,8 @@ mod tests {
 
         // Move character downward (toward floor), large movement
         let mut move_payload = [0u8; 16];
-        move_payload[0..4].copy_from_slice(&0.0f32.to_le_bytes());    // dx=0
-        move_payload[4..8].copy_from_slice(&(-200.0f32).to_le_bytes()); // dy=-200 (down)
+        move_payload[0..4].copy_from_slice(&0.0f32.to_le_bytes());   // dx=0
+        move_payload[4..8].copy_from_slice(&200.0f32.to_le_bytes()); // dy=+200 (down)
         engine.process_commands(&[Command {
             cmd_type: CommandType::MoveCharacter,
             entity_id: 0,
@@ -1820,8 +2130,16 @@ mod tests {
 
         engine.update(FIXED_DT);
 
-        // Character should be grounded
-        assert!(engine.physics.character_map.get(&0).unwrap().state.grounded);
+        // Character should be grounded.
+        //
+        // NOTE: `is_sliding_down_slope` is deliberately NOT asserted here.
+        // Rapier sets that flag from the `else` arm of its slope handling
+        // (character_controller.rs:605-615), which is also taken when there is
+        // no slipping at all — so it reads `true` even on a perfectly flat
+        // floor when the input pushes straight down. It is not a reliable
+        // "on a slope" signal.
+        let state = &engine.physics.character_map.get(&0).unwrap().state;
+        assert!(state.grounded, "character standing on the floor must report grounded");
     }
 
     #[cfg(feature = "physics-2d")]

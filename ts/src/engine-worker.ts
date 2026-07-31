@@ -13,6 +13,10 @@ interface WasmEngine {
   default(): Promise<void>;
   engine_init(): void;
   engine_push_commands(data: Uint8Array): void;
+  /** Command bytes discarded because of an unknown opcode (protocol skew). */
+  engine_dropped_command_bytes?(): number;
+  /** Commands rejected for an out-of-range external entity id. */
+  engine_rejected_command_count?(): number;
   engine_update(dt: number): void;
   engine_tick_count(): bigint;
   engine_render_state_count(): number;

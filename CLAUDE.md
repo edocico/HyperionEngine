@@ -17,7 +17,8 @@ cd ts && npm run build:wasm && npm run dev
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (160 tests, 238 with physics-2d, 182 with dev-tools, 270 with both, 275 with physics-2d+dev-tools+physics-debug)
+cargo test -p hyperion-core                  # All Rust unit tests (165 tests, 243 with physics-2d, 191 with dev-tools, 284 with all features)
+cargo test -p hyperion-core --all-features   # + 64 audit regression tests across 5 integration files
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -58,7 +59,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (842 tests + 5 skipped)
+cd ts && npm test                            # All vitest tests (850 tests + 5 skipped)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -408,7 +409,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Transform2D entities have no `Position` component** — Queries on `&Position` skip 2D entities. Use `Transform2D.x/y` for position data. `collect_gpu()` (legacy) only queries `&Position` — 2D entities invisible in legacy path.
 - **SpawnEntity payload is 1 byte (2D flag)** — `payload[0]`: 1=2D (Transform2D archetype), 0=3D (Position+Rotation+Scale). The `is_2d` flag routes all subsequent commands to the correct component type.
 - **Indirect args now 24 entries (480 bytes)** — 6 prim types × 2 material buckets × 2 blend modes (opaque/transparent). Opaque = entries 0-11, transparent = entries 12-23.
-- **`MAX_COMMAND_TYPE` must be updated when adding commands** — Hardcoded constant in `backpressure.ts` (currently 48). Must match the highest `CommandType` discriminant + 1.
+- **`MAX_COMMAND_TYPE` must be updated when adding commands** — Now defined in BOTH `ring_buffer.rs` (`pub const MAX_COMMAND_TYPE: u8 = 53`) and `backpressure.ts` (53), and a Rust test asserts it is exactly one past the last discriminant.
 - **Depth SoA column not in scatter staging buffer** — The 32 u32/entity staging format has no room for depth. Depth is updated via `write_slot`/`write_slot_2d` only, not the GPU scatter path.
 - **Temporal culling dirty bits must be uploaded BEFORE `DirtyTracker.clear()`** — Tick loop ordering: collect → upload SoA → upload dirty bits → clear → cull dispatch. Clearing first would make all entities appear clean.
 - **`__DEV__` is a Vite compile-time constant** — `true` in dev/test, `false` in production builds. Use `typeof __DEV__ !== 'undefined'` guard when checking outside Vite context.
@@ -419,6 +420,17 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`loro-spike` crate is NOT part of the main build** — In workspace but not a dependency of `hyperion-core`. The WASM output (`ts/loro-spike-wasm/`) is gitignored. The crate exists solely for binary size measurement.
 - **`rapier-spike` crate is NOT part of the main build** — Like `loro-spike`, exists solely for API validation and binary size measurement. The WASM output (`ts/rapier-spike-wasm/`) is gitignored. Rapier2D production dependency is in `hyperion-core` behind `physics-2d` feature flag.
 - **`rapier2d` has NO `wasm-bindgen` feature** — The spike proved this feature does not exist in rapier2d 0.32. Only use `features = ["simd-stable"]`. The design doc incorrectly specifies `wasm-bindgen`.
+- **Physics CommandTypes are 17-47 plus 48-52 (audit 2026-07)** — `SetColliderEvents`(48), `TeleportBody`(49), `SetBoundingRadius`(50), `DestroyCharacterController`(51), `SetCharacterUp`(52). `MAX_COMMAND_TYPE` is 53.
+- **Collision events are OPT-IN** — colliders are built with `ActiveEvents::empty()`. Nothing fires until `SetColliderEvents` (48) is sent for that entity. `EntityHandle.collider({ sensor: true })` opts in automatically.
+- **`SetPosition` on a physics body teleports it** — for an entity with `PhysicsControlled`, `SetPosition`/`SetRotation2D` enqueue a Rapier reposition (momentum preserved). `TeleportBody` (49) additionally clears velocity and forces.
+- **Character controller `up` follows gravity** — derived as `-normalize(gravity)`, falling back to +Y for zero gravity. Override per entity with `SetCharacterUp` (52). The engine's documented default gravity is (0, +980), i.e. +Y is DOWN.
+- **`BoundingRadius` is recomputed every frame** from the world matrix by `systems::update_bounding_radii`. Pin it with `SetBoundingRadius` (50), which attaches the `BoundsOverride` marker; a negative value releases it.
+- **Staging format is chosen by representability, not parentage** — format 0 (compressed) only for `Transform2D` entities; everything else uses format 1 (full mat4). Both emit 16 words, so there is no bandwidth difference.
+- **The exported dirty bitfield is a per-frame snapshot** — `RenderState::exported_dirty_bits`, copied just before the tracker is cleared. Do NOT read the tracker directly for GPU upload.
+- **`staging_ptr` / `staging_indices_ptr` / `dirty_bits_ptr` are valid for ONE frame** and return null when empty.
+- **External entity ids are capped at `MAX_EXTERNAL_ID` (1_048_575)** — `EntityMap` is a sparse Vec indexed by the id. Out-of-range spawns are rejected and counted (`engine_rejected_command_count`).
+- **An unknown opcode discards the rest of the batch** — counted by `engine_dropped_command_bytes()`. A non-zero value almost always means the TS command table is ahead of the WASM build.
+- **`propagate_transforms` handles arbitrary depth** — three passes (snapshot locals → compute depth → apply shallowest-first), capped at `MAX_HIERARCHY_DEPTH` (64). `SetParent` rejects self-parenting and cycles.
 - **Physics CommandTypes are 17-47 (31 commands)** — NOT 14-39 as the design doc says. SetRotation2D=14, SetTransparent=15, SetDepth=16 already occupied 14-16. SetPhysicsDebugRender=47 (Phase 16). `MAX_COMMAND_TYPE` in backpressure.ts is 48.
 - **`isNonCoalescable()` classifies physics commands** — Create/Destroy (17-20), ApplyForce/Impulse/Torque (25-27), Joint lifecycle (33-37), CreateCharacterController (44) are non-coalescable. MoveCharacter (46) is coalescable (last-write-wins). Joint property commands (42-43: SetJointAnchorA/B) and SetCharacterConfig (45) and SetPhysicsDebugRender (47) coalesce via last-write-wins. All other physics commands (21-24, 28-32, 38-39, 41) coalesce via last-write-wins.
 - **`CreateCollider` payload limits to 3 f32 params** — 1B shapeType + 3×4B params = 13B within the 16B payload. Segment shapes (4 params = 17B total) exceed the limit. Design resolution needed in milestone 15b.
@@ -574,7 +586,23 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Implementation Status
 
-**Current: Phase 16 (Physics Debug Render + Determinism Harness + Snapshot v2) complete. Next: TBD (candidates: tech demo Swarm/Canvas, CRDT JS-side sync, Lumière).**
+**Current: Phase 16 complete + Audit 2026-07 remediation (see below). Next: TBD (candidates: tech demo Swarm/Canvas, CRDT JS-side sync, Lumière).**
+
+### Audit 2026-07 — remediation summary
+
+A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduced with tests before being fixed. Branch `fix/core-audit-2026-07`. Highlights, by what changed observably:
+
+| Area | What was broken | What changed |
+|---|---|---|
+| Entity ↔ GPU slot | `entity_to_slot` keyed by generation-stripped `entity.id()` + immediate despawn / deferred slot release → despawn+spawn in one batch made the new entity invisible forever and eventually panicked (WASM trap) | slot resolved at command time (`queue_despawn`), `get_slot` validates the full `hecs::Entity`, `assign_slot` idempotent |
+| Physics commands | 5 collider-override commands had no handler; `active_events` unreachable; body params in the creation batch dropped | handlers added; `Pending*` components now really accumulate; `SetColliderEvents` |
+| Joints | motors/limits always on `AngX`; `SetSpringParams` zeroed the stiffness | axis chosen from `JointEntry.kind`; `set_motor_position` for springs; `max_force` → `set_motor_max_force` |
+| Character controller | `up` == gravity direction so `grounded` was never true; `MoveCharacter` cancelled on 30 fps frames and halved at 144 Hz | `up` derived from gravity; `physics_sync_post` runs per tick; moves accumulate per frame |
+| Rendering | root 3D entities lost X/Y rotation and `scale.z`; the exported dirty bitfield was always zero; `BoundingRadius` never left 0.5 | format by representability; per-frame bitfield snapshot; radius derived from the world matrix |
+| Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
+| Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
+
+Regression coverage: 64 tests in `crates/hyperion-core/tests/verify_*.rs` — each asserts the corrected behaviour of one defect.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|

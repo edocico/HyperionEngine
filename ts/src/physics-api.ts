@@ -176,6 +176,18 @@ export class PhysicsAPI {
     return this._wasm.engine_character_grounded(entityId) === 1;
   }
 
+  /**
+   * Enable Rapier event reporting for an entity's collider.
+   *
+   * Colliders are created with events OFF, so a callback registered through
+   * `onCollisionStart` / `onSensorEnter` / `onContactForce` never fires for an
+   * entity that has not opted in. `EntityHandle.collider({ sensor: true })`
+   * opts in automatically, since a silent sensor is useless.
+   */
+  enableEvents(entityId: number, collision = true, contactForce = false): void {
+    this._producer?.setColliderEvents(entityId, collision, contactForce);
+  }
+
   /** Returns true if the character is sliding down a slope. */
   isSlidingDownSlope(entityId: number): boolean {
     if (!this._wasm) return false;

@@ -12,6 +12,42 @@ use crate::physics::types::{CharacterEntry, CharacterState};
 use crate::ring_buffer::{Command, CommandType};
 
 #[cfg(feature = "physics-2d")]
+use crate::physics::types::{
+    JOINT_KIND_FIXED, JOINT_KIND_PRISMATIC, JOINT_KIND_REVOLUTE, JOINT_KIND_ROPE,
+    JOINT_KIND_SPRING, PendingCollider, PendingRigidBody, PendingTeleport,
+};
+#[cfg(feature = "physics-2d")]
+use crate::physics::PhysicsColliderHandle;
+
+/// Default damping factor used when a velocity motor has none configured.
+///
+/// Rapier's velocity motors drive the joint towards `target_vel` through the
+/// damping term; with damping 0 the motor is inert. Before the 2026-07 audit
+/// (P1-3) the wire's `max_force` was passed into this slot, which "worked" only
+/// because it happened to be a large number.
+#[cfg(feature = "physics-2d")]
+const DEFAULT_MOTOR_DAMPING: f32 = 1.0;
+
+/// The free axis a joint kind drives.
+///
+/// `JointEntry.kind` is recorded at creation precisely so motors and limits can
+/// target the right degree of freedom. Before the audit every joint got `AngX`,
+/// which is a *locked* axis on prismatic/rope/spring joints — so elevators,
+/// pistons and adjustable ropes silently did nothing (audit 2026-07, P1-3).
+#[cfg(feature = "physics-2d")]
+fn joint_primary_axis(kind: u8) -> Option<rapier2d::prelude::JointAxis> {
+    use rapier2d::prelude::JointAxis;
+    match kind {
+        JOINT_KIND_REVOLUTE => Some(JointAxis::AngX),
+        JOINT_KIND_PRISMATIC | JOINT_KIND_ROPE | JOINT_KIND_SPRING => Some(JointAxis::LinX),
+        // A fixed joint has no free degree of freedom: motors and limits are
+        // meaningless and used to silently corrupt its locked-axis mask.
+        JOINT_KIND_FIXED => None,
+        _ => None,
+    }
+}
+
+#[cfg(feature = "physics-2d")]
 pub fn process_physics_commands(
     commands: &[Command],
     world: &mut hecs::World,
@@ -32,10 +68,23 @@ pub fn process_physics_commands(
                 let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let target_vel = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let max_force = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if !target_vel.is_finite() || !max_force.is_finite() {
+                    continue;
+                }
                 if let Some(entry) = physics.joint_map.get(&joint_id)
+                    && let Some(axis) = joint_primary_axis(entry.kind)
                     && let Some(joint) = physics.impulse_joint_set.get_mut(entry.handle, true)
                 {
-                    joint.data.set_motor_velocity(rapier2d::prelude::JointAxis::AngX, target_vel, max_force);
+                    // Keep whatever damping the joint already had; `max_force`
+                    // is a force cap, NOT the damping factor.
+                    let damping = joint
+                        .data
+                        .motor(axis)
+                        .map(|m| m.damping)
+                        .filter(|d| *d > 0.0)
+                        .unwrap_or(DEFAULT_MOTOR_DAMPING);
+                    joint.data.set_motor_velocity(axis, target_vel, damping);
+                    joint.data.set_motor_max_force(axis, max_force);
                 }
                 continue;
             }
@@ -43,10 +92,14 @@ pub fn process_physics_commands(
                 let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let min = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let max = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if !min.is_finite() || !max.is_finite() || min > max {
+                    continue;
+                }
                 if let Some(entry) = physics.joint_map.get(&joint_id)
+                    && let Some(axis) = joint_primary_axis(entry.kind)
                     && let Some(joint) = physics.impulse_joint_set.get_mut(entry.handle, true)
                 {
-                    joint.data.set_limits(rapier2d::prelude::JointAxis::AngX, [min, max]);
+                    joint.data.set_limits(axis, [min, max]);
                 }
                 continue;
             }
@@ -54,11 +107,28 @@ pub fn process_physics_commands(
                 let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let stiffness = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let damping = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if !stiffness.is_finite() || !damping.is_finite() {
+                    continue;
+                }
                 if let Some(entry) = physics.joint_map.get(&joint_id)
+                    && entry.kind == JOINT_KIND_SPRING
                     && let Some(joint) = physics.impulse_joint_set.get_mut(entry.handle, true)
                 {
-                    joint.data.set_motor_velocity(rapier2d::prelude::JointAxis::LinX, 0.0, stiffness);
-                    joint.data.set_motor_velocity(rapier2d::prelude::JointAxis::LinY, 0.0, damping);
+                    use rapier2d::prelude::JointAxis;
+                    // A spring lives entirely in the LinX *position* motor:
+                    // target_pos = rest length, stiffness, damping.
+                    // `set_motor_velocity` (used before the audit) hard-zeroes
+                    // stiffness and writes the caller's stiffness into damping,
+                    // turning every configured spring into a pure damper
+                    // (audit 2026-07, P1-4).
+                    let rest_length = joint
+                        .data
+                        .motor(JointAxis::LinX)
+                        .map(|m| m.target_pos)
+                        .unwrap_or(0.0);
+                    joint
+                        .data
+                        .set_motor_position(JointAxis::LinX, rest_length, stiffness, damping);
                 }
                 continue;
             }
@@ -66,6 +136,9 @@ pub fn process_physics_commands(
                 let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let ax = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let ay = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if !ax.is_finite() || !ay.is_finite() {
+                    continue;
+                }
                 if let Some(entry) = physics.joint_map.get(&joint_id)
                     && let Some(joint) = physics.impulse_joint_set.get_mut(entry.handle, true)
                 {
@@ -77,6 +150,9 @@ pub fn process_physics_commands(
                 let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let bx = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 let by = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                if !bx.is_finite() || !by.is_finite() {
+                    continue;
+                }
                 if let Some(entry) = physics.joint_map.get(&joint_id)
                     && let Some(joint) = physics.impulse_joint_set.get_mut(entry.handle, true)
                 {
@@ -86,10 +162,41 @@ pub fn process_physics_commands(
             }
             // ── Character controller ──
             CommandType::CreateCharacterController => {
-                physics.character_map.entry(cmd.entity_id).or_insert(CharacterEntry {
+                // The entity must still exist: `process_physics_commands` runs
+                // after `process_commands`, so a spawn+despawn inside one batch
+                // would otherwise register a controller for a dead — and
+                // immediately recycled — external id (audit 2026-07, P1-12).
+                if entity_map.get(cmd.entity_id).is_none() {
+                    continue;
+                }
+                let up = physics.default_character_up();
+                let entry = physics.character_map.entry(cmd.entity_id).or_insert(CharacterEntry {
                     controller: rapier2d::control::KinematicCharacterController::default(),
                     state: CharacterState::default(),
                 });
+                // `KinematicCharacterController::default()` uses up = +Y, which
+                // with the engine's documented default gravity (0, +980 = down
+                // in pixel coordinates) points the same way gravity pulls: every
+                // floor normal then reads as a ceiling and `grounded` was never
+                // true (audit 2026-07, P1-11). Derive it from gravity instead.
+                entry.controller.up = up;
+                continue;
+            }
+            CommandType::SetCharacterUp => {
+                let ux = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let uy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let len = (ux * ux + uy * uy).sqrt();
+                if !len.is_finite() || len <= f32::EPSILON {
+                    continue;
+                }
+                if let Some(entry) = physics.character_map.get_mut(&cmd.entity_id) {
+                    entry.controller.up = rapier2d::math::Vector::new(ux / len, uy / len);
+                }
+                continue;
+            }
+            CommandType::DestroyCharacterController => {
+                physics.character_map.remove(&cmd.entity_id);
+                physics.pending_moves.retain(|(id, _, _)| *id != cmd.entity_id);
                 continue;
             }
             CommandType::SetCharacterConfig => {
@@ -100,6 +207,9 @@ pub fn process_physics_commands(
                     let step_h = u16::from_le_bytes(cmd.payload[9..11].try_into().unwrap());
                     let step_w = u16::from_le_bytes(cmd.payload[11..13].try_into().unwrap());
                     let snap_d = u16::from_le_bytes(cmd.payload[13..15].try_into().unwrap());
+                    if !climb.is_finite() || !slide_angle.is_finite() {
+                        continue;
+                    }
 
                     entry.controller.slide = flags & 0x01 != 0;
                     entry.controller.max_slope_climb_angle = climb;
@@ -137,61 +247,263 @@ pub fn process_physics_commands(
             CommandType::MoveCharacter => {
                 let dx = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let dy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                physics.pending_moves.push((cmd.entity_id, dx, dy));
+                if !dx.is_finite() || !dy.is_finite() {
+                    continue;
+                }
+                // Accumulate instead of appending an independent entry: the
+                // drain loop recomputes from `body.translation()`, which
+                // `set_next_kinematic_translation` does not change, so separate
+                // entries collapsed onto the last one (audit 2026-07, P1-6).
+                match physics
+                    .pending_moves
+                    .iter_mut()
+                    .find(|(id, _, _)| *id == cmd.entity_id)
+                {
+                    Some(slot) => {
+                        slot.1 += dx;
+                        slot.2 += dy;
+                    }
+                    None => physics.pending_moves.push((cmd.entity_id, dx, dy)),
+                }
+                continue;
+            }
+            CommandType::TeleportBody => {
+                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                let rot = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
+                let zero_velocity = cmd.payload[12] & 0x01 != 0;
+                if !x.is_finite() || !y.is_finite() || !rot.is_finite() {
+                    continue;
+                }
+                physics.pending_teleports.push(PendingTeleport {
+                    ext_id: cmd.entity_id,
+                    x,
+                    y,
+                    rot: Some(rot),
+                    zero_velocity,
+                });
                 continue;
             }
             _ => {}
         }
 
-        // Body-based commands: need entity → body handle lookup
+        // Body / collider commands: need entity → handle lookup.
         let entity = match entity_map.get(cmd.entity_id) {
             Some(e) => e,
             None => continue,
         };
 
-        let handle = match world.get::<&PhysicsBodyHandle>(entity) {
-            Ok(h) => h.0,
-            Err(_) => continue,
-        };
-
-        let rb = match physics.rigid_body_set.get_mut(handle) {
-            Some(rb) => rb,
-            None => continue,
-        };
-
-        match cmd.cmd_type {
-            CommandType::SetGravityScale => {
-                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                rb.set_gravity_scale(v, true);
-            }
-            CommandType::SetLinearDamping => {
-                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                rb.set_linear_damping(v);
-            }
-            CommandType::SetAngularDamping => {
-                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                rb.set_angular_damping(v);
-            }
-            CommandType::SetCCDEnabled => {
-                let v = cmd.payload[0] != 0;
-                rb.enable_ccd(v);
-            }
-            CommandType::ApplyForce => {
-                let fx = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let fy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                rb.add_force(rapier2d::math::Vector::new(fx, fy), true);
-            }
-            CommandType::ApplyImpulse => {
-                let ix = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let iy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                rb.apply_impulse(rapier2d::math::Vector::new(ix, iy), true);
-            }
-            CommandType::ApplyTorque => {
-                let t = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                rb.apply_torque_impulse(t, true);
-            }
-            _ => {} // non-physics or pending-only commands
+        // ── Collider overrides ──
+        //
+        // These five commands were declared, sized, routed… and dropped on the
+        // floor: no handler existed anywhere in the crate, so sensors, density,
+        // friction, restitution and collision layers could never be configured
+        // (audit 2026-07, P1-1). `SetColliderEvents` is new and is what makes
+        // collision events reachable at all (P1-2).
+        if matches!(
+            cmd.cmd_type,
+            CommandType::SetColliderSensor
+                | CommandType::SetColliderDensity
+                | CommandType::SetColliderRestitution
+                | CommandType::SetColliderFriction
+                | CommandType::SetCollisionGroups
+                | CommandType::SetColliderEvents
+        ) {
+            apply_collider_override(cmd, world, physics, entity);
+            continue;
         }
+
+        // ── Rigid-body parameters ──
+        //
+        // Applied to the live Rapier body when there is one, otherwise staged
+        // onto the pending body so options issued in the same batch as
+        // `CreateRigidBody` are not lost — which is exactly what the canonical
+        // `.rigidBody('dynamic').gravityScale(0)` chain produces
+        // (audit 2026-07, P1-7).
+        let live_handle = world.get::<&PhysicsBodyHandle>(entity).ok().map(|h| h.0);
+        match live_handle.and_then(|h| physics.rigid_body_set.get_mut(h)) {
+            Some(rb) => match cmd.cmd_type {
+                CommandType::SetGravityScale => {
+                    let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if v.is_finite() {
+                        rb.set_gravity_scale(v, true);
+                    }
+                }
+                CommandType::SetLinearDamping => {
+                    let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if v.is_finite() && v >= 0.0 {
+                        rb.set_linear_damping(v);
+                    }
+                }
+                CommandType::SetAngularDamping => {
+                    let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if v.is_finite() && v >= 0.0 {
+                        rb.set_angular_damping(v);
+                    }
+                }
+                CommandType::SetCCDEnabled => {
+                    rb.enable_ccd(cmd.payload[0] != 0);
+                }
+                CommandType::ApplyForce => {
+                    let fx = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    let fy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                    if fx.is_finite() && fy.is_finite() {
+                        rb.add_force(rapier2d::math::Vector::new(fx, fy), true);
+                    }
+                }
+                CommandType::ApplyImpulse => {
+                    let ix = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    let iy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+                    if ix.is_finite() && iy.is_finite() {
+                        rb.apply_impulse(rapier2d::math::Vector::new(ix, iy), true);
+                    }
+                }
+                CommandType::ApplyTorque => {
+                    let t = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    if t.is_finite() {
+                        rb.apply_torque_impulse(t, true);
+                    }
+                }
+                _ => {}
+            },
+            None => stage_pending_body_param(cmd, world, entity),
+        }
+    }
+}
+
+/// Apply a collider override to the live Rapier collider, or stage it onto the
+/// entity's `PendingCollider` when the collider has not been created yet.
+#[cfg(feature = "physics-2d")]
+fn apply_collider_override(
+    cmd: &Command,
+    world: &mut hecs::World,
+    physics: &mut PhysicsWorld,
+    entity: hecs::Entity,
+) {
+    use rapier2d::prelude::{ActiveEvents, Group, InteractionGroups, InteractionTestMode};
+
+    let live = world
+        .get::<&PhysicsColliderHandle>(entity)
+        .ok()
+        .map(|h| h.0)
+        .and_then(|h| physics.collider_set.get_mut(h));
+
+    match live {
+        Some(collider) => match cmd.cmd_type {
+            CommandType::SetColliderSensor => collider.set_sensor(cmd.payload[0] != 0),
+            CommandType::SetColliderDensity => {
+                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if v.is_finite() && v >= 0.0 {
+                    collider.set_density(v);
+                }
+            }
+            CommandType::SetColliderRestitution => {
+                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if v.is_finite() && v >= 0.0 {
+                    collider.set_restitution(v);
+                }
+            }
+            CommandType::SetColliderFriction => {
+                let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                if v.is_finite() && v >= 0.0 {
+                    collider.set_friction(v);
+                }
+            }
+            CommandType::SetCollisionGroups => {
+                let g = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                collider.set_collision_groups(InteractionGroups::new(
+                    Group::from_bits_truncate(g & 0xFFFF),
+                    Group::from_bits_truncate(g >> 16),
+                    InteractionTestMode::And,
+                ));
+            }
+            CommandType::SetColliderEvents => {
+                collider.set_active_events(events_from_mask(cmd.payload[0]));
+            }
+            _ => {}
+        },
+        None => {
+            if let Ok(mut pending) = world.get::<&mut PendingCollider>(entity) {
+                match cmd.cmd_type {
+                    CommandType::SetColliderSensor => pending.is_sensor = cmd.payload[0] != 0,
+                    CommandType::SetColliderDensity => {
+                        let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                        if v.is_finite() && v >= 0.0 {
+                            pending.density = v;
+                        }
+                    }
+                    CommandType::SetColliderRestitution => {
+                        let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                        if v.is_finite() && v >= 0.0 {
+                            pending.restitution = v;
+                        }
+                    }
+                    CommandType::SetColliderFriction => {
+                        let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                        if v.is_finite() && v >= 0.0 {
+                            pending.friction = v;
+                        }
+                    }
+                    CommandType::SetCollisionGroups => {
+                        pending.groups =
+                            u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+                    }
+                    CommandType::SetColliderEvents => pending.active_events = cmd.payload[0],
+                    _ => {}
+                }
+            }
+        }
+    }
+    let _: Option<ActiveEvents> = None; // keep the import meaningful in all cfgs
+}
+
+/// Translate the wire event bitmask into Rapier's `ActiveEvents`.
+#[cfg(feature = "physics-2d")]
+pub(crate) fn events_from_mask(mask: u8) -> rapier2d::prelude::ActiveEvents {
+    use rapier2d::prelude::ActiveEvents;
+    let mut events = ActiveEvents::empty();
+    if mask & 0x01 != 0 {
+        events |= ActiveEvents::COLLISION_EVENTS;
+    }
+    if mask & 0x02 != 0 {
+        events |= ActiveEvents::CONTACT_FORCE_EVENTS;
+    }
+    events
+}
+
+/// Stage a rigid-body parameter onto the entity's `PendingRigidBody`.
+///
+/// `PendingRigidBody`'s doc has always claimed it "accumulates override commands
+/// before physics_sync_pre() creates the actual Rapier body"; until the 2026-07
+/// audit nothing ever wrote those fields (P1-7).
+#[cfg(feature = "physics-2d")]
+fn stage_pending_body_param(cmd: &Command, world: &mut hecs::World, entity: hecs::Entity) {
+    let Ok(mut pending) = world.get::<&mut PendingRigidBody>(entity) else {
+        return;
+    };
+    match cmd.cmd_type {
+        CommandType::SetGravityScale => {
+            let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            if v.is_finite() {
+                pending.gravity_scale = v;
+            }
+        }
+        CommandType::SetLinearDamping => {
+            let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            if v.is_finite() && v >= 0.0 {
+                pending.linear_damping = v;
+            }
+        }
+        CommandType::SetAngularDamping => {
+            let v = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+            if v.is_finite() && v >= 0.0 {
+                pending.angular_damping = v;
+            }
+        }
+        CommandType::SetCCDEnabled => pending.ccd_enabled = cmd.payload[0] != 0,
+        // Forces and impulses need a real body with a real mass; there is
+        // nothing meaningful to stage. They are applied once the body exists.
+        _ => {}
     }
 }
 
