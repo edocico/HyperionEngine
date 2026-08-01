@@ -18,18 +18,18 @@ cd ts && npm run build:wasm && npm run dev
 
 ```bash
 cargo test -p hyperion-core                  # All Rust unit tests (165 tests, 243 with physics-2d, 191 with dev-tools, 284 with all features)
-cargo test -p hyperion-core --all-features   # + 64 audit regression tests across 5 integration files
+cargo test -p hyperion-core --all-features   # + 60 audit regression tests across 5 integration files (284 lib + 60 = 344 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
-cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (36 tests)
-cargo test -p hyperion-core engine           # Engine tests only (9 tests, 18 with physics-2d, 50 with physics-2d+dev-tools)
-cargo test -p hyperion-core render_state     # Render state tests only (36 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (17 tests, 32 with physics-2d)
-cargo test -p hyperion-core systems          # Systems tests only (7 tests, 14 with physics-2d)
-cargo test -p hyperion-core components       # Component tests only (23 tests)
+cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (39 tests)
+cargo test -p hyperion-core engine           # Engine tests only (9 tests, 18 with physics-2d, 54 with physics-2d+dev-tools)
+cargo test -p hyperion-core render_state     # Render state tests only (48 tests)
+cargo test -p hyperion-core command_proc     # Command processor tests only (31 tests, 32 with physics-2d)
+cargo test -p hyperion-core systems          # Systems tests only (12 tests, 14 with physics-2d)
+cargo test -p hyperion-core components       # Component tests only (27 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -59,7 +59,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (850 tests + 5 skipped)
+cd ts && npm test                            # All vitest tests (851 tests + 5 skipped, 77 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -68,21 +68,21 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
 # 60+ test files colocated with source across src/, src/render/passes/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (66 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (63 tests)
-cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (53 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (74 tests)
+cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (63 tests)
 cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (32 tests)
-cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (17 tests)
+cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (19 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (238 tests)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (243 lib tests, 298 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 275 tests
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 284 lib tests (344 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (169 tests)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (191 lib tests, 228 with integration)
 ```
 
 ### Development Workflow
@@ -155,14 +155,14 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_data_ptr/f32_len/entity_count`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Physics (physics-2d): `engine_physics_configure`, `engine_physics_body_count`, `engine_collision_events_ptr/count`, `engine_contact_force_events_ptr/count`, `engine_physics_raycast/raycast_result_ptr`, `engine_physics_overlap_aabb/overlap_circle/overlap_results_ptr`, `engine_character_grounded`, `engine_character_sliding`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore`, `engine_state_hash` (u64→BigInt). Physics-debug: `engine_physics_debug_ptr/f32_len` (8 f32/line: [ax,ay,bx,by,r,g,b,a]) |
-| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy + 2D system variants (`velocity_system_2d`, `transform_system_2d`). Listener position state with velocity derivation and extrapolation. `#[cfg(feature = "physics-2d")]`: `PhysicsWorld` field, `physics_sync_pre`/`step`/`physics_sync_post` in tick loop, filtered velocity systems, physics dirty marking, despawn cleanup. Dev-tools: `reset()`, `snapshot_create()`/`snapshot_restore()` (HSNP v2: u32 mask, 2D archetype, is_2d flags, physics section rebuilt-from-state, GPU slot reassignment, v1 read back-compat), `state_hash()` (FNV-1a 64 over ext-ID-ordered bit patterns). Physics-debug: `debug_render_enabled` flag (CommandType 47), `debug_lines: Vec<f32>` regenerated once per frame |
+| `lib.rs` | WASM exports: `engine_init`, `engine_attach_ring_buffer`, `engine_update`, `engine_tick_count`, `engine_gpu_transforms_ptr/f32_len`, `engine_gpu_bounds_ptr/f32_len`, `engine_gpu_render_meta_ptr/len`, `engine_gpu_prim_params_ptr/f32_len`, `engine_gpu_entity_count`, `engine_rejected_command_count`, `engine_dropped_command_bytes`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`, `engine_dirty_bits_ptr/u32_len`. Physics (physics-2d): `engine_physics_configure`, `engine_physics_body_count`, `engine_collision_events_ptr/count`, `engine_contact_force_events_ptr/count`, `engine_physics_raycast/raycast_result_ptr`, `engine_physics_overlap_aabb/overlap_circle/overlap_results_ptr`, `engine_character_grounded`, `engine_character_sliding`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore`, `engine_state_hash` (u64→BigInt). Physics-debug: `engine_physics_debug_ptr/f32_len` (8 f32/line: [ax,ay,bx,by,r,g,b,a]) |
+| `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy + 2D system variants (`velocity_system_2d`, `transform_system_2d`). Listener position state with velocity derivation and extrapolation. `#[cfg(feature = "physics-2d")]`: `PhysicsWorld` field, `physics_sync_pre`/`step`/`physics_sync_post` in tick loop, filtered velocity systems, physics dirty marking, despawn cleanup. Dev-tools: `reset()`, `snapshot_create()`/`snapshot_restore()` (HSNP v3: u32 mask, 2D archetype, is_2d flags, physics section rebuilt-from-state, GPU slot reassignment, integrity trailer, v1/v2 read back-compat), `state_hash()` (FNV-1a 64 over ext-ID-ordered bit patterns). Physics-debug: `debug_render_enabled` flag (CommandType 47), `debug_lines: Vec<f32>` regenerated once per frame |
 | `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`, `is_2d` flag per entity) + `process_commands` (including `SetParent`, 2D/3D command routing, batch spawn partitioning) |
-| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (48 variants: 17 core + 30 physics + `SetPhysicsDebugRender`(47) incl. `CreateRigidBody`, `CreateCollider`, `ApplyForce`, `CreateRevoluteJoint`, `SetSpringParams`, `SetJointAnchorA/B`, `CreateCharacterController`, `SetCharacterConfig`, `MoveCharacter`), `Command` struct |
+| `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (53 variants: 17 core (0-16) + 36 physics/debug (17-52), ending at `SetCharacterUp`(52) incl. `CreateRigidBody`, `CreateCollider`, `ApplyForce`, `CreateRevoluteJoint`, `SetSpringParams`, `SetJointAnchorA/B`, `CreateCharacterController`, `SetCharacterConfig`, `MoveCharacter`), `Command` struct |
 | `physics.rs` | `#[cfg(feature = "physics-2d")]` — `PendingRigidBody`, `PendingCollider` (defaults+override staging+`from_payload`), `PhysicsBodyHandle`, `PhysicsColliderHandle`, `PhysicsControlled` marker. `JointEntry` (rapier handle + entity_a/b pair + `kind` byte recorded at creation), `PendingJointType` (5 variants: Revolute/Prismatic/Fixed/Rope/Spring), `PendingJoint` (type + joint_id + entity pair + anchors + params). `CharacterState` (grounded/sliding booleans), `CharacterEntry` (controller + state), `character_map: HashMap<u32, CharacterEntry>`, `pending_moves: Vec<(u32, f32, f32)>`. `HyperionCollisionEvent` (#[repr(C)] 12-byte: entity_a/b, event_type, is_sensor), `HyperionContactForceEvent` (#[repr(C)] 20-byte: entity_a/b, max_force_magnitude, max_force_direction_x/y). `PhysicsWorld` (wraps all Rapier2D state: body/collider/joint sets, pipeline, events, `joint_map: HashMap<u32, JointEntry>`, `pending_joints: Vec<PendingJoint>` + `raycast()`/`overlap_aabb()`/`overlap_circle()` scene queries). Static buffers: `RAYCAST_RESULT`, `OVERLAP_RESULTS`. `physics_sync_pre` (consumes pending→Rapier bodies/colliders/joints [Pass 4], kinematic sync, character controller move_shape [Pass 5]), `physics_sync_post` (Rapier→ECS writeback), `build_collider_shape` (shape type→ColliderBuilder). `snapshot` module (physics-2d+dev-tools): `serialize_physics`/`restore_physics` — readback-from-Rapier physics section (world config, bodies, colliders, joints incl. full GenericJoint state, character controllers). `debug` module (physics-debug): `PhysicsWorld::debug_render()` via persistent `DebugRenderPipeline`, HSLA→RGBA conversion |
-| `physics_commands.rs` | `#[cfg(feature = "physics-2d")]` — `process_physics_commands`: second-pass command router for live-body Rapier commands (ApplyForce, ApplyImpulse, ApplyTorque, SetGravityScale, SetLinearDamping, SetAngularDamping, SetCCDEnabled) + joint commands (RemoveJoint, SetJointMotor, SetJointLimits, SetSpringParams, SetJointAnchorA, SetJointAnchorB) + character controller commands (CreateCharacterController, SetCharacterConfig, MoveCharacter [44-46]) |
+| `physics_commands.rs` | `#[cfg(feature = "physics-2d")]` — `process_physics_commands`: second-pass command router for 25 live-body Rapier commands — body forces/params (ApplyForce, ApplyImpulse, ApplyTorque, SetGravityScale, SetLinearDamping, SetAngularDamping, SetCCDEnabled) + collider overrides (SetColliderSensor, SetColliderDensity, SetColliderRestitution, SetColliderFriction, SetCollisionGroups, SetColliderEvents) + TeleportBody + joint commands (RemoveJoint, SetJointMotor, SetJointLimits, SetSpringParams, SetJointAnchorA, SetJointAnchorB) + character controller commands (CreateCharacterController, SetCharacterConfig, MoveCharacter, DestroyCharacterController, SetCharacterUp [44-46, 51-52]) |
 | `components.rs` | `Position(Vec3)`, `Rotation(Quat)`, `Scale(Vec3)`, `Velocity(Vec3)`, `ModelMatrix([f32;16])`, `BoundingRadius(f32)`, `TextureLayerIndex(u32)`, `MeshHandle(u32)`, `RenderPrimitive(u32)`, `PrimitiveParams([f32;8])`, `ExternalId(u32)`, `Active`, `Parent(u32)`, `Children` (fixed 32-slot inline array), `LocalMatrix([f32;16])`, `Transform2D { x, y, rot, sx, sy }` (20 bytes, compact 2D archetype), `Depth(f32)` (opt-in 2.5D), `Transparent(u8)` (blend mode flag) — all `#[repr(C)]` Pod. `OverflowChildren(Vec<u32>)` — heap fallback for 33+ children, NOT `#[repr(C)]`/Pod |
-| `systems.rs` | `velocity_system`, `velocity_system_2d`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy) |
+| `systems.rs` | `velocity_system`, `velocity_system_2d`, `velocity_system_filtered`, `velocity_system_2d_filtered`, `transform_system`, `transform_system_2d`, `count_active`, `propagate_transforms` (scene graph hierarchy, arbitrary depth), `update_bounding_radii` (per-frame radius from world matrix) |
 | `render_state.rs` | `collect()` for legacy matrices, `collect_gpu()` for SoA GPU buffers (transforms/bounds/renderMeta/texIndices/primParams/entityIds) + `BitSet`/`DirtyTracker` for partial upload optimization + stable slot mapping (`assign_slot`/`get_slot`/`flush_pending_despawns` with swap-remove) + `collect_dirty_staging()` for GPU scatter upload (128B/entity staging buffer) + `write_slot()` for in-place SoA updates + `shrink_to_fit()` for memory compaction |
 
 ### TypeScript: ts/src/
@@ -212,8 +212,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics. `CommandType` const enum (47 variants), `PAYLOAD_SIZES` record |
-| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing + `setRecordingTap()` for command tape recording + `isNonCoalescable()` for physics commands + 25 physics producer methods + 11 joint producer methods + 3 character controller producer methods |
+| `ring-buffer.ts` | `RingBufferProducer` — serializes commands into SharedArrayBuffer with Atomics. `CommandType` const enum (53 variants), `PAYLOAD_SIZES` record |
+| `backpressure.ts` | `PrioritizedCommandQueue` + `BackpressuredProducer` — wraps RingBufferProducer with priority queuing + `setRecordingTap()` for command tape recording + `isNonCoalescable()` for physics commands + 36 physics producer methods total: 16 body/collider (17-32) + 11 joint (33-43) + 5 character controller (44-46, 51-52) + 4 audit-2026-07 additions (setPhysicsDebugRender 47, setColliderEvents 48, teleportBody 49, setBoundingRadius 50) |
 | `worker-bridge.ts` | `EngineBridge` interface — `createFullIsolationBridge(canvas)` (A), `createWorkerBridge()` (B), `createDirectBridge()` (C). `GPURenderState` type |
 | `engine-worker.ts` | Web Worker: loads WASM, calls `engine_init`/`engine_update`, heartbeat counter |
 | `render-worker.ts` | Mode A: OffscreenCanvas + `createRenderer()` |
@@ -224,7 +224,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (14 WGSL files), device-lost recovery, compressed texture format detection + overflow views |
+| `renderer.ts` | RenderGraph coordinator: ResourcePool, CullPass+ForwardPass+FXAATonemapPass, optional outlines/bloom, ParticleSystem integration, shader HMR (17 WGSL files imported, 16 hot-reloadable), device-lost recovery, compressed texture format detection + overflow views |
 | `texture-manager.ts` | Multi-tier Texture2DArray with compressed format support (BC7/ASTC), overflow tiers for mixed-mode, lazy allocation (0→16→32→64→128→256), KTX2 load path, `createImageBitmap` pipeline, `TexturePriorityQueue` min-heap for viewport-distance-based load ordering |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type |
 | `render/resource-pool.ts` | `ResourcePool` — named GPU resource registry |
@@ -401,14 +401,13 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`flush_pending_despawns()` must be called before `collect_dirty_staging()`** — Despawns create stale slot references. The descending slot order in batch despawn is a correctness invariant (guarantees `last` is always live).
 - **Scatter shader @group(1) must match CullPass read layout** — ScatterPass writes to the same SoA buffers CullPass reads. Both must agree on buffer names in ResourcePool.
 - **Compressed transforms use format flag at staging[31]** — `0` = compressed 2D (pos+rot+scale, root entities), `1` = pre-computed mat4x4 (child entities). Scatter shader reconstructs mat4x4 from 6 f32 for format=0.
-- **2-bucket cull: 12 indirect args entries** — 6 primitive types × 2 buckets (tier0 vs other). Indirect args buffer is 240 bytes. `firstInstance` encodes visible-indices region offset.
 - **`process_commands` takes `&mut RenderState` as 4th parameter** — All callers (engine.rs, tests) must provide it. Dirty marking happens at command level, not system level.
 - **`collect_gpu()` destroys retained slot mapping** — Never call `collect_gpu()` in the retained-slot path. It rebuilds SoA in hecs iteration order (arbitrary), overwriting `write_slot()` slot assignments. The update flow is: `mark_post_system_dirty()` → `collect()` → `collect_and_cache_dirty()`. `collect_gpu()` is legacy-only.
 - **Systems bypass command_processor dirty marking** — `velocity_system`, `transform_system`, and `propagate_transforms` modify components directly. Call `mark_post_system_dirty()` after systems run to mark velocity-driven entities and children of dirty parents.
 - **SoA length accessors use `gpu_count * stride`, not `vec.len()`** — Retained-slot Vecs grow via `assign_slot()` but never shrink (except `shrink_to_fit()`). `vec.len()` may include stale trailing data. All 7 WASM exports (`gpu_transforms_f32_len`, `gpu_depths_f32_len`, etc.) use `gpu_count * stride`.
 - **Transform2D entities have no `Position` component** — Queries on `&Position` skip 2D entities. Use `Transform2D.x/y` for position data. `collect_gpu()` (legacy) only queries `&Position` — 2D entities invisible in legacy path.
 - **SpawnEntity payload is 1 byte (2D flag)** — `payload[0]`: 1=2D (Transform2D archetype), 0=3D (Position+Rotation+Scale). The `is_2d` flag routes all subsequent commands to the correct component type.
-- **Indirect args now 24 entries (480 bytes)** — 6 prim types × 2 material buckets × 2 blend modes (opaque/transparent). Opaque = entries 0-11, transparent = entries 12-23.
+- **Indirect args are 24 entries (480 bytes)** — 6 prim types × 2 material buckets (tier0 vs other) × 2 blend modes. Opaque = entries 0-11, transparent = entries 12-23. `firstInstance` encodes the visible-indices region offset. Authoritative source is the `array<DrawIndirectArgs, 24>` declaration in `cull.wgsl`.
 - **`MAX_COMMAND_TYPE` must be updated when adding commands** — Now defined in BOTH `ring_buffer.rs` (`pub const MAX_COMMAND_TYPE: u8 = 53`) and `backpressure.ts` (53), and a Rust test asserts it is exactly one past the last discriminant.
 - **Depth SoA column not in scatter staging buffer** — The 32 u32/entity staging format has no room for depth. Depth is updated via `write_slot`/`write_slot_2d` only, not the GPU scatter path.
 - **Temporal culling dirty bits must be uploaded BEFORE `DirtyTracker.clear()`** — Tick loop ordering: collect → upload SoA → upload dirty bits → clear → cull dispatch. Clearing first would make all entities appear clean.
@@ -431,8 +430,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **External entity ids are capped at `MAX_EXTERNAL_ID` (1_048_575)** — `EntityMap` is a sparse Vec indexed by the id. Out-of-range spawns are rejected and counted (`engine_rejected_command_count`).
 - **An unknown opcode discards the rest of the batch** — counted by `engine_dropped_command_bytes()`. A non-zero value almost always means the TS command table is ahead of the WASM build.
 - **`propagate_transforms` handles arbitrary depth** — three passes (snapshot locals → compute depth → apply shallowest-first), capped at `MAX_HIERARCHY_DEPTH` (64). `SetParent` rejects self-parenting and cycles.
-- **Physics CommandTypes are 17-47 (31 commands)** — NOT 14-39 as the design doc says. SetRotation2D=14, SetTransparent=15, SetDepth=16 already occupied 14-16. SetPhysicsDebugRender=47 (Phase 16). `MAX_COMMAND_TYPE` in backpressure.ts is 48.
-- **`isNonCoalescable()` classifies physics commands** — Create/Destroy (17-20), ApplyForce/Impulse/Torque (25-27), Joint lifecycle (33-37), CreateCharacterController (44) are non-coalescable. MoveCharacter (46) is coalescable (last-write-wins). Joint property commands (42-43: SetJointAnchorA/B) and SetCharacterConfig (45) and SetPhysicsDebugRender (47) coalesce via last-write-wins. All other physics commands (21-24, 28-32, 38-39, 41) coalesce via last-write-wins.
+- **Physics CommandTypes are 17-52 (36 commands)** — NOT 14-39 as the design doc says. SetRotation2D=14, SetTransparent=15, SetDepth=16 already occupied 14-16. SetPhysicsDebugRender=47 (Phase 16); 48-52 added by audit 2026-07. `MAX_COMMAND_TYPE` in backpressure.ts is 53.
+- **`isNonCoalescable()` classifies physics commands** — Create/Destroy (17-20), ApplyForce/Impulse/Torque (25-27), Joint lifecycle (33-37), CreateCharacterController (44) are non-coalescable. MoveCharacter (46) is coalescable (last-write-wins). ALL joint commands (33-43) are non-coalescable — the entity-based coalescing key collides when one entity owns two joints. TeleportBody (49) and DestroyCharacterController (51) are also non-coalescable. SetCharacterConfig (45), SetPhysicsDebugRender (47), SetColliderEvents (48), SetBoundingRadius (50), SetCharacterUp (52) and the remaining physics commands (21-24, 28-32) coalesce via last-write-wins.
 - **`CreateCollider` payload limits to 3 f32 params** — 1B shapeType + 3×4B params = 13B within the 16B payload. Segment shapes (4 params = 17B total) exceed the limit. Design resolution needed in milestone 15b.
 - **Rapier2d uses nalgebra internally, not glam** — `vector![]` and `point![]` macros produce nalgebra types requiring `.into()` conversion. `step()` takes gravity by value (Copy), not by reference.
 - **`physics-2d` feature flag is zero-cost when unused** — Rapier is fully tree-shaken by wasm-opt. Physics WASM build is same size as standard until WASM exports actually call Rapier functions.
@@ -448,7 +447,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`QueryPipeline` is ephemeral, NOT stored** — Created on-the-fly via `broad_phase.as_query_pipeline()` for each query call. Holds borrows on `rigid_body_set`/`collider_set` so cannot persist.
 - **`overlap_aabb` deduplicates by entity** — Rapier returns collider handles; multiple colliders can map to the same entity. Results deduplicated via `sort_unstable()` + `dedup()`.
 - **`drainCollisionEvents`/`drainContactForceEvents` are standalone functions** — Separated from `PhysicsAPI` class for Mode B/A bridge seam reuse.
-- **Joint commands (33-37, 42-43) are non-coalescable** — CreateRevoluteJoint, CreatePrismaticJoint, CreateFixedJoint, CreateRopeJoint, CreateSpringJoint are lifecycle commands. RemoveJoint, SetJointMotor, SetJointLimits, SetSpringParams use joint_id (not entity_id) as the command entity_id field.
+- **Joint commands (33-43) are ALL non-coalescable** — CreateRevoluteJoint, CreatePrismaticJoint, CreateFixedJoint, CreateRopeJoint, CreateSpringJoint are lifecycle commands. RemoveJoint, SetJointMotor, SetJointLimits, SetSpringParams, SetJointAnchorA/B use joint_id (not entity_id) as the command entity_id field, so an entity-keyed coalescing map would silently drop one of two joints on the same entity.
 - **`JointAxis::AngX` not `AngZ` for 2D revolute motors** — Rapier2D maps angular axis to `JointAxis::AngX` (X in its internal representation). Using `AngZ` silently does nothing.
 - **`SpringJointBuilder::new()` takes 3 args** — `SpringJointBuilder::new(rest_length, stiffness, damping)`. NOT 2 args as some docs suggest.
 - **`impulse_joints.get_mut()` takes 2 args in Rapier 0.32** — `get_mut(handle, true)` where the second arg is `wake_up: bool`. NOT 1 arg.
@@ -463,8 +462,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **CC shape from first collider, no-collider = no-op** — `body.colliders()[0]` is the main collider. Entity without collider silently skips `MoveCharacter`.
 - **CC only valid on kinematic bodies** — Pass 5 guards with `body.is_kinematic()`. Non-kinematic bodies silently ignored.
 - **`MoveCharacter` is coalescable (last-write-wins)** — Unlike `ApplyForce` (accumulates), `MoveCharacter` replaces. Two calls in one frame = only last desired translation matters.
-- **No `DestroyCharacterController`** — Cleanup via despawn cascade (`character_map.remove(&ext_id)`). Inactive CC has negligible cost.
-- **`MAX_COMMAND_TYPE` is now 48** — Must be updated if new CommandType variants are added.
+- **`DestroyCharacterController` is CommandType 51 (0-byte payload)** — explicit teardown added by audit 2026-07, handled in `physics_commands.rs` and non-coalescable. Despawn also still cascades cleanup via `character_map.remove(&ext_id)`.
+- **`MAX_COMMAND_TYPE` is 53** — defined in both `ring_buffer.rs:111` and `backpressure.ts:25`; a Rust test asserts it is exactly one past the last discriminant (`SetCharacterUp = 52`).
 - **Borrow checker: copy shape+pos before QueryPipeline** — `as_query_pipeline()` borrows `rigid_body_set` + `collider_set`. Shape and position must be copied out first to avoid overlapping borrows.
 
 ### Implementation Notes — design decisions and internal details
@@ -515,7 +514,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Recording tap fires on both direct writes and queued flushes** — `BackpressuredProducer.setRecordingTap()` captures the complete command stream regardless of whether commands were written directly or queued due to backpressure.
 - **CommandTapeRecorder circular buffer** — Uses modular indexing with configurable `maxEntries` (default 600000 = ~10min at 60fps × 1000 cmds/tick). Oldest entries silently evicted.
 - **SnapshotManager interval-based capture** — Captures at tick multiples of `intervalTicks`. `findNearest(targetTick)` returns closest snapshot at or before target for gap replay.
-- **Snapshot binary format is HSNP v2 (Phase 16)** — `[magic "HSNP"][version:u32=2][tick:u64][entity_count:u32][entity_map: (ext_id:u32, hecs_id:u64, flags:u8 bit0=is_2d)][per-entity: hecs_id:u64 + component_mask:u32 + data][physics_present:u8][section_len:u32][physics section]`. 19 component types in bitmask (bits 15-18: Transform2D/Depth/Transparent/OverflowChildren). v1 snapshots (u16 mask, no flags, no physics byte) still restore; v2 is always written.
+- **Snapshot binary format is HSNP v3 (audit 2026-07)** — `[magic "HSNP"][version:u32=3][tick:u64][entity_count:u32][entity_map: (ext_id:u32, hecs_id:u64, flags:u8 bit0=is_2d)][per-entity: hecs_id:u64 + component_mask:u32 + data][physics_present:u8][section_len:u32][physics section][40-byte integrity trailer]`. 19 component types in bitmask (bits 15-18: Transform2D/Depth/Transparent/OverflowChildren). `SNAPSHOT_VERSION = 3`; v3 is always written. v1 (u16 mask, no flags, no physics byte) and v2 (u32 mask, no trailer) still restore; the trailer is validated only when `version >= SNAPSHOT_VERSION`.
 - **Snapshot physics restore is rebuild-from-state, NOT byte-exact continuation** — Solver warm-start caches are not serialized. restore(T)+N ticks == restore(T)+N ticks (bit-identical), but != the uninterrupted original run at T+N. ReplayPlayer comparisons must restore on both sides. The physics section is length-prefixed: non-physics builds skip it wholesale.
 - **`snapshot_restore` replaces PhysicsWorld wholesale** — Fixes the pre-Phase-16 orphan-body bug (Rapier bodies surviving restore with dead entities). It also reassigns GPU render slots for restored entities (they were invisible in the retained-slot path before Phase 16).
 - **`state_hash()` orders everything by external ID / joint ID** — hecs archetype iteration order must NEVER leak into the hash (Invariant I-2). Floats hash by bit pattern (`to_bits`): -0.0 != 0.0 and NaN payloads count.
@@ -533,7 +532,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **DirtyTracker 3 BitSets: transforms, bounds, meta** — Union of all 3 determines scatter upload set. Individual BitSets kept for profiling.
 - **Scatter staging buffer: 32 u32 per entity (128 bytes)** — Cache-line aligned. Layout: transforms[16] + bounds[4] + meta[2] + tex[1] + params[8] + format[1].
 - **ScatterPass grow-only buffers** — Staging and indices GPU buffers never shrink. Destroyed and recreated only when larger size needed.
-- **`mark_post_system_dirty()` two-pass approach** — Pass 1: entities with non-zero `Velocity` get transform+bounds dirty. Pass 2: children whose parent's transform is dirty get transform+bounds dirty. Single-level propagation matches `propagate_transforms` (which is also single-level).
+- **`mark_post_system_dirty()` three-pass approach** — Pass 1: entities with non-zero `Velocity` get transform+bounds dirty. Pass 2: descendants of dirty parents at ANY depth, looped to a fixpoint bounded by `MAX_HIERARCHY_DEPTH` (matches multi-level `propagate_transforms`). Pass 3 (physics-2d only): non-sleeping physics bodies written back by `physics_sync_post`.
 - **Batch spawn auto-detection in `process_commands`** — Consecutive `SpawnEntity` commands are batched via `hecs::World::spawn_batch()`. Threshold: 2+ consecutive.
 - **TexturePriorityQueue is standalone** — Min-heap with `urlToIndex` map for O(log n) update. Integrated into TextureManager alongside FIFO `fetchQueue`.
 - **Progressive KTX2 is a TODO** — Priority queue is implemented; HTTP Range-based progressive loading deferred to future work.
@@ -555,10 +554,19 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ## Claude Code Automations
 
-### Hooks (`.claude/settings.json`)
+### Hooks (`.claude/settings.json` → `.claude/hooks/*.sh`)
 
-- **PreToolUse**: Blocks edits to `ts/wasm/` (generated files)
-- **PostToolUse**: Auto-runs `cargo clippy` on `.rs` edits, colocated vitest on `.ts` edits, WGSL bind group warning on `.wgsl` edits, protocol sync reminder on bridge files, physics feature-flag reminder on physics files, CLAUDE.md sync reminder on structural files
+Hook logic lives in standalone, directly testable scripts — see [`.claude/hooks/README.md`](.claude/hooks/README.md). Each reads the payload as JSON on **stdin** and resolves the root from `$CLAUDE_PROJECT_DIR`.
+
+| Script | Event | Behaviour |
+|---|---|---|
+| `guard-generated.sh` | PreToolUse `Edit\|Write` | **Blocks** edits under `ts/wasm/`, `ts/wasm-physics/`, and the two spike output dirs |
+| `guard-protocol-drift.sh` | PreToolUse `Bash` | **Blocks `git commit`** when the Rust and TS `CommandType` tables disagree, or `MAX_COMMAND_TYPE` is not one past the last discriminant. Bypass once with `touch .claude/.skip-drift-guard` (flag is consumed) |
+| `post-edit-rust.sh` | PostToolUse | `cargo clippy` on `.rs` edits + feature-matrix warning when `cfg(feature = ...)` code is touched |
+| `post-edit-ts.sh` | PostToolUse | Colocated vitest file on `ts/src/**/*.ts` edits |
+| `post-edit-notices.sh` | PostToolUse | WGSL bind-group, protocol-sync, physics and structural-file reminders |
+
+> Verify a hook by making it **fire**, not by observing silence. A script that fails early exits non-zero with no output, which is indistinguishable from "ran clean" — that is how the previous generation of hooks (using `grep -oP`, unsupported by macOS `/usr/bin/grep`, and a hardcoded Linux path) stayed silently dead.
 
 ### Skills
 
@@ -567,18 +575,30 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - `/validate-physics` — Full validation pipeline including `--features physics-2d`
 - `/check-size` — Audit WASM binary sizes for both standard and physics builds
 - `/new-primitive` — Add a new RenderPrimitiveType (shader + pipeline + API, 7-step checklist)
+- `/new-command` — Add a new ring-buffer CommandType end-to-end (Rust enum + handler + TS producer + fluent API + tests)
 - `/start-phase` — Begin a new engine development phase from the masterplan (9-step workflow)
+- `/close-phase` — Close a phase: full feature matrix, refresh every stale count, append the MEMORY.md record, stage the commit
 
 ### Agents
 
+All agent files require YAML frontmatter (`name`, `description`) to be registered — without it they are silently not loadable.
+
 - `protocol-sync-checker` — Validates Rust↔TypeScript protocol consistency (CommandType, ring buffer layout, WASM exports)
-- `wgsl-validator` — Cross-validates all 18 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
+- `wgsl-validator` — Cross-validates all 19 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
 - `physics-integration-checker` — Validates Rapier2D integration consistency (component lifecycle, handle tracking, despawn cleanup, event ordering, command routing)
+- `claude-md-auditor` — Audits this file for factual drift: stale constants, wrong enum/test counts, phantom symbols, and self-contradictory bullets. Read-only
 
 ### MCP (`.mcp.json`)
 
+`.mcp.json` is the single source of truth for MCP servers; the equivalent plugins are disabled in `.claude/settings.json` to avoid loading every tool twice.
+
 - **Context7** — Live documentation lookup for WebGPU, KTX2, wasm-bindgen, and other specs
-- **Playwright** — Browser automation for visual testing of demo harness and DOM-based checks
+- **Playwright** — Browser automation for DOM-based checks in the demo harness
+- **chrome-devtools** — Real Chrome with GPU access. Preferred for anything WebGPU: `requestAdapter()` returns null headless, and this exposes console messages (WGSL validation errors), performance traces, and `evaluate_script` against the live `Hyperion` facade
+
+### Claude Code plugins
+
+`.claude/settings.json` carries an explicit `enabledPlugins` map listing **all** installed plugins — 25 enabled, 83 disabled. It is project-scoped, so the global `~/.claude/settings.json` is untouched. Every plugin is listed explicitly (rather than only the disabled ones) so the result is identical whether Claude Code merges the map per-key or replaces it wholesale.
 
 ### Formatting
 
@@ -602,7 +622,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 64 tests in `crates/hyperion-core/tests/verify_*.rs` — each asserts the corrected behaviour of one defect.
+Regression coverage: 60 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 23, verify_ring 8, verify_hier 5, verify_snapshot 5) — each asserts the corrected behaviour of a defect.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
@@ -630,7 +650,7 @@ Regression coverage: 64 tests in `crates/hyperion-core/tests/verify_*.rs` — ea
 | 15c | Physics: Events & Scene Queries | `#[repr(C)]` event structs (`HyperionCollisionEvent` 12B, `HyperionContactForceEvent` 20B), 9 WASM exports (4 event + 5 query), `PhysicsWorld.raycast()`/`overlap_aabb()`/`overlap_circle()`, `PhysicsAPI` class (two-phase dispatch, sensor sugar, `onCollisionStart/End`/`onContactForce`/`onSensorEnter/Exit`), `drainCollisionEvents()`/`drainContactForceEvents()` standalone helpers |
 | 15d | Physics: Joints | 5 joint types (Revolute/Prismatic/Fixed/Rope/Spring), `JointEntry`+`PendingJoint` types, `joint_map`+`pending_joints` in PhysicsWorld, Pass 4 joint consumption in `physics_sync_pre`, 6 joint property commands (`RemoveJoint`/`SetJointMotor`/`SetJointLimits`/`SetSpringParams`/`SetJointAnchorA`/`SetJointAnchorB`), `JointHandle` branded type, 5 `EntityHandle` fluent joint methods, 6 `PhysicsAPI` joint convenience methods |
 | 15e | Physics: Character Controller | 3 CommandTypes (44-46), `KinematicCharacterController` integration, `move_shape()` Pass 5, grounded/sliding state queries, `CharacterControllerConfig`, `EntityHandle` fluent CC API |
-| 16 | Physics Debug + Determinism + Snapshot v2 | HSNP v2 (u32 mask, 2D archetype + is_2d, physics section rebuilt-from-state, orphan-body fix, GPU slot reassignment), `JointEntry.kind`, `engine_state_hash` (FNV-1a 64, ext-ID ordered) + `EngineBridge.getStateHash()`, `physics-debug` feature (rapier `DebugRenderPipeline`, CommandType 47, `GPURenderState.physicsDebugLines`), `LineBatchPass`/`DebugLinePass` (closed 10b bounds stub), `physicsDebugPlugin` (F3), `build:wasm:physics:dev` |
+| 16 | Physics Debug + Determinism + Snapshot v2 | HSNP v2 — *superseded by HSNP v3 in audit 2026-07, see the Gotchas entry for the current format* — (u32 mask, 2D archetype + is_2d, physics section rebuilt-from-state, orphan-body fix, GPU slot reassignment), `JointEntry.kind`, `engine_state_hash` (FNV-1a 64, ext-ID ordered) + `EngineBridge.getStateHash()`, `physics-debug` feature (rapier `DebugRenderPipeline`, CommandType 47, `GPURenderState.physicsDebugLines`), `LineBatchPass`/`DebugLinePass` (closed 10b bounds stub), `physicsDebugPlugin` (F3), `build:wasm:physics:dev` |
 
 ## Documentation
 
