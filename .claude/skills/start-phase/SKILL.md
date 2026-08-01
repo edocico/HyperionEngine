@@ -27,10 +27,13 @@ Start implementing a new phase from the Hyperion masterplan. The user should spe
 
 7. **Implement**: Use subagent-driven-development skill if tasks are parallelizable (independent files/modules). Otherwise, implement sequentially.
 
-8. **Validate**: Run the full validation pipeline before considering the phase complete:
+8. **Validate**: Run the pipeline before considering the phase complete:
    ```bash
-   cargo test -p hyperion-core && cargo clippy -p hyperion-core && cd ts && npm test && npx tsc --noEmit
+   scripts/preflight.sh
    ```
+   That script is the single definition of "validated" — do not reconstruct the command
+   list here. See the `/validate` skill for what it covers and why one `cargo test` is
+   not enough.
 
 9. **Update documentation** (mandatory, do NOT skip):
    - CLAUDE.md: Architecture tables, Implementation Status, test counts, Gotchas

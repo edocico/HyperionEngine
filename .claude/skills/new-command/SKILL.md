@@ -178,18 +178,13 @@ One-shot bypass: `touch .claude/.skip-drift-guard` (consumed on use). The guard 
 cd ts && npm run build:wasm            # and build:wasm:physics / :dev as needed
 
 # Full gate
-cargo test -p hyperion-core --all-features && cargo clippy -p hyperion-core
-cd ts && npm test && npx tsc --noEmit 2>&1 | grep -v "wasm/hyperion_core"
+scripts/preflight.sh
 ```
 
-All five feature combinations must pass — the cfg-conditional `process_commands` signature means a handler can compile under one and break another:
-```bash
-cargo test -p hyperion-core
-cargo test -p hyperion-core --features dev-tools
-cargo test -p hyperion-core --features physics-2d
-cargo test -p hyperion-core --features "physics-debug dev-tools"
-cargo test -p hyperion-core --all-features
-```
+`scripts/preflight.sh` is the single definition of "validated" — do not reconstruct the
+command list here. It already runs the whole feature matrix, which matters for this
+change in particular: the cfg-conditional `process_commands` signature means a handler
+can compile under one feature set and break another.
 
 Run the **`protocol-sync-checker`** agent before committing (a PostToolUse hook reminds you when `ring_buffer.rs` / `ring-buffer.ts` / `backpressure.ts` / `lib.rs` / `worker-bridge.ts` / `engine-worker.ts` is touched).
 

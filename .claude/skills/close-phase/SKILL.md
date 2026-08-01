@@ -16,18 +16,31 @@ git log --oneline master..HEAD
 ```
 Every deliverable from the phase plan in `docs/plans/` should be committed. If anything is still dirty, stop and finish it — this skill records reality, it does not create it.
 
-## 2. Run the full feature matrix
+## 2. Validate
 
-Not just the default build. The crate has four features and the `process_commands` signature is **cfg-conditional**, so code can compile under one combination and break another.
+```bash
+scripts/preflight.sh
+```
+
+`scripts/preflight.sh` is the single definition of "validated" — do not reconstruct the
+command list here. It runs the whole feature matrix, which matters because the crate has
+four features and the `process_commands` signature is **cfg-conditional**: code can
+compile under one combination and break another.
+
+This is the gate. It must be green before you continue.
+
+## 3. Harvest the counts
+
+Separate job, separate commands. Preflight tells you *whether* the suite passes; it does
+not report per-combination totals, and those are what the docs record. Run these **for the
+numbers**, not to validate:
 
 ```bash
 cargo test -p hyperion-core
 cargo test -p hyperion-core --features dev-tools
 cargo test -p hyperion-core --features physics-2d
-cargo test -p hyperion-core --features "physics-debug dev-tools"
 cargo test -p hyperion-core --all-features
-cargo clippy -p hyperion-core
-cd ts && npm test && npx tsc --noEmit 2>&1 | grep -v "wasm/hyperion_core"
+cd ts && npm test
 ```
 
 **Record the real numbers.** Two traps:
@@ -41,7 +54,7 @@ cd ts && npm test && npx tsc --noEmit 2>&1 | grep -v "wasm/hyperion_core"
 
 Integration files only run under the features that gate them: `verify_physics.rs` needs `physics-2d`, `verify_snapshot.rs` needs `dev-tools`. Under the default build both report 0.
 
-## 3. Refresh the counts in CLAUDE.md
+## 4. Refresh the counts in CLAUDE.md
 
 Every `(N tests)` comment in the Build & Test Commands section, plus the regression-suite figure in the audit table.
 
@@ -53,7 +66,7 @@ cd ts && npx vitest run --reporter=json --outputFile=/tmp/vitest.json
 node -e "const r=require('/tmp/vitest.json');for(const t of r.testResults)console.log(t.name,t.assertionResults.length)"
 ```
 
-## 4. Update the CLAUDE.md architecture tables
+## 5. Update the CLAUDE.md architecture tables
 
 For every module the phase created or changed:
 - add/refresh its row in the crate table or the `ts/src/` tables
@@ -61,11 +74,11 @@ For every module the phase created or changed:
 - add new WGSL shaders to the shader table
 - add new `ts/src/index.ts` exports to the barrel-export row
 
-## 5. Add the phase to the Implementation Status table
+## 6. Add the phase to the Implementation Status table
 
 Append a row: phase number, name, key additions. Update the **Current:** line at the top of that section to name this phase and propose the next candidates.
 
-## 6. Run the claude-md-auditor agent
+## 7. Run the claude-md-auditor agent
 
 ```
 claude-md-auditor
@@ -74,7 +87,7 @@ It mechanically re-checks constants, enum counts, test counts, symbol inventorie
 
 Pay particular attention to its *contradiction* findings. When a remediation pass appends a corrected bullet instead of editing the original, both survive and future sessions read whichever they hit first. **Delete the superseded bullet rather than editing it**, so the contradiction cannot re-form.
 
-## 7. Update MEMORY.md
+## 8. Update MEMORY.md
 
 `~/.claude/projects/-Users-edoardocicognani-Desktop-Code-HyperionEngine/memory/`
 
@@ -82,12 +95,12 @@ Pay particular attention to its *contradiction* findings. When a remediation pas
 
 **Append** a new phase section with today's numbers instead. Keep the `MEMORY.md` index to one line per memory — it is loaded every session, and it is already over its size budget, so put detail in a topic file and link it.
 
-## 8. Documentation
+## 9. Documentation
 
 - Move the phase plan in `docs/plans/` to its completed state, and note any design-doc errata the implementation uncovered (this repo has a strong track record of design docs diverging from what shipped — record the divergence rather than silently fixing the code to match).
 - Update `PROJECT_ARCHITECTURE.md` if the phase changed a subsystem boundary.
 
-## 9. Commit
+## 10. Commit
 
 ```bash
 git add -A
@@ -98,8 +111,7 @@ The commit is gated by `.claude/hooks/guard-protocol-drift.sh` if the phase touc
 
 ## Checklist
 
-- [ ] All five feature combinations pass
-- [ ] clippy clean, `tsc --noEmit` clean
+- [ ] `scripts/preflight.sh` green (feature matrix + clippy + TypeScript + protocol check)
 - [ ] Test counts in CLAUDE.md refreshed, with the convention stated per line
 - [ ] Architecture tables updated for every new/changed module
 - [ ] Implementation Status row added, **Current:** line updated
