@@ -14,10 +14,10 @@ physics-debug = ["physics-2d", "rapier2d/debug-render"]
 
 [dependencies]
 wasm-bindgen = "0.2"
-glam = { version = "0.29", features = ["bytemuck"] }
+glam = { version = "0.33", features = ["bytemuck"] }
 hecs = "0.11"
 bytemuck = { version = "1", features = ["derive"] }
-rapier2d = { version = "0.32", features = ["simd-stable"], optional = true }
+rapier2d = { version = "0.34", features = ["simd-stable"], optional = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

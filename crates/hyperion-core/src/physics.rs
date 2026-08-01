@@ -946,6 +946,7 @@ pub mod snapshot {
     use hecs::World;
     use rapier2d::control::{CharacterAutostep, CharacterLength};
     use rapier2d::prelude::*;
+    use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
 
     // Per-axis serialized joint state: motor (5 f32) + limits (2 f32).
     const AXES: usize = 3; // 2D: LinX, LinY, AngX
@@ -1538,6 +1539,7 @@ mod tests {
     #[test]
     fn physics_world_body_count_after_insert() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         let rb = RigidBodyBuilder::dynamic().build();
         pw.rigid_body_set.insert(rb);
@@ -1554,6 +1556,7 @@ mod tests {
     #[test]
     fn physics_world_step_moves_dynamic_body() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         // Gravity is (0, 980) — body should fall (y increases)
         let rb = RigidBodyBuilder::dynamic()
@@ -1586,6 +1589,7 @@ mod tests {
     #[test]
     fn physics_world_collision_event_translation() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
 
         // Create two dynamic bodies that overlap, with collision events enabled
@@ -1641,6 +1645,7 @@ mod tests {
     #[test]
     fn physics_world_events_skipped_without_mapping() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
 
         // Create overlapping bodies with collision events, but NO reverse mapping
@@ -1681,6 +1686,7 @@ mod tests {
     #[test]
     fn physics_world_events_accumulate_across_steps() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
 
         // Create overlapping bodies
@@ -1900,6 +1906,7 @@ mod tests {
     #[test]
     fn sensor_event_flagged_correctly() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -1952,6 +1959,7 @@ mod tests {
     #[test]
     fn raycast_hits_collider() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -1993,6 +2001,7 @@ mod tests {
     #[test]
     fn overlap_aabb_finds_entities() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -2025,6 +2034,7 @@ mod tests {
     #[test]
     fn overlap_aabb_deduplicates() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -2060,6 +2070,7 @@ mod tests {
     #[test]
     fn overlap_circle_finds_entities() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -2086,6 +2097,7 @@ mod tests {
     #[test]
     fn overlap_circle_excludes_outside() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
@@ -2112,6 +2124,7 @@ mod tests {
     #[test]
     fn joint_entry_fields() {
         use rapier2d::prelude::*;
+        use super::PhysicsWorld; // disambigua da rapier2d::pipeline::PhysicsWorld (0.33+)
         let mut pw = PhysicsWorld::new();
         // Create two bodies so we can get a real ImpulseJointHandle
         let rb_a = RigidBodyBuilder::dynamic().build();
