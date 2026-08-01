@@ -8,7 +8,7 @@ use hecs::World;
 
 use crate::components::{
     Active, BoundingRadius, Depth, ExternalId, MeshHandle, ModelMatrix, Parent, Position,
-    PrimitiveParams, RenderPrimitive, Rotation, Scale, TextureLayerIndex, Transform2D, Transparent,
+    PrimitiveParams, RenderPrimitive, TextureLayerIndex, Transform2D, Transparent,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -173,6 +173,20 @@ impl DirtyTracker {
         self.transform_dirty.words_u32_len()
     }
 
+    /// The transform dirty bitfield as a `u32` slice, for copying into the
+    /// per-frame export buffer.
+    pub fn transforms_words(&self) -> &[u32] {
+        // SAFETY: the bitset stores `u64` words; on little-endian wasm32/x86 a
+        // `u64` slice reinterprets as twice as many `u32` words with the same
+        // bit order. `words_u32_len()` is exactly `words.len() * 2`.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.transform_dirty.words_ptr_u32(),
+                self.transform_dirty.words_u32_len(),
+            )
+        }
+    }
+
     /// Pre-size all internal bitsets to hold at least `capacity` entity slots.
     ///
     /// Call this before the query loop each frame to avoid incremental
@@ -214,7 +228,19 @@ pub struct RenderState {
     // Stable slot mapping (Phase 12: retained-mode GPU buffers)
     slot_to_entity: Vec<hecs::Entity>,
     entity_to_slot: Vec<u32>,         // indexed by entity.id(), u32::MAX = unassigned
-    pub(crate) pending_despawns: Vec<hecs::Entity>,
+    /// Despawns queued this frame, as `(entity, slot)` pairs.
+    ///
+    /// The slot is resolved by `queue_despawn()` at command time, while the
+    /// entity is still live and `entity_to_slot` still points at it. Resolving
+    /// it later (at flush time) was the 2026-07 P0-1 defect: hecs recycles
+    /// `entity.id()` immediately on despawn, so a spawn later in the same frame
+    /// overwrote the dead entity's `entity_to_slot` entry and the flush then
+    /// evicted the *live* entity instead.
+    pub(crate) pending_despawns: Vec<(hecs::Entity, u32)>,
+
+    /// Snapshot of the dirty-transform bitfield taken just before the tracker
+    /// is cleared. This — not the live tracker — is what JS reads.
+    exported_dirty_bits: Vec<u32>,
 
     // Dirty staging cache (populated by collect_and_cache_dirty)
     staging_cache: Vec<u32>,
@@ -252,6 +278,7 @@ impl RenderState {
             slot_to_entity: Vec::new(),
             entity_to_slot: Vec::new(),
             pending_despawns: Vec::new(),
+            exported_dirty_bits: Vec::new(),
             staging_cache: Vec::new(),
             staging_indices_cache: Vec::new(),
             staging_dirty_count: 0,
@@ -288,15 +315,25 @@ impl RenderState {
         (self.matrices.len() * 16) as u32
     }
 
-    /// Collect entity data for GPU-driven pipeline using SoA layout.
+    /// LEGACY full rebuild of the SoA buffers in hecs iteration order.
     ///
-    /// Populates four independent buffers:
-    /// - `gpu_transforms`: 16 f32/entity (model matrix)
-    /// - `gpu_bounds`: 4 f32/entity (position xyz + bounding radius)
-    /// - `gpu_render_meta`: 2 u32/entity (mesh handle + render primitive)
-    /// - `gpu_tex_indices`: 1 u32/entity (texture layer index)
+    /// `Engine::update` no longer calls this — the retained-slot path
+    /// (`write_slot` + `collect_and_cache_dirty`) keeps the buffers current
+    /// incrementally. It is kept for tests and for a one-shot full repopulate.
+    ///
+    /// It RESETS the stable slot mapping, because it re-packs every entity in
+    /// archetype order: keeping the old `entity_to_slot` / `slot_to_entity`
+    /// around left `get_slot` and `flush_pending_despawns` pointing at wrong or
+    /// out-of-range slots (audit 2026-07, P3-1). Callers must treat every slot
+    /// index they were holding as invalid afterwards.
     pub fn collect_gpu(&mut self, world: &World) {
         self.dirty_tracker.clear();
+        // The slot mapping describes the OLD packing; leaving it in place made
+        // every later `get_slot` lookup wrong (audit 2026-07, P3-1).
+        self.slot_to_entity.clear();
+        self.entity_to_slot.clear();
+        self.pending_despawns.clear();
+        self.exported_dirty_bits.clear();
 
         self.gpu_transforms.clear();
         self.gpu_bounds.clear();
@@ -318,8 +355,9 @@ impl RenderState {
         self.dirty_tracker.ensure_capacity(hint);
         self.gpu_count = 0;
 
-        for (pos, matrix, radius, tex, mesh, prim, pp, ext_id, _active) in world
+        for (entity, pos, matrix, radius, tex, mesh, prim, pp, ext_id, _active) in world
             .query::<(
+                hecs::Entity,
                 &Position,
                 &ModelMatrix,
                 &BoundingRadius,
@@ -339,9 +377,12 @@ impl RenderState {
             self.gpu_bounds
                 .extend_from_slice(&[pos.0.x, pos.0.y, pos.0.z, radius.0]);
 
-            // Buffer C: RenderMeta (2 u32)
+            // Buffer C: RenderMeta (2 u32).
+            // Bit 8 carries the Transparent flag, exactly as `write_slot` does —
+            // the two population paths used to disagree here (audit 2026-07, P3-1).
             self.gpu_render_meta.push(mesh.0);
-            self.gpu_render_meta.push(prim.0 as u32);
+            let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
+            self.gpu_render_meta.push(prim.0 as u32 | transparent_bit);
 
             // Texture indices (1 u32)
             self.gpu_tex_indices.push(tex.0);
@@ -354,6 +395,19 @@ impl RenderState {
 
             // Depth (1 f32) — legacy path uses position.z as fallback
             self.gpu_depths.push(pos.0.z);
+
+            // Rebuild the slot mapping for the new packing.
+            let slot = self.gpu_count;
+            if slot as usize >= self.slot_to_entity.len() {
+                self.slot_to_entity
+                    .resize((slot as usize + 1).next_power_of_two(), hecs::Entity::DANGLING);
+            }
+            self.slot_to_entity[slot as usize] = entity;
+            let eid = entity.id() as usize;
+            if eid >= self.entity_to_slot.len() {
+                self.entity_to_slot.resize(eid + 1, u32::MAX);
+            }
+            self.entity_to_slot[eid] = slot;
 
             self.gpu_count += 1;
         }
@@ -522,7 +576,16 @@ impl RenderState {
     }
 
     /// Assign a stable GPU slot to an entity. Returns the slot index.
+    ///
+    /// Idempotent: an entity that already owns a valid slot gets that slot back
+    /// instead of a second one. Before the 2026-07 audit a duplicate
+    /// `SpawnEntity` for a live external id allocated a second slot and orphaned
+    /// the first, which could then never be released (P2-4).
     pub fn assign_slot(&mut self, entity: hecs::Entity) -> u32 {
+        if let Some(existing) = self.get_slot(entity) {
+            return existing;
+        }
+
         let slot = self.gpu_count;
         self.gpu_count += 1;
 
@@ -542,7 +605,11 @@ impl RenderState {
         }
         self.entity_to_slot[eid] = slot;
 
-        // Grow SoA buffers to match
+        // Grow SoA buffers to match. `Vec::resize` only grows when the target
+        // length exceeds the current one — after despawns the buffers are longer
+        // than `gpu_count * stride`, so a recycled slot would silently inherit
+        // the previous occupant's bytes for every column the new entity has no
+        // component for. Zero the slot explicitly (audit 2026-07, P3-3).
         self.gpu_transforms.resize((self.gpu_count as usize) * 16, 0.0);
         self.gpu_bounds.resize((self.gpu_count as usize) * 4, 0.0);
         self.gpu_render_meta.resize((self.gpu_count as usize) * 2, 0);
@@ -550,6 +617,7 @@ impl RenderState {
         self.gpu_prim_params.resize((self.gpu_count as usize) * 8, 0.0);
         self.gpu_entity_ids.resize(self.gpu_count as usize, 0);
         self.gpu_depths.resize(self.gpu_count as usize, 0.0);
+        self.clear_slot(slot);
 
         // Mark all dirty
         self.dirty_tracker.ensure_capacity(self.gpu_count as usize);
@@ -558,6 +626,19 @@ impl RenderState {
         self.dirty_tracker.mark_meta_dirty(slot as usize);
 
         slot
+    }
+
+    /// Zero every SoA column of a slot so a recycled slot never leaks the
+    /// previous occupant's data through columns the new entity doesn't write.
+    fn clear_slot(&mut self, slot: u32) {
+        let s = slot as usize;
+        self.gpu_transforms[s * 16..s * 16 + 16].fill(0.0);
+        self.gpu_bounds[s * 4..s * 4 + 4].fill(0.0);
+        self.gpu_render_meta[s * 2..s * 2 + 2].fill(0);
+        self.gpu_tex_indices[s] = 0;
+        self.gpu_prim_params[s * 8..s * 8 + 8].fill(0.0);
+        self.gpu_entity_ids[s] = 0;
+        self.gpu_depths[s] = 0.0;
     }
 
     /// Write all SoA data for an entity into its assigned slot.
@@ -583,13 +664,17 @@ impl RenderState {
         if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
             self.gpu_render_meta[s * 2] = mesh.0;
         }
-        if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
-            self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
-        }
+        // Rebuild the word from scratch: the transparency bit must never be
+        // OR-ed onto a stale value left by a previous occupant of this slot,
+        // and an entity without `RenderPrimitive` must not keep a sticky
+        // bit 8 (audit 2026-07, P3-2).
+        let prim_word = world
+            .get::<&RenderPrimitive>(entity)
+            .map(|p| p.0 as u32)
+            .unwrap_or(0);
         // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
-        if world.get::<&Transparent>(entity).is_ok() {
-            self.gpu_render_meta[s * 2 + 1] |= 0x100;
-        }
+        let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
+        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit;
 
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
@@ -656,13 +741,17 @@ impl RenderState {
         if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
             self.gpu_render_meta[s * 2] = mesh.0;
         }
-        if let Ok(prim) = world.get::<&RenderPrimitive>(entity) {
-            self.gpu_render_meta[s * 2 + 1] = prim.0 as u32;
-        }
+        // Rebuild the word from scratch: the transparency bit must never be
+        // OR-ed onto a stale value left by a previous occupant of this slot,
+        // and an entity without `RenderPrimitive` must not keep a sticky
+        // bit 8 (audit 2026-07, P3-2).
+        let prim_word = world
+            .get::<&RenderPrimitive>(entity)
+            .map(|p| p.0 as u32)
+            .unwrap_or(0);
         // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
-        if world.get::<&Transparent>(entity).is_ok() {
-            self.gpu_render_meta[s * 2 + 1] |= 0x100;
-        }
+        let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
+        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit;
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
         }
@@ -691,27 +780,33 @@ impl RenderState {
             return;
         }
 
-        let mut despawn_slots: Vec<u32> = self
-            .pending_despawns
-            .drain(..)
-            .filter_map(|e| {
-                let eid = e.id() as usize;
-                if eid >= self.entity_to_slot.len() {
-                    return None;
-                }
-                let slot = self.entity_to_slot[eid];
-                if slot == u32::MAX { None } else { Some(slot) }
-            })
-            .collect();
+        let mut queued: Vec<(hecs::Entity, u32)> = std::mem::take(&mut self.pending_despawns);
 
         // Sort descending so highest-numbered slots are removed first.
         // This guarantees that when we swap the "last" entity into the dead slot,
         // "last" is always a live entity (not one pending removal).
-        despawn_slots.sort_unstable_by(|a, b| b.cmp(a));
+        queued.sort_unstable_by_key(|&(_, slot)| std::cmp::Reverse(slot));
+        // A slot can only be released once. A duplicate would swap-remove an
+        // already-dead slot and hand a live entity an out-of-range index, which
+        // later panicked in `copy_soa_slot` — a WASM trap (audit 2026-07, P0-2).
+        queued.dedup_by_key(|(_, slot)| *slot);
 
-        for slot in despawn_slots {
+        for (dead_entity, slot) in queued {
+            // Defensive: `gpu_count` can have shrunk below a queued slot if the
+            // caller queued the same entity twice through different paths.
+            if self.gpu_count == 0 || slot >= self.gpu_count {
+                continue;
+            }
             let last = self.gpu_count - 1;
-            let dead_entity = self.slot_to_entity[slot as usize];
+
+            // Clear the dead entity's mapping FIRST. If the entity that gets
+            // swapped into this slot shares `entity.id()` with the dead one
+            // (same id, newer generation — hecs recycles ids), clearing after
+            // the swap would wipe the live entity's mapping.
+            let dead_id = dead_entity.id() as usize;
+            if dead_id < self.entity_to_slot.len() && self.entity_to_slot[dead_id] == slot {
+                self.entity_to_slot[dead_id] = u32::MAX;
+            }
 
             if slot != last {
                 // Swap last entity's data into the dead slot
@@ -724,9 +819,19 @@ impl RenderState {
                 self.dirty_tracker.mark_meta_dirty(slot as usize);
             }
 
-            // Remove the dead entity from the mapping
-            self.entity_to_slot[dead_entity.id() as usize] = u32::MAX;
+            self.slot_to_entity[last as usize] = hecs::Entity::DANGLING;
             self.gpu_count -= 1;
+        }
+    }
+
+    /// Queue an entity for slot release at the next `flush_pending_despawns()`.
+    ///
+    /// MUST be called while the entity is still live in the world — it resolves
+    /// the GPU slot immediately, because hecs recycles `entity.id()` the moment
+    /// `world.despawn()` returns.
+    pub fn queue_despawn(&mut self, entity: hecs::Entity) {
+        if let Some(slot) = self.get_slot(entity) {
+            self.pending_despawns.push((entity, slot));
         }
     }
 
@@ -763,13 +868,25 @@ impl RenderState {
     }
 
     /// Look up the GPU slot for an entity. Returns None if not assigned.
+    ///
+    /// `entity_to_slot` is keyed by `entity.id()`, which hecs recycles across
+    /// despawns, so the candidate slot is validated against `slot_to_entity`.
+    /// `hecs::Entity` equality includes the generation, so a stale entity whose
+    /// id now belongs to a different entity resolves to `None` rather than to
+    /// the live entity's slot (audit 2026-07, P0-1).
     pub fn get_slot(&self, entity: hecs::Entity) -> Option<u32> {
         let eid = entity.id() as usize;
         if eid >= self.entity_to_slot.len() {
             return None;
         }
         let slot = self.entity_to_slot[eid];
-        if slot == u32::MAX { None } else { Some(slot) }
+        if slot == u32::MAX || slot >= self.gpu_count {
+            return None;
+        }
+        if self.slot_to_entity.get(slot as usize) != Some(&entity) {
+            return None;
+        }
+        Some(slot)
     }
 
     /// Collect dirty entity data into a compact staging buffer for GPU scatter upload.
@@ -777,6 +894,12 @@ impl RenderState {
     pub fn collect_dirty_staging(&mut self, world: &World) -> DirtyStagingResult {
         let total = self.gpu_count as usize;
         if total == 0 {
+            // The early return used to skip the `clear()` below, so dirty bits
+            // set before the last entity was despawned survived into the next
+            // frame and were inherited by whichever entities took those slots
+            // (audit 2026-07, P2-9).
+            self.exported_dirty_bits.clear();
+            self.dirty_tracker.clear();
             return DirtyStagingResult {
                 staging: Vec::new(),
                 dirty_indices: Vec::new(),
@@ -816,11 +939,24 @@ impl RenderState {
                 self.write_slot(slot, world, entity);
             }
 
-            // Check if entity is a root (no Parent or Parent == u32::MAX)
-            let is_root = world
-                .get::<&Parent>(entity)
-                .map(|p| p.0 == u32::MAX)
-                .unwrap_or(true); // no Parent component = root
+            // Choose the wire format by what it can actually REPRESENT, not by
+            // parentage.
+            //
+            // Format 0 carries pos(3) + a single z-rotation angle + scale.xy —
+            // exactly the degrees of freedom a `Transform2D` has. It used to be
+            // selected for every unparented entity, including 3D ones, so a root
+            // 3D entity silently lost its X/Y rotation and its `scale.z`: the
+            // correct mat4 `transform_system` had already computed was thrown
+            // away and the GPU rebuilt an unrotated, unscaled quad
+            // (audit 2026-07, P1-15).
+            //
+            // Format 1 is the full pre-computed mat4. Both branches emit exactly
+            // 16 words, so correctness here costs no extra bandwidth.
+            let is_root = is_2d
+                && world
+                    .get::<&Parent>(entity)
+                    .map(|p| p.0 == u32::MAX)
+                    .unwrap_or(true);
 
             if is_root {
                 if is_2d {
@@ -838,31 +974,7 @@ impl RenderState {
                     // Padding: 10 zeros to reach offset 16
                     staging.extend(std::iter::repeat_n(0u32, 10));
                 } else {
-                    // Compressed 3D format (format=0): pos(3) + rot_angle(1) + scale(2) + padding(10)
-                    let pos = world
-                        .get::<&Position>(entity)
-                        .map(|p| p.0)
-                        .unwrap_or(glam::Vec3::ZERO);
-                    let rot = world
-                        .get::<&Rotation>(entity)
-                        .map(|r| r.0)
-                        .unwrap_or(glam::Quat::IDENTITY);
-                    let scale = world
-                        .get::<&Scale>(entity)
-                        .map(|s| s.0)
-                        .unwrap_or(glam::Vec3::ONE);
-
-                    // Extract z-rotation angle from quaternion
-                    let (angle, _, _) = rot.to_euler(glam::EulerRot::ZYX);
-
-                    staging.push(pos.x.to_bits());
-                    staging.push(pos.y.to_bits());
-                    staging.push(pos.z.to_bits());
-                    staging.push(angle.to_bits());
-                    staging.push(scale.x.to_bits());
-                    staging.push(scale.y.to_bits());
-                    // Padding: 10 zeros to reach offset 16
-                    staging.extend(std::iter::repeat_n(0u32, 10));
+                    unreachable!("format 0 is only selected for Transform2D entities");
                 }
             } else {
                 // Pre-computed mat4x4 (format=1): copy from SoA transforms
@@ -892,6 +1004,21 @@ impl RenderState {
             staging.push(if is_root { 0 } else { 1 });
         }
 
+        // Snapshot the transform bitfield into a dedicated export buffer BEFORE
+        // clearing the tracker.
+        //
+        // The pointer handed to JS used to come straight from the tracker, which
+        // this very function clears as its last act — so `engine_dirty_bits_ptr`
+        // always read zeros and the GPU temporal-culling path (which skips the
+        // bounds read for clean entities) was a permanent no-op, the exact
+        // opposite of what its doc promised (audit 2026-07, P1-16).
+        //
+        // Exporting a copy also makes the pointer stable for the whole frame:
+        // `BitSet::set` can reallocate mid-frame, dangling a pointer JS already
+        // took (P2-5).
+        self.exported_dirty_bits.clear();
+        self.exported_dirty_bits
+            .extend_from_slice(self.dirty_tracker.transforms_words());
         self.dirty_tracker.clear();
 
         DirtyStagingResult {
@@ -914,8 +1041,18 @@ impl RenderState {
     }
 
     /// Pointer to the staging cache buffer for WASM export.
+    ///
+    /// VALID FOR ONE FRAME: `collect_and_cache_dirty` rebuilds the `Vec` every
+    /// frame, so the address changes. Read it after each `engine_update()` and
+    /// never cache it. Returns null when there is nothing to upload — it used to
+    /// return a dangling non-null pointer that passed a JS `if (ptr)` guard
+    /// (audit 2026-07, P2-5).
     pub fn staging_ptr(&self) -> *const u32 {
-        self.staging_cache.as_ptr()
+        if self.staging_cache.is_empty() {
+            std::ptr::null()
+        } else {
+            self.staging_cache.as_ptr()
+        }
     }
 
     /// Number of u32 values in the staging cache buffer.
@@ -924,8 +1061,14 @@ impl RenderState {
     }
 
     /// Pointer to the dirty indices cache buffer for WASM export.
+    ///
+    /// Same one-frame lifetime as `staging_ptr`; null when empty.
     pub fn staging_indices_ptr(&self) -> *const u32 {
-        self.staging_indices_cache.as_ptr()
+        if self.staging_indices_cache.is_empty() {
+            std::ptr::null()
+        } else {
+            self.staging_indices_cache.as_ptr()
+        }
     }
 
     /// Number of u32 values in the dirty indices cache buffer.
@@ -948,17 +1091,50 @@ impl RenderState {
     /// Packed as little-endian `u32` words. Upload to the GPU for temporal
     /// culling: a bit value of 1 means the entity's transform changed this frame.
     pub fn dirty_transform_bits_ptr(&self) -> *const u32 {
-        self.dirty_tracker.transforms_words_ptr()
+        if self.exported_dirty_bits.is_empty() {
+            std::ptr::null()
+        } else {
+            self.exported_dirty_bits.as_ptr()
+        }
     }
 
     /// Number of `u32` words in the dirty-transform bitfield.
     pub fn dirty_transform_bits_u32_len(&self) -> usize {
-        self.dirty_tracker.transforms_words_len()
+        self.exported_dirty_bits.len()
     }
 
     /// Release excess heap memory from all internal buffers.
-    /// Call after a large batch of entity despawns to reclaim memory.
+    ///
+    /// INVALIDATES EVERY `engine_gpu_*_ptr()` PREVIOUSLY HANDED TO JS: every
+    /// `Vec` here may reallocate. Re-read the pointers after calling it.
+    ///
+    /// Before the 2026-07 audit this claimed to shrink "all internal buffers"
+    /// while skipping the slot maps and staging caches, and it left the
+    /// post-despawn dead tail counted as live length — reclaiming far less than
+    /// advertised (P2-5).
     pub fn shrink_to_fit(&mut self) {
+        // Drop the dead tail first: after swap-remove despawns the SoA Vecs are
+        // longer than `gpu_count * stride`.
+        let n = self.gpu_count as usize;
+        self.gpu_transforms.truncate(n * 16);
+        self.gpu_bounds.truncate(n * 4);
+        self.gpu_render_meta.truncate(n * 2);
+        self.gpu_tex_indices.truncate(n);
+        self.gpu_prim_params.truncate(n * 8);
+        self.gpu_entity_ids.truncate(n);
+        self.gpu_depths.truncate(n);
+        self.slot_to_entity.truncate(n);
+        self.slot_to_entity.shrink_to_fit();
+        self.staging_cache.shrink_to_fit();
+        self.staging_indices_cache.shrink_to_fit();
+        self.exported_dirty_bits.shrink_to_fit();
+        if let Some(last) = self.entity_to_slot.iter().rposition(|&s| s != u32::MAX) {
+            self.entity_to_slot.truncate(last + 1);
+        } else {
+            self.entity_to_slot.clear();
+        }
+        self.entity_to_slot.shrink_to_fit();
+
         self.matrices.shrink_to_fit();
         self.gpu_transforms.shrink_to_fit();
         self.gpu_bounds.shrink_to_fit();
@@ -1551,7 +1727,7 @@ mod tests {
         rs.gpu_bounds[s2 * 4] = 77.0;
 
         // Despawn e1 (slot 1) — e2 (slot 2, last) should swap into slot 1
-        rs.pending_despawns.push(e1);
+        rs.queue_despawn(e1);
         rs.flush_pending_despawns();
 
         assert_eq!(rs.gpu_entity_count(), 2);
@@ -1559,7 +1735,7 @@ mod tests {
         assert_eq!(rs.get_slot(e2), Some(1)); // e2 moved to slot 1
         assert_eq!(rs.get_slot(e1), None);    // e1 gone
         // e2's data now at slot 1
-        assert_eq!(rs.gpu_bounds[1 * 4], 77.0);
+        assert_eq!(rs.gpu_bounds[4], 77.0);
     }
 
     #[test]
@@ -1571,8 +1747,8 @@ mod tests {
             rs.assign_slot(e);
         }
         // Despawn slots 1 and 3 — descending order should handle correctly
-        rs.pending_despawns.push(entities[1]);
-        rs.pending_despawns.push(entities[3]);
+        rs.queue_despawn(entities[1]);
+        rs.queue_despawn(entities[3]);
         rs.flush_pending_despawns();
 
         assert_eq!(rs.gpu_entity_count(), 3);
@@ -1619,7 +1795,7 @@ mod tests {
         rs.assign_slot(e1);
 
         // Despawn last slot — no swap needed, just shrink
-        rs.pending_despawns.push(e1);
+        rs.queue_despawn(e1);
         rs.flush_pending_despawns();
 
         assert_eq!(rs.gpu_entity_count(), 1);
@@ -1684,13 +1860,19 @@ mod tests {
 
     #[test]
     fn collect_dirty_staging_compressed_root() {
+        // Audit 2026-07 (P1-15): format 0 is chosen by REPRESENTABILITY, so it
+        // now applies only to `Transform2D` roots — the archetype whose degrees
+        // of freedom it can actually carry. A root 3D entity gets format 1.
         let mut rs = RenderState::new();
         let mut world = World::new();
-
         let e = world.spawn((
-            Position(Vec3::new(10.0, 20.0, 0.0)),
-            Rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)), // 45 degrees
-            Scale(Vec3::new(2.0, 3.0, 1.0)),
+            Transform2D {
+                x: 10.0,
+                y: 20.0,
+                rot: std::f32::consts::FRAC_PI_4,
+                sx: 2.0,
+                sy: 3.0,
+            },
             Velocity::default(),
             ModelMatrix::default(),
             BoundingRadius(1.0),
@@ -1705,37 +1887,62 @@ mod tests {
         ));
         rs.assign_slot(e);
 
-        // Clear dirty from assign, then mark dirty
         rs.dirty_tracker.clear();
         rs.dirty_tracker.mark_transform_dirty(0);
         rs.dirty_tracker.mark_bounds_dirty(0);
 
         let result = rs.collect_dirty_staging(&world);
         assert_eq!(result.dirty_count, 1);
+        assert_eq!(result.staging.len(), 32);
 
-        // Format flag at position 31 should be 0 (compressed)
+        // Format flag at position 31 should be 0 (compressed 2D)
         assert_eq!(result.staging[31], 0);
-
-        // Position at [0..2]
         assert_eq!(f32::from_bits(result.staging[0]), 10.0);
         assert_eq!(f32::from_bits(result.staging[1]), 20.0);
         assert_eq!(f32::from_bits(result.staging[2]), 0.0);
-
-        // Rotation angle at [3] — should be ~PI/4 (0.785...)
         let angle = f32::from_bits(result.staging[3]);
-        assert!(
-            (angle - std::f32::consts::FRAC_PI_4).abs() < 0.001,
-            "expected ~PI/4, got {angle}"
-        );
-
-        // Scale at [4..5]
+        assert!((angle - std::f32::consts::FRAC_PI_4).abs() < 1e-5, "angle was {angle}");
         assert_eq!(f32::from_bits(result.staging[4]), 2.0);
         assert_eq!(f32::from_bits(result.staging[5]), 3.0);
+    }
 
-        // Padding [6..15] should be 0
-        for i in 6..16 {
-            assert_eq!(result.staging[i], 0, "padding at index {i} should be 0");
+    /// A root 3D entity must travel as a full mat4: the compressed format has no
+    /// room for X/Y rotation or scale.z (audit 2026-07, P1-15).
+    #[test]
+    fn collect_dirty_staging_3d_root_uses_full_matrix() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let e = world.spawn((
+            Position(Vec3::new(1.0, 2.0, 3.0)),
+            Rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+            Scale(Vec3::new(1.0, 1.0, 5.0)),
+            Velocity::default(),
+            ModelMatrix::default(),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(0),
+            PrimitiveParams::default(),
+            ExternalId(0),
+            Parent::default(),
+            Children::default(),
+            Active,
+        ));
+        crate::systems::transform_system(&mut world);
+        rs.assign_slot(e);
+        rs.dirty_tracker.clear();
+        rs.dirty_tracker.mark_transform_dirty(0);
+
+        let result = rs.collect_dirty_staging(&world);
+        assert_eq!(result.staging[31], 1, "3D roots must use the mat4 format");
+        // The staged matrix must be the real one, scale.z and X rotation included.
+        let staged: Vec<f32> = result.staging[..16].iter().map(|b| f32::from_bits(*b)).collect();
+        let truth = world.get::<&ModelMatrix>(e).unwrap().0;
+        for i in 0..16 {
+            assert!((staged[i] - truth[i]).abs() < 1e-5,
+                "column word {i}: staged {} vs real {}", staged[i], truth[i]);
         }
+        assert!(staged[9].abs() > 4.0, "scale.z must survive, got {}", staged[9]);
     }
 
     #[test]
@@ -1972,8 +2179,10 @@ mod tests {
         // Clear dirty state (assign_slot marks everything dirty)
         rs.dirty_tracker.clear();
 
-        // Mark only slot1 dirty
+        // Mark only slot1 dirty, then stage the frame — the exported bitfield is
+        // a snapshot taken during staging (audit 2026-07, P1-16).
         rs.dirty_tracker.mark_transform_dirty(slot1 as usize);
+        let _ = rs.collect_dirty_staging(&world);
 
         // Check the raw bits
         let len = rs.dirty_transform_bits_u32_len();
@@ -2011,6 +2220,7 @@ mod tests {
             ));
             rs.assign_slot(ent);
         }
+        let _ = rs.collect_dirty_staging(&world);
 
         let len = rs.dirty_transform_bits_u32_len();
         // 100 slots need at least ceil(100/32) = 4 u32 words
@@ -2020,7 +2230,10 @@ mod tests {
     }
 
     #[test]
-    fn dirty_bits_cleared_after_clear() {
+    fn exported_dirty_bits_reflect_the_frame_that_was_staged() {
+        // Audit 2026-07 (P1-16): the exported bitfield is a snapshot taken just
+        // before `collect_dirty_staging` clears the tracker, NOT a live view of
+        // the tracker — which is why it used to read as all zeros from JS.
         let mut rs = RenderState::new();
         let mut world = World::new();
 
@@ -2033,21 +2246,44 @@ mod tests {
             Active,
             ExternalId(1),
         ));
-        let slot = rs.assign_slot(ent);
+        let slot = rs.assign_slot(ent) as usize;
 
-        // After assign_slot the bit is dirty; clear it
-        rs.dirty_tracker.clear();
-        rs.dirty_tracker.mark_transform_dirty(slot as usize);
+        // Nothing staged yet -> nothing exported, and the pointer is null so a
+        // JS `if (ptr)` guard behaves.
+        assert!(rs.dirty_transform_bits_ptr().is_null());
+        assert_eq!(rs.dirty_transform_bits_u32_len(), 0);
 
-        // Verify dirty
+        rs.dirty_tracker.mark_transform_dirty(slot);
+        let _ = rs.collect_dirty_staging(&world);
+
+        let ptr = rs.dirty_transform_bits_ptr();
+        let len = rs.dirty_transform_bits_u32_len();
+        assert!(!ptr.is_null() && len > 0, "the staged frame must export its bits");
+        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_ne!(bits[slot / 32] & (1 << (slot % 32)), 0,
+            "the slot marked dirty this frame must be set in the export");
+
+        // The tracker itself is cleared, so the NEXT frame with no changes
+        // exports an all-zero mask.
+        let _ = rs.collect_dirty_staging(&world);
         let ptr = rs.dirty_transform_bits_ptr();
         let len = rs.dirty_transform_bits_u32_len();
         let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert_ne!(bits[slot as usize / 32] & (1 << (slot as usize % 32)), 0);
+        assert_eq!(bits[slot / 32] & (1 << (slot % 32)), 0);
+    }
 
-        // Clear and verify clean
-        rs.dirty_tracker.clear();
-        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert_eq!(bits[slot as usize / 32] & (1 << (slot as usize % 32)), 0);
+    /// A frame that ends with zero entities must not leave dirty bits behind for
+    /// the next frame's slots to inherit (audit 2026-07, P2-9).
+    #[test]
+    fn zero_entity_frame_clears_the_tracker() {
+        let mut rs = RenderState::new();
+        let world = World::new();
+        rs.dirty_tracker.ensure_capacity(8);
+        rs.dirty_tracker.mark_transform_dirty(0);
+        rs.dirty_tracker.mark_transform_dirty(5);
+        let _ = rs.collect_dirty_staging(&world);
+        assert!(!rs.dirty_tracker.is_transform_dirty(0));
+        assert!(!rs.dirty_tracker.is_transform_dirty(5));
+        assert!(rs.dirty_transform_bits_ptr().is_null());
     }
 }

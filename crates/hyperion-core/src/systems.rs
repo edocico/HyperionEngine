@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use glam::Mat4;
 use hecs::World;
 
-use crate::components::{Active, ModelMatrix, Parent, Position, Rotation, Scale, Transform2D, Velocity};
+use crate::components::{
+    Active, BoundingRadius, BoundsOverride, ModelMatrix, Parent, Position, Rotation, Scale,
+    Transform2D, Velocity,
+};
 
 #[cfg(feature = "physics-2d")]
 use crate::physics::PhysicsControlled;
@@ -91,34 +94,135 @@ pub fn count_active(world: &World) -> usize {
     world.query::<&Active>().iter().count()
 }
 
-/// Propagate parent transforms to children.
-/// For each entity with a Parent != u32::MAX, multiply parent's ModelMatrix
-/// by child's ModelMatrix to produce the child's world ModelMatrix.
+/// Propagate parent transforms down the scene graph, at any depth.
+///
+/// `transform_system` / `transform_system_2d` leave each entity's **local**
+/// matrix in `ModelMatrix`; this turns those into **world** matrices.
+///
+/// Before the 2026-07 audit (P1-18) this was a single flat pass that multiplied
+/// every child by its parent's `ModelMatrix` as it happened to be at that
+/// moment — i.e. by the parent's *local* matrix. A grandchild therefore got
+/// `P_local × C_local` and the grandparent was dropped entirely: a weapon held
+/// by an arm rendered at the arm's local offset from the world origin.
+///
+/// The rewrite snapshots the local matrices first, then applies them strictly
+/// in increasing depth order, so `world[e] = world[parent] × local[e]` always
+/// reads a parent that is already in world space. It is also idempotent: the
+/// locals it reads are the snapshot, never the values it just wrote.
+///
+/// Chains longer than [`MAX_HIERARCHY_DEPTH`](crate::command_processor::MAX_HIERARCHY_DEPTH)
+/// are treated as broken and left in local space; `SetParent` rejects cycles,
+/// so this only triggers on genuinely pathological data (e.g. a restored
+/// snapshot written by an older build).
 pub fn propagate_transforms(world: &mut World, ext_to_entity: &HashMap<u32, hecs::Entity>) {
-    let mut updates: Vec<(hecs::Entity, [f32; 16])> = Vec::new();
+    use crate::command_processor::MAX_HIERARCHY_DEPTH;
 
+    // Pass 1 — snapshot every parented entity's local matrix and its parent.
+    let mut locals: HashMap<hecs::Entity, ([f32; 16], u32)> = HashMap::new();
     for (entity, parent_comp, matrix, _active) in world
         .query::<(hecs::Entity, &Parent, &ModelMatrix, &Active)>()
         .iter()
     {
-        if parent_comp.0 == u32::MAX {
-            continue;
+        if parent_comp.0 != u32::MAX {
+            locals.insert(entity, (matrix.0, parent_comp.0));
         }
-        if let Some(&parent_entity) = ext_to_entity.get(&parent_comp.0)
-            && let Ok(parent_matrix) = world.get::<&ModelMatrix>(parent_entity)
-        {
-            let parent_mat4 = glam::Mat4::from_cols_array(&parent_matrix.0);
-            let child_mat4 = glam::Mat4::from_cols_array(&matrix.0);
-            let result = parent_mat4 * child_mat4;
-            updates.push((entity, result.to_cols_array()));
-        }
+    }
+    if locals.is_empty() {
+        return;
     }
 
-    for (entity, new_matrix) in updates {
-        if let Ok(mut m) = world.get::<&mut ModelMatrix>(entity) {
-            m.0 = new_matrix;
+    // Pass 2 — depth of every parented entity (root children = depth 1).
+    // Entities whose chain exceeds the cap, or whose parent is missing, are
+    // dropped rather than propagated with a wrong ancestor.
+    let mut ordered: Vec<(hecs::Entity, usize)> = Vec::with_capacity(locals.len());
+    for (&entity, &(_, parent_ext)) in &locals {
+        let mut depth = 1usize;
+        let mut cursor = parent_ext;
+        let mut ok = true;
+        loop {
+            let Some(&parent_entity) = ext_to_entity.get(&cursor) else {
+                ok = false;
+                break;
+            };
+            match locals.get(&parent_entity) {
+                // Parent is itself parented — keep climbing.
+                Some(&(_, grandparent_ext)) => {
+                    depth += 1;
+                    if depth > MAX_HIERARCHY_DEPTH {
+                        ok = false;
+                        break;
+                    }
+                    cursor = grandparent_ext;
+                }
+                // Parent is a root: chain complete.
+                None => break,
+            }
+        }
+        if ok {
+            ordered.push((entity, depth));
         }
     }
+    ordered.sort_unstable_by_key(|&(entity, depth)| (depth, entity.id()));
+
+    // Pass 3 — apply shallowest first, so each parent is already in world space.
+    for (entity, _) in ordered {
+        let Some(&(local, parent_ext)) = locals.get(&entity) else {
+            continue;
+        };
+        let Some(&parent_entity) = ext_to_entity.get(&parent_ext) else {
+            continue;
+        };
+        let Ok(parent_matrix) = world.get::<&ModelMatrix>(parent_entity) else {
+            continue;
+        };
+        let world_mat = Mat4::from_cols_array(&parent_matrix.0) * Mat4::from_cols_array(&local);
+        drop(parent_matrix);
+        if let Ok(mut m) = world.get::<&mut ModelMatrix>(entity) {
+            m.0 = world_mat.to_cols_array();
+        }
+    }
+}
+
+/// Recompute every entity's bounding-sphere radius from its **world** matrix.
+///
+/// Runs after `transform_system` / `transform_system_2d` and
+/// `propagate_transforms`, so the matrix already includes inherited parent
+/// scale — deriving from the `Scale` component instead would leave a scaled
+/// child wrong.
+///
+/// Before the 2026-07 audit (P1-17) `BoundingRadius` was written exactly once,
+/// at spawn, as the constant 0.5 and never updated. It feeds GPU frustum
+/// culling (`cull.wgsl`) and CPU ray picking (`hit-tester.ts`), so a sprite
+/// scaled to 2000x1000 was culled the instant its centre left the view and
+/// `hitTestRay` missed it everywhere except within 0.5 units of its centre.
+/// 0.5 was also too small even for an unscaled unit quad, whose circumradius
+/// is 0.7071.
+///
+/// Entities carrying `BoundsOverride` (set via `SetBoundingRadius`) are skipped.
+pub fn update_bounding_radii(world: &mut World) {
+    for (matrix, radius, _active) in world
+        .query_mut::<hecs::Without<(&ModelMatrix, &mut BoundingRadius, &Active), &BoundsOverride>>()
+    {
+        radius.0 = world_matrix_radius(&matrix.0);
+    }
+}
+
+/// Circumradius of the unit box [-0.5, 0.5]^3 transformed by `m`'s linear part.
+///
+/// Exact rather than conservative: the maximum is taken over the four
+/// independent corner sign combinations (the other four are their negatives),
+/// so nothing is culled that should be drawn and nothing is drawn that a
+/// tighter bound would have culled.
+fn world_matrix_radius(m: &[f32; 16]) -> f32 {
+    let c0 = glam::Vec3::new(m[0], m[1], m[2]) * 0.5;
+    let c1 = glam::Vec3::new(m[4], m[5], m[6]) * 0.5;
+    let c2 = glam::Vec3::new(m[8], m[9], m[10]) * 0.5;
+    let mut best = 0.0f32;
+    for &(sy, sz) in &[(1.0f32, 1.0f32), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        best = best.max((c0 + c1 * sy + c2 * sz).length_squared());
+    }
+    let r = best.sqrt();
+    if r.is_finite() { r } else { 0.0 }
 }
 
 #[cfg(test)]

@@ -69,6 +69,18 @@ export const enum CommandType {
   SetCharacterConfig = 45,
   MoveCharacter = 46,
   SetPhysicsDebugRender = 47,
+
+  // Audit 2026-07: commands added to close unreachable behaviour
+  /** Enable Rapier event reporting on a collider (bit0 = collision, bit1 = contact force). */
+  SetColliderEvents = 48,
+  /** Reposition a physics body — the only way to move a dynamic/fixed body. */
+  TeleportBody = 49,
+  /** Pin an explicit cull/pick radius. Negative restores automatic derivation. */
+  SetBoundingRadius = 50,
+  /** Remove a character controller without destroying the entity. */
+  DestroyCharacterController = 51,
+  /** Explicit "up" axis for the character controller. */
+  SetCharacterUp = 52,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -129,6 +141,13 @@ export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetCharacterConfig]: 16,
   [CommandType.MoveCharacter]: 8,
   [CommandType.SetPhysicsDebugRender]: 1,
+
+  // Audit 2026-07 additions
+  [CommandType.SetColliderEvents]: 1,          // event bitmask (u8)
+  [CommandType.TeleportBody]: 13,              // x + y + rot (3 × f32) + flags (u8)
+  [CommandType.SetBoundingRadius]: 4,          // f32
+  [CommandType.DestroyCharacterController]: 0,
+  [CommandType.SetCharacterUp]: 8,             // ux + uy (2 × f32)
 };
 
 export class RingBufferProducer {

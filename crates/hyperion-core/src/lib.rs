@@ -7,6 +7,11 @@ pub mod components;
 pub mod engine;
 #[cfg(feature = "physics-2d")]
 pub mod physics;
+/// Re-export of the Rapier2D types the physics API exposes, so integration
+/// tests and downstream crates can name them without adding their own
+/// dependency (and risking a version skew).
+#[cfg(feature = "physics-2d")]
+pub use rapier2d;
 #[cfg(feature = "physics-2d")]
 pub mod physics_commands;
 pub mod render_state;
@@ -52,12 +57,41 @@ pub fn engine_attach_ring_buffer(ptr: *mut u8, capacity: usize) {
 /// Call this BEFORE `engine_update()` each frame.
 #[wasm_bindgen]
 pub fn engine_push_commands(data: &[u8]) {
-    let commands = ring_buffer::parse_commands(data);
+    let parsed = ring_buffer::parse_commands_checked(data);
     // SAFETY: wasm32 is single-threaded; no concurrent access.
     unsafe {
         if let Some(ref mut engine) = *addr_of_mut!(ENGINE) {
-            engine.process_commands(&commands);
+            if parsed.dropped_bytes > 0 {
+                engine.note_dropped_command_bytes(parsed.dropped_bytes);
+            }
+            engine.process_commands(&parsed.commands);
         }
+    }
+}
+
+/// Total command bytes discarded because of an unknown opcode.
+///
+/// An unknown opcode cannot be framed, so the rest of that batch is lost —
+/// silently, before the 2026-07 audit. A non-zero value here almost always
+/// means the TypeScript `CommandType` table is ahead of the WASM build.
+#[wasm_bindgen]
+pub fn engine_dropped_command_bytes() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.dropped_command_bytes())
+    }
+}
+
+/// Commands rejected because their external entity id was out of range.
+#[wasm_bindgen]
+pub fn engine_rejected_command_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.rejected_command_count())
     }
 }
 
@@ -698,8 +732,11 @@ pub fn engine_debug_generate_lines(vert_ptr: *mut f32, color_ptr: *mut f32, max_
             Some(e) => e,
             None => return 0,
         };
-        let verts = std::slice::from_raw_parts_mut(vert_ptr, (max_verts * 3) as usize);
-        let colors = std::slice::from_raw_parts_mut(color_ptr, (max_verts * 4) as usize);
+        // Widen BEFORE multiplying: the products overflow u32 past
+        // max_verts > u32::MAX/4 and would build a slice shorter than the
+        // caller's buffer (audit 2026-07, P3-13).
+        let verts = std::slice::from_raw_parts_mut(vert_ptr, max_verts as usize * 3);
+        let colors = std::slice::from_raw_parts_mut(color_ptr, max_verts as usize * 4);
         engine.debug_generate_lines(verts, colors, max_verts)
     }
 }

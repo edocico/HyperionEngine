@@ -32,9 +32,10 @@ Before starting, read these files to understand the current primitive type setup
    - If primitive uses PrimParams, add parameter mapping to `prim-params-schema.ts`
 
 4. **Update cull shader indirect args** if total primitive types exceeds 6:
-   - `ts/src/shaders/cull.wgsl`: increase indirect args array
-   - `ts/src/render/passes/cull-pass.ts`: update buffer size (currently 240 bytes = 6 types x 2 buckets x 20 bytes)
-   - Update CLAUDE.md gotcha about "12 indirect args entries"
+   - `ts/src/shaders/cull.wgsl`: grow the `array<DrawIndirectArgs, N>` declaration — it is
+     currently 24 entries (6 types x 2 material buckets x 2 blend modes), 480 bytes
+   - `ts/src/render/passes/cull-pass.ts`: update the buffer allocation to match
+   - Update the "Indirect args are 24 entries (480 bytes)" gotcha in CLAUDE.md
 
 5. **Export from barrel** (`ts/src/index.ts`):
    - Re-export new RenderPrimitiveType value if public
@@ -49,12 +50,19 @@ Before starting, read these files to understand the current primitive type setup
 
 ## Validation
 
-After implementation, run:
 ```bash
-cd ts && npm test && npx tsc --noEmit
+scripts/preflight.sh
 ```
 
-Then visually verify in the browser:
+That script is the single definition of "validated" — do not reconstruct the command list
+here. See the `/validate` skill for what it covers.
+
+Then verify visually, which nothing automated can do — WebGPU returns null from
+`requestAdapter()` headless, so a green preflight says nothing about whether the new
+primitive draws:
 ```bash
 cd ts && npm run dev
 ```
+
+Run the **`wgsl-validator`** agent as well: every primitive shader must declare an
+identical bind group layout, including bindings it never reads.

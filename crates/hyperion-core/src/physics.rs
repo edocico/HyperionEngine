@@ -143,6 +143,22 @@ pub mod types {
         Spring { rest_length: f32 },
     }
 
+    /// A queued body reposition, consumed at the start of `physics_sync_pre`.
+    ///
+    /// Rapier owns the transform of every body it simulates, so writing
+    /// `Position`/`Transform2D` from a command was silently reverted on the next
+    /// step for dynamic and fixed bodies — there was no teleport path at all
+    /// (audit 2026-07, P1-9).
+    pub struct PendingTeleport {
+        pub ext_id: u32,
+        pub x: f32,
+        pub y: f32,
+        /// `None` keeps the body's current rotation.
+        pub rot: Option<f32>,
+        /// Clear linear/angular velocity and accumulated forces (respawn semantics).
+        pub zero_velocity: bool,
+    }
+
     /// A pending joint creation. Consumed in physics_sync_pre() step 4.
     pub struct PendingJoint {
         pub joint_id: u32,
@@ -241,11 +257,33 @@ mod world {
         /// Character controller entries keyed by external entity ID.
         pub character_map: std::collections::HashMap<u32, super::types::CharacterEntry>,
         /// Pending MoveCharacter commands: (ext_id, dx, dy).
-        /// Populated by process_commands, consumed in physics_sync_pre Pass 5.
+        /// Populated by process_commands (accumulated per entity), consumed
+        /// once per FRAME by `Engine::update` before the tick loop.
         pub pending_moves: Vec<(u32, f32, f32)>,
+        /// Queued body repositions, consumed at the start of `physics_sync_pre`.
+        pub pending_teleports: Vec<super::types::PendingTeleport>,
     }
 
     impl PhysicsWorld {
+        /// The "up" axis a character controller should use, derived from gravity.
+        ///
+        /// `KinematicCharacterController::default()` hardcodes +Y, which points
+        /// the same way as this engine's default gravity (0, +980 = down in
+        /// pixel coordinates). With up == gravity direction every floor normal
+        /// reads as a ceiling, so `grounded` was permanently false and
+        /// `is_sliding_down_slope` permanently true (audit 2026-07, P1-11).
+        ///
+        /// Falls back to +Y for zero (top-down) gravity, matching the previous
+        /// behaviour for scenes that never relied on ground detection.
+        pub fn default_character_up(&self) -> Vector {
+            let g = self.gravity;
+            let len = (g.x * g.x + g.y * g.y).sqrt();
+            if !len.is_finite() || len <= f32::EPSILON {
+                return Vector::new(0.0, 1.0);
+            }
+            Vector::new(-g.x / len, -g.y / len)
+        }
+
         /// Create a new physics world with pixel-space defaults.
         ///
         /// - `gravity`: (0, 980) — down in pixel coordinates
@@ -282,6 +320,7 @@ mod world {
                 debug_pipeline: rapier2d::pipeline::DebugRenderPipeline::default(),
                 character_map: std::collections::HashMap::new(),
                 pending_moves: Vec::new(),
+                pending_teleports: Vec::new(),
             }
         }
 
@@ -337,7 +376,16 @@ mod world {
                 &self.collider_set,
                 QueryFilter::default(),
             );
-            let ray = Ray::new(Vector::new(ox, oy), Vector::new(dx, dy));
+            // Normalise the direction so `max_toi` and the reported `toi` are
+            // in world units regardless of what the caller passed. Before the
+            // 2026-07 audit (P1-14) both were implicitly scaled by |dir|, so an
+            // un-normalised direction produced hits well past the requested
+            // maximum distance.
+            let len = (dx * dx + dy * dy).sqrt();
+            if !len.is_finite() || len <= f32::EPSILON || !max_toi.is_finite() {
+                return -1;
+            }
+            let ray = Ray::new(Vector::new(ox, oy), Vector::new(dx / len, dy / len));
             match qp.cast_ray_and_get_normal(&ray, max_toi, true) {
                 Some((col_handle, hit)) => {
                     // SAFETY: wasm32 is single-threaded
@@ -369,6 +417,12 @@ mod world {
             // SAFETY: wasm32 is single-threaded
             let results = unsafe { &mut *addr_of_mut!(OVERLAP_RESULTS) };
             results.clear();
+            // NOTE: broad-phase conservative — a rotated or round collider whose
+            // AABB overlaps but whose actual shape does not is still reported.
+            // `overlap_circle` below uses the exact test; the difference is
+            // documented rather than "fixed", because an AABB query with exact
+            // semantics would need a cuboid shape cast and change the cost
+            // profile of what is meant to be the cheap query.
             for (col_handle, _collider) in qp.intersect_aabb_conservative(aabb) {
                 if let Some(ext_id) = self.collider_handle_to_entity(col_handle) {
                     results.push(ext_id);
@@ -486,7 +540,13 @@ pub fn physics_sync_pre(
             0 => RigidBodyBuilder::dynamic(),
             1 => RigidBodyBuilder::fixed(),
             2 => RigidBodyBuilder::kinematic_position_based(),
-            _ => continue,
+            // An invalid discriminant used to `continue` while leaving the
+            // component attached, so the entity was re-scanned on every tick for
+            // the rest of its life (audit 2026-07, P1-14e).
+            _ => {
+                cmd.remove::<(PendingRigidBody,)>(entity);
+                continue;
+            }
         }
         .translation(translation)
         .gravity_scale(pending.gravity_scale)
@@ -509,6 +569,9 @@ pub fn physics_sync_pre(
         &PhysicsBodyHandle,
         Option<&ExternalId>,
     )>() {
+        // The component is removed on BOTH paths: a rejected shape used to keep
+        // it attached forever (audit 2026-07, P1-14e / P1-13).
+        cmd2.remove::<(PendingCollider,)>(entity);
         if let Some(builder) = build_collider_shape(pending) {
             let collider = builder.build();
             let col_handle = physics.collider_set.insert_with_parent(
@@ -522,15 +585,60 @@ pub fn physics_sync_pre(
             if idx >= physics.collider_to_entity.len() {
                 physics.collider_to_entity.resize(idx + 1, None);
             }
-            if let Some(eid) = ext_id {
-                physics.collider_to_entity[idx] = Some(eid.0);
-            }
+            // Always write the slot: Rapier recycles arena indices, so leaving a
+            // stale entry behind mis-attributed the previous owner's collisions
+            // (audit 2026-07, P3-5).
+            physics.collider_to_entity[idx] = ext_id.map(|e| e.0);
 
             cmd2.insert_one(entity, PhysicsColliderHandle(col_handle));
-            cmd2.remove::<(PendingCollider,)>(entity);
         }
     }
     cmd2.run_on(world);
+
+    // Pass 2b: Consume queued teleports.
+    //
+    // Rapier owns the transform of every body it simulates, so a `SetPosition`
+    // on a dynamic or fixed body was overwritten by `physics_sync_post` on the
+    // very next frame — the engine had no reposition path at all
+    // (audit 2026-07, P1-9). Applied after body creation so a teleport issued
+    // in the same batch as `CreateRigidBody` still lands.
+    if !physics.pending_teleports.is_empty() {
+        let queued = std::mem::take(&mut physics.pending_teleports);
+        for t in queued {
+            let Some(entity) = entity_map.get(t.ext_id) else { continue };
+            let Some(handle) = world.get::<&PhysicsBodyHandle>(entity).ok().map(|h| h.0) else {
+                continue;
+            };
+            let Some(body) = physics.rigid_body_set.get_mut(handle) else { continue };
+            body.set_translation(Vector::new(t.x, t.y), true);
+            if let Some(rot) = t.rot {
+                body.set_rotation(rapier2d::math::Rotation::from_angle(rot), true);
+            }
+            if body.is_kinematic() {
+                // Keep the interpolation target consistent with the new pose,
+                // otherwise the next step would sweep back from the old one.
+                body.set_next_kinematic_translation(Vector::new(t.x, t.y));
+            }
+            if t.zero_velocity {
+                body.set_linvel(Vector::new(0.0, 0.0), true);
+                body.set_angvel(0.0, true);
+                body.reset_forces(true);
+                body.reset_torques(true);
+            }
+            // Mirror into the ECS so the frame that issued the teleport already
+            // renders at the new pose.
+            if let Ok(mut t2d) = world.get::<&mut Transform2D>(entity) {
+                t2d.x = t.x;
+                t2d.y = t.y;
+                if let Some(rot) = t.rot {
+                    t2d.rot = rot;
+                }
+            } else if let Ok(mut pos) = world.get::<&mut crate::components::Position>(entity) {
+                pos.0.x = t.x;
+                pos.0.y = t.y;
+            }
+        }
+    }
 
     // Pass 3: Kinematic body sync — push ECS position into Rapier
     for (t2d, handle) in world.query_mut::<(&Transform2D, &PhysicsBodyHandle)>() {
@@ -573,12 +681,22 @@ pub fn physics_sync_pre(
                     .into(),
                 JOINT_KIND_REVOLUTE,
             ),
-            PendingJointType::Prismatic { axis_x, axis_y } => (
-                PrismaticJointBuilder::new(vector![axis_x, axis_y].into())
-                    .build()
-                    .into(),
-                JOINT_KIND_PRISMATIC,
-            ),
+            PendingJointType::Prismatic { axis_x, axis_y } => {
+                // Rapier feeds the axis straight into the joint frame: a
+                // non-unit axis yields a non-orthonormal frame (motor velocities
+                // and limits then scale by |axis|) and a zero axis a degenerate
+                // rotation with no constraint at all (audit 2026-07, P1-14a).
+                let len = (axis_x * axis_x + axis_y * axis_y).sqrt();
+                if !len.is_finite() || len <= f32::EPSILON {
+                    continue;
+                }
+                (
+                    PrismaticJointBuilder::new(vector![axis_x / len, axis_y / len].into())
+                        .build()
+                        .into(),
+                    JOINT_KIND_PRISMATIC,
+                )
+            }
             PendingJointType::Fixed => (FixedJointBuilder::new().build().into(), JOINT_KIND_FIXED),
             PendingJointType::Rope { max_dist } => {
                 (RopeJointBuilder::new(max_dist).build().into(), JOINT_KIND_ROPE)
@@ -622,7 +740,11 @@ pub fn physics_sync_pre(
             physics.narrow_phase.query_dispatcher(),
             &physics.rigid_body_set,
             &physics.collider_set,
-            QueryFilter::default().exclude_rigid_body(body_handle.0),
+            // Sensors are trigger volumes: shape-casting against them made the
+            // character physically stop at every trigger (audit 2026-07, P1-14b).
+            QueryFilter::default()
+                .exclude_sensors()
+                .exclude_rigid_body(body_handle.0),
         );
 
         let desired = Vector::new(dx, dy);
@@ -648,12 +770,42 @@ pub fn physics_sync_pre(
 fn build_collider_shape(pending: &PendingCollider) -> Option<rapier2d::prelude::ColliderBuilder> {
     use rapier2d::prelude::*;
     let p = &pending.shape_params;
+    // Validate before handing anything to Rapier.
+    //
+    // A negative radius produced an inverted AABB that could never overlap
+    // anything in the BVH (an invisible collider that still carried mass), and a
+    // NaN dimension produced a NaN mass that propagated back into the ECS
+    // transform and from there into the GPU model matrix
+    // (audit 2026-07, P1-13).
     let builder = match pending.shape_type {
-        0 => ColliderBuilder::ball(p[0]),
-        1 => ColliderBuilder::cuboid(p[0] / 2.0, p[1] / 2.0),
-        2 => ColliderBuilder::capsule_y(p[0], p[1]),
+        0 => {
+            if !(p[0].is_finite() && p[0] > 0.0) {
+                return None;
+            }
+            ColliderBuilder::ball(p[0])
+        }
+        1 => {
+            if !(p[0].is_finite() && p[1].is_finite() && p[0] > 0.0 && p[1] > 0.0) {
+                return None;
+            }
+            ColliderBuilder::cuboid(p[0] / 2.0, p[1] / 2.0)
+        }
+        2 => {
+            // params are (half_height, radius) — matches the TS overload
+            // `collider('capsule', { halfHeight, radius })`.
+            if !(p[0].is_finite() && p[1].is_finite() && p[0] > 0.0 && p[1] > 0.0) {
+                return None;
+            }
+            ColliderBuilder::capsule_y(p[0], p[1])
+        }
         _ => return None,
     };
+    if !(pending.density.is_finite()
+        && pending.restitution.is_finite()
+        && pending.friction.is_finite())
+    {
+        return None;
+    }
     let mut builder = builder
         .density(pending.density)
         .restitution(pending.restitution)

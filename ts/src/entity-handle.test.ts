@@ -45,6 +45,17 @@ function mockProducer(): BackpressuredProducer {
     createCharacterController: vi.fn(() => true),
     setCharacterConfig: vi.fn(() => true),
     moveCharacter: vi.fn(() => true),
+    // Audit 2026-07 additions
+    setColliderSensor: vi.fn(() => true),
+    setColliderDensity: vi.fn(() => true),
+    setColliderFriction: vi.fn(() => true),
+    setColliderRestitution: vi.fn(() => true),
+    setCollisionGroups: vi.fn(() => true),
+    setColliderEvents: vi.fn(() => true),
+    teleportBody: vi.fn(() => true),
+    setBoundingRadius: vi.fn(() => true),
+    destroyCharacterController: vi.fn(() => true),
+    setCharacterUp: vi.fn(() => true),
     flush: vi.fn(),
     pendingCount: 0,
     freeSpace: 1000,
@@ -530,5 +541,73 @@ describe('EntityHandle', () => {
       h.destroy();
       expect(() => h.characterController()).toThrow('destroyed');
     });
+  });
+});
+
+// ── Audit 2026-07 ──────────────────────────────────────────────
+describe('EntityHandle — audit 2026-07 additions', () => {
+  it('applies collider options issued with the collider itself', () => {
+    // These five commands had no handler at all in Rust before the audit, and
+    // options sent in the creation batch were dropped even after the handlers
+    // existed — so both halves of the path are pinned here.
+    const p = mockProducer();
+    const h = new EntityHandle(7, p);
+    h.collider('circle', {
+      radius: 10,
+      sensor: true,
+      density: 3,
+      friction: 0.1,
+      restitution: 0.9,
+      groups: { membership: 0x0002, filter: 0x0004 },
+    });
+    expect(p.createCollider).toHaveBeenCalledWith(7, 0, 10, 0, 0);
+    expect(p.setColliderSensor).toHaveBeenCalledWith(7, true);
+    expect(p.setColliderDensity).toHaveBeenCalledWith(7, 3);
+    expect(p.setColliderFriction).toHaveBeenCalledWith(7, 0.1);
+    expect(p.setColliderRestitution).toHaveBeenCalledWith(7, 0.9);
+    expect(p.setCollisionGroups).toHaveBeenCalledWith(7, 0x0002, 0x0004);
+  });
+
+  it('opts a sensor into collision events automatically', () => {
+    // Events are off by default; a sensor that reports nothing is useless.
+    const p = mockProducer();
+    new EntityHandle(1, p).collider('circle', { radius: 5, sensor: true });
+    expect(p.setColliderEvents).toHaveBeenCalledWith(1, true, false);
+  });
+
+  it('leaves events off for an ordinary collider', () => {
+    const p = mockProducer();
+    new EntityHandle(1, p).collider('circle', { radius: 5 });
+    expect(p.setColliderEvents).not.toHaveBeenCalled();
+  });
+
+  it('box takes full extents, capsule takes a half height', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(2, p);
+    h.collider('box', { width: 40, height: 60 });
+    expect(p.createCollider).toHaveBeenCalledWith(2, 1, 40, 60, 0);
+    h.collider('capsule', { halfHeight: 40, radius: 5 });
+    expect(p.createCollider).toHaveBeenCalledWith(2, 2, 40, 5, 0);
+  });
+
+  it('exposes teleport, boundingRadius and character-controller controls', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(3, p);
+    const chained = h
+      .teleport(10, 20)
+      .boundingRadius(7.5)
+      .characterUp(0, -1)
+      .destroyCharacterController();
+    expect(chained).toBe(h);
+    expect(p.teleportBody).toHaveBeenCalledWith(3, 10, 20, 0, true);
+    expect(p.setBoundingRadius).toHaveBeenCalledWith(3, 7.5);
+    expect(p.setCharacterUp).toHaveBeenCalledWith(3, 0, -1);
+    expect(p.destroyCharacterController).toHaveBeenCalledWith(3);
+  });
+
+  it('a negative bounding radius releases the override', () => {
+    const p = mockProducer();
+    new EntityHandle(4, p).boundingRadius(-1);
+    expect(p.setBoundingRadius).toHaveBeenCalledWith(4, -1);
   });
 });

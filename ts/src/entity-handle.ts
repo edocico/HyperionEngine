@@ -3,6 +3,19 @@ import type { ImmediateState } from './immediate-state';
 import type { TextureHandle } from './types';
 import type { JointHandle, CharacterControllerConfig } from './physics-api';
 
+/** Optional collider properties, applicable at creation time or later. */
+export interface ColliderOptions {
+  /** Trigger volume: reports overlaps but does not resolve them. */
+  sensor?: boolean;
+  density?: number;
+  friction?: number;
+  restitution?: number;
+  /** Collision layers: 16-bit membership + 16-bit filter. */
+  groups?: { membership: number; filter: number };
+  /** Rapier event reporting. Sensors default to `{ collision: true }`. */
+  events?: { collision?: boolean; contactForce?: boolean };
+}
+
 /** Render primitive type enum (must match Rust RenderPrimitive values). */
 export const enum RenderPrimitiveType {
   Quad = 0,
@@ -223,11 +236,21 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Create a collider for this entity. Returns `this` for chaining. */
-  collider(shape: 'circle', opts: { radius: number }): this;
-  collider(shape: 'box', opts: { width: number; height: number }): this;
-  collider(shape: 'capsule', opts: { halfHeight: number; radius: number }): this;
-  collider(shape: string, opts: Record<string, number>): this {
+  /**
+   * Create a collider for this entity. Returns `this` for chaining.
+   *
+   * Note the shape conventions differ: `box` takes FULL width/height, `capsule`
+   * takes a HALF height plus a radius.
+   *
+   * The optional `opts` fields below (sensor, density, friction, restitution,
+   * groups, events) are applied even when issued in the same batch as the
+   * collider creation — they are staged onto the pending collider and consumed
+   * when the Rapier collider is built.
+   */
+  collider(shape: 'circle', opts: { radius: number } & ColliderOptions): this;
+  collider(shape: 'box', opts: { width: number; height: number } & ColliderOptions): this;
+  collider(shape: 'capsule', opts: { halfHeight: number; radius: number } & ColliderOptions): this;
+  collider(shape: string, opts: Record<string, any> & ColliderOptions): this {
     this.check();
     const shapeMap: Record<string, number> = { circle: 0, box: 1, capsule: 2 };
     const st = shapeMap[shape] ?? 0;
@@ -238,6 +261,86 @@ export class EntityHandle implements Disposable {
       case 'capsule': p0 = opts.halfHeight; p1 = opts.radius; break;
     }
     this._producer!.createCollider(this._id, st, p0, p1, p2);
+
+    const o: ColliderOptions = opts;
+    if (o.sensor !== undefined) this._producer!.setColliderSensor(this._id, o.sensor);
+    if (o.density !== undefined) this._producer!.setColliderDensity(this._id, o.density);
+    if (o.friction !== undefined) this._producer!.setColliderFriction(this._id, o.friction);
+    if (o.restitution !== undefined) {
+      this._producer!.setColliderRestitution(this._id, o.restitution);
+    }
+    if (o.groups !== undefined) {
+      this._producer!.setCollisionGroups(this._id, o.groups.membership, o.groups.filter);
+    }
+    // A sensor with no events reports nothing, which is never what anyone wants,
+    // so sensors opt into collision events unless told otherwise.
+    const wantsEvents = o.events ?? (o.sensor === true ? { collision: true } : undefined);
+    if (wantsEvents !== undefined) {
+      this._producer!.setColliderEvents(
+        this._id,
+        wantsEvents.collision ?? false,
+        wantsEvents.contactForce ?? false,
+      );
+    }
+    return this;
+  }
+
+  /**
+   * Enable Rapier event reporting for this entity's collider.
+   *
+   * Colliders are created with events OFF for performance, so without this no
+   * `onCollisionStart` / `onSensorEnter` / `onContactForce` callback can fire
+   * for this entity.
+   */
+  colliderEvents(collision: boolean, contactForce = false): this {
+    this.check();
+    this._producer!.setColliderEvents(this._id, collision, contactForce);
+    return this;
+  }
+
+  /**
+   * Reposition this entity's physics body.
+   *
+   * `position()` alone is not enough for a body Rapier owns (dynamic or fixed):
+   * the simulation writes its transform back every tick. Use this for respawns
+   * and hard cuts; pass `zeroVelocity: false` to keep momentum.
+   */
+  teleport(x: number, y: number, rot = 0, zeroVelocity = true): this {
+    this.check();
+    this._producer!.teleportBody(this._id, x, y, rot, zeroVelocity);
+    return this;
+  }
+
+  /**
+   * Pin an explicit culling / hit-test radius.
+   *
+   * By default the radius is derived from the entity's world matrix each frame,
+   * which is right for anything whose extents follow its scale. Pin it for
+   * primitives whose visual size comes from `PrimitiveParams` instead (lines,
+   * box shadows, bezier curves). Pass a negative value to go back to automatic.
+   */
+  boundingRadius(radius: number): this {
+    this.check();
+    this._producer!.setBoundingRadius(this._id, radius);
+    return this;
+  }
+
+  /** Remove this entity's character controller, keeping the entity itself. */
+  destroyCharacterController(): this {
+    this.check();
+    this._producer!.destroyCharacterController(this._id);
+    return this;
+  }
+
+  /**
+   * Override the character controller's "up" axis.
+   *
+   * Defaults to the opposite of gravity, which is what a platformer wants. Set
+   * it explicitly for e.g. a top-down game with zero gravity.
+   */
+  characterUp(ux: number, uy: number): this {
+    this.check();
+    this._producer!.setCharacterUp(this._id, ux, uy);
     return this;
   }
 

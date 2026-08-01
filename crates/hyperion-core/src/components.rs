@@ -118,15 +118,29 @@ impl Children {
         true
     }
 
+    /// True when `child_id` is already listed. Callers use this to keep the
+    /// list duplicate-free: `remove` only drops the first match, so a duplicate
+    /// entry could never be cleared again (audit 2026-07, P2-1d).
+    pub fn contains(&self, child_id: u32) -> bool {
+        self.as_slice().contains(&child_id)
+    }
+
+    /// Remove **every** occurrence of `child_id`. Returns true if at least one
+    /// was removed.
     pub fn remove(&mut self, child_id: u32) -> bool {
-        for i in 0..self.count as usize {
+        let mut removed = false;
+        let mut i = 0;
+        while i < self.count as usize {
             if self.slots[i] == child_id {
                 self.count -= 1;
                 self.slots[i] = self.slots[self.count as usize];
-                return true;
+                removed = true;
+                // do not advance: the swapped-in element still needs checking
+            } else {
+                i += 1;
             }
         }
-        false
+        removed
     }
 
     pub fn get(&self, index: usize) -> Option<u32> {
@@ -208,6 +222,15 @@ pub struct Transparent(pub u8);
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
+
+/// Marker: `BoundingRadius` was pinned explicitly via `SetBoundingRadius` and
+/// must NOT be recomputed by `update_bounding_radii`.
+///
+/// Without this marker the radius is derived every frame from the entity's
+/// world matrix, so scaled entities are culled and hit-tested against a sphere
+/// that actually encloses them (audit 2026-07, P1-17).
+#[derive(Debug, Clone, Copy)]
+pub struct BoundsOverride;
 
 impl Default for Position {
     fn default() -> Self {

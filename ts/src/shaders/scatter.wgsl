@@ -26,15 +26,19 @@ fn scatter(@builtin(global_invocation_id) gid: vec3u) {
     let dst = dirty_indices[i];
     let src = i * STAGING_STRIDE;
 
-    // Format flag at position 31: 1 = pre-computed mat4x4 (direct copy)
-    // Task 12 will add format 0 = compressed 2D transform
+    // Format flag at position 31.
+    //   0 = compressed 2D transform (pos + z-angle + scale.xy)
+    //   1 = pre-computed mat4x4 (direct copy)
+    // Rust picks the format by REPRESENTABILITY: format 0 is used only for
+    // Transform2D entities, whose degrees of freedom it can actually carry.
+    // It used to be picked by parentage, so a root 3D entity silently lost its
+    // X/Y rotation and scale.z here (audit 2026-07, P1-15).
     let format = staging[src + 31u];
 
     // Transforms: 16 u32
     let t = dst * 16u;
     if (format == 0u) {
         // Compressed 2D: reconstruct mat4x4 from pos(3f) + rot(1f) + scale(2f)
-        // (Task 12 placeholder — for now all entities use format 1)
         let px = bitcast<f32>(staging[src]);
         let py = bitcast<f32>(staging[src + 1u]);
         let pz = bitcast<f32>(staging[src + 2u]);
