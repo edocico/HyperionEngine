@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Quick Reference
 
 ```bash
-# Full validation (run before committing)
-cargo test -p hyperion-core && cargo clippy -p hyperion-core && cd ts && npm test && npx tsc --noEmit
+# Full validation (run before committing) — the single definition of "validated"
+scripts/preflight.sh          # feature matrix + clippy -D warnings + TS + protocol check
+scripts/preflight.sh --full   # + release WASM builds and size gates (~1 min more)
 
 # Full rebuild + visual test
 cd ts && npm run build:wasm && npm run dev
@@ -359,6 +360,11 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 ### Critical — will cause bugs or errors if ignored
 
+- **Never use `grep -P` in scripts** — hooks and CI run under `sh`, where `/usr/bin/grep` is BSD and rejects `-P`. The interactive shell's `grep` is a ugrep wrapper that *does* support it, so `-P` works when tested by hand and fails silently in the script. Use `grep -oE`. This left six PostToolUse hooks dead.
+- **Claude Code hooks receive the payload as JSON on stdin**, not in an env var. Parse with `jq -r '.tool_input.file_path'`; resolve the repo root from `$CLAUDE_PROJECT_DIR`. There is no `$CLAUDE_TOOL_INPUT`.
+- **`.claude/agents/*.md` require YAML frontmatter (`name`, `description`)** or the agent is silently never registered — it simply does not appear as invokable.
+- **`--all-targets` matters for clippy, not for `cargo test`** — `cargo test` already compiles and runs `tests/`. Plain `cargo clippy` lints only the lib target, leaving all test code unlinted. Always pair it: `cargo clippy -p hyperion-core --all-features --all-targets`; `--all-targets` *without* `--all-features` reports a false dead-code warning for `make_position_cmd`.
+- **`--all-features` and `--features "physics-debug dev-tools"` are the same build** — `physics-debug` implies `physics-2d`, so cargo emits identical binary hashes. Document one number for both, not two.
 - **hecs 0.11 `query_mut`** returns component tuples directly, NOT `(Entity, components)`. Use `for (pos, vel) in world.query_mut::<(&mut Position, &Velocity)>()`.
 - **Rust `u64` → JS `BigInt`** via wasm-bindgen. Wrap with `Number()` on TS side (safe for values < 2^53).
 - **`wasm-bindgen` can't export `unsafe fn`** — use `#[allow(clippy::not_unsafe_ptr_arg_deref)]` for functions taking raw pointers.

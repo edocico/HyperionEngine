@@ -11,3 +11,5 @@ firebase-debug.log
 *.docx
 .playwright-mcp/
 .worktrees/
+.claude.local.md
+.claude/settings.local*.json
