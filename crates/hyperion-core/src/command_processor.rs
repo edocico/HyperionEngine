@@ -237,7 +237,7 @@ pub fn process_commands(
 
 /// Process a batch of commands against the ECS world (physics-enabled variant).
 ///
-/// Physics-aware: passes `&mut PhysicsWorld` to `process_single_command` so that
+/// Physics-aware: passes `&mut HyperionPhysicsWorld` to `process_single_command` so that
 /// `DespawnEntity`, `DestroyRigidBody`, and `DestroyCollider` can clean up Rapier
 /// state. `CreateRigidBody` and `CreateCollider` insert pending ECS components.
 #[cfg(feature = "physics-2d")]
@@ -246,7 +246,7 @@ pub fn process_commands(
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     let mut i = 0;
     while i < commands.len() {
@@ -977,7 +977,7 @@ fn process_single_command_physics(
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     match cmd.cmd_type {
         // DespawnEntity: clean up Rapier state before despawning the ECS entity.
@@ -1185,7 +1185,7 @@ fn process_single_command_physics(
 pub fn despawn_physics_cleanup(
     world: &hecs::World,
     entity: hecs::Entity,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     // External-id-keyed cleanup runs UNCONDITIONALLY.
     //
@@ -1212,7 +1212,7 @@ pub fn despawn_physics_cleanup(
 fn physics_detach_body(
     world: &mut World,
     entity: hecs::Entity,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) -> bool {
     // A body carries its joints: Rapier cascades their removal, so the joint
     // bookkeeping has to follow even though the entity itself survives.
@@ -1248,7 +1248,7 @@ fn read_entity_pose(world: &World, entity: hecs::Entity) -> (f32, f32, Option<f3
 fn remove_live_collider(
     world: &mut World,
     entity: hecs::Entity,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     let col_h = world
         .get::<&crate::physics::PhysicsColliderHandle>(entity)
@@ -1273,7 +1273,7 @@ fn remove_live_collider(
 fn remove_body_and_colliders(
     world: &hecs::World,
     entity: hecs::Entity,
-    physics: &mut crate::physics::PhysicsWorld,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
 ) -> bool {
     let Ok(handle) = world.get::<&crate::physics::PhysicsBodyHandle>(entity) else {
         return false;
@@ -1318,7 +1318,7 @@ mod tests {
     ) {
         #[cfg(feature = "physics-2d")]
         {
-            let mut physics = crate::physics::PhysicsWorld::new();
+            let mut physics = crate::physics::HyperionPhysicsWorld::new();
             process_commands(commands, world, entity_map, render_state, &mut physics);
         }
         #[cfg(not(feature = "physics-2d"))]
@@ -2136,7 +2136,7 @@ mod tests {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
-        let mut physics = crate::physics::PhysicsWorld::new();
+        let mut physics = crate::physics::HyperionPhysicsWorld::new();
 
         // Spawn entity 0 (entity_a for the joint)
         let spawn = Command {
