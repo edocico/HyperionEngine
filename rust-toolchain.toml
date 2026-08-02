@@ -1,0 +1,17 @@
+# Toolchain pinnata per riproducibilità delle build WASM.
+#
+# 1.97.1 è la versione con cui il progetto builda oggi (verificata su target/.rustc_info.json,
+# rilasciata il 16/07/2026). Pinnarla evita che un `rustup update` cambi il compilatore
+# sotto i piedi: da Rust 1.96 il flag `--allow-undefined` non viene più passato a wasm-ld
+# (rust-lang/rust#149868), quindi un simbolo indefinito è un errore di link, non un import
+# silenzioso dal modulo "env".
+#
+# Vincoli MSRV correnti del workspace:
+#   edition 2024        -> >= 1.85.0
+#   nalgebra 0.35       -> >= 1.89.0   (via rapier2d 0.34)
+#   wide 1.6            -> >= 1.89.0
+#   wasm-bindgen-cli    -> >= 1.86.0
+[toolchain]
+channel = "1.97.1"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]

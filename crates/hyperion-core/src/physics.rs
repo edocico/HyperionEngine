@@ -115,7 +115,7 @@ pub mod types {
         pub state: CharacterState,
     }
 
-    /// A live joint tracked in PhysicsWorld.joint_map.
+    /// A live joint tracked in HyperionPhysicsWorld.joint_map.
     pub struct JointEntry {
         pub handle: rapier2d::prelude::ImpulseJointHandle,
         pub entity_a: u32,
@@ -172,7 +172,7 @@ pub mod types {
 pub use types::*;
 
 // ---------------------------------------------------------------------------
-// PhysicsWorld — wraps ALL Rapier simulation state
+// HyperionPhysicsWorld — wraps ALL Rapier simulation state
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "physics-2d")]
@@ -211,14 +211,23 @@ mod world {
     /// All fields are public so that `physics_sync_pre` / `physics_sync_post`
     /// (Task 3+) can directly access body/collider sets.
     ///
-    /// NOTE: `gravity` is stored as `rapier2d::math::Vector` (rapier's glam 0.30
-    /// `Vec2`), not our crate's `glam::Vec2` (0.29). This avoids version-mismatch
-    /// conversions on every `step()` call.
+    /// The `Hyperion` prefix is deliberate and must NOT be dropped: rapier 0.33
+    /// added its own `PhysicsWorld` to `rapier2d::prelude`. While our struct was
+    /// also called `PhysicsWorld`, every scope globbing both this module and the
+    /// rapier prelude needed an explicit `use super::PhysicsWorld;` to disambiguate
+    /// — and in a *function body* the rapier glob silently won instead of raising
+    /// `E0659`, so the bare name resolved to rapier's unrelated type with no error.
+    /// The prefix retires that whole class of bug.
     ///
-    /// NOTE: `QueryPipeline` is NOT stored — in rapier2d 0.32 it is a short-lived
-    /// view obtained from `BroadPhaseBvh::as_query_pipeline()`. Create it on-the-fly
-    /// when raycasts are needed.
-    pub struct PhysicsWorld {
+    /// NOTE: `gravity` is stored as `rapier2d::math::Vector`. Since the glam
+    /// unification (glam 0.33 + rapier 0.34) that is *the same type* as our
+    /// `glam::Vec2` — one compiled glam in the graph — so it assigns across with
+    /// no conversion. Before the unification these were two distinct glam copies.
+    ///
+    /// NOTE: `QueryPipeline` is NOT stored — it is a short-lived view obtained
+    /// from `BroadPhaseBvh::as_query_pipeline()` (verified through rapier2d 0.34).
+    /// Create it on-the-fly when raycasts are needed.
+    pub struct HyperionPhysicsWorld {
         // Rapier core
         pub gravity: Vector,
         pub integration_parameters: IntegrationParameters,
@@ -264,7 +273,7 @@ mod world {
         pub pending_teleports: Vec<super::types::PendingTeleport>,
     }
 
-    impl PhysicsWorld {
+    impl HyperionPhysicsWorld {
         /// The "up" axis a character controller should use, derived from gravity.
         ///
         /// `KinematicCharacterController::default()` hardcodes +Y, which points
@@ -497,7 +506,7 @@ mod world {
         }
     }
 
-    impl Default for PhysicsWorld {
+    impl Default for HyperionPhysicsWorld {
         fn default() -> Self {
             Self::new()
         }
@@ -514,7 +523,7 @@ pub use world::*;
 #[cfg(feature = "physics-2d")]
 pub fn physics_sync_pre(
     world: &mut hecs::World,
-    physics: &mut PhysicsWorld,
+    physics: &mut HyperionPhysicsWorld,
     entity_map: &crate::command_processor::EntityMap,
     dt: f32,
 ) {
@@ -836,7 +845,7 @@ fn build_collider_shape(pending: &PendingCollider) -> Option<rapier2d::prelude::
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "physics-2d")]
-pub fn physics_sync_post(world: &mut hecs::World, physics: &PhysicsWorld) {
+pub fn physics_sync_post(world: &mut hecs::World, physics: &HyperionPhysicsWorld) {
     use crate::components::*;
 
     // 2D entities
@@ -872,7 +881,7 @@ pub fn physics_sync_post(world: &mut hecs::World, physics: &PhysicsWorld) {
 
 #[cfg(feature = "physics-debug")]
 pub mod debug {
-    use super::PhysicsWorld;
+    use super::HyperionPhysicsWorld;
     use rapier2d::math::Vector;
     use rapier2d::pipeline::{DebugColor, DebugRenderBackend, DebugRenderObject};
 
@@ -908,7 +917,7 @@ pub mod debug {
         }
     }
 
-    impl PhysicsWorld {
+    impl HyperionPhysicsWorld {
         /// Run the rapier debug pipeline (collider shapes + joints + body
         /// axes, the `DebugRenderMode` default) and fill `out` with 8-f32
         /// line records. Called once per FRAME when enabled (Invariant I-1),
@@ -992,7 +1001,7 @@ pub mod snapshot {
     pub fn serialize_physics(
         buf: &mut Vec<u8>,
         world: &World,
-        physics: &PhysicsWorld,
+        physics: &HyperionPhysicsWorld,
     ) {
         // ── World config (engine_physics_configure knobs) ──
         push_f32(buf, physics.gravity.x);
@@ -1184,17 +1193,17 @@ pub mod snapshot {
         }
     }
 
-    /// Rebuild a fresh `PhysicsWorld` from a serialized physics section and
+    /// Rebuild a fresh `HyperionPhysicsWorld` from a serialized physics section and
     /// re-insert handle components on the restored entities.
     ///
     /// Returns `false` on malformed data. `physics` must be a fresh
-    /// `PhysicsWorld::new()` (the caller replaces the old one wholesale —
+    /// `HyperionPhysicsWorld::new()` (the caller replaces the old one wholesale —
     /// this is what fixes the pre-Phase-16 orphan-body bug).
     pub fn restore_physics(
         section: &[u8],
         world: &mut World,
         entity_map: &EntityMap,
-        physics: &mut PhysicsWorld,
+        physics: &mut HyperionPhysicsWorld,
     ) -> bool {
         let mut r = Reader { data: section, cursor: 0 };
         macro_rules! read {
@@ -1498,31 +1507,31 @@ mod tests {
         assert_eq!(pending.active_events, 0x01);
     }
 
-    // --- PhysicsWorld tests ---
+    // --- HyperionPhysicsWorld tests ---
 
     #[test]
     fn physics_world_default_gravity() {
-        let pw = PhysicsWorld::new();
+        let pw = HyperionPhysicsWorld::new();
         assert!((pw.gravity.x - 0.0).abs() < f32::EPSILON);
         assert!((pw.gravity.y - 980.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn physics_world_default_length_unit() {
-        let pw = PhysicsWorld::new();
+        let pw = HyperionPhysicsWorld::new();
         assert!((pw.integration_parameters.length_unit - 100.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn physics_world_step_does_not_panic() {
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.step();
     }
 
     #[test]
     fn physics_world_configure() {
         use rapier2d::prelude::Vector;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, -9.81);
         pw.integration_parameters.length_unit = 1.0;
         assert!((pw.gravity.y - (-9.81)).abs() < f32::EPSILON);
@@ -1531,14 +1540,14 @@ mod tests {
 
     #[test]
     fn physics_world_body_count_empty() {
-        let pw = PhysicsWorld::new();
+        let pw = HyperionPhysicsWorld::new();
         assert_eq!(pw.body_count(), 0);
     }
 
     #[test]
     fn physics_world_body_count_after_insert() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         let rb = RigidBodyBuilder::dynamic().build();
         pw.rigid_body_set.insert(rb);
         assert_eq!(pw.body_count(), 1);
@@ -1546,7 +1555,7 @@ mod tests {
 
     #[test]
     fn physics_world_default_trait() {
-        let pw = PhysicsWorld::default();
+        let pw = HyperionPhysicsWorld::default();
         assert!((pw.gravity.y - 980.0).abs() < f32::EPSILON);
         assert_eq!(pw.body_count(), 0);
     }
@@ -1554,7 +1563,7 @@ mod tests {
     #[test]
     fn physics_world_step_moves_dynamic_body() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         // Gravity is (0, 980) — body should fall (y increases)
         let rb = RigidBodyBuilder::dynamic()
             .translation(Vector::new(0.0, 0.0))
@@ -1577,7 +1586,7 @@ mod tests {
 
     #[test]
     fn physics_world_events_empty_without_collisions() {
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.step();
         assert!(pw.frame_collision_events.is_empty());
         assert!(pw.frame_contact_force_events.is_empty());
@@ -1586,7 +1595,7 @@ mod tests {
     #[test]
     fn physics_world_collision_event_translation() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
 
         // Create two dynamic bodies that overlap, with collision events enabled
         let rb_a = RigidBodyBuilder::dynamic()
@@ -1641,7 +1650,7 @@ mod tests {
     #[test]
     fn physics_world_events_skipped_without_mapping() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
 
         // Create overlapping bodies with collision events, but NO reverse mapping
         let rb_a = RigidBodyBuilder::dynamic()
@@ -1681,7 +1690,7 @@ mod tests {
     #[test]
     fn physics_world_events_accumulate_across_steps() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
 
         // Create overlapping bodies
         let rb_a = RigidBodyBuilder::dynamic()
@@ -1733,7 +1742,7 @@ mod tests {
     fn physics_sync_pre_consumes_pending_rigid_body_dynamic() {
         use hecs::World;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         let entity = world.spawn((
@@ -1758,7 +1767,7 @@ mod tests {
     fn physics_sync_pre_consumes_pending_collider_circle() {
         use hecs::World;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         let entity = world.spawn((
@@ -1780,7 +1789,7 @@ mod tests {
     fn physics_sync_pre_consumes_pending_collider_box() {
         use hecs::World;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         let entity = world.spawn((
@@ -1800,7 +1809,7 @@ mod tests {
     fn physics_sync_pre_consumes_pending_collider_capsule() {
         use hecs::World;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         let entity = world.spawn((
@@ -1823,7 +1832,7 @@ mod tests {
         use hecs::World;
         use crate::components::*;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         // Create entity with pending body + collider (collider gives mass)
@@ -1855,7 +1864,7 @@ mod tests {
         use hecs::World;
         use crate::components::*;
         let mut world = World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let entity_map = crate::command_processor::EntityMap::new();
 
         // Fixed body (never moves, sleeps immediately)
@@ -1900,7 +1909,7 @@ mod tests {
     #[test]
     fn sensor_event_flagged_correctly() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         // Body A: dynamic with sensor collider
@@ -1952,7 +1961,7 @@ mod tests {
     #[test]
     fn raycast_hits_collider() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         // Static body with circle at (100, 0), radius 10
@@ -1981,7 +1990,7 @@ mod tests {
 
     #[test]
     fn raycast_misses_empty_world() {
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.step();
 
         let entity_id = pw.raycast(0.0, 0.0, 1.0, 0.0, 100.0);
@@ -1993,7 +2002,7 @@ mod tests {
     #[test]
     fn overlap_aabb_finds_entities() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         for (x, ext_id) in [(50.0, 10u32), (80.0, 20u32)] {
@@ -2025,7 +2034,7 @@ mod tests {
     #[test]
     fn overlap_aabb_deduplicates() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         let rb = RigidBodyBuilder::fixed()
@@ -2060,7 +2069,7 @@ mod tests {
     #[test]
     fn overlap_circle_finds_entities() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         let rb = RigidBodyBuilder::fixed()
@@ -2086,7 +2095,7 @@ mod tests {
     #[test]
     fn overlap_circle_excludes_outside() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         pw.gravity = Vector::new(0.0, 0.0);
 
         let rb = RigidBodyBuilder::fixed()
@@ -2112,7 +2121,7 @@ mod tests {
     #[test]
     fn joint_entry_fields() {
         use rapier2d::prelude::*;
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         // Create two bodies so we can get a real ImpulseJointHandle
         let rb_a = RigidBodyBuilder::dynamic().build();
         let h_a = pw.rigid_body_set.insert(rb_a);
@@ -2134,7 +2143,7 @@ mod tests {
 
     #[test]
     fn pending_joint_staging_buffer() {
-        let mut pw = PhysicsWorld::new();
+        let mut pw = HyperionPhysicsWorld::new();
         assert!(pw.pending_joints.is_empty());
 
         pw.pending_joints.push(PendingJoint {
@@ -2154,13 +2163,13 @@ mod tests {
     /// Helper: create two entities with bodies+colliders, register in entity_map.
     fn setup_two_body_entities() -> (
         hecs::World,
-        PhysicsWorld,
+        HyperionPhysicsWorld,
         crate::command_processor::EntityMap,
     ) {
         use crate::components::*;
 
         let mut world = hecs::World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let mut entity_map = crate::command_processor::EntityMap::new();
 
         // Entity A (ext_id=0)
@@ -2321,7 +2330,7 @@ mod tests {
         // then run physics_sync_pre — bodies must be consumed (step 1)
         // before joints can look up PhysicsBodyHandle (step 4).
         let mut world = hecs::World::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         let mut entity_map = crate::command_processor::EntityMap::new();
 
         let ea = world.spawn((

@@ -1666,7 +1666,7 @@ mod tests {
             };
             #[cfg(feature = "physics-2d")]
             {
-                let mut physics = crate::physics::PhysicsWorld::new();
+                let mut physics = crate::physics::HyperionPhysicsWorld::new();
                 process_commands(&[cmd], &mut world, &mut entity_map, &mut rs, &mut physics);
             }
             #[cfg(not(feature = "physics-2d"))]

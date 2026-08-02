@@ -29,7 +29,7 @@ pub struct Engine {
     pub entity_map: EntityMap,
     pub render_state: RenderState,
     #[cfg(feature = "physics-2d")]
-    pub physics: crate::physics::PhysicsWorld,
+    pub physics: crate::physics::HyperionPhysicsWorld,
     /// Physics debug rendering toggle (CommandType 47, Phase 16 Track A).
     #[cfg(feature = "physics-debug")]
     pub debug_render_enabled: bool,
@@ -61,7 +61,7 @@ impl Engine {
             entity_map: EntityMap::new(),
             render_state: RenderState::new(),
             #[cfg(feature = "physics-2d")]
-            physics: crate::physics::PhysicsWorld::new(),
+            physics: crate::physics::HyperionPhysicsWorld::new(),
             #[cfg(feature = "physics-debug")]
             debug_render_enabled: false,
             #[cfg(feature = "physics-debug")]
@@ -370,7 +370,7 @@ impl Engine {
         self.render_state = RenderState::new();
         #[cfg(feature = "physics-2d")]
         {
-            self.physics = crate::physics::PhysicsWorld::new();
+            self.physics = crate::physics::HyperionPhysicsWorld::new();
         }
         #[cfg(feature = "physics-debug")]
         {
@@ -892,7 +892,7 @@ impl Engine {
         // (the pre-Phase-16 orphan-body bug).
         #[cfg(feature = "physics-2d")]
         let new_physics = {
-            let mut new_physics = crate::physics::PhysicsWorld::new();
+            let mut new_physics = crate::physics::HyperionPhysicsWorld::new();
             if let Some((start, len)) = physics_section
                 && !crate::physics::snapshot::restore_physics(
                     &data[start..start + len],
@@ -2075,7 +2075,7 @@ mod tests {
     fn character_controller_grounded_on_floor() {
         let mut engine = Engine::new();
 
-        // Pixel-space convention (the one PhysicsWorld::new documents): gravity
+        // Pixel-space convention (the one HyperionPhysicsWorld::new documents): gravity
         // is (0, +980), so "down" is +Y and the floor sits BELOW the character
         // at y=+50. The character controller derives its `up` from gravity
         // (audit 2026-07, P1-11), so this is now the coherent layout — before

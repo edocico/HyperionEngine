@@ -1,11 +1,11 @@
 //! Routes live-body physics commands to Rapier.
 //! Second pass: runs AFTER process_commands, handles commands
-//! that need &mut PhysicsWorld.
+//! that need &mut HyperionPhysicsWorld.
 
 #[cfg(feature = "physics-2d")]
 use crate::command_processor::EntityMap;
 #[cfg(feature = "physics-2d")]
-use crate::physics::{PhysicsBodyHandle, PhysicsWorld};
+use crate::physics::{HyperionPhysicsWorld, PhysicsBodyHandle};
 #[cfg(feature = "physics-2d")]
 use crate::physics::types::{CharacterEntry, CharacterState};
 #[cfg(feature = "physics-2d")]
@@ -52,7 +52,7 @@ pub fn process_physics_commands(
     commands: &[Command],
     world: &mut hecs::World,
     entity_map: &EntityMap,
-    physics: &mut PhysicsWorld,
+    physics: &mut HyperionPhysicsWorld,
 ) {
     for cmd in commands {
         // Joint commands: use joint_map, not body handle
@@ -377,7 +377,7 @@ pub fn process_physics_commands(
 fn apply_collider_override(
     cmd: &Command,
     world: &mut hecs::World,
-    physics: &mut PhysicsWorld,
+    physics: &mut HyperionPhysicsWorld,
     entity: hecs::Entity,
 ) {
     use rapier2d::prelude::{ActiveEvents, Group, InteractionGroups, InteractionTestMode};
@@ -518,7 +518,7 @@ mod tests {
     fn apply_force_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         // Spawn entity
         let entity = world.spawn((
@@ -555,7 +555,7 @@ mod tests {
     fn set_gravity_scale_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let entity = world.spawn((
             Transform2D::default(),
@@ -590,7 +590,7 @@ mod tests {
     fn apply_impulse_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         // Zero gravity so impulse effect is isolated
         physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
 
@@ -624,7 +624,7 @@ mod tests {
     fn apply_torque_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
 
         let entity = world.spawn((
@@ -656,7 +656,7 @@ mod tests {
     fn set_linear_damping_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let entity = world.spawn((
             Transform2D::default(),
@@ -685,7 +685,7 @@ mod tests {
     fn set_angular_damping_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let entity = world.spawn((
             Transform2D::default(),
@@ -714,7 +714,7 @@ mod tests {
     fn set_ccd_enabled_on_live_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let entity = world.spawn((
             Transform2D::default(),
@@ -743,7 +743,7 @@ mod tests {
     fn skips_unknown_entity() {
         let mut world = hecs::World::new();
         let entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&100.0f32.to_le_bytes());
@@ -760,7 +760,7 @@ mod tests {
     fn skips_entity_without_physics_body() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         // Entity with no PhysicsBodyHandle
         let entity = world.spawn((Transform2D::default(), ExternalId(0)));
@@ -781,7 +781,7 @@ mod tests {
     fn ignores_non_physics_commands() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let entity = world.spawn((
             Transform2D::default(),
@@ -803,10 +803,10 @@ mod tests {
 
     // -- Helper: two bodies with a joint -----------------------------------
 
-    fn setup_two_bodies_with_joint(joint_id: u32) -> (hecs::World, EntityMap, PhysicsWorld) {
+    fn setup_two_bodies_with_joint(joint_id: u32) -> (hecs::World, EntityMap, HyperionPhysicsWorld) {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
 
         let _ea = world.spawn((
@@ -905,7 +905,7 @@ mod tests {
     fn multi_joint_single_entity() {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
 
         // 3 entities
@@ -1049,7 +1049,7 @@ mod tests {
     fn set_commands_on_missing_joint_no_panic() {
         let mut world = hecs::World::new();
         let entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
 
         let mut payload = [0u8; 16];
         payload[0..4].copy_from_slice(&999u32.to_le_bytes());
@@ -1076,10 +1076,10 @@ mod tests {
 
     // -- Helper: single kinematic entity ---------------------------------
 
-    fn setup_kinematic_entity() -> (hecs::World, EntityMap, PhysicsWorld) {
+    fn setup_kinematic_entity() -> (hecs::World, EntityMap, HyperionPhysicsWorld) {
         let mut world = hecs::World::new();
         let mut entity_map = EntityMap::new();
-        let mut physics = PhysicsWorld::new();
+        let mut physics = HyperionPhysicsWorld::new();
         physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
 
         let entity = world.spawn((
