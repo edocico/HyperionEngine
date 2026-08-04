@@ -34,6 +34,8 @@ import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
 import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
+import { SCENE_HDR_FORMAT } from './render/formats';
+import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 
 const MAX_ENTITIES = 100_000;
 // 24 draw entries (12 opaque + 12 transparent) x 5 u32 x 4 bytes = 480 bytes
@@ -62,6 +64,22 @@ export interface Renderer {
   disableBloom(): void;
   readonly bloomEnabled: boolean;
   recompileShader(passName: string, shaderCode: string): void;
+
+  /**
+   * Whether this device exposes `timestamp-query`. False on drivers that lack
+   * it — every profiling call below is then a safe no-op.
+   */
+  readonly gpuProfilingSupported: boolean;
+  /**
+   * Start measuring per-pass GPU time. Returns false when unsupported.
+   * Read the numbers with {@link getGpuTimings}; quote `averageMs`, not
+   * `lastMs`, because Chrome quantizes timestamps to 100us by default.
+   */
+  enableGpuProfiling(): boolean;
+  disableGpuProfiling(): void;
+  /** Per-pass GPU timings. Empty when profiling is off or still warming up. */
+  getGpuTimings(): PassTiming[];
+
   destroy(): void;
 }
 
@@ -86,6 +104,13 @@ export async function createRenderer(
   else if (compressedFormat === 'astc-4x4-unorm') requiredFeatures.push('texture-compression-astc');
   if (subgroupSupport.supported) requiredFeatures.push('subgroups' as GPUFeatureName);
 
+  // GPU timing. Optional everywhere: absent on some mobile drivers, and the
+  // device request must still succeed without it. Chrome quantizes the
+  // timestamps it returns to 100us unless started with
+  // --enable-webgpu-developer-features — see render/gpu-profiler.ts.
+  const timestampSupported = adapter.features.has('timestamp-query');
+  if (timestampSupported) requiredFeatures.push('timestamp-query');
+
   let device: GPUDevice;
   let useSubgroups = subgroupSupport.supported;
   try {
@@ -93,9 +118,12 @@ export async function createRenderer(
       requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
     });
   } catch {
-    // Subgroup request failed — retry without
+    // Feature request failed — retry with only the texture-compression
+    // features, which are the ones the asset pipeline actually depends on.
     useSubgroups = false;
-    const fallbackFeatures = requiredFeatures.filter(f => f !== ('subgroups' as GPUFeatureName));
+    const fallbackFeatures = requiredFeatures.filter(
+      f => f !== ('subgroups' as GPUFeatureName) && f !== 'timestamp-query',
+    );
     device = await adapter.requestDevice({
       requiredFeatures: fallbackFeatures.length > 0 ? fallbackFeatures : undefined,
     });
@@ -173,8 +201,9 @@ export async function createRenderer(
   // --- 5. Create intermediate scene-hdr texture for post-processing ---
   let sceneHdrTexture = device.createTexture({
     size: { width: canvas.width, height: canvas.height },
-    format: format,
+    format: SCENE_HDR_FORMAT,
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    label: 'scene-hdr',
   });
   resources.setTextureView('scene-hdr', sceneHdrTexture.createView());
   let sceneHdrWidth = canvas.width;
@@ -224,6 +253,12 @@ export async function createRenderer(
   radixSortPass.setup(device, resources);
 
   // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
+  // The profiler is created once and re-attached on every rebuildGraph(), so
+  // its rolling averages survive outline/bloom toggles and shader hot-reloads.
+  // Off until enableGpuProfiling() is called: idle cost is zero.
+  const gpuProfiler = timestampSupported ? new GpuProfiler(device) : null;
+  let gpuProfilingEnabled = false;
+
   let graph = new RenderGraph();
   if (scatterPass) graph.addPass(scatterPass);
   graph.addPass(cullPass);
@@ -413,6 +448,13 @@ export async function createRenderer(
     graph.addPass(newFxaaPass);
 
     graph.compile();
+
+    // The graph object is new; re-attach the profiler and drop the history,
+    // which measured a different set of passes.
+    if (gpuProfilingEnabled && gpuProfiler) {
+      graph.setProfiler(gpuProfiler);
+      gpuProfiler.reset();
+    }
   }
 
   // --- 9. Build the Renderer object ---
@@ -626,8 +668,9 @@ export async function createRenderer(
         sceneHdrTexture.destroy();
         sceneHdrTexture = device.createTexture({
           size: { width: canvas.width, height: canvas.height },
-          format: format,
+          format: SCENE_HDR_FORMAT,
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+          label: 'scene-hdr',
         });
         resources.setTextureView('scene-hdr', sceneHdrTexture.createView());
         sceneHdrWidth = canvas.width;
@@ -695,7 +738,27 @@ export async function createRenderer(
       }
     },
 
+    get gpuProfilingSupported() { return gpuProfiler !== null; },
+
+    enableGpuProfiling() {
+      if (!gpuProfiler) return false;
+      gpuProfilingEnabled = true;
+      graph.setProfiler(gpuProfiler);
+      gpuProfiler.reset();
+      return true;
+    },
+
+    disableGpuProfiling() {
+      gpuProfilingEnabled = false;
+      graph.setProfiler(null);
+    },
+
+    getGpuTimings() {
+      return gpuProfiler?.timings() ?? [];
+    },
+
     destroy() {
+      gpuProfiler?.destroy();
       particleSystem.destroy();
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();

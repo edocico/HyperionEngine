@@ -1,6 +1,7 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import { BUCKETS_PER_TYPE, OPAQUE_DRAW_BUCKETS } from './cull-pass';
+import { SCENE_HDR_FORMAT } from '../formats';
 
 /**
  * Forward rendering pass with multi-pipeline per-type dispatch, 2-bucket material sort,
@@ -137,7 +138,11 @@ export class ForwardPass implements RenderPass {
       ],
     });
 
-    const format = navigator.gpu.getPreferredCanvasFormat();
+    // ForwardPass writes `scene-hdr`, never the swapchain. Before this was
+    // pinned to SCENE_HDR_FORMAT it queried getPreferredCanvasFormat(), which
+    // silently clamped the whole scene to [0,1] and left bloom + tonemapping
+    // with nothing to work on. See render/formats.ts.
+    const format = SCENE_HDR_FORMAT;
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],
     });

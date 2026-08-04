@@ -64,6 +64,10 @@ function mockRenderer(): Renderer {
     disableBloom: vi.fn(),
     bloomEnabled: false,
     recompileShader: vi.fn(),
+    gpuProfilingSupported: false,
+    enableGpuProfiling: vi.fn(() => false),
+    disableGpuProfiling: vi.fn(),
+    getGpuTimings: vi.fn(() => []),
     destroy: vi.fn(),
   };
 }

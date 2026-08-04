@@ -1,0 +1,235 @@
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { GpuProfiler, WINDOW } from './gpu-profiler';
+
+// Polyfill the WebGPU bitflag globals for Node/vitest (browser globals).
+// Same pattern as texture-manager.test.ts.
+beforeAll(() => {
+  if (typeof globalThis.GPUBufferUsage === 'undefined') {
+    (globalThis as any).GPUBufferUsage = {
+      MAP_READ: 0x0001, MAP_WRITE: 0x0002,
+      COPY_SRC: 0x0004, COPY_DST: 0x0008,
+      INDEX: 0x0010, VERTEX: 0x0020, UNIFORM: 0x0040,
+      STORAGE: 0x0080, INDIRECT: 0x0100, QUERY_RESOLVE: 0x0200,
+    };
+  }
+  if (typeof globalThis.GPUMapMode === 'undefined') {
+    (globalThis as any).GPUMapMode = { READ: 0x0001, WRITE: 0x0002 };
+  }
+});
+
+/**
+ * Minimal fake device. WebGPU is not testable headless, so these tests cover
+ * the bookkeeping the profiler does around the API — marker counting, readback
+ * recycling, the rolling window, the invalid-frame guard — not the GPU itself.
+ */
+function makeDevice() {
+  const computePasses: Array<{ label?: string; index?: number }> = [];
+  const buffers: Array<{ destroyed: boolean }> = [];
+
+  const mapped: { data: BigInt64Array<ArrayBufferLike> } = { data: new BigInt64Array(0) };
+
+  const device = {
+    computePasses,
+    buffers,
+    mapped,
+    createQuerySet: vi.fn(() => ({ destroy: vi.fn() })),
+    createBuffer: vi.fn(() => {
+      const b = {
+        destroyed: false,
+        destroy() { this.destroyed = true; },
+        mapAsync: vi.fn(async () => {}),
+        getMappedRange: vi.fn(() => mapped.data.buffer),
+        unmap: vi.fn(),
+      };
+      buffers.push(b as unknown as { destroyed: boolean });
+      return b;
+    }),
+  };
+  return device as unknown as GPUDevice & typeof device;
+}
+
+function makeEncoder(device: ReturnType<typeof makeDevice>) {
+  return {
+    beginComputePass: vi.fn((desc: { label?: string; timestampWrites?: { beginningOfPassWriteIndex: number } }) => {
+      device.computePasses.push({
+        label: desc.label,
+        index: desc.timestampWrites?.beginningOfPassWriteIndex,
+      });
+      return { end: vi.fn() };
+    }),
+    resolveQuerySet: vi.fn(),
+    copyBufferToBuffer: vi.fn(),
+  } as unknown as GPUCommandEncoder;
+}
+
+/** Build a timestamp table where pass i costs `costsMs[i]`. */
+function stamps(costsMs: number[]): BigInt64Array<ArrayBufferLike> {
+  const out = new BigInt64Array(costsMs.length + 1);
+  let t = 1_000_000n; // start non-zero: 0 is the "never written" sentinel
+  out[0] = t;
+  for (let i = 0; i < costsMs.length; i++) {
+    t += BigInt(Math.round(costsMs[i] * 1e6));
+    out[i + 1] = t;
+  }
+  return out;
+}
+
+describe('GpuProfiler', () => {
+  let device: ReturnType<typeof makeDevice>;
+
+  beforeEach(() => { device = makeDevice(); });
+
+  describe('isSupported', () => {
+    it('reports true when the feature is present', () => {
+      expect(GpuProfiler.isSupported(new Set(['timestamp-query']))).toBe(true);
+    });
+
+    it('reports false when it is not', () => {
+      expect(GpuProfiler.isSupported(new Set(['subgroups']))).toBe(false);
+    });
+  });
+
+  describe('frame lifecycle', () => {
+    it('encodes one marker per pass plus a closing marker', () => {
+      const p = new GpuProfiler(device);
+      const enc = makeEncoder(device);
+
+      expect(p.beginFrame(['cull', 'forward', 'fxaa'])).toBe(true);
+      p.mark(enc); p.mark(enc); p.mark(enc);
+      p.endFrame(enc);
+
+      expect(device.computePasses).toHaveLength(4);
+      expect(device.computePasses.map(c => c.index)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('encodes nothing when beginFrame was not called', () => {
+      const p = new GpuProfiler(device);
+      const enc = makeEncoder(device);
+      p.mark(enc);
+      p.endFrame(enc);
+      expect(device.computePasses).toHaveLength(0);
+    });
+
+    it('refuses a graph larger than the query set', () => {
+      const p = new GpuProfiler(device, 2);
+      expect(p.beginFrame(['a', 'b', 'c'])).toBe(false);
+    });
+
+    it('refuses a second beginFrame while one is open', () => {
+      const p = new GpuProfiler(device);
+      expect(p.beginFrame(['a'])).toBe(true);
+      expect(p.beginFrame(['a'])).toBe(false);
+    });
+
+    it('skips frames when every readback buffer is in flight', () => {
+      const p = new GpuProfiler(device);
+      // Three slots: consume all of them without ever polling.
+      for (let i = 0; i < 3; i++) {
+        expect(p.beginFrame(['a'])).toBe(true);
+        const enc = makeEncoder(device);
+        p.mark(enc);
+        p.endFrame(enc);
+      }
+      expect(p.beginFrame(['a'])).toBe(false);
+      expect(p.skippedFrames).toBe(1);
+    });
+  });
+
+  describe('timing math', () => {
+    async function runFrame(p: GpuProfiler, names: string[], costsMs: number[]) {
+      device.mapped.data = stamps(costsMs);
+      p.beginFrame(names);
+      const enc = makeEncoder(device);
+      for (const _ of names) p.mark(enc);
+      p.endFrame(enc);
+      await p.poll();
+    }
+
+    it('turns timestamp deltas into per-pass milliseconds', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['cull', 'forward'], [0.25, 1.5]);
+
+      const t = p.getTimingsByName();
+      expect(t.get('cull')?.lastMs).toBeCloseTo(0.25, 5);
+      expect(t.get('forward')?.lastMs).toBeCloseTo(1.5, 5);
+    });
+
+    it('averages across frames, which is what defeats the 100us quantization', async () => {
+      const p = new GpuProfiler(device);
+      // Chrome would report a 60us pass as 0 or 100us on alternate frames.
+      await runFrame(p, ['jfa'], [0.0]);
+      await runFrame(p, ['jfa'], [0.1]);
+
+      const jfa = p.getTimingsByName().get('jfa')!;
+      expect(jfa.sampleCount).toBe(2);
+      expect(jfa.averageMs).toBeCloseTo(0.05, 5);
+    });
+
+    it('caps history at WINDOW samples', async () => {
+      const p = new GpuProfiler(device);
+      for (let i = 0; i < WINDOW + 25; i++) {
+        await runFrame(p, ['forward'], [1.0]);
+      }
+      expect(p.getTimingsByName().get('forward')!.sampleCount).toBe(WINDOW);
+    });
+
+    it('discards a frame containing an unwritten (zero) timestamp', async () => {
+      const p = new GpuProfiler(device);
+      device.mapped.data = new BigInt64Array([0n, 0n]);
+      p.beginFrame(['cull']);
+      const enc = makeEncoder(device);
+      p.mark(enc);
+      p.endFrame(enc);
+      await p.poll();
+      expect(p.timings()).toEqual([]);
+    });
+
+    it('clamps a non-monotonic delta to zero instead of reporting a negative', async () => {
+      const p = new GpuProfiler(device);
+      device.mapped.data = new BigInt64Array([5_000_000n, 1_000_000n]);
+      p.beginFrame(['weird']);
+      const enc = makeEncoder(device);
+      p.mark(enc);
+      p.endFrame(enc);
+      await p.poll();
+      expect(p.getTimingsByName().get('weird')!.lastMs).toBe(0);
+    });
+
+    it('sums pass averages into an approximate frame cost', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['cull', 'forward'], [0.5, 2.0]);
+      expect(p.totalAverageMs()).toBeCloseTo(2.5, 5);
+    });
+
+    it('reset() drops accumulated history', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['cull'], [1.0]);
+      expect(p.timings()).toHaveLength(1);
+      p.reset();
+      expect(p.timings()).toEqual([]);
+    });
+
+    it('recycles readback buffers so long runs never starve', async () => {
+      const p = new GpuProfiler(device);
+      for (let i = 0; i < 20; i++) {
+        await runFrame(p, ['forward'], [1.0]);
+      }
+      expect(p.skippedFrames).toBe(0);
+    });
+  });
+
+  describe('destroy', () => {
+    it('releases every buffer and stops measuring', () => {
+      const p = new GpuProfiler(device);
+      p.destroy();
+      expect(device.buffers.every(b => b.destroyed)).toBe(true);
+      expect(p.beginFrame(['a'])).toBe(false);
+    });
+
+    it('is idempotent', () => {
+      const p = new GpuProfiler(device);
+      p.destroy();
+      expect(() => p.destroy()).not.toThrow();
+    });
+  });
+});

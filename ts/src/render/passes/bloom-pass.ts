@@ -1,5 +1,6 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import { SCENE_HDR_FORMAT } from '../formats';
 
 export interface BloomConfig {
   threshold?: number;
@@ -73,8 +74,9 @@ export class BloomPass implements RenderPass {
     const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const vertex = { module, entryPoint: 'vs_main' };
 
-    // Extract and downsample/upsample write to rgba16float intermediates
-    const hdrFormat: GPUTextureFormat = 'rgba16float';
+    // Extract and downsample/upsample write to the HDR intermediates, which
+    // must match the format of `scene-hdr` they are derived from.
+    const hdrFormat: GPUTextureFormat = SCENE_HDR_FORMAT;
 
     this.extractPipeline = device.createRenderPipeline({
       layout,

@@ -79,4 +79,87 @@ describe('RenderGraph', () => {
     graph.addPass(mockPass('b', [], ['shared-resource']));
     expect(() => graph.compile()).toThrow(/multiple writers/i);
   });
+
+  describe('GPU profiler hook', () => {
+    function mockDevice() {
+      return {
+        createCommandEncoder: () => ({ finish: () => ({}) }),
+        queue: { submit: vi.fn() },
+      } as unknown as GPUDevice;
+    }
+
+    const frame = {} as never;
+    const resources = {} as never;
+
+    function fakeProfiler(measuring: boolean) {
+      return {
+        beginFrame: vi.fn(() => measuring),
+        mark: vi.fn(),
+        endFrame: vi.fn(),
+        poll: vi.fn(async () => {}),
+      };
+    }
+
+    it('encodes no markers when no profiler is attached', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('cull', [], ['visible-indices']));
+      graph.addPass(mockPass('forward', ['visible-indices'], ['swapchain']));
+      // No profiler set — must not throw and must still submit.
+      const device = mockDevice();
+      expect(() => graph.render(device, frame, resources)).not.toThrow();
+      expect(device.queue.submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('marks once per pass and closes the frame when measuring', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('cull', [], ['visible-indices']));
+      graph.addPass(mockPass('forward', ['visible-indices'], ['swapchain']));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+
+      expect(profiler.beginFrame).toHaveBeenCalledWith(['cull', 'forward']);
+      expect(profiler.mark).toHaveBeenCalledTimes(2);
+      expect(profiler.endFrame).toHaveBeenCalledTimes(1);
+      expect(profiler.poll).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips marking entirely when beginFrame declines the frame', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('forward', [], ['swapchain']));
+      const profiler = fakeProfiler(false);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+
+      expect(profiler.mark).not.toHaveBeenCalled();
+      expect(profiler.endFrame).not.toHaveBeenCalled();
+      expect(profiler.poll).not.toHaveBeenCalled();
+    });
+
+    it('detaching the profiler restores the unmeasured path', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('forward', [], ['swapchain']));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+      graph.setProfiler(null);
+
+      graph.render(mockDevice(), frame, resources);
+      expect(profiler.beginFrame).not.toHaveBeenCalled();
+    });
+
+    it('marks only live passes, not dead-culled ones', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('forward', [], ['swapchain']));
+      graph.addPass(mockPass('orphan', [], ['nobody-reads-this'], true));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+
+      expect(profiler.beginFrame).toHaveBeenCalledWith(['forward']);
+      expect(profiler.mark).toHaveBeenCalledTimes(1);
+    });
+  });
 });

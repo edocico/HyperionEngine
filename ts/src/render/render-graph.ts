@@ -1,5 +1,6 @@
 import type { RenderPass, FrameState } from './render-pass';
 import type { ResourcePool } from './resource-pool';
+import type { GpuProfiler } from './gpu-profiler';
 
 /**
  * Directed acyclic graph of render passes.
@@ -12,6 +13,12 @@ import type { ResourcePool } from './resource-pool';
 export class RenderGraph {
   private passes = new Map<string, RenderPass>();
   private executionOrder: string[] = [];
+
+  /**
+   * Optional GPU timing. Null by default and on devices without the
+   * `timestamp-query` feature — when null, `render()` encodes no extra work.
+   */
+  private profiler: GpuProfiler | null = null;
   private _needsRecompile = true;
 
   get needsRecompile(): boolean {
@@ -24,6 +31,16 @@ export class RenderGraph {
     }
     this.passes.set(pass.name, pass);
     this._needsRecompile = true;
+  }
+
+  /**
+   * Attach (or detach, with null) a GPU profiler. The profiler outlives the
+   * graph — `rebuildGraph()` in the renderer constructs a new RenderGraph on
+   * every outline/bloom toggle and shader hot-reload, so keeping the profiler
+   * outside preserves its history across those rebuilds.
+   */
+  setProfiler(profiler: GpuProfiler | null): void {
+    this.profiler = profiler;
   }
 
   removePass(name: string): void {
@@ -132,10 +149,25 @@ export class RenderGraph {
     }
 
     const encoder = device.createCommandEncoder();
+
+    // `beginFrame` returns false when profiling is off, when every readback
+    // buffer is still in flight, or when the graph outgrew the profiler's
+    // query set. In all three cases we fall through to the unmeasured path
+    // and encode no marker passes at all.
+    const measuring = this.profiler?.beginFrame(this.executionOrder) ?? false;
+
     for (const name of this.executionOrder) {
+      if (measuring) this.profiler!.mark(encoder);
       this.passes.get(name)!.execute(encoder, frame, resources);
     }
+
+    if (measuring) this.profiler!.endFrame(encoder);
+
     device.queue.submit([encoder.finish()]);
+
+    // Fire and forget: reads the frames that finished on the GPU a few frames
+    // ago. Never awaited, so it cannot stall the render loop.
+    if (measuring) void this.profiler!.poll();
   }
 
   destroy(): void {
