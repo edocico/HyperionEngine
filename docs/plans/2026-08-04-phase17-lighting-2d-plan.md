@@ -28,11 +28,25 @@ where the implementation would otherwise stall or silently pick the wrong thing.
 work until someone changes range through `raw-api.ts` and forgets the second
 write — the light then culls against a stale radius and pops at the frustum edge.
 Instead, `update_bounding_radii` (systems.rs:202) gains a second query that sets
-`radius.0 = params.0[3]` for entities with `RenderPrimitive(6)`. Lights therefore
-do **not** carry `BoundsOverride`; the existing `Without<..., &BoundsOverride>`
-query already skips them from matrix-derived bounds because they are handled by
-the new query. Consequence to document: a light's transform *scale* does not
-affect its culling radius, which is correct — a light's extent is its range.
+`radius.0 = params.0[3]` for entities with `RenderPrimitive(6)`. Consequence to
+document: a light's transform *scale* does not affect its culling radius, which
+is correct — a light's extent is its range.
+
+> ⚠️ **Erratum, found while implementing.** The paragraph above originally
+> continued: *"the existing `Without<..., &BoundsOverride>` query already skips
+> them from matrix-derived bounds because they are handled by the new query."*
+> **That is false.** `SpawnEntity` gives *every* entity a `ModelMatrix`
+> (`command_processor.rs:632` and `:649`, both archetypes), so the existing
+> query matches lights too and would overwrite their radius with the
+> circumradius of the light quad's matrix.
+>
+> What makes the result correct is the **order**: the light query runs second
+> and wins. That is a correctness invariant, not style, and
+> `light_radius_ignores_transform_scale` pins it — with scale 40x the matrix
+> path would give ~34.6 instead of the intended 300.
+>
+> `BoundsOverride` still wins over both, so `SetBoundingRadius` keeps working on
+> a light.
 
 **D2 — Type 6 gets all four buckets, three of which stay empty.**
 `visible-indices` is `TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4` = 24 × 100_000 × 4 =
@@ -59,7 +73,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
 
 ## Track A — Light data model and protocol (headless)
 
-- [ ] **Task 1: `renderMeta` bit layout (Rust)**
+- [x] **Task 1: `renderMeta` bit layout (Rust)** — landed in `6b9d686`
   - `render_state.rs`: extend the word at `gpu_render_meta[slot*2+1]`. Bits 0-7
     `primType`, bit 8 `transparent` stay as they are; add bit 9 `castsShadow`,
     bit 10 `receivesLight`, bits 11-13 `lightType`, bits 14-15 `lightBlendMode`,
@@ -72,7 +86,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     (~8 tests)
   - Gate: `cargo test -p hyperion-core render_state`
 
-- [ ] **Task 2: `RenderPrimitive(6)` = Light2D + range→radius derivation (Rust)**
+- [x] **Task 2: `RenderPrimitive(6)` = Light2D + range→radius derivation (Rust)** — landed in `c64827b`
   - `components.rs`: document `6 = Light2D` on `RenderPrimitive`; add the
     `PrimitiveParams` slot map for it in the doc comment (0-2 colour with energy
     premultiplied, 3 range, 4 innerCos/height, 5 outerCos, 6 falloff,
@@ -83,7 +97,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     entity is unaffected, radius 0 does not panic the frustum test. (~5 tests)
   - Gate: `cargo test -p hyperion-core systems`
 
-- [ ] **Task 3: four CommandTypes, 53-56 (Rust)**
+- [x] **Task 3: four CommandTypes, 53-56 (Rust)** — landed in `2065f0f`
   - Follow `/new-command` step by step — 16 steps, and steps 2 and 7.1 are the
     two that fail *silently*.
   - `ring_buffer.rs`: `SetLightFlags = 53` (4B: u8 lightType, u8 blendMode,
@@ -100,7 +114,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     fires, engine-level commands do not reach the ECS. (~12 tests)
   - Gate: `cargo test -p hyperion-core ring_buffer command_proc`
 
-- [ ] **Task 4: TypeScript protocol mirror**
+- [x] **Task 4: TypeScript protocol mirror** — landed in `2065f0f`
   - `ring-buffer.ts`: the four CommandTypes + `PAYLOAD_SIZES` (TS2741 catches an
     omission here).
   - `backpressure.ts`: `MAX_COMMAND_TYPE` 53 → 57, four producer methods, all
@@ -116,7 +130,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     (~14 tests)
   - Gate: run the **protocol-sync-checker** agent.
 
-- [ ] **Task 5: `indirect-args` 24 → 28 buckets**
+- [x] **Task 5: `indirect-args` 24 → 28 buckets** — landed in `fb060c5`
   - `cull-pass.ts`: `NUM_PRIM_TYPES` 6 → 7. `OPAQUE_DRAW_BUCKETS`,
     `TOTAL_DRAW_BUCKETS`, `TRANSPARENT_BUCKET_OFFSET` all derive from it.
     `INDIRECT_BUFFER_SIZE` follows.
@@ -132,7 +146,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     reset writes 28 entries. (~7 tests)
   - Gate: run the **wgsl-validator** agent.
 
-- [ ] **Task 6: fluent API + facade**
+- [x] **Task 6: fluent API + facade** — landed in `3556e08`
   - `entity-handle.ts`: `.light({ type, color, energy, range, innerAngle,
     outerAngle, falloff })`, `.shadows(intensity)`, `.castsShadow(bool)`,
     `.receivesLight(bool)`, `.lightLayers(mask)`.
@@ -284,6 +298,11 @@ Estimated new tests: ~25 Rust, ~65 TS → targets ≈ 190/268/216/309 Rust,
 
 ## Note on repo hygiene
 
-`/close-phase` instructs appending a record to `MEMORY.md`, and that file does not
-exist anywhere in the repo. Either create it at Task 11 or correct the skill —
-right now the instruction cannot be followed as written.
+~~`/close-phase` instructs appending a record to `MEMORY.md`, and that file does
+not exist anywhere in the repo.~~
+
+**Withdrawn — this was a misreading.** `MEMORY.md` is not meant to be a repo
+file. `.claude/skills/close-phase/SKILL.md:92` gives the path directly under the
+heading: `~/.claude/projects/-Users-edoardocicognani-Desktop-Code-HyperionEngine/memory/`.
+The file is there, alongside `phases-completed.md` and the other topic files it
+indexes. Nothing to create, nothing to correct.
