@@ -6,8 +6,8 @@ use glam::Mat4;
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, BoundsOverride, ModelMatrix, Parent, Position, Rotation, Scale,
-    Transform2D, Velocity,
+    Active, BoundingRadius, BoundsOverride, ModelMatrix, Parent, Position, PrimitiveParams,
+    RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D,
 };
 
 #[cfg(feature = "physics-2d")]
@@ -204,6 +204,44 @@ pub fn update_bounding_radii(world: &mut World) {
         .query_mut::<hecs::Without<(&ModelMatrix, &mut BoundingRadius, &Active), &BoundsOverride>>()
     {
         radius.0 = world_matrix_radius(&matrix.0);
+    }
+
+    // A light's culling radius is its range, and range has exactly one source
+    // of truth: `primParams[3]`, the same slot the accumulation shader reads.
+    // Mirroring it into `BoundingRadius` from the TypeScript producer instead
+    // would hold until someone set range through `raw-api.ts` and forgot the
+    // second write, at which point the light culls against a stale radius and
+    // pops at the frustum edge.
+    //
+    // This query runs SECOND on purpose, and the order is a correctness
+    // invariant, not style: `SpawnEntity` gives *every* entity a `ModelMatrix`
+    // (command_processor.rs:632 and :649, both archetypes), so the pass above
+    // matches lights too and would otherwise leave them with a radius derived
+    // from the light quad's scale.
+    //
+    // `BoundsOverride` still wins — `SetBoundingRadius` is the documented way
+    // to pin a radius, and a light is no exception.
+    for (prim, params, radius, _active) in world.query_mut::<hecs::Without<
+        (
+            &RenderPrimitive,
+            &PrimitiveParams,
+            &mut BoundingRadius,
+            &Active,
+        ),
+        &BoundsOverride,
+    >>() {
+        if prim.0 != PRIM_TYPE_LIGHT2D {
+            continue;
+        }
+        // A light's transform scale does NOT affect its culling radius: a
+        // light's extent is its range. Negative and non-finite ranges collapse
+        // to 0 rather than reaching the sphere-frustum test.
+        let range = params.0[3];
+        radius.0 = if range.is_finite() && range > 0.0 {
+            range
+        } else {
+            0.0
+        };
     }
 }
 
@@ -475,6 +513,105 @@ mod tests {
         velocity_system_2d(&mut world, 1.0);
         let pos = world.get::<&Position>(e).unwrap();
         assert!((pos.0.x - 0.0).abs() < 1e-5); // unchanged
+    }
+
+    // --- Phase 17: a light's culling radius is its range ---
+
+    /// Mirror the archetype `SpawnEntity` actually produces — in particular the
+    /// `ModelMatrix`, which is what makes the ordering inside
+    /// `update_bounding_radii` load-bearing.
+    fn spawn_light(world: &mut World, range: f32, scale: f32) -> hecs::Entity {
+        let mut params = [0.0f32; 8];
+        params[3] = range;
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::splat(scale)),
+            ModelMatrix(
+                Mat4::from_scale_rotation_translation(
+                    Vec3::splat(scale),
+                    Quat::IDENTITY,
+                    Vec3::ZERO,
+                )
+                .to_cols_array(),
+            ),
+            BoundingRadius(0.5),
+            RenderPrimitive(PRIM_TYPE_LIGHT2D),
+            PrimitiveParams(params),
+            Active,
+        ))
+    }
+
+    #[test]
+    fn light_radius_follows_prim_params_slot_3() {
+        let mut world = World::new();
+        let e = spawn_light(&mut world, 300.0, 1.0);
+        update_bounding_radii(&mut world);
+        assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 300.0);
+    }
+
+    #[test]
+    fn light_radius_ignores_transform_scale() {
+        // A 40x-scaled light quad would give a matrix-derived radius near 34.6.
+        // The light must still cull against its range. This is the assertion
+        // that fails if the two queries are ever swapped.
+        let mut world = World::new();
+        let e = spawn_light(&mut world, 300.0, 40.0);
+        update_bounding_radii(&mut world);
+        assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 300.0);
+    }
+
+    #[test]
+    fn non_light_entities_keep_matrix_derived_radius() {
+        let mut world = World::new();
+        let mut params = [0.0f32; 8];
+        params[3] = 999.0; // slot 3 means something else entirely for a quad
+        let e = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::splat(2.0)),
+            ModelMatrix(
+                Mat4::from_scale_rotation_translation(
+                    Vec3::splat(2.0),
+                    Quat::IDENTITY,
+                    Vec3::ZERO,
+                )
+                .to_cols_array(),
+            ),
+            BoundingRadius(0.5),
+            RenderPrimitive(0),
+            PrimitiveParams(params),
+            Active,
+        ));
+        update_bounding_radii(&mut world);
+        let r = world.get::<&BoundingRadius>(e).unwrap().0;
+        assert!((r - 3.0_f32.sqrt()).abs() < 1e-5, "got {r}");
+    }
+
+    #[test]
+    fn light_radius_rejects_negative_and_non_finite_range() {
+        for bad in [-1.0f32, f32::NAN, f32::INFINITY] {
+            let mut world = World::new();
+            let e = spawn_light(&mut world, bad, 1.0);
+            update_bounding_radii(&mut world);
+            let r = world.get::<&BoundingRadius>(e).unwrap().0;
+            assert_eq!(r, 0.0, "range {bad} must collapse to 0, got {r}");
+            assert!(r.is_finite());
+        }
+    }
+
+    #[test]
+    fn bounds_override_pins_a_light_radius_too() {
+        let mut world = World::new();
+        let e = spawn_light(&mut world, 300.0, 1.0);
+        world.insert_one(e, BoundsOverride).unwrap();
+        world.insert_one(e, BoundingRadius(12.0)).unwrap();
+        update_bounding_radii(&mut world);
+        assert_eq!(
+            world.get::<&BoundingRadius>(e).unwrap().0,
+            12.0,
+            "SetBoundingRadius must still win on a light"
+        );
     }
 
     #[cfg(feature = "physics-2d")]

@@ -54,6 +54,13 @@ pub struct MeshHandle(pub u32);
 
 /// Render primitive type. Determines which GPU pipeline processes this entity.
 /// 0 = Quad (default). Range 0–31 core, 32–63 extended, 64–127 plugin.
+///
+/// Core types: 0=Quad, 1=Line, 2=SDFGlyph, 3=BezierPath, 4=Gradient,
+/// 5=BoxShadow, 6=Light2D.
+///
+/// `6 = Light2D` is the one type the ForwardPass never draws: no shader is
+/// registered for it in `SHADER_SOURCES`, so the per-type pipeline loop simply
+/// never finds it. `LightAccumPass` reads its draw bucket directly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct RenderPrimitive(pub u8);
@@ -64,6 +71,21 @@ pub struct RenderPrimitive(pub u8);
 ///   SDFGlyph: [atlasU0, atlasV0, atlasU1, atlasV1, screenPxRange, _pad, _pad, _pad]
 ///   Gradient: [type, angle, stop0pos, stop0r, stop0g, stop0b, stop1pos, stop1r]
 ///   BoxShadow: [rectW, rectH, cornerRadius, blur, colorR, colorG, colorB, colorA]
+///   Light2D: [colorR, colorG, colorB, range, innerCos, outerCos, falloff, shadowIntensity]
+///
+/// For `Light2D` the colour is HDR with `energy` **premultiplied in** — that is
+/// what frees slot 7 for `shadowIntensity`. Premultiplication is a property of
+/// the GPU buffer only: the TypeScript API keeps `color` and `energy` separate,
+/// because a 3D light will need them apart.
+///
+/// Slot 3 (`range`) is the single source of truth for a light's extent and
+/// drives `BoundingRadius` through `systems::update_bounding_radii`; slot 4
+/// doubles as `height` for point lights once normal maps land.
+///
+/// Flags are deliberately NOT bit-packed into a spare `f32` here: the
+/// `SetPrimParams0/1` handlers validate every float with `is_finite()`, and an
+/// arbitrary bitfield can bitcast to a NaN that is then silently rejected. That
+/// is why the lighting flags live in `renderMeta` (u32) instead.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct PrimitiveParams(pub [f32; 8]);
