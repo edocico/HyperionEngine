@@ -104,11 +104,24 @@ pub enum CommandType {
     DestroyCharacterController = 51, // 0B
     /// Explicit "up" axis for the character controller (overrides the gravity-derived default).
     SetCharacterUp = 52,        // 8B: ux(f32) + uy(f32)
+
+    // ── Phase 17: 2D lighting ──
+    // Only four, because a light's colour/range/cone reuse `SetPrimParams0/1`
+    // and its position reuses the transform. These carry what does not fit in
+    // an f32 slot without risking a NaN — see `PrimitiveParams` doc comment.
+    /// Light description: shape, blend mode and layer mask. renderMeta bits 11-31.
+    SetLightFlags = 53,         // 4B: light_type(u8) + blend_mode(u8) + light_mask(u16)
+    /// Per-entity lighting participation. renderMeta bits 9-10.
+    SetLightingFlags = 54,      // 1B: bit0=castsShadow, bit1=receivesLight
+    /// Global ambient light — engine-level, `entity_id = 0` sentinel.
+    SetAmbientLight = 55,       // 16B: r(f32) + g(f32) + b(f32) + intensity(f32)
+    /// Active lighting backend — engine-level, `entity_id = 0` sentinel.
+    SetLightingBackend = 56,    // 1B: 0=off, 1=lit, 2=gi
 }
 
 /// One past the highest `CommandType` discriminant.
 /// Must stay in sync with `MAX_COMMAND_TYPE` in `ts/src/backpressure.ts`.
-pub const MAX_COMMAND_TYPE: u8 = 53;
+pub const MAX_COMMAND_TYPE: u8 = 57;
 
 impl CommandType {
     /// Try to convert a raw byte into a `CommandType`.
@@ -173,6 +186,13 @@ impl CommandType {
             50 => Some(Self::SetBoundingRadius),
             51 => Some(Self::DestroyCharacterController),
             52 => Some(Self::SetCharacterUp),
+            // Phase 17: lighting. This match has a `_ => None` catch-all, so
+            // the compiler does NOT enforce these four arms — omitting one is a
+            // silent drop of the whole rest of the batch at runtime.
+            53 => Some(Self::SetLightFlags),
+            54 => Some(Self::SetLightingFlags),
+            55 => Some(Self::SetAmbientLight),
+            56 => Some(Self::SetLightingBackend),
             _ => None,
         }
     }
@@ -224,6 +244,11 @@ impl CommandType {
             Self::SetBoundingRadius => 4,          // 1 × f32
             Self::DestroyCharacterController => 0,
             Self::SetCharacterUp => 8,             // ux(f32) + uy(f32)
+            // Phase 17: lighting
+            Self::SetLightFlags => 4,              // type(u8) + blend(u8) + mask(u16)
+            Self::SetLightingFlags => 1,           // flag bitmask (u8)
+            Self::SetAmbientLight => 16,           // 4 × f32
+            Self::SetLightingBackend => 1,         // backend id (u8)
         }
     }
 
@@ -1111,5 +1136,44 @@ mod tests {
         assert_eq!(CommandType::SetCharacterConfig.payload_size(), 16);
         assert_eq!(CommandType::MoveCharacter.payload_size(), 8);
         assert_eq!(CommandType::SetPhysicsDebugRender.payload_size(), 1);
+    }
+
+    /// `from_u8` is the one step of `/new-command` the compiler cannot enforce:
+    /// its `_ => None` catch-all turns a forgotten arm into an unknown opcode,
+    /// which makes `drain` resync and discard the whole rest of the batch.
+    #[test]
+    fn phase17_lighting_command_types_round_trip() {
+        assert_eq!(CommandType::from_u8(53), Some(CommandType::SetLightFlags));
+        assert_eq!(CommandType::from_u8(54), Some(CommandType::SetLightingFlags));
+        assert_eq!(CommandType::from_u8(55), Some(CommandType::SetAmbientLight));
+        assert_eq!(
+            CommandType::from_u8(56),
+            Some(CommandType::SetLightingBackend)
+        );
+    }
+
+    #[test]
+    fn phase17_lighting_payload_sizes() {
+        assert_eq!(CommandType::SetLightFlags.payload_size(), 4);
+        assert_eq!(CommandType::SetLightingFlags.payload_size(), 1);
+        assert_eq!(CommandType::SetAmbientLight.payload_size(), 16);
+        assert_eq!(CommandType::SetLightingBackend.payload_size(), 1);
+    }
+
+    /// Sweep the whole table rather than the new four: a hard-coded upper bound
+    /// in a test like this is exactly how the previous phase's commands escaped
+    /// the 16-byte check (`/new-command` step 16).
+    #[test]
+    fn every_declared_command_type_is_decodable_and_fits_the_wire() {
+        for v in 0..MAX_COMMAND_TYPE {
+            let ct = CommandType::from_u8(v)
+                .unwrap_or_else(|| panic!("discriminant {v} has no from_u8 arm"));
+            assert!(
+                ct.payload_size() <= 16,
+                "{ct:?} payload {} exceeds the 16-byte wire limit",
+                ct.payload_size()
+            );
+            assert_eq!(ct.message_size(), 5 + ct.payload_size());
+        }
     }
 }

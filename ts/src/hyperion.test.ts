@@ -225,6 +225,7 @@ describe('Hyperion', () => {
       renderMeta: new Uint32Array(0), texIndices: new Uint32Array(0),
       primParams: new Float32Array(0), entityIds: new Uint32Array(0),
       listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 42,
+      ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
       dirtyCount: 0, dirtyRatio: 0, stagingData: null, dirtyIndices: null, dirtyBits: null,
     };
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());

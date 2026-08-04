@@ -873,3 +873,144 @@ describe('physics debug render command (Phase 16)', () => {
     expect(PAYLOAD_SIZES[CommandType.SetPhysicsDebugRender]).toBe(1);
   });
 });
+
+describe('phase 17 lighting commands (53-56)', () => {
+  const HEADER = 32;
+
+  function createProducer(): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const bp = new BackpressuredProducer(new RingBufferProducer(sab));
+    return { bp, sab };
+  }
+
+  it('all four are coalescable — last write wins', () => {
+    const queue = new PrioritizedCommandQueue();
+    for (const cmd of [
+      CommandType.SetLightFlags,
+      CommandType.SetLightingFlags,
+      CommandType.SetAmbientLight,
+      CommandType.SetLightingBackend,
+    ]) {
+      queue.enqueue(cmd, 1, new Uint8Array([1]));
+      queue.enqueue(cmd, 1, new Uint8Array([2]));
+    }
+    expect(queue.criticalCount).toBe(0);
+    expect(queue.overwriteCount).toBe(4);
+  });
+
+  it('setLightFlags packs u8 + u8 + u16 little-endian', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(7, 0b001, 0b10, 0xbeef);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 4 payload = 9 bytes
+    expect(bytes.length).toBe(9);
+    expect(bytes[0]).toBe(CommandType.SetLightFlags);
+    expect(bytes[5]).toBe(0b001);      // lightType
+    expect(bytes[6]).toBe(0b10);       // blendMode
+    expect(bytes[7]).toBe(0xef);       // mask low byte first
+    expect(bytes[8]).toBe(0xbe);
+  });
+
+  it('setLightFlags masks lightType to 3 bits and blendMode to 2', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(1, 0xff, 0xff, 0xffff);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes[5]).toBe(0b111);
+    expect(bytes[6]).toBe(0b11);
+    expect(bytes[7]).toBe(0xff);
+    expect(bytes[8]).toBe(0xff);
+  });
+
+  it('setLightFlags round-trips all 16 mask bits', () => {
+    for (const mask of [0x0000, 0x0001, 0x8000, 0xffff, 0xa5a5]) {
+      const { bp, sab } = createProducer();
+      bp.setLightFlags(1, 0, 0, mask);
+      bp.flush();
+      const { bytes } = extractUnread(sab);
+      expect(bytes[7] | (bytes[8] << 8), `mask 0x${mask.toString(16)}`).toBe(mask);
+    }
+  });
+
+  it('setLightingFlags encodes both bits independently', () => {
+    const cases: Array<[boolean, boolean, number]> = [
+      [false, false, 0b00],
+      [true, false, 0b01],
+      [false, true, 0b10],
+      [true, true, 0b11],
+    ];
+    for (const [casts, receives, expected] of cases) {
+      const { bp, sab } = createProducer();
+      bp.setLightingFlags(3, casts, receives);
+      bp.flush();
+      const { bytes } = extractUnread(sab);
+      expect(bytes.length).toBe(6);
+      expect(bytes[0]).toBe(CommandType.SetLightingFlags);
+      expect(bytes[5], `casts=${casts} receives=${receives}`).toBe(expected);
+    }
+  });
+
+  it('setAmbientLight writes 4 f32 against entity 0', () => {
+    const { bp, sab } = createProducer();
+    bp.setAmbientLight(0.25, 0.5, 0.75, 2);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // 1 cmd + 4 entity_id + 16 payload = 21 bytes
+    expect(bytes.length).toBe(21);
+    expect(bytes[0]).toBe(CommandType.SetAmbientLight);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset);
+    expect(dv.getUint32(1, true)).toBe(0); // engine-level sentinel
+    expect(dv.getFloat32(5, true)).toBeCloseTo(0.25);
+    expect(dv.getFloat32(9, true)).toBeCloseTo(0.5);
+    expect(dv.getFloat32(13, true)).toBeCloseTo(0.75);
+    expect(dv.getFloat32(17, true)).toBeCloseTo(2);
+  });
+
+  it('setAmbientLight defaults intensity to 1', () => {
+    const { bp, sab } = createProducer();
+    bp.setAmbientLight(0, 0, 0);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    const dv = new DataView(bytes.buffer, bytes.byteOffset);
+    expect(dv.getFloat32(17, true)).toBeCloseTo(1);
+  });
+
+  it('setLightingBackend writes the backend id against entity 0', () => {
+    for (const backend of [0, 1, 2]) {
+      const { bp, sab } = createProducer();
+      bp.setLightingBackend(backend);
+      bp.flush();
+      const { bytes } = extractUnread(sab);
+      expect(bytes.length).toBe(6);
+      expect(bytes[0]).toBe(CommandType.SetLightingBackend);
+      expect(bytes[5]).toBe(backend);
+    }
+  });
+
+  it('despawning entity 0 does not purge pending engine-level commands', () => {
+    // 55 and 56 address engine state through the `entity_id = 0` sentinel, but
+    // 0 is also a valid external entity id — the purge loop used to take them
+    // down as collateral, silently. Same fix covers SetListenerPosition (13).
+    const queue = new PrioritizedCommandQueue();
+    queue.enqueue(CommandType.SetAmbientLight, 0, new Float32Array([1, 1, 1, 1]));
+    queue.enqueue(CommandType.SetLightingBackend, 0, new Uint8Array([1]));
+    queue.enqueue(CommandType.SetListenerPosition, 0, new Float32Array([1, 2, 3]));
+    queue.enqueue(CommandType.SetLightFlags, 0, new Uint8Array([0, 0, 0, 0]));
+    expect(queue.overwriteCount).toBe(4);
+
+    queue.enqueue(CommandType.DespawnEntity, 0);
+
+    // The entity-scoped command goes; the three engine-level ones stay.
+    expect(queue.overwriteCount).toBe(3);
+
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const kinds: number[] = [];
+    queue.drainTo(new RingBufferProducer(sab), (type) => kinds.push(type));
+
+    expect(kinds).toContain(CommandType.SetAmbientLight);
+    expect(kinds).toContain(CommandType.SetLightingBackend);
+    expect(kinds).toContain(CommandType.SetListenerPosition);
+    expect(kinds).not.toContain(CommandType.SetLightFlags);
+  });
+});

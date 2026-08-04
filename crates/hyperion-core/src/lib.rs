@@ -483,6 +483,68 @@ pub fn engine_listener_z() -> f32 {
     }
 }
 
+// ── Phase 17: lighting engine-level state ────────────────────────────────
+//
+// Returned as four scalars rather than a pointer: `ambient_light` is a fixed
+// array inside the `Engine` struct, not a `Vec`, so there is no stable
+// allocation to hand out — and taking the address of a field of a `static mut`
+// would be a pointer whose validity depends on the struct never moving.
+
+/// Ambient light red channel (CommandType 55).
+#[wasm_bindgen]
+pub fn engine_ambient_r() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.ambient_light()[0])
+    }
+}
+
+/// Ambient light green channel (CommandType 55).
+#[wasm_bindgen]
+pub fn engine_ambient_g() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.ambient_light()[1])
+    }
+}
+
+/// Ambient light blue channel (CommandType 55).
+#[wasm_bindgen]
+pub fn engine_ambient_b() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0.0, |e| e.ambient_light()[2])
+    }
+}
+
+/// Ambient light intensity multiplier (CommandType 55). Defaults to 1.0.
+#[wasm_bindgen]
+pub fn engine_ambient_intensity() -> f32 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(1.0, |e| e.ambient_light()[3])
+    }
+}
+
+/// Active lighting backend (CommandType 56): 0=off, 1=lit, 2=gi.
+#[wasm_bindgen]
+pub fn engine_lighting_backend() -> u8 {
+    // SAFETY: wasm32 is single-threaded.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.lighting_backend())
+    }
+}
+
 /// Expose WASM linear memory to JavaScript.
 /// wasm-bindgen does not auto-export `WebAssembly.Memory`; callers need
 /// it to create typed array views over SoA GPU buffers (transforms, bounds, etc.).

@@ -40,6 +40,13 @@ interface WasmEngine {
   engine_listener_x(): number;
   engine_listener_y(): number;
   engine_listener_z(): number;
+  // Lighting engine-level exports (Phase 17). Optional: a WASM build predating
+  // them still satisfies this interface.
+  engine_ambient_r?(): number;
+  engine_ambient_g?(): number;
+  engine_ambient_b?(): number;
+  engine_ambient_intensity?(): number;
+  engine_lighting_backend?(): number;
   // Physics debug exports (physics-debug builds only)
   engine_physics_debug_ptr?(): number;
   engine_physics_debug_f32_len?(): number;
@@ -128,6 +135,11 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         listenerX: number;
         listenerY: number;
         listenerZ: number;
+        ambientR: number;
+        ambientG: number;
+        ambientB: number;
+        ambientIntensity: number;
+        lightingBackend: number;
         physicsDebugLines?: ArrayBuffer;
       } | null = null;
 
@@ -184,6 +196,11 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
           listenerX: wasm!.engine_listener_x(),
           listenerY: wasm!.engine_listener_y(),
           listenerZ: wasm!.engine_listener_z(),
+          ambientR: wasm!.engine_ambient_r?.() ?? 0,
+          ambientG: wasm!.engine_ambient_g?.() ?? 0,
+          ambientB: wasm!.engine_ambient_b?.() ?? 0,
+          ambientIntensity: wasm!.engine_ambient_intensity?.() ?? 1,
+          lightingBackend: wasm!.engine_lighting_backend?.() ?? 0,
           ...(physicsDebugLines ? { physicsDebugLines: physicsDebugLines.buffer as ArrayBuffer } : {}),
         };
       }
@@ -205,6 +222,11 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
             listenerX: wasm!.engine_listener_x(),
             listenerY: wasm!.engine_listener_y(),
             listenerZ: wasm!.engine_listener_z(),
+            ambientR: wasm!.engine_ambient_r?.() ?? 0,
+            ambientG: wasm!.engine_ambient_g?.() ?? 0,
+            ambientB: wasm!.engine_ambient_b?.() ?? 0,
+            ambientIntensity: wasm!.engine_ambient_intensity?.() ?? 1,
+            lightingBackend: wasm!.engine_lighting_backend?.() ?? 0,
           },
         });
       }

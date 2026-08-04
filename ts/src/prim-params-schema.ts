@@ -11,7 +11,7 @@
  * NOTE: RenderPrimitiveType is re-declared here (not imported from entity-handle.ts)
  * to avoid circular dependency. entity-handle.ts is the authoritative source.
  * The values MUST stay synchronized: Quad=0, Line=1, SDFGlyph=2, BezierPath=3,
- * Gradient=4, BoxShadow=5.
+ * Gradient=4, BoxShadow=5, Light2D=6.
  */
 
 // Re-declare RenderPrimitiveType here (NOT imported from entity-handle.ts)
@@ -23,6 +23,7 @@ export const enum RenderPrimitiveType {
   BezierPath = 3,
   Gradient = 4,
   BoxShadow = 5,
+  Light2D = 6,
 }
 
 /**
@@ -54,6 +55,14 @@ export const PRIM_PARAMS_SCHEMA: Partial<Record<RenderPrimitiveType, Record<stri
   [RenderPrimitiveType.BoxShadow]: {
     rectW: 0, rectH: 1, cornerRadius: 2, blur: 3,
     r: 4, g: 5, b: 6, a: 7,
+  },
+  // Light2D. `colorR/G/B` are HDR with energy already premultiplied — that
+  // premultiplication happens at the API boundary, not here, which is what
+  // frees slot 7 for `shadowIntensity`. `range` (slot 3) is also the single
+  // source of truth for the light's culling radius.
+  [RenderPrimitiveType.Light2D]: {
+    colorR: 0, colorG: 1, colorB: 2, range: 3,
+    innerCos: 4, outerCos: 5, falloff: 6, shadowIntensity: 7,
   },
 };
 

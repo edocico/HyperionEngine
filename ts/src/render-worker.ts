@@ -28,6 +28,12 @@ interface RenderState {
   listenerX?: number;
   listenerY?: number;
   listenerZ?: number;
+  // Lighting engine-level state (Phase 17), forwarded from the ECS worker.
+  ambientR?: number;
+  ambientG?: number;
+  ambientB?: number;
+  ambientIntensity?: number;
+  lightingBackend?: number;
   tickCount?: number;
 }
 
@@ -87,6 +93,11 @@ function renderLoop(): void {
         listenerX: latestRenderState.listenerX ?? 0,
         listenerY: latestRenderState.listenerY ?? 0,
         listenerZ: latestRenderState.listenerZ ?? 0,
+        ambientR: latestRenderState.ambientR ?? 0,
+        ambientG: latestRenderState.ambientG ?? 0,
+        ambientB: latestRenderState.ambientB ?? 0,
+        ambientIntensity: latestRenderState.ambientIntensity ?? 1,
+        lightingBackend: latestRenderState.lightingBackend ?? 0,
         tickCount: latestRenderState.tickCount ?? 0,
         dirtyCount: 0,
         dirtyRatio: 0,

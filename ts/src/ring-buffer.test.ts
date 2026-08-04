@@ -328,8 +328,15 @@ describe('audit 2026-07 command types', () => {
     expect(PAYLOAD_SIZES[CommandType.SetCharacterUp]).toBe(8);
   });
 
+  // ⚠️ Both sweeps below are bounded by this constant, and `const enum` gives
+  // no way to derive it (no reverse mapping, no Object.values). Re-point it at
+  // the last member every time a CommandType is added, or the new command is
+  // silently excluded from both checks. Declared once so there is one place to
+  // change rather than two to forget.
+  const LAST_COMMAND_TYPE = CommandType.SetLightingBackend;
+
   it('keeps every payload within the 16-byte wire limit', () => {
-    for (let t = 0; t <= CommandType.SetCharacterUp; t++) {
+    for (let t = 0; t <= LAST_COMMAND_TYPE; t++) {
       const size = PAYLOAD_SIZES[t as CommandType];
       expect(size, `command ${t}`).toBeLessThanOrEqual(16);
       expect(size, `command ${t}`).toBeGreaterThanOrEqual(0);
@@ -339,8 +346,25 @@ describe('audit 2026-07 command types', () => {
   it('has a payload size declared for every discriminant up to the last one', () => {
     // A missing entry would make writeCommand emit a malformed message and
     // desynchronise the whole stream from that byte onwards.
-    for (let t = 0; t <= CommandType.SetCharacterUp; t++) {
+    for (let t = 0; t <= LAST_COMMAND_TYPE; t++) {
       expect(PAYLOAD_SIZES[t as CommandType], `command ${t}`).toBeTypeOf('number');
     }
+  });
+});
+
+// ── Phase 17: 2D lighting protocol ─────────────────────────────
+describe('phase 17 lighting command types', () => {
+  it('declares the four discriminants at 53-56', () => {
+    expect(CommandType.SetLightFlags).toBe(53);
+    expect(CommandType.SetLightingFlags).toBe(54);
+    expect(CommandType.SetAmbientLight).toBe(55);
+    expect(CommandType.SetLightingBackend).toBe(56);
+  });
+
+  it('declares payload sizes matching the Rust payload_size() arms', () => {
+    expect(PAYLOAD_SIZES[CommandType.SetLightFlags]).toBe(4);
+    expect(PAYLOAD_SIZES[CommandType.SetLightingFlags]).toBe(1);
+    expect(PAYLOAD_SIZES[CommandType.SetAmbientLight]).toBe(16);
+    expect(PAYLOAD_SIZES[CommandType.SetLightingBackend]).toBe(1);
   });
 });

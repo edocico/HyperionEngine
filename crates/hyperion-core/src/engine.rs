@@ -46,6 +46,17 @@ pub struct Engine {
     listener_pos: [f32; 3],
     listener_prev_pos: [f32; 3],
     listener_vel: [f32; 3],
+    /// Global ambient light `[r, g, b, intensity]` (CommandType 55).
+    /// Engine-level, not per-entity: it becomes the clear colour of the light
+    /// accumulation buffer, which is why it costs nothing to render.
+    ///
+    /// Known gap: this is NOT in the HSNP trailer, so `snapshot_restore`
+    /// followed by replay only reproduces it if the ambient was set after the
+    /// snapshot point. Adding it means HSNP v4 — deliberately deferred.
+    ambient_light: [f32; 4],
+    /// Active lighting backend (CommandType 56): 0=off, 1=lit, 2=gi.
+    /// Same snapshot gap as `ambient_light`.
+    lighting_backend: u8,
 }
 
 impl Default for Engine {
@@ -72,6 +83,8 @@ impl Engine {
             listener_pos: [0.0; 3],
             listener_prev_pos: [0.0; 3],
             listener_vel: [0.0; 3],
+            ambient_light: [0.0, 0.0, 0.0, 1.0],
+            lighting_backend: 0,
         }
     }
 
@@ -109,6 +122,40 @@ impl Engine {
                 }
                 self.listener_pos = new_pos;
                 self.listener_prev_pos = new_pos;
+            }
+        }
+
+        // Lighting: engine-level state addressed with the `entity_id = 0`
+        // sentinel, intercepted before ECS dispatch exactly like the two above.
+        // Both still carry a no-op arm in `process_single_command` so the
+        // exhaustive match keeps compiling.
+        for cmd in commands {
+            match cmd.cmd_type {
+                CommandType::SetAmbientLight => {
+                    let mut v = [0.0f32; 4];
+                    for (i, slot) in v.iter_mut().enumerate() {
+                        *slot = f32::from_le_bytes(
+                            cmd.payload[i * 4..i * 4 + 4].try_into().unwrap(),
+                        );
+                    }
+                    // A non-finite ambient becomes the light buffer's clear
+                    // colour, i.e. a NaN across the entire screen for every
+                    // subsequent frame. Reject the whole command, not per-channel.
+                    if v.iter().all(|c| c.is_finite()) {
+                        self.ambient_light = v;
+                    }
+                }
+                CommandType::SetLightingBackend => {
+                    // 0=off, 1=lit, 2=gi. Unknown values fall back to `off`
+                    // rather than leaving the previous backend live, so a
+                    // protocol mismatch fails visibly instead of subtly.
+                    self.lighting_backend = if cmd.payload[0] <= 2 {
+                        cmd.payload[0]
+                    } else {
+                        0
+                    };
+                }
+                _ => {}
             }
         }
 
@@ -356,6 +403,18 @@ impl Engine {
     /// Returns the extrapolated listener Z position.
     pub fn listener_z(&self) -> f32 {
         self.listener_pos[2]
+    }
+
+    /// Global ambient light `[r, g, b, intensity]` (CommandType 55).
+    /// The engine is the source of truth: TypeScript reads it back rather than
+    /// keeping a parallel copy, the same arrangement as the audio listener.
+    pub fn ambient_light(&self) -> [f32; 4] {
+        self.ambient_light
+    }
+
+    /// Active lighting backend (CommandType 56): 0=off, 1=lit, 2=gi.
+    pub fn lighting_backend(&self) -> u8 {
+        self.lighting_backend
     }
 }
 
@@ -1760,6 +1819,88 @@ mod tests {
         let e = engine.entity_map.get(0).unwrap();
         assert_eq!(engine.world.get::<&Depth>(e).unwrap().0, 3.5);
         assert_eq!(engine.world.get::<&Transparent>(e).unwrap().0, 1);
+    }
+
+    // ── Phase 17: engine-level lighting commands (55, 56) ──
+
+    fn ambient_cmd(r: f32, g: f32, b: f32, i: f32) -> Command {
+        let mut payload = [0u8; 16];
+        for (n, v) in [r, g, b, i].iter().enumerate() {
+            payload[n * 4..n * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        Command {
+            cmd_type: CommandType::SetAmbientLight,
+            entity_id: 0,
+            payload,
+        }
+    }
+
+    fn backend_cmd(id: u8) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = id;
+        Command {
+            cmd_type: CommandType::SetLightingBackend,
+            entity_id: 0,
+            payload,
+        }
+    }
+
+    #[test]
+    fn ambient_light_defaults_to_black_at_full_intensity() {
+        let engine = Engine::new();
+        assert_eq!(engine.ambient_light(), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(engine.lighting_backend(), 0, "lighting starts off");
+    }
+
+    #[test]
+    fn set_ambient_light_stores_all_four_channels() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[ambient_cmd(0.1, 0.2, 0.3, 2.5)]);
+        assert_eq!(engine.ambient_light(), [0.1, 0.2, 0.3, 2.5]);
+    }
+
+    #[test]
+    fn non_finite_ambient_is_rejected_wholesale() {
+        // The ambient is the light buffer's clear colour: one NaN channel is a
+        // NaN across the whole screen, every frame from then on.
+        let mut engine = Engine::new();
+        engine.process_commands(&[ambient_cmd(0.4, 0.5, 0.6, 1.0)]);
+        engine.process_commands(&[ambient_cmd(0.9, f32::NAN, 0.9, 1.0)]);
+        assert_eq!(
+            engine.ambient_light(),
+            [0.4, 0.5, 0.6, 1.0],
+            "previous value kept, not partially overwritten"
+        );
+        engine.process_commands(&[ambient_cmd(0.9, 0.9, f32::INFINITY, 1.0)]);
+        assert_eq!(engine.ambient_light(), [0.4, 0.5, 0.6, 1.0]);
+    }
+
+    #[test]
+    fn lighting_backend_accepts_known_values_and_falls_back_to_off() {
+        let mut engine = Engine::new();
+        for id in 0..=2u8 {
+            engine.process_commands(&[backend_cmd(id)]);
+            assert_eq!(engine.lighting_backend(), id);
+        }
+        engine.process_commands(&[backend_cmd(1)]);
+        engine.process_commands(&[backend_cmd(7)]);
+        assert_eq!(
+            engine.lighting_backend(),
+            0,
+            "an unknown backend must fail visibly, not leave the old one live"
+        );
+    }
+
+    #[test]
+    fn engine_level_lighting_does_not_spawn_or_touch_entity_zero() {
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        engine.process_commands(&[ambient_cmd(1.0, 1.0, 1.0, 1.0), backend_cmd(1)]);
+
+        assert_eq!(engine.world.len(), 1);
+        assert!(engine.world.contains(e));
+        assert_eq!(engine.ambient_light(), [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[cfg(feature = "dev-tools")]

@@ -32,6 +32,15 @@ export interface GPURenderState {
   // Physics debug lines (Phase 16): 8 f32 per line [ax,ay,bx,by,r,g,b,a].
   // Non-null only on physics-debug builds while debug rendering is enabled.
   physicsDebugLines?: Float32Array | null;
+  // Lighting engine-level state (Phase 17). Read back from WASM rather than
+  // kept as a TypeScript copy for the same reason as the audio listener:
+  // during a `ReplayPlayer` run the commands come off the tape, so a local
+  // copy on this side would be stale.
+  ambientR: number;
+  ambientG: number;
+  ambientB: number;
+  ambientIntensity: number;
+  lightingBackend: number;     // 0=off, 1=lit, 2=gi
 }
 
 export interface EngineBridge {
@@ -113,6 +122,11 @@ export function createWorkerBridge(
         listenerX: rs.listenerX ?? 0,
         listenerY: rs.listenerY ?? 0,
         listenerZ: rs.listenerZ ?? 0,
+        ambientR: rs.ambientR ?? 0,
+        ambientG: rs.ambientG ?? 0,
+        ambientB: rs.ambientB ?? 0,
+        ambientIntensity: rs.ambientIntensity ?? 1,
+        lightingBackend: rs.lightingBackend ?? 0,
         tickCount: msg.tickCount ?? 0,
         dirtyCount: rs.dirtyCount ?? 0,
         dirtyRatio: rs.dirtyRatio ?? 0,
@@ -234,6 +248,11 @@ export function createFullIsolationBridge(
         listenerX: rs.listenerX ?? 0,
         listenerY: rs.listenerY ?? 0,
         listenerZ: rs.listenerZ ?? 0,
+        ambientR: rs.ambientR ?? 0,
+        ambientG: rs.ambientG ?? 0,
+        ambientB: rs.ambientB ?? 0,
+        ambientIntensity: rs.ambientIntensity ?? 1,
+        lightingBackend: rs.lightingBackend ?? 0,
         tickCount: msg.tickCount ?? 0,
         dirtyCount: rs.dirtyCount ?? 0,
         dirtyRatio: rs.dirtyRatio ?? 0,
@@ -354,6 +373,13 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_listener_x(): number;
     engine_listener_y(): number;
     engine_listener_z(): number;
+    // Lighting engine-level exports (Phase 17). Optional so a WASM build
+    // predating them still satisfies this interface.
+    engine_ambient_r?(): number;
+    engine_ambient_g?(): number;
+    engine_ambient_b?(): number;
+    engine_ambient_intensity?(): number;
+    engine_lighting_backend?(): number;
     engine_tick_count(): bigint;
     engine_memory(): WebAssembly.Memory;
     // Dirty staging exports
@@ -452,6 +478,11 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerX: engine.engine_listener_x(),
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
+          ambientR: engine.engine_ambient_r?.() ?? 0,
+          ambientG: engine.engine_ambient_g?.() ?? 0,
+          ambientB: engine.engine_ambient_b?.() ?? 0,
+          ambientIntensity: engine.engine_ambient_intensity?.() ?? 1,
+          lightingBackend: engine.engine_lighting_backend?.() ?? 0,
           tickCount,
           dirtyCount,
           dirtyRatio,
@@ -477,6 +508,11 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           listenerX: engine.engine_listener_x(),
           listenerY: engine.engine_listener_y(),
           listenerZ: engine.engine_listener_z(),
+          ambientR: engine.engine_ambient_r?.() ?? 0,
+          ambientG: engine.engine_ambient_g?.() ?? 0,
+          ambientB: engine.engine_ambient_b?.() ?? 0,
+          ambientIntensity: engine.engine_ambient_intensity?.() ?? 1,
+          lightingBackend: engine.engine_lighting_backend?.() ?? 0,
           tickCount,
           dirtyCount: 0,
           dirtyRatio: 0,

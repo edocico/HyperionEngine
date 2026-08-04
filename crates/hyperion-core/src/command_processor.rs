@@ -963,6 +963,53 @@ fn process_single_command(
 
         // Handled in Engine::process_commands (engine-level flag, Phase 16)
         CommandType::SetPhysicsDebugRender => {}
+
+        // ── Phase 17: lighting ──
+        //
+        // `LightFlags` is inserted rather than mutated in place: `insert_one`
+        // on an entity that already has it overwrites, which is what a
+        // last-write-wins coalescable command means. Reading first preserves
+        // the bits this command does not own.
+        CommandType::SetLightFlags => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let light_type = cmd.payload[0];
+                let blend = cmd.payload[1];
+                let mask = u16::from_le_bytes([cmd.payload[2], cmd.payload[3]]);
+                let mut flags = world
+                    .get::<&LightFlags>(entity)
+                    .map(|f| *f)
+                    .unwrap_or_default();
+                // Out-of-range values are masked, not rejected: the field is
+                // 3 and 2 bits wide and a wider value would otherwise bleed
+                // into the neighbouring field.
+                flags.set_light(light_type, blend, mask);
+                let _ = world.insert_one(entity, flags);
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
+
+        CommandType::SetLightingFlags => {
+            if let Some(entity) = entity_map.get(cmd.entity_id) {
+                let bits = cmd.payload[0];
+                let mut flags = world
+                    .get::<&LightFlags>(entity)
+                    .map(|f| *f)
+                    .unwrap_or_default();
+                flags.set_casts_shadow(bits & 0b01 != 0);
+                flags.set_receives_light(bits & 0b10 != 0);
+                let _ = world.insert_one(entity, flags);
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_meta_dirty(slot as usize);
+                }
+            }
+        }
+
+        // Engine-level (entity_id = 0 sentinel), intercepted in
+        // `Engine::process_commands` before ECS dispatch — same shape as
+        // `SetPhysicsDebugRender`. These arms exist only for exhaustiveness.
+        CommandType::SetAmbientLight | CommandType::SetLightingBackend => {}
     }
 }
 
@@ -2128,6 +2175,174 @@ mod tests {
         assert!(map.is_entity_2d(1));
         assert!(!map.is_entity_2d(2));
         assert!(map.is_entity_2d(3));
+    }
+
+    // ── Phase 17: lighting command handlers (53-56) ──
+
+    fn light_flags_cmd(id: u32, light_type: u8, blend: u8, mask: u16) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = light_type;
+        payload[1] = blend;
+        payload[2..4].copy_from_slice(&mask.to_le_bytes());
+        Command {
+            cmd_type: CommandType::SetLightFlags,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    fn lighting_flags_cmd(id: u32, bits: u8) -> Command {
+        let mut payload = [0u8; 16];
+        payload[0] = bits;
+        Command {
+            cmd_type: CommandType::SetLightingFlags,
+            entity_id: id,
+            payload,
+        }
+    }
+
+    #[test]
+    fn set_light_flags_writes_type_blend_and_mask() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[make_spawn_cmd(0), light_flags_cmd(0, 1, 2, 0xBEEF)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        let e = map.get(0).unwrap();
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert_eq!(flags.light_type_raw(), 1);
+        assert_eq!(flags.blend_mode_raw(), 2);
+        assert_eq!(flags.light_mask(), 0xBEEF);
+    }
+
+    #[test]
+    fn set_light_flags_masks_out_of_range_fields() {
+        // lightType is 3 bits and blendMode 2. A wider value must be masked,
+        // not written through, or it bleeds into the neighbouring field.
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[make_spawn_cmd(0), light_flags_cmd(0, 0xFF, 0xFF, 0)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        let e = map.get(0).unwrap();
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert_eq!(flags.light_type_raw(), 0b111);
+        assert_eq!(flags.blend_mode_raw(), 0b11);
+        assert_eq!(flags.light_mask(), 0, "mask field must be untouched");
+    }
+
+    #[test]
+    fn lighting_flags_and_light_flags_do_not_clobber_each_other() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[
+                make_spawn_cmd(0),
+                lighting_flags_cmd(0, 0b11), // castsShadow + receivesLight
+                light_flags_cmd(0, 3, 1, 0x00FF),
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        let e = map.get(0).unwrap();
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert!(flags.casts_shadow(), "bit 9 survived SetLightFlags");
+        assert!(flags.receives_light(), "bit 10 survived SetLightFlags");
+        assert_eq!(flags.light_type_raw(), 3);
+        assert_eq!(flags.light_mask(), 0x00FF);
+
+        // …and the reverse order, since both are last-write-wins coalescable.
+        run_commands(&[lighting_flags_cmd(0, 0b01)], &mut world, &mut map, &mut rs);
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert!(flags.casts_shadow());
+        assert!(!flags.receives_light(), "bit 10 cleared");
+        assert_eq!(flags.light_type_raw(), 3, "light fields survived");
+        assert_eq!(flags.light_mask(), 0x00FF);
+    }
+
+    #[test]
+    fn lighting_commands_mark_meta_dirty() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+        rs.dirty_tracker.clear();
+
+        run_commands(
+            &[light_flags_cmd(0, 0, 0, 0x0001)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let e = map.get(0).unwrap();
+        let slot = rs.get_slot(e).unwrap() as usize;
+        assert!(
+            rs.dirty_tracker.is_meta_dirty(slot),
+            "without this the light never reaches the GPU and nothing errors"
+        );
+    }
+
+    #[test]
+    fn lighting_commands_on_unknown_entity_are_ignored() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[light_flags_cmd(99, 1, 1, 0xFFFF), lighting_flags_cmd(99, 0b11)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        assert!(map.get(99).is_none());
+        assert_eq!(world.len(), 0);
+    }
+
+    #[test]
+    fn engine_level_lighting_commands_do_not_reach_the_ecs() {
+        // 55 and 56 use the entity_id = 0 sentinel, which is also a perfectly
+        // valid external id. They must not be mistaken for entity commands.
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        let mut ambient = [0u8; 16];
+        ambient[0..4].copy_from_slice(&0.5f32.to_le_bytes());
+        run_commands(
+            &[
+                make_spawn_cmd(0),
+                Command {
+                    cmd_type: CommandType::SetAmbientLight,
+                    entity_id: 0,
+                    payload: ambient,
+                },
+                Command {
+                    cmd_type: CommandType::SetLightingBackend,
+                    entity_id: 0,
+                    payload: [1; 16],
+                },
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        let e = map.get(0).unwrap();
+        assert!(
+            world.get::<&LightFlags>(e).is_err(),
+            "engine-level commands must not attach LightFlags to entity 0"
+        );
     }
 
     #[cfg(feature = "physics-2d")]

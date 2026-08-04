@@ -22,7 +22,22 @@ export interface FlushStats {
  * Maximum command type value (exclusive). Used for despawn purge iteration.
  * Must be updated if new CommandType variants are added.
  */
-const MAX_COMMAND_TYPE = 53; // CommandType values: 0..52 — keep in sync with ring_buffer.rs MAX_COMMAND_TYPE
+const MAX_COMMAND_TYPE = 57; // CommandType values: 0..56 — keep in sync with ring_buffer.rs MAX_COMMAND_TYPE
+
+/**
+ * Commands that address *engine* state through the `entity_id = 0` sentinel
+ * rather than an entity.
+ *
+ * Their coalescing key is `0 * 256 + cmd`, and `0` is also a perfectly valid
+ * external entity id — so despawning entity 0 used to purge a pending listener
+ * position along with it, silently. These are exempt from the purge.
+ */
+const ENGINE_LEVEL_COMMANDS: ReadonlySet<number> = new Set<number>([
+  CommandType.SetListenerPosition,   // 13
+  CommandType.SetPhysicsDebugRender, // 47
+  CommandType.SetAmbientLight,       // 55
+  CommandType.SetLightingBackend,    // 56
+]);
 
 /**
  * Returns true for commands that must NOT be coalesced (last-write-wins).
@@ -30,6 +45,13 @@ const MAX_COMMAND_TYPE = 53; // CommandType values: 0..52 — keep in sync with 
  * - Physics create/destroy: CreateRigidBody, DestroyRigidBody, CreateCollider, DestroyCollider
  * - Physics additive: ApplyForce, ApplyImpulse, ApplyTorque
  * - Physics joints: ALL joint commands (33-43) are non-coalescable
+ *
+ * The four Phase 17 lighting commands (53-56) are all coalescable: none
+ * accumulates, none is a lifecycle edge, none carries a secondary id in its
+ * payload, and only the final value of each is observable. That matters in
+ * practice — an ambient-light slider dragged while the ring buffer is under
+ * backpressure must collapse to one command per frame, not flood the
+ * non-coalescable queue.
  */
 function isNonCoalescable(cmd: CommandType): boolean {
   if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) return true;
@@ -81,6 +103,9 @@ export class PrioritizedCommandQueue {
    */
   private purgeEntity(entityId: number): void {
     for (let cmdType = 0; cmdType < MAX_COMMAND_TYPE; cmdType++) {
+      // Engine-level commands share the `entity_id = 0` sentinel with real
+      // entity 0; despawning it must not take them down as collateral.
+      if (entityId === 0 && ENGINE_LEVEL_COMMANDS.has(cmdType)) continue;
       if (this.overwrites.delete(entityId * 256 + cmdType)) {
         this._purgedByDespawn++;
       }
@@ -560,5 +585,57 @@ export class BackpressuredProducer {
    */
   setCharacterUp(entityId: number, ux: number, uy: number): boolean {
     return this.writeCommand(CommandType.SetCharacterUp, entityId, new Float32Array([ux, uy]));
+  }
+
+  // ── Phase 17: 2D lighting ────────────────────────────────────
+
+  /**
+   * Describe a light: shape, blend mode and the 16 layers it illuminates.
+   * Colour, range and cone angles travel through `setPrimParams0/1` instead —
+   * they are ordinary f32 and fit the existing slots.
+   *
+   * Encoded by hand rather than as a Float32Array: `writeCommand`'s
+   * Float32Array branch walks whole f32 slots and cannot express the
+   * `u8 + u8 + u16` layout.
+   */
+  setLightFlags(entityId: number, lightType: number, blendMode: number, lightMask: number): boolean {
+    const buf = new Uint8Array(4);
+    const dv = new DataView(buf.buffer);
+    buf[0] = lightType & 0b111;
+    buf[1] = blendMode & 0b11;
+    dv.setUint16(2, lightMask & 0xffff, true);
+    return this.writeCommand(CommandType.SetLightFlags, entityId, buf);
+  }
+
+  /**
+   * Per-entity lighting participation. Both default to off: an entity opts in
+   * to casting shadows and to being lit, so unlit sprites skip the light
+   * buffer lookup entirely.
+   */
+  setLightingFlags(entityId: number, castsShadow: boolean, receivesLight: boolean): boolean {
+    const mask = (castsShadow ? 0b01 : 0) | (receivesLight ? 0b10 : 0);
+    return this.writeCommand(CommandType.SetLightingFlags, entityId, new Uint8Array([mask]));
+  }
+
+  /**
+   * Global ambient light. Engine-level (`entity_id = 0` sentinel), like
+   * `setPhysicsDebugRender`. It becomes the clear colour of the light
+   * accumulation buffer, which is why global light costs nothing to render.
+   */
+  setAmbientLight(r: number, g: number, b: number, intensity = 1.0): boolean {
+    return this.writeCommand(
+      CommandType.SetAmbientLight,
+      0,
+      new Float32Array([r, g, b, intensity]),
+    );
+  }
+
+  /** Select the lighting backend: 0=off, 1=lit, 2=gi. Engine-level. */
+  setLightingBackend(backend: number): boolean {
+    return this.writeCommand(
+      CommandType.SetLightingBackend,
+      0,
+      new Uint8Array([backend & 0xff]),
+    );
   }
 }

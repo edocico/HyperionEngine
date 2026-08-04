@@ -81,6 +81,16 @@ export const enum CommandType {
   DestroyCharacterController = 51,
   /** Explicit "up" axis for the character controller. */
   SetCharacterUp = 52,
+
+  // Phase 17: 2D lighting
+  /** Light shape, blend mode and layer mask — renderMeta bits 11-31. */
+  SetLightFlags = 53,
+  /** Per-entity lighting participation — renderMeta bits 9-10. */
+  SetLightingFlags = 54,
+  /** Global ambient light. Engine-level: entity_id = 0 sentinel. */
+  SetAmbientLight = 55,
+  /** Active lighting backend (0=off, 1=lit, 2=gi). Engine-level: entity_id = 0. */
+  SetLightingBackend = 56,
 }
 
 /** Payload sizes in bytes for each command type (excluding type + entity_id). */
@@ -148,6 +158,14 @@ export const PAYLOAD_SIZES: Record<CommandType, number> = {
   [CommandType.SetBoundingRadius]: 4,          // f32
   [CommandType.DestroyCharacterController]: 0,
   [CommandType.SetCharacterUp]: 8,             // ux + uy (2 × f32)
+
+  // Phase 17: lighting. These must equal the Rust `payload_size()` arms
+  // exactly — a mismatch raises no error on either side, it just mis-frames
+  // every command that follows in the batch.
+  [CommandType.SetLightFlags]: 4,              // type(u8) + blend(u8) + mask(u16)
+  [CommandType.SetLightingFlags]: 1,           // flag bitmask (u8)
+  [CommandType.SetAmbientLight]: 16,           // r + g + b + intensity (4 × f32)
+  [CommandType.SetLightingBackend]: 1,         // backend id (u8)
 };
 
 export class RingBufferProducer {
