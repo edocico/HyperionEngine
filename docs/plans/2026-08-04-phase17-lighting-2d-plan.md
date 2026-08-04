@@ -1,0 +1,289 @@
+# Phase 17: 2D Lighting — `lit` Backend — Implementation Plan
+
+> **Date**: 2026-08-04
+> **Design**: `2026-08-04-phase17-lighting-2d-design.md`
+> **Baseline**: commit `10bfa1d` — 165/243/191/284 Rust, 885 TS (+5 skipped, 78 files)
+> **Already landed** (commits `30001fa`, `10bfa1d`): prerequisite #0 — `scene-hdr` at
+> `rgba16float` via `render/formats.ts`, FXAA moved after tonemapping in both
+> post-process shaders, `GpuProfiler` + `timestamp-query` in the RenderGraph.
+
+Eleven tasks in three tracks. Track A is the whole data model and protocol and is
+**fully verifiable headless** — `cargo test` plus `vitest` cover it end to end.
+Tracks B and C touch the GPU, so their gate is a visual check in `npm run dev`;
+plan them for a sitting where you can look at the screen.
+
+Track order A → B → C is forced: nothing can cull or accumulate a light until the
+light exists as an entity (A), and nothing can shadow until the SDF exists (B).
+
+---
+
+## Decisions taken up front
+
+These were open in the design. Resolving them here, because each one is a place
+where the implementation would otherwise stall or silently pick the wrong thing.
+
+**D1 — The light's range has one source of truth: `primParams[3]`.**
+`CullPass` frustum-tests `BoundingRadius`, but the shader reads range from
+`primParams[3]`. Mirroring the value into both from the TypeScript producer would
+work until someone changes range through `raw-api.ts` and forgets the second
+write — the light then culls against a stale radius and pops at the frustum edge.
+Instead, `update_bounding_radii` (systems.rs:202) gains a second query that sets
+`radius.0 = params.0[3]` for entities with `RenderPrimitive(6)`. Lights therefore
+do **not** carry `BoundsOverride`; the existing `Without<..., &BoundsOverride>`
+query already skips them from matrix-derived bounds because they are handled by
+the new query. Consequence to document: a light's transform *scale* does not
+affect its culling radius, which is correct — a light's extent is its range.
+
+**D2 — Type 6 gets all four buckets, three of which stay empty.**
+`visible-indices` is `TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4` = 24 × 100_000 × 4 =
+9.6 MB today, 11.2 MB at 28 buckets. Lights have neither a material sort (tier0 vs
+other) nor a transparent variant, so **1.2 MB of the +1.6 MB is dead space**. The
+alternative — a variable bucket count per type — breaks the uniform
+`blendOff + primType * BUCKETS_PER_TYPE + bucket` indexing in `cull.wgsl` and adds
+a branch to the hot loop. Take the waste; revisit only if 100k-entity scenes turn
+out to be memory-bound.
+
+**D3 — Lights are never drawn by `ForwardPass`.**
+No shader is registered for `primType 6` in `SHADER_SOURCES`, so the
+`for (const [primType, pipeline] of this.pipelines)` loop simply never finds them.
+No opt-out flag needed, no branch. `LightAccumPass` reads their bucket directly.
+
+**D4 — The 16-bit `lightMask` is one field with three meanings, not two pairs.**
+Godot uses two orthogonal mask pairs and `shadow_item_cull_mask` ends up doing
+double duty; the confusion that causes is documented at length by its users. One
+field means an entity that is both sprite and occluder cannot receive light from
+one layer set and cast shadow for another. That is almost always what you want,
+and separating them costs a new SoA column. Ship one field, document the limit.
+
+---
+
+## Track A — Light data model and protocol (headless)
+
+- [ ] **Task 1: `renderMeta` bit layout (Rust)**
+  - `render_state.rs`: extend the word at `gpu_render_meta[slot*2+1]`. Bits 0-7
+    `primType`, bit 8 `transparent` stay as they are; add bit 9 `castsShadow`,
+    bit 10 `receivesLight`, bits 11-13 `lightType`, bits 14-15 `lightBlendMode`,
+    bits 16-31 `lightMask`. Touches all three write sites (`collect_gpu` ~l.383,
+    and the two incremental paths ~l.677 and ~l.754) — they must agree.
+  - `components.rs`: `LightFlags(pub u32)` component holding bits 9-31, so the
+    encode is one OR rather than five field reads.
+  - Tests: encode/decode roundtrip per field, field independence (setting one
+    does not disturb another), default is all-zero, `transparent` bit survives.
+    (~8 tests)
+  - Gate: `cargo test -p hyperion-core render_state`
+
+- [ ] **Task 2: `RenderPrimitive(6)` = Light2D + range→radius derivation (Rust)**
+  - `components.rs`: document `6 = Light2D` on `RenderPrimitive`; add the
+    `PrimitiveParams` slot map for it in the doc comment (0-2 colour with energy
+    premultiplied, 3 range, 4 innerCos/height, 5 outerCos, 6 falloff,
+    7 shadowIntensity).
+  - `systems.rs`: `update_bounding_radii` — second query setting
+    `radius.0 = params.0[3]` for `RenderPrimitive(6)`. See **D1**.
+  - Tests: radius follows `primParams[3]`, ignores transform scale, a non-light
+    entity is unaffected, radius 0 does not panic the frustum test. (~5 tests)
+  - Gate: `cargo test -p hyperion-core systems`
+
+- [ ] **Task 3: four CommandTypes, 53-56 (Rust)**
+  - Follow `/new-command` step by step — 16 steps, and steps 2 and 7.1 are the
+    two that fail *silently*.
+  - `ring_buffer.rs`: `SetLightFlags = 53` (4B: u8 lightType, u8 blendMode,
+    u16 lightMask), `SetLightingFlags = 54` (1B: bit0 castsShadow,
+    bit1 receivesLight), `SetAmbientLight = 55` (16B: 4×f32),
+    `SetLightingBackend = 56` (1B). Then `from_u8` arms, then `payload_size`
+    arms, **then** `MAX_COMMAND_TYPE` 53 → 57 — in that order, same commit.
+  - `command_processor.rs`: real handlers for 53/54 (resolve entity, validate,
+    mutate `LightFlags`, `mark_meta_dirty`); no-op arms for 55/56.
+  - `engine.rs`: intercept 55/56 before ECS dispatch on the `entity_id == 0`
+    sentinel, same shape as `SetPhysicsDebugRender` (engine.rs:83-90).
+  - Tests: `from_u8` roundtrip for each of the four (the arm the compiler will
+    not check), payload sizes, handler mutates the right bits, dirty marking
+    fires, engine-level commands do not reach the ECS. (~12 tests)
+  - Gate: `cargo test -p hyperion-core ring_buffer command_proc`
+
+- [ ] **Task 4: TypeScript protocol mirror**
+  - `ring-buffer.ts`: the four CommandTypes + `PAYLOAD_SIZES` (TS2741 catches an
+    omission here).
+  - `backpressure.ts`: `MAX_COMMAND_TYPE` 53 → 57, four producer methods, all
+    four coalescable last-write-wins — none carries a secondary id in its
+    payload, so the `entityId * 256 + cmd` key is sound.
+  - `prim-params-schema.ts`: `RenderPrimitiveType.Light2D = 6` and its schema
+    entry, mirroring Task 2.
+  - `entity-handle.ts`: `RenderPrimitiveType.Light2D = 6` (this file is the
+    authoritative TS declaration; `prim-params-schema.ts` re-declares it and the
+    two must not drift).
+  - Tests: producer emits the right opcode and payload, coalescing, mask
+    round-trips 16 bits, schema resolves named params to the right slots.
+    (~14 tests)
+  - Gate: run the **protocol-sync-checker** agent.
+
+- [ ] **Task 5: `indirect-args` 24 → 28 buckets**
+  - `cull-pass.ts`: `NUM_PRIM_TYPES` 6 → 7. `OPAQUE_DRAW_BUCKETS`,
+    `TOTAL_DRAW_BUCKETS`, `TRANSPARENT_BUCKET_OFFSET` all derive from it.
+    `INDIRECT_BUFFER_SIZE` follows.
+  - `cull.wgsl`: `NUM_PRIM_TYPES` 6u → 7u; `drawArgs: array<DrawIndirectArgs, 24>`
+    → 28; `sg_counts`/`sg_prefixes` `array<u32, 192>` → 224 (28 × 8 subgroups);
+    `wg_bases` `array<u32, 24>` → 28. Workgroup storage goes to ~1.8 KB, well
+    inside the 16 KiB limit.
+  - `renderer.ts`: `visible-indices` grows to 11.2 MB (see **D2**).
+  - ⚠️ The WGSL constant and the TS constant are **separate declarations of the
+    same number**. This is check #4 of `wgsl-validator` and rule #3 in the design
+    risk table — land both in one commit.
+  - Tests: bucket index math for type 6 opaque and transparent, buffer sizing,
+    reset writes 28 entries. (~7 tests)
+  - Gate: run the **wgsl-validator** agent.
+
+- [ ] **Task 6: fluent API + facade**
+  - `entity-handle.ts`: `.light({ type, color, energy, range, innerAngle,
+    outerAngle, falloff })`, `.shadows(intensity)`, `.castsShadow(bool)`,
+    `.receivesLight(bool)`, `.lightLayers(mask)`.
+    `color` and `energy` stay separate in the API and are premultiplied only when
+    writing `SetPrimParams0` — design §5.3, second of the two 3D-readiness moves.
+  - `hyperion.ts`: `lighting.setAmbient()`, `lighting.setBackend()`,
+    `lighting.setQuality()`. `index.ts` barrel export.
+  - Tests: each method emits the expected commands, premultiplication happens at
+    the boundary and not in the API surface, defaults, chaining. (~18 tests)
+  - Gate: `cd ts && npx vitest run src/entity-handle.test.ts src/hyperion.test.ts`
+
+**End of Track A.** At this point lights exist as entities, are culled by
+`CullPass`, survive snapshot/restore and replay, and appear in `engine_state_hash`
+— and nothing is rendered yet. Run `scripts/preflight.sh` before starting B.
+
+---
+
+## Track B — Occluders and the signed SDF (needs GPU eyes)
+
+- [ ] **Task 7: `OccluderSeedPass` + `shaders/occluder-seed.wgsl`**
+  - New pass, **not** a reworked `SelectionSeedPass`: that one filters on
+    `selection-mask` and draws 2 of the 24 buckets; this one filters on
+    `renderMeta` bit 9 and must iterate every opaque bucket.
+  - Same degenerate-triangle trick in the vertex shader for entities that do not
+    cast.
+  - Writes `occluder-seed` at `JFA_FORMAT`, half resolution, **oversize 1.0 by
+    default** — design §6.2 established the 120% Godot default costs +96% pixels,
+    not +20%, so it is opt-in and not the starting point.
+  - Tests: pass lifecycle, resource declarations, empty-scene no-op, resize.
+    (~8 tests)
+
+- [ ] **Task 8: signed SDF chain**
+  - Reuse `JFAPass` unmodified for the iterations; resources `sdf-iter-0..N` on
+    the same two-physical-texture ping-pong as `jfa-iter-N`.
+  - Sign: adopt Godot's single-chain encoding (`canvas_sdf.glsl`) — a neighbour of
+    opposite fill type acts as its own seed, so interior and exterior fronts
+    propagate together in one pass chain. Godot stores it in `rg16i`/`r16snorm`,
+    which are **not core WebGPU** (they need `texture-formats-tier1`); encode in
+    the free alpha channel of `JFA_FORMAT` instead.
+  - ⚠️ **This forces `JFAPass.SHADER_SOURCE` from a static class field to an
+    instance field** — the outline chain and the SDF chain now need different
+    shaders. Design §12.3 flagged this as conditional; the sign decision makes it
+    certain.
+  - Add `1+JFA` (one extra pass at step 1 *before* the standard chain): JFA error
+    is always an over-estimate of distance, which is the direction that lets a
+    sphere-march step tunnel through a thin occluder. Rong & Tan measure 1+JFA at
+    roughly JFA+2 accuracy for JFA+1 cost.
+  - Tests: instance-field shader source does not leak between chains, iteration
+    count `ceil(log2(max(w,h)))`, ping-pong resource naming, sign in alpha.
+    (~10 tests)
+  - Gate: **wgsl-validator**; visual check that an occluder's interior reads
+    negative and its exterior positive.
+
+---
+
+## Track C — Light accumulation (needs GPU eyes)
+
+- [ ] **Task 9: `LightAccumPass` + `shaders/light-accum.wgsl`**
+  - Target `light-buffer`, `SCENE_HDR_FORMAT`, half resolution, additive blend
+    (`one`/`one`, core WebGPU). **Clear colour is the ambient light** — free, the
+    way Unity does it.
+  - One instanced draw off the type-6 bucket via `drawIndexedIndirect`;
+    `instanceCount` is already written by `CullPass`.
+  - Fragment: radial/conic attenuation, then if `shadowIntensity > 0` a sphere
+    march on `scene-sdf` toward the light with Quilez's `res = min(res, k*h/t)`,
+    16-32 steps with early-out.
+  - ⚠️ Use the **original** Quilez form, not the Aaltonen correction. The
+    correction assumes an exact SDF; with a jump-flood field `h` is already an
+    over-estimate and `y = h²/(2·ph)` amplifies it. Put that reasoning in the
+    shader comment — the "better" version is the obvious thing for the next
+    reader to reach for.
+  - Tests: pass lifecycle, resource declarations, blend state, clear colour
+    tracks ambient, no-lights no-op. (~10 tests)
+
+- [ ] **Task 10: `@group(2)` in `ForwardPass`**
+  - Three bindings: `light-buffer` texture, sampler, `lighting-uniform`.
+  - A 3-group `pipelineLayout` where a shader declares only groups 0-1 is legal —
+    validation requires that bindings *used* exist in the layout, not the
+    converse. So only `basic.wgsl` and `gradient.wgsl` declare group 2.
+  - ⚠️ But `execute()` must still `setBindGroup(2, ...)` for **every** pipeline,
+    including those whose shaders ignore it. One call before the type loop.
+    Forgetting it produces an obscure validation error.
+  - `textureSampleLevel`, never `textureSample` — `derivative_uniformity` is an
+    error by default and this is check #7 of `wgsl-validator`.
+  - Gate on bit 10 `receivesLight`, `@interpolate(flat)` so the branch is
+    uniform across the quad.
+  - Tests: bind group layout shape, group-2 presence per shader, uniform packing.
+    (~8 tests)
+  - Gate: **wgsl-validator**; visual check — a lit sprite and an unlit sprite in
+    the same scene.
+
+- [ ] **Task 11: demo tab, measurement, docs**
+  - `demo/lighting.ts`: new tab with point/spot/global lights, an occluder wall,
+    a shadow-intensity slider, a light-layer toggle. Register in `demo/types.ts`
+    and the report.
+  - **Take the measurement.** Chrome with `--enable-webgpu-developer-features`
+    (stock Chrome on Metal returns all zeroes — CLAUDE.md gotcha), run
+    `enableGpuProfiling()`, record `averageMs` for the JFA chain with and without
+    the SDF chain. This is the number design §13.2 has been estimating at
+    ~0.35 ms; write the real one into the design doc.
+  - Full `scripts/preflight.sh --full`, including the WASM size gates.
+  - CLAUDE.md: module tables (`render_state.rs` bit layout, `systems.rs`,
+    `components.rs`, new passes, new shaders, `entity-handle.ts`, `hyperion.ts`),
+    Gotchas (`MAX_COMMAND_TYPE = 57`; 28 buckets and the WGSL/TS pairing;
+    light range lives in `primParams[3]` and drives `BoundingRadius`;
+    `JFAPass.SHADER_SOURCE` is now per-instance; Quilez original not Aaltonen),
+    Implementation Status row Phase 17, test counts.
+  - Commit style as 15e/16: one commit per task, `feat(#17):` / `docs:`.
+
+---
+
+## Execution Order
+
+```
+Task 1 (renderMeta bits) ──┐
+Task 2 (primType 6 + radius) ←─(1)
+Task 3 (CommandTypes) ←────(1)
+Task 4 (TS protocol) ←─────(3)
+Task 5 (24→28 buckets) ────── independent of 1-4, but before 6
+Task 6 (fluent API) ←──────(4,5)
+        ── preflight gate ──
+Task 7 (OccluderSeedPass) ←(5)
+Task 8 (signed SDF) ←──────(7)
+Task 9 (LightAccumPass) ←──(6,8)
+Task 10 (@group(2)) ←──────(9)
+Task 11 (demo + measure + docs) ←─(all)
+```
+
+Critical path: 1 → 3 → 4 → 6 → 9 → 10 → 11.
+
+Tasks 1, 2, 3 and 5 are independent enough to land in any order within Track A;
+5 is the one worth doing early, because the bucket-count change touches a shader
+and a hot compute loop and is the least pleasant thing to debug late.
+
+Estimated new tests: ~25 Rust, ~65 TS → targets ≈ 190/268/216/309 Rust,
+~950 TS. Record actuals in CLAUDE.md at Task 11.
+
+---
+
+## What this phase deliberately leaves out
+
+| Capability | Why |
+|---|---|
+| **Normal maps on sprites** | Needs a new SoA column and the staging stride 32 → 33 u32. It is the only table-stakes feature excluded, and the cost of adding it later is identical to adding it now, so the decision is deferrable without penalty. Design §7.5 |
+| **`LightCullPass` (tile compute)** | With a half-res light buffer and typical radii it may not repay itself. Drawing each light as a quad of its own radius is already geometric culling. Measure first. Design §7.2 |
+| **Backend `gi` (Radiance Cascades)** | Separate phase. Gate it on the `tmpvar` prototype, which costs no repo code and can run any time |
+| **Second accumulator (additive/glow)** | MRT is affordable — `maxColorAttachmentBytesPerSample` 32 allows 4 `rgba16float` targets — but it is not needed for a first version |
+| **Occluders from Rapier colliders** | Not extractable: `LineCollector::draw_line` discards `DebugRenderObject`, so the lines arrive as an undifferentiated pool. Design §6.2 |
+
+## Note on repo hygiene
+
+`/close-phase` instructs appending a record to `MEMORY.md`, and that file does not
+exist anywhere in the repo. Either create it at Task 11 or correct the skill —
+right now the instruction cannot be followed as written.
