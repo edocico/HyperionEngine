@@ -82,3 +82,8 @@ export type { HotSystemConfig } from './hmr/hot-system';
 export { PhysicsAPI } from './physics-api';
 export type { CollisionEvent, ContactForceEvent, RaycastHit, JointHandle, CharacterControllerConfig } from './physics-api';
 export { drainCollisionEvents, drainContactForceEvents } from './physics-api';
+
+// 2D lighting (Phase 17)
+export { LightingAPI, DEFAULT_LIGHTING_QUALITY } from './lighting-api';
+export type { LightingBackend, LightingQuality } from './lighting-api';
+export type { LightOptions, LightType, LightBlendMode } from './entity-handle';

@@ -914,13 +914,34 @@ describe('phase 17 lighting commands (53-56)', () => {
 
   it('setLightFlags masks lightType to 3 bits and blendMode to 2', () => {
     const { bp, sab } = createProducer();
-    bp.setLightFlags(1, 0xff, 0xff, 0xffff);
+    // 0x7f, not 0xff: bit 7 of each byte means "preserve", so 0xff would
+    // exercise that path instead of the masking one.
+    bp.setLightFlags(1, 0x7f, 0x7f, 0xffff);
     bp.flush();
     const { bytes } = extractUnread(sab);
     expect(bytes[5]).toBe(0b111);
     expect(bytes[6]).toBe(0b11);
     expect(bytes[7]).toBe(0xff);
     expect(bytes[8]).toBe(0xff);
+  });
+
+  it('setLightFlags encodes null as the preserve bit', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(1, null, null, 0x00ff);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    expect(bytes[5]).toBe(0x80);
+    expect(bytes[6]).toBe(0x80);
+    expect(bytes[7] | (bytes[8] << 8)).toBe(0x00ff);
+  });
+
+  it('setLightingFlags encodes null as the preserve bit', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightingFlags(1, true, null);
+    bp.flush();
+    const { bytes } = extractUnread(sab);
+    // value bit0 set, preserve bit3 set for receivesLight
+    expect(bytes[5]).toBe(0b1001);
   });
 
   it('setLightFlags round-trips all 16 mask bits', () => {

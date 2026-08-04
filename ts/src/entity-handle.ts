@@ -32,6 +32,74 @@ export const enum RenderPrimitiveType {
   Light2D = 6,
 }
 
+/** Light shape. `directional` and `global` ignore position. */
+export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
+
+/** How a light combines into the accumulation buffer. */
+export type LightBlendMode = 'add' | 'sub' | 'mix';
+
+/**
+ * Wire values for `renderMeta` bits 11-13. 5, 6 and 7 are deliberately left
+ * unclaimed for `Point3D`, `Spot3D` and `Area`: reserving them costs nothing
+ * now and avoids renumbering a shipped protocol later.
+ */
+const LIGHT_TYPE_IDS: Record<LightType, number> = {
+  point: 0, spot: 1, directional: 2, global: 3, sprite: 4,
+};
+
+/** Wire values for `renderMeta` bits 14-15. */
+const LIGHT_BLEND_IDS: Record<LightBlendMode, number> = { add: 0, sub: 1, mix: 2 };
+
+/** Options for {@link EntityHandle.light}. */
+export interface LightOptions {
+  /** Default `'point'`. */
+  type?: LightType;
+  /** `'#rrggbb'`, `'#rgb'`, or `[r, g, b]` in 0-1. Default white. */
+  color?: string | readonly [number, number, number];
+  /** Multiplier applied to `color` on the way to the GPU. Default 1. */
+  energy?: number;
+  /** Radius in world units. Also becomes the light's culling radius. Default 100. */
+  range?: number;
+  /** Spot inner cone half-angle in degrees. Default 30. Ignored by other types. */
+  innerAngle?: number;
+  /** Spot outer cone half-angle in degrees. Default 45. Ignored by other types. */
+  outerAngle?: number;
+  /** Attenuation exponent. Default 1 (linear). */
+  falloff?: number;
+  /** 0 = no shadow. See {@link EntityHandle.shadows}. Default 0. */
+  shadowIntensity?: number;
+  /** Default `'add'`. */
+  blend?: LightBlendMode;
+  /** 16-bit layer mask. Default `0xffff` (all layers). */
+  layers?: number;
+}
+
+/**
+ * Accept `'#rgb'`, `'#rrggbb'` or an `[r, g, b]` triple, and return linear
+ * 0-1 components.
+ *
+ * No sRGB→linear conversion: `scene-hdr` is `rgba16float` and the tonemap runs
+ * at the end of the chain, so a light's colour is already the linear radiance
+ * the accumulation buffer wants. Converting here would darken every light by
+ * roughly a factor of two for no reason.
+ */
+function normalizeColor(c: string | readonly [number, number, number]): [number, number, number] {
+  if (typeof c !== 'string') return [c[0], c[1], c[2]];
+  let hex = c.startsWith('#') ? c.slice(1) : c;
+  if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+  if (hex.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(hex)) {
+    throw new Error(`Invalid light color '${c}': expected '#rgb', '#rrggbb' or [r, g, b]`);
+  }
+  return [
+    parseInt(hex.slice(0, 2), 16) / 255,
+    parseInt(hex.slice(2, 4), 16) / 255,
+    parseInt(hex.slice(4, 6), 16) / 255,
+  ];
+}
+
+/** primParams slots 4-6 as `light()` last wrote them. See `shadows()`. */
+const DEFAULT_LIGHT_CONE: readonly [number, number, number] = [-1, -1, 1];
+
 /**
  * Opaque handle to an entity, providing a fluent builder API.
  *
@@ -50,6 +118,13 @@ export class EntityHandle implements Disposable {
   private _producer: BackpressuredProducer | null = null;
   private _immediateState: ImmediateState | null = null;
   private _data: Map<string, unknown> | null = null;
+  /**
+   * primParams slots 4-6 (innerCos, outerCos, falloff) as `light()` last wrote
+   * them, so `shadows()` can change slot 7 without restating them. Reset by
+   * `init()` like `_data`, because a pooled handle must not inherit the cone
+   * of whatever light used the slot before it.
+   */
+  private _lightCone: [number, number, number] = [...DEFAULT_LIGHT_CONE];
 
   constructor(id: number, producer: BackpressuredProducer, immediateState?: ImmediateState) {
     this.init(id, producer, immediateState);
@@ -71,6 +146,7 @@ export class EntityHandle implements Disposable {
     this._producer = producer;
     this._immediateState = immediateState ?? null;
     this._data = null;
+    this._lightCone = [...DEFAULT_LIGHT_CONE];
   }
 
   /** Throws if the handle has been destroyed. */
@@ -347,6 +423,115 @@ export class EntityHandle implements Disposable {
   characterUp(ux: number, uy: number): this {
     this.check();
     this._producer!.setCharacterUp(this._id, ux, uy);
+    return this;
+  }
+
+  // ── Lighting (Phase 17) ──────────────────────────
+
+  /**
+   * Turn this entity into a 2D light.
+   *
+   * A light is an ordinary ECS entity, so it inherits position, hierarchy
+   * (a torch parented to a character), spawn/despawn, GPU frustum culling,
+   * snapshot and replay for free — which is why `range` also drives its
+   * culling radius rather than needing a separate call.
+   *
+   * `color` and `energy` stay separate here on purpose. The GPU buffer gets
+   * them premultiplied (that is what frees a `primParams` slot for
+   * `shadowIntensity`), but the API keeps them apart because a 3D light will
+   * need them apart, and because multiplying is lossy: once premultiplied you
+   * cannot recover "which colour at what intensity" to show in an editor.
+   */
+  light(options: LightOptions): this {
+    this.check();
+    const [r, g, b] = normalizeColor(options.color ?? '#ffffff');
+    const energy = options.energy ?? 1;
+    const range = options.range ?? 100;
+
+    this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Light2D);
+    this._producer!.setLightFlags(
+      this._id,
+      LIGHT_TYPE_IDS[options.type ?? 'point'],
+      LIGHT_BLEND_IDS[options.blend ?? 'add'],
+      options.layers ?? 0xffff,
+    );
+    // Premultiply at the wire boundary, not in the API surface.
+    this._producer!.setPrimParams0(this._id, r * energy, g * energy, b * energy, range);
+    // Cone angles are stored as cosines: the shader compares against a dot
+    // product, so converting here keeps a trig call out of the fragment loop.
+    // A point light gets inner=outer=-1, i.e. "every direction is inside".
+    const isSpot = (options.type ?? 'point') === 'spot';
+    const innerCos = isSpot ? Math.cos(((options.innerAngle ?? 30) * Math.PI) / 180) : -1;
+    const outerCos = isSpot ? Math.cos(((options.outerAngle ?? 45) * Math.PI) / 180) : -1;
+    const falloff = options.falloff ?? 1;
+    this._lightCone = [innerCos, outerCos, falloff];
+    this._producer!.setPrimParams1(
+      this._id,
+      innerCos,
+      outerCos,
+      falloff,
+      options.shadowIntensity ?? 0,
+    );
+    return this;
+  }
+
+  /**
+   * Shadow strength for this light: 0 casts none, 1 is fully opaque.
+   *
+   * Kept separate from `light()` because it is the one light parameter with a
+   * real per-frame cost — `shadowIntensity > 0` is what switches on the sphere
+   * march in the accumulation shader, so it is the knob you reach for.
+   *
+   * ⚠️ Unlike `lightLayers()`, this one is not stateless. `shadowIntensity` is
+   * `primParams[7]` and `SetPrimParams1` writes four floats at once with no
+   * spare bits to carry a preserve mask (`PrimitiveParams` are validated as
+   * finite f32, so a bitfield smuggled into one would risk a NaN and be
+   * rejected). So the cone and falloff are replayed from what `light()` last
+   * put on this handle. Call it on the handle that configured the light — on a
+   * fresh handle for an existing entity it replays defaults instead.
+   */
+  shadows(intensity: number): this {
+    this.check();
+    const [innerCos, outerCos, falloff] = this._lightCone;
+    this._producer!.setPrimParams1(this._id, innerCos, outerCos, falloff, intensity);
+    return this;
+  }
+
+  /**
+   * Whether this entity is rasterised into the occluder seed, i.e. whether it
+   * casts a shadow. Independent of `receivesLight()`.
+   */
+  castsShadow(enabled = true): this {
+    this.check();
+    this._producer!.setLightingFlags(this._id, enabled, null);
+    return this;
+  }
+
+  /**
+   * Whether this entity samples the light buffer. Off by default: an unlit
+   * sprite skips the lookup entirely, which is the cheap path.
+   */
+  receivesLight(enabled = true): this {
+    this.check();
+    this._producer!.setLightingFlags(this._id, null, enabled);
+    return this;
+  }
+
+  /**
+   * The 16 light layers this entity participates in.
+   *
+   * One field with three meanings depending on role: on a light, which layers
+   * it illuminates; on a drawable, which layer it belongs to; on an occluder,
+   * which layers it shadows. Godot splits this into two orthogonal pairs, at
+   * the cost of a second mask — and its users document real confusion from
+   * `shadow_item_cull_mask` doing double duty. A single field cannot express
+   * "lit by layer A but shadowing for layer B"; that is the accepted limit.
+   */
+  lightLayers(mask: number): this {
+    this.check();
+    // null/null = preserve the stored shape and blend mode, change only the
+    // mask. Stateless, so this works on any handle for the entity.
+    this._producer!.setLightFlags(this._id, null, null, mask);
     return this;
   }
 

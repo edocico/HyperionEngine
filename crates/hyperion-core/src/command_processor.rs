@@ -970,15 +970,30 @@ fn process_single_command(
         // on an entity that already has it overwrites, which is what a
         // last-write-wins coalescable command means. Reading first preserves
         // the bits this command does not own.
+        // Payload: type(u8), blend(u8), mask(u16 LE). `lightType` needs 3 bits
+        // and `blendMode` 2, so bit 7 of each of the first two bytes is spare
+        // and carries "preserve the stored value, ignore mine".
+        //
+        // That is what lets `EntityHandle.lightLayers()` change only the mask
+        // without the caller having to restate the light's shape — statelessly,
+        // rather than by remembering the last values on a pooled handle.
         CommandType::SetLightFlags => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
-                let light_type = cmd.payload[0];
-                let blend = cmd.payload[1];
-                let mask = u16::from_le_bytes([cmd.payload[2], cmd.payload[3]]);
                 let mut flags = world
                     .get::<&LightFlags>(entity)
                     .map(|f| *f)
                     .unwrap_or_default();
+                let light_type = if cmd.payload[0] & 0x80 != 0 {
+                    flags.light_type_raw()
+                } else {
+                    cmd.payload[0]
+                };
+                let blend = if cmd.payload[1] & 0x80 != 0 {
+                    flags.blend_mode_raw()
+                } else {
+                    cmd.payload[1]
+                };
+                let mask = u16::from_le_bytes([cmd.payload[2], cmd.payload[3]]);
                 // Out-of-range values are masked, not rejected: the field is
                 // 3 and 2 bits wide and a wider value would otherwise bleed
                 // into the neighbouring field.
@@ -990,6 +1005,13 @@ fn process_single_command(
             }
         }
 
+        // Payload: bits 0-1 are the values (castsShadow, receivesLight); bits
+        // 2-3 mean "preserve this one, ignore my value for it".
+        //
+        // The preserve bits exist because the fluent API exposes
+        // `.castsShadow()` and `.receivesLight()` as separate calls, and a
+        // command carrying only values would make each one silently clear the
+        // other. Default 0 = write both, which is the plain form.
         CommandType::SetLightingFlags => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 let bits = cmd.payload[0];
@@ -997,8 +1019,12 @@ fn process_single_command(
                     .get::<&LightFlags>(entity)
                     .map(|f| *f)
                     .unwrap_or_default();
-                flags.set_casts_shadow(bits & 0b01 != 0);
-                flags.set_receives_light(bits & 0b10 != 0);
+                if bits & 0b0100 == 0 {
+                    flags.set_casts_shadow(bits & 0b01 != 0);
+                }
+                if bits & 0b1000 == 0 {
+                    flags.set_receives_light(bits & 0b10 != 0);
+                }
                 let _ = world.insert_one(entity, flags);
                 if let Some(slot) = render_state.get_slot(entity) {
                     render_state.dirty_tracker.mark_meta_dirty(slot as usize);
@@ -2224,11 +2250,14 @@ mod tests {
     fn set_light_flags_masks_out_of_range_fields() {
         // lightType is 3 bits and blendMode 2. A wider value must be masked,
         // not written through, or it bleeds into the neighbouring field.
+        //
+        // 0x7F, not 0xFF: bit 7 of each byte now means "preserve", so 0xFF
+        // would exercise that path instead of the masking one.
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
         run_commands(
-            &[make_spawn_cmd(0), light_flags_cmd(0, 0xFF, 0xFF, 0)],
+            &[make_spawn_cmd(0), light_flags_cmd(0, 0x7F, 0x7F, 0)],
             &mut world,
             &mut map,
             &mut rs,
@@ -2271,6 +2300,63 @@ mod tests {
         assert!(!flags.receives_light(), "bit 10 cleared");
         assert_eq!(flags.light_type_raw(), 3, "light fields survived");
         assert_eq!(flags.light_mask(), 0x00FF);
+    }
+
+    #[test]
+    fn lighting_flags_preserve_bits_make_the_two_flags_independent() {
+        // Payload bits 2-3 mean "preserve". Without them the fluent API's
+        // `.castsShadow()` and `.receivesLight()` would each clear the other,
+        // because one command carries both bits.
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[
+                make_spawn_cmd(0),
+                lighting_flags_cmd(0, 0b0001),          // casts = true, write both
+                lighting_flags_cmd(0, 0b0010 | 0b0100), // receives = true, preserve casts
+            ],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        let e = map.get(0).unwrap();
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert!(flags.casts_shadow(), "preserved across the second command");
+        assert!(flags.receives_light());
+
+        // Preserve receivesLight while clearing castsShadow.
+        run_commands(&[lighting_flags_cmd(0, 0b1000)], &mut world, &mut map, &mut rs);
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert!(!flags.casts_shadow());
+        assert!(flags.receives_light(), "preserved");
+    }
+
+    #[test]
+    fn set_light_flags_preserve_bits_change_only_the_mask() {
+        // Bit 7 of the type and blend bytes means "preserve". This is what lets
+        // `EntityHandle.lightLayers()` be stateless.
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(
+            &[make_spawn_cmd(0), light_flags_cmd(0, 2, 1, 0x000F)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+        run_commands(
+            &[light_flags_cmd(0, 0x80, 0x80, 0xF000)],
+            &mut world,
+            &mut map,
+            &mut rs,
+        );
+
+        let e = map.get(0).unwrap();
+        let flags = *world.get::<&LightFlags>(e).unwrap();
+        assert_eq!(flags.light_type_raw(), 2, "shape preserved");
+        assert_eq!(flags.blend_mode_raw(), 1, "blend preserved");
+        assert_eq!(flags.light_mask(), 0xF000, "mask replaced");
     }
 
     #[test]

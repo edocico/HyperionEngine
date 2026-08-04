@@ -598,11 +598,19 @@ export class BackpressuredProducer {
    * Float32Array branch walks whole f32 slots and cannot express the
    * `u8 + u8 + u16` layout.
    */
-  setLightFlags(entityId: number, lightType: number, blendMode: number, lightMask: number): boolean {
+  setLightFlags(
+    entityId: number,
+    lightType: number | null,
+    blendMode: number | null,
+    lightMask: number,
+  ): boolean {
     const buf = new Uint8Array(4);
     const dv = new DataView(buf.buffer);
-    buf[0] = lightType & 0b111;
-    buf[1] = blendMode & 0b11;
+    // `lightType` uses 3 bits and `blendMode` 2, so bit 7 of each byte is free
+    // to mean "preserve what is stored". That is how `lightLayers()` changes
+    // only the mask without restating the light's shape.
+    buf[0] = lightType === null ? 0x80 : lightType & 0b111;
+    buf[1] = blendMode === null ? 0x80 : blendMode & 0b11;
     dv.setUint16(2, lightMask & 0xffff, true);
     return this.writeCommand(CommandType.SetLightFlags, entityId, buf);
   }
@@ -611,10 +619,23 @@ export class BackpressuredProducer {
    * Per-entity lighting participation. Both default to off: an entity opts in
    * to casting shadows and to being lit, so unlit sprites skip the light
    * buffer lookup entirely.
+   *
+   * Pass `null` for either flag to leave it as it is. That is what makes
+   * `EntityHandle.castsShadow()` and `.receivesLight()` independent — without
+   * it, one command carrying both bits would have each call silently clear the
+   * other. Encoded as preserve bits 2-3, so 0 still means "write both".
    */
-  setLightingFlags(entityId: number, castsShadow: boolean, receivesLight: boolean): boolean {
-    const mask = (castsShadow ? 0b01 : 0) | (receivesLight ? 0b10 : 0);
-    return this.writeCommand(CommandType.SetLightingFlags, entityId, new Uint8Array([mask]));
+  setLightingFlags(
+    entityId: number,
+    castsShadow: boolean | null,
+    receivesLight: boolean | null,
+  ): boolean {
+    const bits =
+      (castsShadow ? 0b0001 : 0) |
+      (receivesLight ? 0b0010 : 0) |
+      (castsShadow === null ? 0b0100 : 0) |
+      (receivesLight === null ? 0b1000 : 0);
+    return this.writeCommand(CommandType.SetLightingFlags, entityId, new Uint8Array([bits]));
   }
 
   /**

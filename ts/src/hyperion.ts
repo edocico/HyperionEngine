@@ -40,6 +40,7 @@ import { PrefabRegistry } from './prefab/registry';
 import { CommandTapeRecorder } from './replay/command-tape';
 import type { CommandTape } from './replay/command-tape';
 import { PhysicsAPI } from './physics-api';
+import { LightingAPI } from './lighting-api';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -67,6 +68,7 @@ export class Hyperion implements Disposable {
   private readonly audioManager: AudioManager;
   private readonly eventBus: EventBus;
   private readonly physicsApi: PhysicsAPI;
+  private readonly lightingApi: LightingAPI;
   private readonly prefabRegistry: PrefabRegistry;
 
   private nextEntityId = 0;
@@ -96,6 +98,8 @@ export class Hyperion implements Disposable {
     this.eventBus = new EventBus();
     this.physicsApi = new PhysicsAPI();
     this.physicsApi._initProducer(bridge.commandBuffer);
+    this.lightingApi = new LightingAPI();
+    this.lightingApi._init(bridge.commandBuffer, bridge);
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
@@ -230,6 +234,17 @@ export class Hyperion implements Disposable {
   /** Physics API for collision events, sensor callbacks, and scene queries. */
   get physics(): PhysicsAPI {
     return this.physicsApi;
+  }
+
+  /**
+   * 2D lighting (Phase 17).
+   *
+   * Individual lights are entities — `engine.spawn().light({...})`. This
+   * sub-API is only the engine-wide state: which backend runs, the ambient
+   * term, and the quality knobs.
+   */
+  get lighting(): LightingAPI {
+    return this.lightingApi;
   }
 
   /**

@@ -56,6 +56,9 @@ function mockProducer(): BackpressuredProducer {
     setBoundingRadius: vi.fn(() => true),
     destroyCharacterController: vi.fn(() => true),
     setCharacterUp: vi.fn(() => true),
+    // Phase 17 lighting
+    setLightFlags: vi.fn(() => true),
+    setLightingFlags: vi.fn(() => true),
     flush: vi.fn(),
     pendingCount: 0,
     freeSpace: 1000,
@@ -609,5 +612,140 @@ describe('EntityHandle — audit 2026-07 additions', () => {
     const p = mockProducer();
     new EntityHandle(4, p).boundingRadius(-1);
     expect(p.setBoundingRadius).toHaveBeenCalledWith(4, -1);
+  });
+});
+
+describe('EntityHandle — lighting (Phase 17)', () => {
+  it('light() sets primType 6 and packs colour, energy and range', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(7, p);
+    const result = h.light({ type: 'point', color: '#ff8000', energy: 2, range: 300 });
+
+    expect(result).toBe(h);
+    expect(p.setRenderPrimitive).toHaveBeenCalledWith(7, 6);
+    // Energy is premultiplied at the wire boundary, not held in the API.
+    const [, r, g, b, range] = (p.setPrimParams0 as any).mock.calls[0];
+    expect(r).toBeCloseTo((0xff / 255) * 2, 5);
+    expect(g).toBeCloseTo((0x80 / 255) * 2, 5);
+    expect(b).toBeCloseTo(0, 5);
+    expect(range).toBe(300);
+  });
+
+  it('keeps colour and energy separate in the API surface', () => {
+    // Same product, two different (colour, energy) pairs — the API must accept
+    // both and only collapse them on the way out. Premultiplying in the API
+    // would make "which colour at what intensity" unrecoverable for an editor.
+    const a = mockProducer();
+    new EntityHandle(1, a).light({ color: [0.5, 0.5, 0.5], energy: 2 });
+    const b = mockProducer();
+    new EntityHandle(1, b).light({ color: [1, 1, 1], energy: 1 });
+    expect((a.setPrimParams0 as any).mock.calls[0].slice(1, 4))
+      .toEqual((b.setPrimParams0 as any).mock.calls[0].slice(1, 4));
+  });
+
+  it('converts spot cone angles to cosines, and gives a point light -1', () => {
+    const spot = mockProducer();
+    new EntityHandle(1, spot).light({ type: 'spot', innerAngle: 0, outerAngle: 60 });
+    const [, innerCos, outerCos] = (spot.setPrimParams1 as any).mock.calls[0];
+    expect(innerCos).toBeCloseTo(1, 5);        // cos(0)
+    expect(outerCos).toBeCloseTo(0.5, 5);      // cos(60°)
+
+    const point = mockProducer();
+    new EntityHandle(1, point).light({ type: 'point' });
+    const [, pInner, pOuter] = (point.setPrimParams1 as any).mock.calls[0];
+    expect(pInner).toBe(-1);                   // every direction is inside
+    expect(pOuter).toBe(-1);
+  });
+
+  it('maps light type and blend mode to their wire ids', () => {
+    const cases: Array<[any, any, number, number]> = [
+      ['point', 'add', 0, 0], ['spot', 'sub', 1, 1], ['directional', 'mix', 2, 2],
+      ['global', 'add', 3, 0], ['sprite', 'add', 4, 0],
+    ];
+    for (const [type, blend, typeId, blendId] of cases) {
+      const p = mockProducer();
+      new EntityHandle(1, p).light({ type, blend, layers: 0xabcd });
+      expect(p.setLightFlags, `${type}/${blend}`).toHaveBeenCalledWith(1, typeId, blendId, 0xabcd);
+    }
+  });
+
+  it('defaults to a white point light on all layers', () => {
+    const p = mockProducer();
+    new EntityHandle(1, p).light({});
+    expect(p.setLightFlags).toHaveBeenCalledWith(1, 0, 0, 0xffff);
+    const [, r, g, b, range] = (p.setPrimParams0 as any).mock.calls[0];
+    expect([r, g, b, range]).toEqual([1, 1, 1, 100]);
+  });
+
+  it('rejects a malformed colour instead of emitting garbage', () => {
+    const p = mockProducer();
+    expect(() => new EntityHandle(1, p).light({ color: '#xyz' })).toThrow(/Invalid light color/);
+  });
+
+  it('castsShadow and receivesLight do not clear each other', () => {
+    // They share one command carrying both bits, so each passes null for the
+    // flag it does not own. Without that, the second call would undo the first.
+    const p = mockProducer();
+    const h = new EntityHandle(3, p);
+    h.castsShadow(true).receivesLight(true);
+    expect(p.setLightingFlags).toHaveBeenNthCalledWith(1, 3, true, null);
+    expect(p.setLightingFlags).toHaveBeenNthCalledWith(2, 3, null, true);
+  });
+
+  it('castsShadow/receivesLight default to enabling and accept false', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(3, p);
+    h.castsShadow();
+    expect(p.setLightingFlags).toHaveBeenNthCalledWith(1, 3, true, null);
+    h.receivesLight(false);
+    expect(p.setLightingFlags).toHaveBeenNthCalledWith(2, 3, null, false);
+  });
+
+  it('lightLayers changes only the mask, statelessly', () => {
+    const p = mockProducer();
+    new EntityHandle(5, p).lightLayers(0b11);
+    // null/null = preserve the stored shape and blend, so this works on any
+    // handle for the entity, not just the one that called light().
+    expect(p.setLightFlags).toHaveBeenCalledWith(5, null, null, 0b11);
+  });
+
+  it('shadows() preserves the cone and falloff that light() wrote', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(9, p);
+    h.light({ type: 'spot', innerAngle: 0, outerAngle: 60, falloff: 3 });
+    (p.setPrimParams1 as any).mockClear();
+
+    h.shadows(0.8);
+    const [, innerCos, outerCos, falloff, intensity] = (p.setPrimParams1 as any).mock.calls[0];
+    expect(innerCos).toBeCloseTo(1, 5);
+    expect(outerCos).toBeCloseTo(0.5, 5);
+    expect(falloff).toBe(3);
+    expect(intensity).toBe(0.8);
+  });
+
+  it('a pooled handle does not inherit the previous light cone', () => {
+    // `_lightCone` is instance state, so `init()` must reset it or a recycled
+    // handle would replay the spotlight cone of whatever used the slot before.
+    const p = mockProducer();
+    const h = new EntityHandle(1, p);
+    h.light({ type: 'spot', innerAngle: 0, outerAngle: 60, falloff: 5 });
+
+    h.init(2, p);
+    (p.setPrimParams1 as any).mockClear();
+    h.shadows(1);
+    const [id, innerCos, outerCos, falloff] = (p.setPrimParams1 as any).mock.calls[0];
+    expect(id).toBe(2);
+    expect([innerCos, outerCos, falloff]).toEqual([-1, -1, 1]);
+  });
+
+  it('every lighting method throws after destroy()', () => {
+    const p = mockProducer();
+    const h = new EntityHandle(1, p);
+    h.destroy();
+    expect(() => h.light({})).toThrow(/destroyed/);
+    expect(() => h.shadows(1)).toThrow(/destroyed/);
+    expect(() => h.castsShadow(true)).toThrow(/destroyed/);
+    expect(() => h.receivesLight(true)).toThrow(/destroyed/);
+    expect(() => h.lightLayers(1)).toThrow(/destroyed/);
   });
 });
