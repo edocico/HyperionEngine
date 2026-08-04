@@ -78,19 +78,36 @@ export function computeWorkgroupSize(useSubgroups: boolean, subgroupSize: number
 }
 
 /**
- * Conditionally prepend WGSL directives for subgroup support.
+ * Region of `cull.wgsl` that only compiles on a device with the `subgroups`
+ * feature. Deleted wholesale when it does not.
+ */
+const SUBGROUP_REGION = /^[ \t]*\/\/ BEGIN-SUBGROUPS-ONLY[\s\S]*?\/\/ END-SUBGROUPS-ONLY[ \t]*\r?\n/m;
+
+/**
+ * Specialise `cull.wgsl` for what the device can actually do.
  *
  * 3 levels:
- * - No subgroups: unchanged source
+ * - No subgroups: **strip** the `BEGIN/END-SUBGROUPS-ONLY` region
  * - Subgroups: prepend `enable subgroups;`
  * - Subgroups + subgroup_id (Chrome 144+): also prepend `requires subgroup_id;`
+ *
+ * ⚠️ The stripping is not an optimisation, it is what makes the shader compile
+ * at all without the feature. `override USE_SUBGROUPS` decides which branch
+ * *runs*, but WGSL validates every builtin call in the module no matter what
+ * the override is set to, so a `subgroupAdd` left in the text is a hard compile
+ * error on a device that lacks the extension — and since `createRenderer`
+ * catches the failure and yields a null renderer, the symptom is a completely
+ * blank canvas rather than an error. That covers all of Firefox and Safari.
+ *
+ * Textual stripping is the only tool available: WGSL has no preprocessor, and
+ * `override` is limited to scalar values.
  */
 export function prepareShaderSource(
   baseSource: string,
   useSubgroups: boolean,
   useSubgroupId: boolean = false,
 ): string {
-  if (!useSubgroups) return baseSource;
+  if (!useSubgroups) return baseSource.replace(SUBGROUP_REGION, '');
   let prefix = 'enable subgroups;\n';
   if (useSubgroupId) prefix += 'requires subgroup_id;\n';
   return prefix + baseSource;

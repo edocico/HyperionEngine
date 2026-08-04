@@ -132,9 +132,21 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (USE_SUBGROUPS) {
+        // BEGIN-SUBGROUPS-ONLY
+        //
+        // ⚠️ These markers are load-bearing, not decoration. `prepareShaderSource()`
+        // deletes everything between them when the device has no `subgroups`
+        // feature, and the deletion is what makes this shader compile there.
+        //
+        // `override USE_SUBGROUPS` gates whether this branch *runs*, but WGSL
+        // validates every builtin call in the module regardless of any override
+        // value — so `subgroupAdd` left in the text is a hard compile error on a
+        // device without the extension, taking the whole renderer down with it.
+        // There is no WGSL preprocessor; textual stripping is the only tool.
+        //
         // Shared-memory prefix-sum compaction: reduces global atomics from
-        // up to 192/workgroup (24 buckets × 8 subgroups) to at most
-        // 24/workgroup (one atomicAdd per active bucket).
+        // up to TOTAL_BUCKETS × MAX_SUBGROUPS per workgroup to at most
+        // TOTAL_BUCKETS (one atomicAdd per active bucket).
         //
         // Three phases:
         //  1. Intra-subgroup: subgroupExclusiveAdd per bucket, leader writes
@@ -202,6 +214,7 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
                 visibleIndices[region + wg_base + sg_prefix + intra] = idx;
             }
         }
+        // END-SUBGROUPS-ONLY
     } else {
         // Original atomic path — one global atomic per visible entity
         if (visible) {

@@ -181,6 +181,60 @@ describe('prepareShaderSource v2 (3-level)', () => {
   });
 });
 
+// The engine ran for four phases believing `override USE_SUBGROUPS = false` was
+// enough to make the subgroup branch harmless on a device without the feature.
+// It is not: WGSL validates every builtin call in the module no matter what an
+// override is set to, so `subgroupAdd` in the text is a hard compile error
+// there — and `createRenderer` swallows it into a null renderer, so the symptom
+// was a blank canvas, not a message. That covers all of Firefox and Safari.
+//
+// Verified against a real driver via chrome-devtools `getCompilationInfo()`
+// (the method in CLAUDE.md); these tests are the cheap standing guard.
+describe('prepareShaderSource strips subgroup-only code from the real shader', () => {
+  const SUBGROUP_BUILTIN = /subgroup(Add|Elect|ExclusiveAdd|BroadcastFirst)\s*\(/;
+
+  it('the shader really does call subgroup builtins — otherwise this is all moot', () => {
+    expect(cullShaderSource).toMatch(SUBGROUP_BUILTIN);
+  });
+
+  it('carries both region markers, in order', () => {
+    const begin = cullShaderSource.indexOf('// BEGIN-SUBGROUPS-ONLY');
+    const end = cullShaderSource.indexOf('// END-SUBGROUPS-ONLY');
+    expect(begin, 'BEGIN-SUBGROUPS-ONLY marker missing').toBeGreaterThan(-1);
+    expect(end, 'END-SUBGROUPS-ONLY marker missing').toBeGreaterThan(begin);
+  });
+
+  it('leaves no subgroup builtin behind when the feature is absent', () => {
+    const stripped = prepareShaderSource(cullShaderSource, false);
+    expect(stripped).not.toMatch(SUBGROUP_BUILTIN);
+    expect(stripped.length).toBeLessThan(cullShaderSource.length);
+  });
+
+  it('keeps the atomic fallback that the stripped shader has to run', () => {
+    const stripped = prepareShaderSource(cullShaderSource, false);
+    expect(stripped).toContain('atomicAdd(&drawArgs[argSlot].instanceCount, 1u)');
+    // Braces still balance, i.e. the region was removed as a whole block.
+    const open = (stripped.match(/\{/g) ?? []).length;
+    const close = (stripped.match(/\}/g) ?? []).length;
+    expect(open).toBe(close);
+  });
+
+  it('leaves the subgroup path untouched when the feature is present', () => {
+    const enabled = prepareShaderSource(cullShaderSource, true);
+    expect(enabled).toMatch(SUBGROUP_BUILTIN);
+    expect(enabled).toBe('enable subgroups;\n' + cullShaderSource);
+  });
+
+  it('never emits the enable directive on the stripped path', () => {
+    // Doing so would fail validation on exactly the devices this path targets.
+    // Checked at the start of the source, not anywhere in it: the shader's own
+    // header comment names the directive while explaining why it is not there.
+    expect(prepareShaderSource(cullShaderSource, false).startsWith('enable ')).toBe(false);
+    expect(prepareShaderSource(cullShaderSource, false, true).startsWith('enable ')).toBe(false);
+    expect(prepareShaderSource(cullShaderSource, true).startsWith('enable subgroups;\n')).toBe(true);
+  });
+});
+
 describe('temporal culling', () => {
   it('computeInvalidationFlag returns true when camera teleports in X', () => {
     const prev = { x: 0, y: 0, frustumWidth: 1000 };
