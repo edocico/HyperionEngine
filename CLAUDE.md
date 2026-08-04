@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (851 tests + 5 skipped, 77 files)
+cd ts && npm test                            # All vitest tests (885 tests + 5 skipped, 78 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -179,7 +179,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Module | Role |
 |---|---|
-| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `physics` (PhysicsAPI), `prefabs`, `enableProfiler/disableProfiler`, `recompileShader`, `compressionFormat`, `debug` (recording tap). `fromParts()` test factory |
+| `hyperion.ts` | `Hyperion` — public facade: `create()`, `spawn()`, `batch()`, `start/pause/resume/destroy`, `use()/unuse()`, `addHook/removeHook`, `loadTexture/loadTextures`, `compact()`, `resize()`, `selection`, `enableOutlines/disableOutlines`, `enableBloom/disableBloom`, `createParticleEmitter/destroyParticleEmitter`, `input`, `picking`, `audio`, `physics` (PhysicsAPI), `prefabs`, `enableProfiler/disableProfiler`, `gpuProfilingSupported`/`enableGpuProfiling`/`disableGpuProfiling`/`getGpuTimings`, `recompileShader`, `compressionFormat`, `debug` (recording tap). `fromParts()` test factory |
 | `entity-handle.ts` | `EntityHandle` — fluent builder (`.position/.velocity/.rotation/.scale/.texture/.mesh/.primitive/.parent/.unparent/.line/.gradient/.boxShadow/.bezier/.data/.positionImmediate/.clearImmediate`). Physics: `.rigidBody()/.collider()/.gravityScale()/.linearDamping()/.applyForce()/.applyImpulse()`. Joints: `.revoluteJoint()/.prismaticJoint()/.fixedJoint()/.ropeJoint()/.springJoint()` (return `JointHandle`). Character controller: `.characterController()/.characterConfig()/.moveCharacter()`. `RenderPrimitiveType` enum. Implements `Disposable` |
 | `entity-pool.ts` | `EntityHandlePool` — object pool (cap 1024) for EntityHandle recycling |
 | `raw-api.ts` | `RawAPI` — low-level numeric ID entity management bypassing EntityHandle overhead |
@@ -236,7 +236,9 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `texture-manager.ts` | Multi-tier Texture2DArray with compressed format support (BC7/ASTC), overflow tiers for mixed-mode, lazy allocation (0→16→32→64→128→256), KTX2 load path, `createImageBitmap` pipeline, `TexturePriorityQueue` min-heap for viewport-distance-based load ordering |
 | `render/render-pass.ts` | `RenderPass` interface + `FrameState` type |
 | `render/resource-pool.ts` | `ResourcePool` — named GPU resource registry |
-| `render/render-graph.ts` | `RenderGraph` — DAG scheduling with Kahn's topological sort + dead-pass culling |
+| `render/render-graph.ts` | `RenderGraph` — DAG scheduling with Kahn's topological sort + dead-pass culling + optional `setProfiler()` GPU timing hook |
+| `render/formats.ts` | `SCENE_HDR_FORMAT` (`rgba16float`, for `scene-hdr` + the bloom mip chain) and `JFA_FORMAT` (selection-seed + jump-flood ping-pong). Single source of truth for both pairs of pipeline-format / texture-format |
+| `render/gpu-profiler.ts` | `GpuProfiler` — per-pass GPU timing via `timestamp-query`. Empty compute passes as markers between graph passes; 3 rotating readback buffers; `WINDOW`=120 rolling mean; generation counter invalidates in-flight frames on `reset()`. `PassTiming` type |
 | `render/passes/cull-pass.ts` | GPU frustum culling compute, 6 primitive types, per-type DrawIndirectArgs |
 | `render/passes/forward-pass.ts` | Multi-pipeline forward pass, `SHADER_SOURCES` per RenderPrimitiveType, renders to `scene-hdr` |
 | `render/passes/fxaa-tonemap-pass.ts` | Full-screen FXAA + tonemap (none/PBR-neutral/ACES), reads `scene-hdr` → `swapchain` |
@@ -385,6 +387,10 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. Adding new tiers requires updating the shader `switch`.
 - **AudioContext requires user gesture** — Browsers block creation/resumption without user gesture. `AudioManager` lazily creates context on first `load()` or `play()`.
 - **Bloom and outlines are mutually exclusive** — Both write to `swapchain`, dead-culling `FXAATonemapPass`. `enableBloom()` disables outlines and vice versa. Console warning issued.
+- **`scene-hdr` is `rgba16float`, and its format lives in `render/formats.ts`** — it used to be `getPreferredCanvasFormat()`, which clamped the whole scene to [0,1] and left bloom's threshold and the ACES/PBR tonemap with nothing to do. `SCENE_HDR_FORMAT` is consumed by BOTH `ForwardPass`'s 12 pipelines and the `scene-hdr` texture in `renderer.ts`, and by BOTH the bloom mip pipelines and the bloom mip textures. Change it in one place only and you get a pipeline/attachment format mismatch — a hard validation error at draw time that **no test can catch**, since WebGPU cannot run headless. Same pairing for `JFA_FORMAT` across `SelectionSeedPass`, `JFAPass` and the `jfa-a`/`jfa-b` textures. Anything targeting the **swapchain** (bloom composite, `FXAATonemapPass`, `OutlineCompositePass`, `LineBatchPass`, particles) must keep using `getPreferredCanvasFormat()`.
+- **FXAA runs on display-space values, after tonemapping — do not "simplify" it back** — Lottes' contrast test `lumaRange < max(0.0312, lumaMax * 0.125)` has an absolute floor tuned for [0,1]. With `scene-hdr` unbounded, running it on raw HDR is hypersensitive in bright regions and blind in dark ones. Both `fxaa-tonemap.wgsl` and `bloom.wgsl` therefore tonemap **every tap** at the point of sampling (`resolveTexel()` / `resolveComposite()`) and return the result with no second tonemap. Cost: up to 9 tonemaps per pixel; in the bloom composite also 2 samples per tap, because bloom must be added before the edges are detected.
+- **`timestamp-query` resolves to all zeroes on a stock Chrome** — verified 2026-08-04 on macOS/Metal: the adapter advertises the feature, `requestDevice` accepts it, `resolveQuerySet` raises no validation error, and every value reads back as exactly 0 (including with `endOfPassWriteIndex`). So `GpuProfiler` correctly reports nothing at all. Launch Chrome with `--enable-webgpu-developer-features` for real numbers; `GpuProfiler.discardedFrames` distinguishes this from a warm-up and warns once after 120 such frames.
+- **Optional GPU features must be re-checked on the `device`, never the `adapter`** — `createRenderer` catches a failed `requestDevice` and retries with a reduced feature set, so an adapter that advertises a feature can still yield a device without it. `GpuProfiler.isSupported(device.features)` exists for exactly this; reading `adapter.features` instead builds a profiler on a device that cannot serve one and takes down the whole renderer, not just profiling.
 - **WebGPU can't be tested in headless browsers** — `requestAdapter()` returns null. Visual testing requires a real browser (`npm run dev` → Chrome).
 - **`EntityHandle.data()` cleared on pool `init()`** — Recycled handles reset their data map. Plugins storing data via `.data(key, value)` must handle this.
 - **Adding a new primitive type requires 3 steps** — (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES[RenderPrimitiveType]`, (3) optionally extend `EntityHandle`. Types: 0=Quad, 1=Line, 2=SDFGlyph, 3=BezierPath, 4=Gradient, 5=BoxShadow.

@@ -24,22 +24,41 @@
  *    answer "what fraction of the frame does the JFA chain cost"; not good
  *    enough to attribute microseconds to a single draw call.
  *
- * 2. **Chrome quantizes timestamps to 100 microseconds** by default, as a
- *    side-channel mitigation. A pass costing 60us reads as 0 or 100us on any
- *    given frame. This is why {@link PassTiming.averageMs} exists and is the
- *    number to quote: over {@link WINDOW} frames the quantization averages
- *    out. For unquantized values, run Chrome with the
- *    `--enable-webgpu-developer-features` flag (never in production).
+ * 2. **Chrome does not hand out real timestamps by default.** The documented
+ *    behaviour is 100-microsecond quantization as a side-channel mitigation,
+ *    which is why {@link PassTiming.averageMs} exists and is the number to
+ *    quote — over {@link WINDOW} frames the quantization averages out.
+ *
+ *    Measured behaviour is stricter still. On macOS/Metal with a stock Chrome
+ *    build (checked 2026-08-04) every resolved query is **exactly 0**: the
+ *    adapter advertises `timestamp-query`, `requestDevice` accepts it,
+ *    `resolveQuerySet` raises no validation error, and the readback is all
+ *    zeroes — including for a pass writing both `beginningOfPassWriteIndex`
+ *    and `endOfPassWriteIndex`. So on a default browser this profiler reports
+ *    nothing at all, by design rather than by failure; {@link discardedFrames}
+ *    is how you tell that apart from a warm-up, and it warns once on its own.
+ *
+ *    To get real numbers, launch Chrome with
+ *    `--enable-webgpu-developer-features` (never in production).
  *
  * ## Cost when disabled
  *
- * Zero. The RenderGraph holds `profiler: GpuProfiler | null`; when the device
- * lacks `timestamp-query`, or profiling was never enabled, no marker passes
- * are encoded and no buffers are allocated.
+ * Zero, and literally so: `createRenderer` does not construct a GpuProfiler
+ * until `enableGpuProfiling()` is called, so on a device where nobody asks for
+ * timings there is no query set and no readback buffer. Once one exists, the
+ * RenderGraph holds it as `profiler: GpuProfiler | null` and encodes no marker
+ * passes while that reference is null.
  */
 
 /** Frames of history kept per pass for the rolling mean. */
 export const WINDOW = 120;
+
+/**
+ * How many all-zero frames to tolerate before warning that this browser is not
+ * actually serving timestamps. Two seconds at 60fps — comfortably past any
+ * legitimate warm-up.
+ */
+const ZERO_FRAME_WARN_THRESHOLD = 120;
 
 /** Readback buffers in flight before the profiler starts skipping frames. */
 const READBACK_SLOTS = 3;
@@ -66,6 +85,8 @@ interface PendingReadback {
   buffer: GPUBuffer;
   names: string[];
   markerCount: number;
+  /** Value of {@link GpuProfiler.generation} when the frame was opened. */
+  generation: number;
 }
 
 export class GpuProfiler {
@@ -95,8 +116,22 @@ export class GpuProfiler {
   private destroyed = false;
   private polling = false;
 
+  /**
+   * Bumped by {@link reset}. A frame carries the generation it was opened
+   * under, and {@link consume} drops any frame whose generation no longer
+   * matches — without this, the up-to-{@link READBACK_SLOTS} frames still in
+   * flight when the graph is rebuilt would land in the fresh history and
+   * report passes the new graph does not even contain.
+   */
+  private generation = 0;
+  private frameGeneration = 0;
+
   /** Frames dropped because every readback buffer was still in flight. */
   private skipped = 0;
+
+  /** Frames dropped because their timestamps read back as zero. */
+  private zeroFrames = 0;
+  private warnedAboutZeros = false;
 
   constructor(device: GPUDevice, maxPasses = 32) {
     // One marker before each pass, plus a closing marker after the last.
@@ -145,6 +180,7 @@ export class GpuProfiler {
     }
     this.frameNames = [...passNames];
     this.markerIndex = 0;
+    this.frameGeneration = this.generation;
     this.active = true;
     return true;
   }
@@ -162,6 +198,20 @@ export class GpuProfiler {
       })
       .end();
     this.markerIndex++;
+  }
+
+  /**
+   * Abandon the frame opened by {@link beginFrame} without recording anything.
+   *
+   * Used when a pass throws mid-graph: the encoder is discarded unfinished, so
+   * the markers already encoded will never execute and there is nothing to read
+   * back. Without this the frame would stay open and every later
+   * {@link beginFrame} would return false — the profiler would go silently
+   * dead for the rest of the session.
+   */
+  abortFrame(): void {
+    this.active = false;
+    this.markerIndex = 0;
   }
 
   /**
@@ -187,7 +237,12 @@ export class GpuProfiler {
       buffer, 0,
       markerCount * TIMESTAMP_SIZE,
     );
-    this.pending.push({ buffer, names: this.frameNames, markerCount });
+    this.pending.push({
+      buffer,
+      names: this.frameNames,
+      markerCount,
+      generation: this.frameGeneration,
+    });
   }
 
   /**
@@ -221,15 +276,23 @@ export class GpuProfiler {
   }
 
   private consume(entry: PendingReadback): void {
+    // Measured under a graph configuration that has since been reset. The
+    // buffer is still recycled by the caller; only the samples are dropped.
+    if (entry.generation !== this.generation) return;
+
     const stamps = new BigInt64Array(
       entry.buffer.getMappedRange(0, entry.markerCount * TIMESTAMP_SIZE).slice(0),
     );
 
-    // A zero timestamp means the query never got written (feature disabled
-    // mid-flight, or a driver quirk). Treat the whole frame as invalid rather
-    // than reporting a bogus multi-second delta.
+    // A zero timestamp means the query never got written. Treat the whole frame
+    // as invalid rather than reporting a bogus multi-second delta.
+    //
+    // This is the common case, not an edge case: see {@link discardedFrames}.
     for (let i = 0; i < stamps.length; i++) {
-      if (stamps[i] === 0n) return;
+      if (stamps[i] === 0n) {
+        this.noteZeroFrame();
+        return;
+      }
     }
 
     for (let i = 0; i < entry.names.length; i++) {
@@ -247,6 +310,46 @@ export class GpuProfiler {
       samples.push(ms);
       if (samples.length > WINDOW) samples.shift();
     }
+  }
+
+  /**
+   * Count an all-zero frame and, once, say so out loud.
+   *
+   * Silence here is what makes a dead profiler indistinguishable from one that
+   * is still warming up: `gpuProfilingSupported` is true, `enableGpuProfiling()`
+   * returns true, and `timings()` stays empty forever with no explanation.
+   */
+  private noteZeroFrame(): void {
+    this.zeroFrames++;
+    if (
+      !this.warnedAboutZeros &&
+      this.zeroFrames >= ZERO_FRAME_WARN_THRESHOLD &&
+      this.history.size === 0
+    ) {
+      this.warnedAboutZeros = true;
+      console.warn(
+        `[Hyperion] GPU profiling is enabled but this browser returned ${this.zeroFrames} ` +
+        `frames of zeroed timestamps. The device advertises 'timestamp-query', yet resolves ` +
+        `every query to 0 — Chrome does this unless started with ` +
+        `--enable-webgpu-developer-features. No timings will be reported until then.`,
+      );
+    }
+  }
+
+  /**
+   * Frames discarded because every timestamp in them read back as zero.
+   *
+   * Not a theoretical driver quirk. Measured 2026-08-04 on macOS/Metal with a
+   * stock Chrome build: the adapter advertises `timestamp-query`, `requestDevice`
+   * accepts it, `resolveQuerySet` raises no validation error — and every
+   * resolved value is 0, including for a pass that writes both
+   * `beginningOfPassWriteIndex` and `endOfPassWriteIndex`. Chrome gates real
+   * timestamps behind `--enable-webgpu-developer-features`.
+   *
+   * If this number climbs while {@link timings} stays empty, that is the cause.
+   */
+  get discardedFrames(): number {
+    return this.zeroFrames;
   }
 
   /** Current timings, one entry per pass measured at least once. */
@@ -280,11 +383,33 @@ export class GpuProfiler {
     return total;
   }
 
-  /** Drop accumulated history. Call after changing the graph or resolution. */
+  /**
+   * Drop accumulated history *and* invalidate every frame still in flight.
+   * Call after changing the graph or the resolution.
+   *
+   * Clearing only the history would not be enough: up to
+   * {@link READBACK_SLOTS} frames measured under the previous configuration
+   * are already encoded and unread, and would land in the fresh history the
+   * next time {@link poll} runs — reporting passes the new graph no longer
+   * contains, and summing them into {@link totalAverageMs}.
+   */
   reset(): void {
     this.history.clear();
     this.latest.clear();
     this.skipped = 0;
+    this.generation++;
+    // `zeroFrames` deliberately survives: it describes what this browser is
+    // capable of, not what the current graph measured, and resetting it on every
+    // outline toggle would keep it below the warning threshold forever.
+
+    // Recycle the invalidated frames rather than dropping them on the floor:
+    // their buffers are checked out of `freeReadbacks`, so discarding the
+    // entries alone would shrink the pool until the profiler skipped every
+    // frame forever. Re-queuing a buffer that still has a copy encoded against
+    // it is safe — the GPU serializes that copy ahead of the next one, and the
+    // stale frame is discarded on generation mismatch regardless.
+    for (const entry of this.pending) this.freeReadbacks.push(entry.buffer);
+    this.pending.length = 0;
   }
 
   destroy(): void {

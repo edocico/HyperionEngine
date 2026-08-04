@@ -1,5 +1,6 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import { JFA_FORMAT } from '../formats';
 
 /**
  * Selection seed pass: renders selected entities to an off-screen RGBA16Float
@@ -100,7 +101,7 @@ export class SelectionSeedPass implements RenderPass {
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
-        targets: [{ format: 'rgba16float' }],
+        targets: [{ format: JFA_FORMAT }],
       },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
       primitive: { topology: 'triangle-list', cullMode: 'back' },
@@ -173,7 +174,7 @@ export class SelectionSeedPass implements RenderPass {
 
     this.seedTexture = this.device.createTexture({
       size: { width, height },
-      format: 'rgba16float',
+      format: JFA_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     resources.setTextureView('selection-seed', this.seedTexture.createView());

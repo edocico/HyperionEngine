@@ -5,7 +5,7 @@
 //   fs_extract      — bright pixel extraction with luminance threshold
 //   fs_downsample   — Kawase 4-tap downsample filter
 //   fs_upsample     — Kawase 9-tap tent upsample filter
-//   fs_composite    — additive bloom blend + PBR Neutral tonemapping + FXAA
+//   fs_composite    — additive bloom blend + tonemap, then FXAA over the result
 
 // --- Shared uniforms ---
 struct BloomParams {
@@ -105,20 +105,54 @@ fn acesTonemap(color: vec3f) -> vec3f {
   return clamp((color * (a * color + b)) / (color * (c * color + d) + e), vec3f(0.0), vec3f(1.0));
 }
 
-// --- FXAA (Lottes) ---
-fn fxaaTexel(tex: texture_2d<f32>, s: sampler, uv: vec2f, ts: vec2f) -> vec4f {
-  let lumaS = luminance(textureSampleLevel(tex, s, uv + vec2f(0.0, ts.y), 0.0).rgb);
-  let lumaN = luminance(textureSampleLevel(tex, s, uv - vec2f(0.0, ts.y), 0.0).rgb);
-  let lumaE = luminance(textureSampleLevel(tex, s, uv + vec2f(ts.x, 0.0), 0.0).rgb);
-  let lumaW = luminance(textureSampleLevel(tex, s, uv - vec2f(ts.x, 0.0), 0.0).rgb);
-  let lumaM = luminance(textureSampleLevel(tex, s, uv, 0.0).rgb);
+// The composite's final colour at `uv`: scene plus its bloom contribution,
+// tonemapped into display space. This is what the pixel will actually be, and
+// therefore the only thing FXAA may legitimately look at.
+fn resolveComposite(uv: vec2f) -> vec3f {
+  let scene = textureSampleLevel(inputTex, samp, uv, 0.0).rgb;
+  let bloom = textureSampleLevel(bloomTex, samp, uv, 0.0).rgb;
+  let hdr = scene + bloom * params.intensity;
+
+  if (params.tonemapMode == 1u) {
+    return pbrNeutralTonemap(hdr);
+  }
+  if (params.tonemapMode == 2u) {
+    return acesTonemap(hdr);
+  }
+  return clamp(hdr, vec3f(0.0), vec3f(1.0));
+}
+
+// --- FXAA (Lottes), over the resolved composite ---
+//
+// This pass previously ran FXAA on the raw HDR scene, *then* added bloom, *then*
+// tonemapped — so the filter was deciding where the edges were by looking at an
+// image that was neither the final one nor in the range its thresholds assume.
+// Bloom in particular is what creates the brightest edges in the frame, and it
+// was not yet present when those edges were detected.
+//
+// Every tap now goes through resolveComposite(), so edge detection and blending
+// both happen on the finished pixel. The cost is two texture samples per tap
+// instead of one, plus a tonemap per tap: up to 18 samples and 9 tonemaps in the
+// worst case, against 10 samples and 1 tonemap before.
+fn fxaaComposite(uv: vec2f, ts: vec2f) -> vec3f {
+  let rgbM = resolveComposite(uv);
+  let rgbN = resolveComposite(uv - vec2f(0.0, ts.y));
+  let rgbS = resolveComposite(uv + vec2f(0.0, ts.y));
+  let rgbE = resolveComposite(uv + vec2f(ts.x, 0.0));
+  let rgbW = resolveComposite(uv - vec2f(ts.x, 0.0));
+
+  let lumaM = luminance(rgbM);
+  let lumaN = luminance(rgbN);
+  let lumaS = luminance(rgbS);
+  let lumaE = luminance(rgbE);
+  let lumaW = luminance(rgbW);
 
   let rangeMin = min(lumaM, min(min(lumaS, lumaN), min(lumaE, lumaW)));
   let rangeMax = max(lumaM, max(max(lumaS, lumaN), max(lumaE, lumaW)));
   let range = rangeMax - rangeMin;
 
   if (range < max(0.0312, rangeMax * 0.125)) {
-    return textureSampleLevel(tex, s, uv, 0.0);
+    return rgbM;
   }
 
   let dir = vec2f(
@@ -129,37 +163,20 @@ fn fxaaTexel(tex: texture_2d<f32>, s: sampler, uv: vec2f, ts: vec2f) -> vec4f {
   let rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
   let d = clamp(dir * rcpDirMin, vec2f(-8.0), vec2f(8.0)) * ts;
 
-  let a = textureSampleLevel(tex, s, uv + d * (1.0 / 3.0 - 0.5), 0.0);
-  let b = textureSampleLevel(tex, s, uv + d * (2.0 / 3.0 - 0.5), 0.0);
-  let rgbA = (a + b) * 0.5;
-  let c = textureSampleLevel(tex, s, uv + d * -0.5, 0.0);
-  let dd = textureSampleLevel(tex, s, uv + d * 0.5, 0.0);
-  let rgbB = rgbA * 0.5 + (c + dd) * 0.25;
+  let rgbA = (resolveComposite(uv + d * (1.0 / 3.0 - 0.5))
+            + resolveComposite(uv + d * (2.0 / 3.0 - 0.5))) * 0.5;
+  let rgbB = rgbA * 0.5 + (resolveComposite(uv + d * -0.5)
+                         + resolveComposite(uv + d * 0.5)) * 0.25;
 
-  let lumaB = luminance(rgbB.rgb);
+  let lumaB = luminance(rgbB);
   if (lumaB < rangeMin || lumaB > rangeMax) {
     return rgbA;
   }
   return rgbB;
 }
 
-// --- Composite: blend bloom + tonemap + FXAA ---
+// --- Composite: blend bloom + tonemap, then antialias the result ---
 @fragment
 fn fs_composite(in: VertexOutput) -> @location(0) vec4f {
-  // Scene color (FXAA applied to scene)
-  let scene = fxaaTexel(inputTex, samp, in.uv, params.texelSize);
-  // Bloom contribution
-  let bloom = textureSampleLevel(bloomTex, samp, in.uv, 0.0);
-  // Additive blend
-  var hdr = scene.rgb + bloom.rgb * params.intensity;
-
-  // Tonemapping
-  var ldr: vec3f;
-  switch (params.tonemapMode) {
-    case 1u: { ldr = pbrNeutralTonemap(hdr); }
-    case 2u: { ldr = acesTonemap(hdr); }
-    default: { ldr = clamp(hdr, vec3f(0.0), vec3f(1.0)); }
-  }
-
-  return vec4f(ldr, 1.0);
+  return vec4f(fxaaComposite(in.uv, params.texelSize), 1.0);
 }

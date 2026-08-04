@@ -1,5 +1,6 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import { JFA_FORMAT } from '../formats';
 
 /**
  * Single JFA iteration pass.
@@ -134,7 +135,7 @@ export class JFAPass implements RenderPass {
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
-        targets: [{ format: 'rgba16float' }],
+        targets: [{ format: JFA_FORMAT }],
       },
       primitive: { topology: 'triangle-list' },
     });

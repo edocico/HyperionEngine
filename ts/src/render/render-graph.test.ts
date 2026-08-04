@@ -96,6 +96,7 @@ describe('RenderGraph', () => {
         beginFrame: vi.fn(() => measuring),
         mark: vi.fn(),
         endFrame: vi.fn(),
+        abortFrame: vi.fn(),
         poll: vi.fn(async () => {}),
       };
     }
@@ -147,6 +148,33 @@ describe('RenderGraph', () => {
 
       graph.render(mockDevice(), frame, resources);
       expect(profiler.beginFrame).not.toHaveBeenCalled();
+    });
+
+    it('closes the open frame when a pass throws, then rethrows', () => {
+      const graph = new RenderGraph();
+      const boom = mockPass('boom', [], ['swapchain']);
+      boom.execute = () => { throw new Error('pass exploded'); };
+      graph.addPass(boom);
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      // Without abortFrame() the profiler's frame stays open and every later
+      // beginFrame() returns false — it would go silently dead.
+      expect(() => graph.render(mockDevice(), frame, resources)).toThrow('pass exploded');
+      expect(profiler.abortFrame).toHaveBeenCalledTimes(1);
+      expect(profiler.endFrame).not.toHaveBeenCalled();
+      expect(profiler.poll).not.toHaveBeenCalled();
+    });
+
+    it('does not abort the frame when every pass succeeds', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('forward', [], ['swapchain']));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+      expect(profiler.abortFrame).not.toHaveBeenCalled();
+      expect(profiler.endFrame).toHaveBeenCalledTimes(1);
     });
 
     it('marks only live passes, not dead-culled ones', () => {

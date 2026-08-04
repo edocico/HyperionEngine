@@ -10,6 +10,7 @@ import {
   createFullIsolationBridge,
 } from './worker-bridge';
 import type { Renderer, OutlineOptions } from './renderer';
+import type { PassTiming } from './render/gpu-profiler';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
@@ -540,6 +541,45 @@ export class Hyperion implements Disposable {
     }
     this.profiler.destroy();
     this.profiler = null;
+  }
+
+  /**
+   * Whether per-pass GPU timing is available — needs a local renderer on a
+   * device that exposes the `timestamp-query` feature.
+   *
+   * Not the same thing as {@link enableProfiler}, which is a DOM overlay of CPU
+   * frame stats. This one measures where the frame actually goes on the GPU.
+   */
+  get gpuProfilingSupported(): boolean {
+    return this.renderer?.gpuProfilingSupported ?? false;
+  }
+
+  /**
+   * Start measuring per-pass GPU time. Returns false when the feature is
+   * missing, and in any context without a local renderer — headless, or the
+   * main thread in Mode A, where rendering happens in the Render Worker.
+   *
+   * Read the numbers back with {@link getGpuTimings}, and quote `averageMs`
+   * rather than `lastMs`: Chrome quantizes GPU timestamps to 100us by default,
+   * so only the rolling mean carries usable resolution.
+   */
+  enableGpuProfiling(): boolean {
+    this.checkDestroyed();
+    return this.renderer?.enableGpuProfiling() ?? false;
+  }
+
+  /** Stop measuring per-pass GPU time. */
+  disableGpuProfiling(): void {
+    this.renderer?.disableGpuProfiling();
+  }
+
+  /**
+   * Per-pass GPU timings, one entry per pass measured at least once. Empty when
+   * profiling is off, unsupported, or still warming up — treat a `sampleCount`
+   * below ~30 as not yet meaningful.
+   */
+  getGpuTimings(): PassTiming[] {
+    return this.renderer?.getGpuTimings() ?? [];
   }
 
   /**

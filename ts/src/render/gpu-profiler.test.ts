@@ -182,6 +182,37 @@ describe('GpuProfiler', () => {
       p.endFrame(enc);
       await p.poll();
       expect(p.timings()).toEqual([]);
+      // Counted, so a browser that serves only zeroes is diagnosable rather
+      // than looking like a profiler that never finishes warming up.
+      expect(p.discardedFrames).toBe(1);
+    });
+
+    it('counts zeroed frames separately from skipped ones', async () => {
+      const p = new GpuProfiler(device);
+      device.mapped.data = new BigInt64Array([0n, 0n]);
+      for (let i = 0; i < 3; i++) {
+        p.beginFrame(['cull']);
+        const enc = makeEncoder(device);
+        p.mark(enc);
+        p.endFrame(enc);
+        await p.poll();
+      }
+      expect(p.discardedFrames).toBe(3);
+      expect(p.skippedFrames).toBe(0);
+      expect(p.timings()).toEqual([]);
+    });
+
+    it('keeps the zero-frame count across reset, since it describes the browser', async () => {
+      const p = new GpuProfiler(device);
+      device.mapped.data = new BigInt64Array([0n, 0n]);
+      p.beginFrame(['cull']);
+      const enc = makeEncoder(device);
+      p.mark(enc);
+      p.endFrame(enc);
+      await p.poll();
+
+      p.reset();
+      expect(p.discardedFrames).toBe(1);
     });
 
     it('clamps a non-monotonic delta to zero instead of reporting a negative', async () => {
@@ -215,6 +246,76 @@ describe('GpuProfiler', () => {
         await runFrame(p, ['forward'], [1.0]);
       }
       expect(p.skippedFrames).toBe(0);
+    });
+  });
+
+  describe('aborting a frame', () => {
+    it('reopens a frame left dangling by a throwing pass', () => {
+      const p = new GpuProfiler(device);
+      expect(p.beginFrame(['a'])).toBe(true);
+      expect(p.beginFrame(['a'])).toBe(false);  // still open, correctly refused
+      p.abortFrame();
+      expect(p.beginFrame(['a'])).toBe(true);
+    });
+
+    it('consumes no readback slot, so repeated failures cannot starve the pool', () => {
+      const p = new GpuProfiler(device);
+      // Five aborted frames against three slots: without the fix this would
+      // have exhausted the pool after the third.
+      for (let i = 0; i < 5; i++) {
+        expect(p.beginFrame(['a'])).toBe(true);
+        p.mark(makeEncoder(device));
+        p.abortFrame();
+      }
+      expect(p.skippedFrames).toBe(0);
+    });
+  });
+
+  describe('reset with frames still in flight', () => {
+    /** Open and close a frame without polling: it stays queued for readback. */
+    function encodeUnpolledFrame(p: GpuProfiler, names: string[], costsMs: number[]) {
+      device.mapped.data = stamps(costsMs);
+      p.beginFrame(names);
+      const enc = makeEncoder(device);
+      for (const _ of names) p.mark(enc);
+      p.endFrame(enc);
+    }
+
+    it('discards samples measured before the reset', async () => {
+      const p = new GpuProfiler(device);
+      encodeUnpolledFrame(p, ['jfa-iter-0'], [1.0]);
+
+      // Simulates rebuildGraph(): the pass set changed under us.
+      p.reset();
+      await p.poll();
+
+      // The stale frame must not resurrect a pass the new graph does not have.
+      expect(p.timings()).toEqual([]);
+    });
+
+    it('keeps measuring frames opened after the reset', async () => {
+      const p = new GpuProfiler(device);
+      encodeUnpolledFrame(p, ['old-pass'], [1.0]);
+      p.reset();
+
+      encodeUnpolledFrame(p, ['new-pass'], [2.0]);
+      await p.poll();
+
+      const t = p.getTimingsByName();
+      expect(t.has('old-pass')).toBe(false);
+      expect(t.get('new-pass')?.lastMs).toBeCloseTo(2.0, 5);
+    });
+
+    it('returns the invalidated frames to the pool instead of starving it', () => {
+      const p = new GpuProfiler(device);
+      for (let i = 0; i < 3; i++) encodeUnpolledFrame(p, ['a'], [1.0]);
+      expect(p.beginFrame(['a'])).toBe(false);  // all three slots checked out
+
+      p.reset();
+
+      // Dropping the entries without recycling their buffers would leave the
+      // profiler permanently unable to open a frame.
+      expect(p.beginFrame(['a'])).toBe(true);
     });
   });
 

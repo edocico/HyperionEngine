@@ -713,4 +713,44 @@ describe('debug API', () => {
     expect(engine.debug!.isRecording).toBe(false);
     engine.destroy();
   });
+
+  describe('GPU profiling', () => {
+    it('delegates to the renderer when one is present', () => {
+      const renderer = mockRenderer();
+      renderer.enableGpuProfiling = vi.fn(() => true);
+      renderer.getGpuTimings = vi.fn(() => [
+        { name: 'forward', averageMs: 1.5, lastMs: 1.4, sampleCount: 120 },
+      ]);
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+
+      expect(engine.enableGpuProfiling()).toBe(true);
+      expect(engine.getGpuTimings()[0].name).toBe('forward');
+      engine.disableGpuProfiling();
+      expect(renderer.disableGpuProfiling).toHaveBeenCalled();
+      engine.destroy();
+    });
+
+    it('degrades to a no-op without a renderer (headless, or Mode A main thread)', () => {
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+      expect(engine.gpuProfilingSupported).toBe(false);
+      expect(engine.enableGpuProfiling()).toBe(false);
+      expect(engine.getGpuTimings()).toEqual([]);
+      expect(() => engine.disableGpuProfiling()).not.toThrow();
+      engine.destroy();
+    });
+
+    it('mirrors the renderer\'s support flag in both directions', () => {
+      const unsupported = mockRenderer();  // gpuProfilingSupported: false
+      const a = Hyperion.fromParts(defaultConfig(), mockBridge(), unsupported);
+      expect(a.gpuProfilingSupported).toBe(false);
+      a.destroy();
+
+      // gpuProfilingSupported is readonly on the interface, so override it at
+      // construction rather than by assignment.
+      const supported: Renderer = { ...mockRenderer(), gpuProfilingSupported: true };
+      const b = Hyperion.fromParts(defaultConfig(), mockBridge(), supported);
+      expect(b.gpuProfilingSupported).toBe(true);
+      b.destroy();
+    });
+  });
 });

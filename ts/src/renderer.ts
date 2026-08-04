@@ -34,7 +34,7 @@ import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
 import { ParticleSystem } from './particle-system';
 import type { FrameState } from './render/render-pass';
 import type { GPURenderState } from './worker-bridge';
-import { SCENE_HDR_FORMAT } from './render/formats';
+import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 
 const MAX_ENTITIES = 100_000;
@@ -108,8 +108,7 @@ export async function createRenderer(
   // device request must still succeed without it. Chrome quantizes the
   // timestamps it returns to 100us unless started with
   // --enable-webgpu-developer-features — see render/gpu-profiler.ts.
-  const timestampSupported = adapter.features.has('timestamp-query');
-  if (timestampSupported) requiredFeatures.push('timestamp-query');
+  if (adapter.features.has('timestamp-query')) requiredFeatures.push('timestamp-query');
 
   let device: GPUDevice;
   let useSubgroups = subgroupSupport.supported;
@@ -128,6 +127,14 @@ export async function createRenderer(
       requiredFeatures: fallbackFeatures.length > 0 ? fallbackFeatures : undefined,
     });
   }
+
+  // Derived from the *device*, never the adapter. The fallback path above drops
+  // `timestamp-query` from the request, so an adapter that advertises the
+  // feature can still hand back a device without it. Trusting the adapter here
+  // would build a profiler on a device that cannot serve one, and
+  // `createQuerySet({ type: 'timestamp' })` fails inside createRenderer — the
+  // whole renderer goes down, not just profiling.
+  const timestampSupported = GpuProfiler.isSupported(device.features);
 
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);
@@ -253,10 +260,12 @@ export async function createRenderer(
   radixSortPass.setup(device, resources);
 
   // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
-  // The profiler is created once and re-attached on every rebuildGraph(), so
-  // its rolling averages survive outline/bloom toggles and shader hot-reloads.
-  // Off until enableGpuProfiling() is called: idle cost is zero.
-  const gpuProfiler = timestampSupported ? new GpuProfiler(device) : null;
+  // Constructed on the first enableGpuProfiling(), never here, so that the
+  // "costs nothing when off" claim in gpu-profiler.ts holds literally: until
+  // someone asks for timings there is no query set and no readback buffer.
+  // Once built it is re-attached on every rebuildGraph(), so its rolling
+  // averages survive outline/bloom toggles and shader hot-reloads.
+  let gpuProfiler: GpuProfiler | null = null;
   let gpuProfilingEnabled = false;
 
   let graph = new RenderGraph();
@@ -300,19 +309,21 @@ export async function createRenderer(
     const eighthW = Math.max(1, Math.floor(width / 8));
     const eighthH = Math.max(1, Math.floor(height / 8));
 
+    // Must stay SCENE_HDR_FORMAT: BloomPass builds its extract/downsample/
+    // upsample pipelines against that constant and renders into these.
     bloomHalfTexture = device.createTexture({
       size: { width: halfW, height: halfH },
-      format: 'rgba16float',
+      format: SCENE_HDR_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     bloomQuarterTexture = device.createTexture({
       size: { width: quarterW, height: quarterH },
-      format: 'rgba16float',
+      format: SCENE_HDR_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     bloomEighthTexture = device.createTexture({
       size: { width: eighthW, height: eighthH },
-      format: 'rgba16float',
+      format: SCENE_HDR_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
 
@@ -344,12 +355,12 @@ export async function createRenderer(
 
     jfaTextureA = device.createTexture({
       size: { width, height },
-      format: 'rgba16float',
+      format: JFA_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     jfaTextureB = device.createTexture({
       size: { width, height },
-      format: 'rgba16float',
+      format: JFA_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
 
@@ -686,6 +697,10 @@ export async function createRenderer(
         if (bloomActive) {
           ensureBloomTextures(canvas.width, canvas.height);
         }
+
+        // Pass cost is roughly proportional to pixel count, so samples taken at
+        // the old resolution must not be averaged with the new ones.
+        if (gpuProfilingEnabled) gpuProfiler?.reset();
       }
 
       // Set swapchain view for this frame
@@ -738,10 +753,11 @@ export async function createRenderer(
       }
     },
 
-    get gpuProfilingSupported() { return gpuProfiler !== null; },
+    get gpuProfilingSupported() { return timestampSupported; },
 
     enableGpuProfiling() {
-      if (!gpuProfiler) return false;
+      if (!timestampSupported) return false;
+      gpuProfiler ??= new GpuProfiler(device);
       gpuProfilingEnabled = true;
       graph.setProfiler(gpuProfiler);
       gpuProfiler.reset();

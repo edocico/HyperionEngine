@@ -64,17 +64,56 @@ fn acesTonemap(x: vec3f) -> vec3f {
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
+// Map scene radiance to display space: the exact values that reach the
+// swapchain. Mode 0 clamps rather than passing through, because the 8-bit unorm
+// swapchain clamps on write anyway — doing it here keeps the FXAA contrast test
+// below meaningful in all three modes instead of only two.
+fn tonemap(color: vec3f) -> vec3f {
+    if (params.tonemapMode == 1u) {
+        return pbrNeutralTonemap(color);
+    }
+    if (params.tonemapMode == 2u) {
+        return acesTonemap(color);
+    }
+    return clamp(color, vec3f(0.0), vec3f(1.0));
+}
+
+// One FXAA tap, already in display space. Every sample the filter looks at must
+// go through here — see the note on fs_main.
+fn resolveTexel(uv: vec2f) -> vec3f {
+    return tonemap(textureSampleLevel(inputTex, inputSampler, uv, 0.0).rgb);
+}
+
+// FXAA runs on tonemapped output, not on raw HDR.
+//
+// Lottes' filter is specified over display-space LDR. Its contrast test,
+// `lumaRange < max(0.0312, lumaMax * 0.125)`, carries an absolute floor tuned
+// for a [0,1] range. `scene-hdr` is rgba16float, so its values are unbounded:
+// run the test on them directly and it goes hypersensitive in bright regions
+// and blind in dark ones. Tonemapping after the filter — which is what this
+// shader used to do — leaves every luma comparison and the edge blend itself
+// computed in the wrong space.
+//
+// So each tap is tonemapped at the point of sampling and all the FXAA maths
+// happens in display space. There is deliberately no tonemap at the end: what
+// this function returns is already the final pixel.
+//
+// Cost: up to 9 tonemap evaluations per pixel instead of 1. The alternative is
+// splitting this into a tonemap pass plus a separate FXAA pass, which needs an
+// extra full-screen pass and an intermediate LDR target, and puts a third
+// writer on `swapchain` where BloomPass and OutlineCompositePass already
+// contend.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let uv = in.uv;
     let ts = params.texelSize;
 
     // --- FXAA (Lottes, simplified) ---
-    let rgbM  = textureSampleLevel(inputTex, inputSampler, uv, 0.0).rgb;
-    let rgbNW = textureSampleLevel(inputTex, inputSampler, uv + vec2f(-ts.x, -ts.y), 0.0).rgb;
-    let rgbNE = textureSampleLevel(inputTex, inputSampler, uv + vec2f( ts.x, -ts.y), 0.0).rgb;
-    let rgbSW = textureSampleLevel(inputTex, inputSampler, uv + vec2f(-ts.x,  ts.y), 0.0).rgb;
-    let rgbSE = textureSampleLevel(inputTex, inputSampler, uv + vec2f( ts.x,  ts.y), 0.0).rgb;
+    let rgbM  = resolveTexel(uv);
+    let rgbNW = resolveTexel(uv + vec2f(-ts.x, -ts.y));
+    let rgbNE = resolveTexel(uv + vec2f( ts.x, -ts.y));
+    let rgbSW = resolveTexel(uv + vec2f(-ts.x,  ts.y));
+    let rgbSE = resolveTexel(uv + vec2f( ts.x,  ts.y));
 
     let lumaM  = fxaaLuma(rgbM);
     let lumaNW = fxaaLuma(rgbNW);
@@ -88,13 +127,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     // Early exit for low contrast regions
     if (lumaRange < max(0.0312, lumaMax * 0.125)) {
-        var result = rgbM;
-        if (params.tonemapMode == 1u) {
-            result = pbrNeutralTonemap(result);
-        } else if (params.tonemapMode == 2u) {
-            result = acesTonemap(result);
-        }
-        return vec4f(result, 1.0);
+        return vec4f(rgbM, 1.0);
     }
 
     // Edge direction
@@ -106,28 +139,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let d = clamp(dir * rcpDirMin, vec2f(-8.0), vec2f(8.0)) * ts;
 
     let rgbA = 0.5 * (
-        textureSampleLevel(inputTex, inputSampler, uv + d * (1.0/3.0 - 0.5), 0.0).rgb +
-        textureSampleLevel(inputTex, inputSampler, uv + d * (2.0/3.0 - 0.5), 0.0).rgb
+        resolveTexel(uv + d * (1.0/3.0 - 0.5)) +
+        resolveTexel(uv + d * (2.0/3.0 - 0.5))
     );
     let rgbB = rgbA * 0.5 + 0.25 * (
-        textureSampleLevel(inputTex, inputSampler, uv + d * -0.5, 0.0).rgb +
-        textureSampleLevel(inputTex, inputSampler, uv + d *  0.5, 0.0).rgb
+        resolveTexel(uv + d * -0.5) +
+        resolveTexel(uv + d *  0.5)
     );
 
     let lumaB = fxaaLuma(rgbB);
-    var result: vec3f;
     if (lumaB < lumaMin || lumaB > lumaMax) {
-        result = rgbA;
-    } else {
-        result = rgbB;
+        return vec4f(rgbA, 1.0);
     }
-
-    // --- Tonemapping ---
-    if (params.tonemapMode == 1u) {
-        result = pbrNeutralTonemap(result);
-    } else if (params.tonemapMode == 2u) {
-        result = acesTonemap(result);
-    }
-
-    return vec4f(result, 1.0);
+    return vec4f(rgbB, 1.0);
 }

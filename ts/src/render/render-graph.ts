@@ -156,9 +156,17 @@ export class RenderGraph {
     // and encode no marker passes at all.
     const measuring = this.profiler?.beginFrame(this.executionOrder) ?? false;
 
-    for (const name of this.executionOrder) {
-      if (measuring) this.profiler!.mark(encoder);
-      this.passes.get(name)!.execute(encoder, frame, resources);
+    try {
+      for (const name of this.executionOrder) {
+        if (measuring) this.profiler!.mark(encoder);
+        this.passes.get(name)!.execute(encoder, frame, resources);
+      }
+    } catch (err) {
+      // The encoder is abandoned unfinished, so the frame the profiler opened
+      // will never resolve. Closing it here keeps a single throwing pass from
+      // wedging `beginFrame()` shut for every frame that follows.
+      if (measuring) this.profiler!.abortFrame();
+      throw err;
     }
 
     if (measuring) this.profiler!.endFrame(encoder);

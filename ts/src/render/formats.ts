@@ -37,5 +37,26 @@
  * `FXAATonemapPass`, `OutlineCompositePass`, `LineBatchPass` and the particle
  * renderer — must keep using `navigator.gpu.getPreferredCanvasFormat()`. Only
  * `scene-hdr` and the bloom mip chain use `SCENE_HDR_FORMAT`.
+ *
+ * Both halves of each pair must move together: `BloomPass` builds its extract /
+ * downsample / upsample pipelines against `SCENE_HDR_FORMAT` while the renderer
+ * creates the mip textures those pipelines render into. If one side changes and
+ * the other does not, the mismatch is a hard validation error at draw time —
+ * and invisible to the test suite, because WebGPU cannot run headless.
  */
 export const SCENE_HDR_FORMAT: GPUTextureFormat = 'rgba16float';
+
+/**
+ * Format of the selection-seed and jump-flood ping-pong textures.
+ *
+ * Deliberately a separate constant from {@link SCENE_HDR_FORMAT} even though
+ * the two currently hold the same value: these textures carry encoded seed
+ * *coordinates*, not radiance. Tying them to the scene's HDR format would make
+ * a future change to one silently rewrite the other.
+ *
+ * Shared by `SelectionSeedPass` (pipeline + seed texture), `JFAPass` (pipeline)
+ * and the renderer's `jfa-a` / `jfa-b` ping-pong pair. 16-bit float is chosen
+ * for the precision the UV encoding needs, and is renderable and filterable in
+ * core WebGPU.
+ */
+export const JFA_FORMAT: GPUTextureFormat = 'rgba16float';
