@@ -15,10 +15,16 @@ override USE_SUBGROUPS: bool = false;
 override SUBGROUP_SIZE: u32 = 32u;
 override USE_SUBGROUP_ID: bool = false;
 
-const NUM_PRIM_TYPES: u32 = 6u;
+// 7 = Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow, Light2D.
+// Light2D has no material sort and no transparent variant, so three of its four
+// buckets stay empty. Uniform waste, and the alternative — a variable bucket
+// count per type — would break the `blendOff + primType * BUCKETS_PER_TYPE + bk`
+// indexing below and add a branch to the hot loop.
+const NUM_PRIM_TYPES: u32 = 7u;
 const BUCKETS_PER_TYPE: u32 = 2u;   // bucket 0 = tier0 compressed, bucket 1 = other tiers
-const OPAQUE_BUCKETS: u32 = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;   // 12
-const TOTAL_BUCKETS: u32 = OPAQUE_BUCKETS * 2u;                  // 24 (12 opaque + 12 transparent)
+const OPAQUE_BUCKETS: u32 = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;   // 14
+const TOTAL_BUCKETS: u32 = OPAQUE_BUCKETS * 2u;                  // 28 (14 opaque + 14 transparent)
+const MAX_SUBGROUPS: u32 = 8u;  // 256 / 32
 
 struct CullUniforms {
     frustumPlanes: array<vec4f, 6>,
@@ -28,8 +34,9 @@ struct CullUniforms {
     _pad1: u32,
 };
 
-// Per-type-bucket indirect draw args. Packed as 24 consecutive DrawIndirectArgs
-// (12 opaque + 12 transparent: each set = 6 prim types x 2 material buckets).
+// Per-type-bucket indirect draw args. Packed as TOTAL_BUCKETS consecutive
+// DrawIndirectArgs (14 opaque + 14 transparent: each set = 7 prim types x 2
+// material buckets).
 struct DrawIndirectArgs {
     indexCount: u32,
     instanceCount: atomic<u32>,
@@ -43,7 +50,7 @@ struct DrawIndirectArgs {
 @group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
 @group(0) @binding(2) var<storage, read> bounds: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> visibleIndices: array<u32>;
-@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, 24>;
+@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, TOTAL_BUCKETS>;
 @group(0) @binding(5) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
 @group(0) @binding(6) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
 
@@ -53,12 +60,17 @@ struct DrawIndirectArgs {
 @group(1) @binding(2) var<storage, read_write> visibility_out: array<atomic<u32>>;
 
 // Shared memory for subgroup prefix-sum compaction.
-// Reduces global atomics from 192/workgroup (24 buckets × 8 subgroups) to
-// at most 24/workgroup (one per active bucket).
-const MAX_SUBGROUPS: u32 = 8u;  // 256 / 32
-var<workgroup> sg_counts: array<u32, 192>;    // 24 buckets * 8 subgroups
-var<workgroup> sg_prefixes: array<u32, 192>;  // exclusive prefix sums per bucket per subgroup
-var<workgroup> wg_bases: array<u32, 24>;      // global base offset per bucket
+// Reduces global atomics from TOTAL_BUCKETS × MAX_SUBGROUPS per workgroup to at
+// most TOTAL_BUCKETS (one per active bucket).
+//
+// Sized by const-expression rather than by literal on purpose: these three used
+// to be 192/192/24 written out by hand, so a change to NUM_PRIM_TYPES had four
+// separate numbers to keep in step — with no test able to catch a miss, since
+// WGSL cannot be compiled headless. At 28 buckets this is ~1.8 KB of workgroup
+// storage, well inside the 16 KiB limit.
+var<workgroup> sg_counts: array<u32, TOTAL_BUCKETS * MAX_SUBGROUPS>;
+var<workgroup> sg_prefixes: array<u32, TOTAL_BUCKETS * MAX_SUBGROUPS>;
+var<workgroup> wg_bases: array<u32, TOTAL_BUCKETS>;
 
 @compute @workgroup_size(256)
 fn cull_main(@builtin(global_invocation_id) gid: vec3u) {

@@ -3,7 +3,17 @@ import type { ResourcePool } from '../resource-pool';
 import { extractFrustumPlanes } from '../../camera';
 
 const WORKGROUP_SIZE = 256;
-const NUM_PRIM_TYPES = 6;
+
+/**
+ * 7 = Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow, Light2D.
+ *
+ * ⚠️ `cull.wgsl` declares its own `NUM_PRIM_TYPES` — the two are independent
+ * declarations of the same number and nothing but agreement makes them work.
+ * WGSL cannot be compiled headless, so no test can catch a mismatch at the
+ * shader end; `cull-pass.test.ts` asserts the shader text instead. Land both
+ * in the same commit. This is check #4 of the `wgsl-validator` agent.
+ */
+export const NUM_PRIM_TYPES = 7;
 const MAX_SUBGROUPS_PER_WG = 8;
 
 /** Number of material-sort buckets per primitive type (tier0 vs other). */
@@ -12,12 +22,18 @@ export const BUCKETS_PER_TYPE = 2;
 /** Number of blend modes: 0 = opaque, 1 = transparent. */
 export const BLEND_MODES = 2;
 
-/** Number of opaque draw buckets (6 prim types x 2 material buckets). */
+/** Number of opaque draw buckets (7 prim types x 2 material buckets). */
 export const OPAQUE_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
 
 /**
  * Total number of indirect draw arg entries including both opaque and transparent.
- * Layout: [0..11] opaque (6 types x 2 buckets), [12..23] transparent (6 types x 2 buckets).
+ * Layout: [0..13] opaque (7 types x 2 buckets), [14..27] transparent (7 types x 2 buckets).
+ *
+ * Light2D (type 6) claims all four of its buckets and leaves three empty: it has
+ * neither a material sort nor a transparent variant. The waste is uniform, which
+ * is the point — a variable bucket count per type would break the flat
+ * `blendOffset + primType * BUCKETS_PER_TYPE + bucket` indexing in `cull.wgsl`
+ * and put a branch in the hot loop.
  */
 export const TOTAL_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE * BLEND_MODES;
 
@@ -94,9 +110,9 @@ export function extractPrimType(meta: number): number {
  * GPU frustum-culling compute pass with 2-bucket material sort and opaque/transparent split.
  *
  * Reads SoA entity buffers (transforms + bounds + renderMeta + texIndices) and writes
- * per-primitive-type compacted visible-indices lists plus 24 sets of
- * indirect draw arguments: 12 opaque (6 types x 2 material buckets) followed by
- * 12 transparent (6 types x 2 material buckets).
+ * per-primitive-type compacted visible-indices lists plus 28 sets of
+ * indirect draw arguments: 14 opaque (7 types x 2 material buckets) followed by
+ * 14 transparent (7 types x 2 material buckets).
  * Transparency is determined by bit 8 of renderMeta.
  * This reduces fragment divergence and enables correct alpha-blended rendering.
  */
@@ -334,7 +350,7 @@ export class CullPass implements RenderPass {
     // Rebuild bind group 1 for current ping-pong orientation
     this._rebuildBindGroup1(device);
 
-    // Reset indirect draw arguments: 24 buckets (12 opaque + 12 transparent) × 5 u32 each.
+    // Reset indirect draw arguments: 28 buckets (14 opaque + 14 transparent) × 5 u32 each.
     // firstInstance encodes the visible-indices region offset so the vertex shader
     // can read visibleIndices[instance_index] directly (instance_index = firstInstance + slot).
     const MAX_ENTITIES_PER_TYPE = 100_000;

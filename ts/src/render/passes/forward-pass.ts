@@ -15,11 +15,15 @@ import { SCENE_HDR_FORMAT } from '../formats';
  * one opaque (depth-write enabled, no blend) and one transparent (depth-write
  * disabled, alpha blend enabled).
  *
- * CullPass produces 24 DrawIndirectArgs (12 opaque + 12 transparent, each set
- * being 6 prim types x 2 material buckets) at sequential 20-byte offsets.
+ * CullPass produces 28 DrawIndirectArgs (14 opaque + 14 transparent, each set
+ * being 7 prim types x 2 material buckets) at sequential 20-byte offsets.
  *
- * Sub-pass 1: Opaque entities (buckets 0-11) with depth write.
- * Sub-pass 2: Transparent entities (buckets 12-23) with alpha blend, no depth write.
+ * Sub-pass 1: Opaque entities (buckets 0-13) with depth write.
+ * Sub-pass 2: Transparent entities (buckets 14-27) with alpha blend, no depth write.
+ *
+ * Type 6 (Light2D) has buckets here but no pipeline: `SHADER_SOURCES` registers
+ * nothing for it, so the per-type loop below never finds it. Its buckets are
+ * read directly by the light accumulation pass.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';

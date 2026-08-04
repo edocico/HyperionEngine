@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { CullPass, computeWorkgroupSize, prepareShaderSource, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType, computeInvalidationFlag, visibilityBufferSize } from './cull-pass';
+import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType, computeInvalidationFlag, visibilityBufferSize } from './cull-pass';
+import cullShaderSource from '../../shaders/cull.wgsl?raw';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -32,20 +33,59 @@ describe('opaque/transparent split constants', () => {
     expect(BLEND_MODES).toBe(2);
   });
 
-  it('has 12 opaque draw buckets (6 prim types x 2 buckets)', () => {
-    expect(OPAQUE_DRAW_BUCKETS).toBe(12);
+  it('has 7 primitive types (Phase 17 added Light2D = 6)', () => {
+    expect(NUM_PRIM_TYPES).toBe(7);
   });
 
-  it('has 24 total draw buckets (12 opaque + 12 transparent)', () => {
-    expect(TOTAL_DRAW_BUCKETS).toBe(24);
+  it('has 14 opaque draw buckets (7 prim types x 2 buckets)', () => {
+    expect(OPAQUE_DRAW_BUCKETS).toBe(14);
   });
 
-  it('transparent bucket offset starts at 12', () => {
-    expect(TRANSPARENT_BUCKET_OFFSET).toBe(12);
+  it('has 28 total draw buckets (14 opaque + 14 transparent)', () => {
+    expect(TOTAL_DRAW_BUCKETS).toBe(28);
   });
 
-  it('produces 480-byte indirect args buffer (24 x 5 u32 x 4 bytes)', () => {
-    expect(TOTAL_DRAW_BUCKETS * 5 * 4).toBe(480);
+  it('transparent bucket offset starts at 14', () => {
+    expect(TRANSPARENT_BUCKET_OFFSET).toBe(14);
+  });
+
+  it('produces 560-byte indirect args buffer (28 x 5 u32 x 4 bytes)', () => {
+    expect(TOTAL_DRAW_BUCKETS * 5 * 4).toBe(560);
+  });
+});
+
+// ⚠️ `cull.wgsl` declares NUM_PRIM_TYPES independently of `cull-pass.ts`, and
+// WebGPU cannot be exercised headless — so nothing at runtime would notice the
+// two drifting apart until a draw call read past the end of the indirect
+// buffer. These assertions read the shader source as text, which is the only
+// check available without a browser. Check #4 of the `wgsl-validator` agent.
+describe('cull.wgsl agrees with cull-pass.ts on the bucket count', () => {
+  function wgslConst(name: string): number {
+    const m = cullShaderSource.match(new RegExp(`const\\s+${name}\\s*:\\s*u32\\s*=\\s*(\\d+)u`));
+    if (!m) throw new Error(`cull.wgsl no longer declares a literal '${name}'`);
+    return Number(m[1]);
+  }
+
+  it('declares the same NUM_PRIM_TYPES', () => {
+    expect(wgslConst('NUM_PRIM_TYPES')).toBe(NUM_PRIM_TYPES);
+  });
+
+  it('declares the same BUCKETS_PER_TYPE', () => {
+    expect(wgslConst('BUCKETS_PER_TYPE')).toBe(BUCKETS_PER_TYPE);
+  });
+
+  it('sizes drawArgs and workgroup storage by const-expression, not by literal', () => {
+    // Deriving them is what makes NUM_PRIM_TYPES the single number to change.
+    // A literal creeping back in is the regression this guards.
+    expect(cullShaderSource).toContain('array<DrawIndirectArgs, TOTAL_BUCKETS>');
+    expect(cullShaderSource).toContain('array<u32, TOTAL_BUCKETS * MAX_SUBGROUPS>');
+    expect(cullShaderSource).toContain('array<u32, TOTAL_BUCKETS>');
+  });
+
+  it('keeps workgroup storage inside the 16 KiB limit', () => {
+    const MAX_SUBGROUPS = 8;
+    const bytes = (TOTAL_DRAW_BUCKETS * MAX_SUBGROUPS * 2 + TOTAL_DRAW_BUCKETS) * 4;
+    expect(bytes).toBeLessThan(16 * 1024);
   });
 });
 
@@ -64,11 +104,20 @@ describe('transparent flag extraction', () => {
 
   it('transparent entities route to correct bucket offset', () => {
     // For a transparent entity with primType=2, bucket=1:
-    // argSlot = TRANSPARENT_BUCKET_OFFSET + 2 * BUCKETS_PER_TYPE + 1 = 12 + 4 + 1 = 17
+    // argSlot = TRANSPARENT_BUCKET_OFFSET + 2 * BUCKETS_PER_TYPE + 1 = 14 + 4 + 1 = 19
     const primType = 2;
     const bucket = 1;
     const argSlot = TRANSPARENT_BUCKET_OFFSET + primType * BUCKETS_PER_TYPE + bucket;
-    expect(argSlot).toBe(17);
+    expect(argSlot).toBe(19);
+  });
+
+  it('Light2D (type 6) claims the last opaque bucket pair', () => {
+    // Its transparent pair exists too and stays empty — see TOTAL_DRAW_BUCKETS.
+    expect(6 * BUCKETS_PER_TYPE + 0).toBe(12);
+    expect(6 * BUCKETS_PER_TYPE + 1).toBe(13);
+    expect(TRANSPARENT_BUCKET_OFFSET + 6 * BUCKETS_PER_TYPE + 1).toBe(27);
+    // Every bucket index stays inside the buffer.
+    expect(TRANSPARENT_BUCKET_OFFSET + 6 * BUCKETS_PER_TYPE + 1).toBeLessThan(TOTAL_DRAW_BUCKETS);
   });
 
   it('opaque entities route to correct bucket offset', () => {

@@ -38,7 +38,7 @@ import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 
 const MAX_ENTITIES = 100_000;
-// 24 draw entries (12 opaque + 12 transparent) x 5 u32 x 4 bytes = 480 bytes
+// 28 draw entries (14 opaque + 14 transparent) x 5 u32 x 4 bytes = 560 bytes
 const INDIRECT_BUFFER_SIZE = TOTAL_DRAW_BUCKETS * 5 * 4;
 
 export interface OutlineOptions {
@@ -163,7 +163,7 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4,  // 24 regions x 100k x u32
+    size: TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4,  // 28 regions x 100k x u32 = 11.2 MB
     usage: GPUBufferUsage.STORAGE,
   }));
 
