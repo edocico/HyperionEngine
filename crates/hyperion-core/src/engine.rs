@@ -542,6 +542,12 @@ impl Engine {
                     buf.extend_from_slice(&id.to_le_bytes());
                 }
             }
+            // bit 19: LightFlags (4 bytes) — v3. Lights are ECS entities, so
+            // time-travel and replay only cover them if their flags round-trip.
+            if let Ok(v) = self.world.get::<&LightFlags>(e) {
+                mask |= 1 << 19;
+                buf.extend_from_slice(bytemuck::bytes_of(&*v));
+            }
 
             // Patch mask
             buf[mask_offset..mask_offset + 4].copy_from_slice(&mask.to_le_bytes());
@@ -757,6 +763,13 @@ impl Engine {
             } else {
                 None
             };
+            // bit 19: LightFlags — v3. Absent from v1/v2 masks, so an older
+            // snapshot restores unlit entities, which is what it described.
+            let light_flags = if mask & (1 << 19) != 0 {
+                Some(read_pod!(LightFlags))
+            } else {
+                None
+            };
 
             // Spawn with the archetype matching the original entity:
             // Transform2D present => compact 2D archetype (mirrors SpawnEntity
@@ -812,6 +825,9 @@ impl Engine {
             }
             if let Some(oc) = overflow_children {
                 let _ = new_world.insert_one(new_entity, oc);
+            }
+            if let Some(lf) = light_flags {
+                let _ = new_world.insert_one(new_entity, lf);
             }
 
             old_to_new.insert(old_hecs_bits, new_entity);
@@ -1023,6 +1039,15 @@ impl Engine {
             if let Ok(d) = self.world.get::<&Depth>(entity) {
                 h.f32(d.0);
             }
+            // Lighting flags are simulation state (a light layer toggle changes
+            // what a replay must reproduce), so they belong in the hash. Absent
+            // component hashes as 0, which is what an unlit entity means.
+            h.u32(
+                self.world
+                    .get::<&LightFlags>(entity)
+                    .map(|f| f.0)
+                    .unwrap_or(0),
+            );
 
             // Hierarchy and activation.
             //
@@ -1735,6 +1760,55 @@ mod tests {
         let e = engine.entity_map.get(0).unwrap();
         assert_eq!(engine.world.get::<&Depth>(e).unwrap().0, 3.5);
         assert_eq!(engine.world.get::<&Transparent>(e).unwrap().0, 1);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn snapshot_v3_light_flags_roundtrip() {
+        use crate::components::{LightBlendMode, LightFlags, LightType};
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        let mut flags = LightFlags::new(LightType::Spot, LightBlendMode::Mix, 0xBEEF);
+        flags.set_casts_shadow(true);
+        engine.world.insert_one(e, flags).unwrap();
+
+        let snapshot = engine.snapshot_create();
+        assert!(engine.snapshot_restore(&snapshot));
+
+        let e = engine.entity_map.get(0).unwrap();
+        let restored = *engine.world.get::<&LightFlags>(e).unwrap();
+        assert_eq!(restored, flags);
+        assert_eq!(restored.light_mask(), 0xBEEF);
+        assert!(restored.casts_shadow());
+        assert!(!restored.receives_light());
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn state_hash_sees_light_flags() {
+        use crate::components::{LightBlendMode, LightFlags, LightType};
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let e = engine.entity_map.get(0).unwrap();
+        let before = engine.state_hash();
+
+        engine
+            .world
+            .insert_one(
+                e,
+                LightFlags::new(LightType::Point, LightBlendMode::Add, 0x0001),
+            )
+            .unwrap();
+        let after = engine.state_hash();
+        assert_ne!(before, after, "adding a light must change the hash");
+
+        // A layer-mask change alone is a simulation difference a replay must see.
+        let mut flags = *engine.world.get::<&LightFlags>(e).unwrap();
+        flags.set_light(LightType::Point as u8, LightBlendMode::Add as u8, 0x0002);
+        drop(engine.world.remove_one::<LightFlags>(e));
+        engine.world.insert_one(e, flags).unwrap();
+        assert_ne!(after, engine.state_hash(), "layer mask is hashed");
     }
 
     #[cfg(feature = "dev-tools")]

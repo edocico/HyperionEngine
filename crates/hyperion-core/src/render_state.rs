@@ -7,8 +7,9 @@
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, Depth, ExternalId, MeshHandle, ModelMatrix, Parent, Position,
-    PrimitiveParams, RenderPrimitive, TextureLayerIndex, Transform2D, Transparent,
+    Active, BoundingRadius, Depth, ExternalId, LightFlags, MeshHandle, ModelMatrix, Parent,
+    Position, PrimitiveParams, RenderPrimitive, TextureLayerIndex, Transform2D, Transparent,
+    RENDER_META_TRANSPARENT_BIT,
 };
 
 /// Compact bitset for tracking dirty flags per entity slot.
@@ -378,11 +379,18 @@ impl RenderState {
                 .extend_from_slice(&[pos.0.x, pos.0.y, pos.0.z, radius.0]);
 
             // Buffer C: RenderMeta (2 u32).
-            // Bit 8 carries the Transparent flag, exactly as `write_slot` does —
-            // the two population paths used to disagree here (audit 2026-07, P3-1).
+            // Bit 8 carries the Transparent flag and bits 9-31 the lighting
+            // flags, exactly as `write_slot` does — the population paths used to
+            // disagree here (audit 2026-07, P3-1).
             self.gpu_render_meta.push(mesh.0);
-            let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
-            self.gpu_render_meta.push(prim.0 as u32 | transparent_bit);
+            let transparent_bit =
+                u32::from(world.get::<&Transparent>(entity).is_ok()) * RENDER_META_TRANSPARENT_BIT;
+            let light_bits = world
+                .get::<&LightFlags>(entity)
+                .map(|f| f.bits())
+                .unwrap_or(0);
+            self.gpu_render_meta
+                .push(prim.0 as u32 | transparent_bit | light_bits);
 
             // Texture indices (1 u32)
             self.gpu_tex_indices.push(tex.0);
@@ -664,17 +672,22 @@ impl RenderState {
         if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
             self.gpu_render_meta[s * 2] = mesh.0;
         }
-        // Rebuild the word from scratch: the transparency bit must never be
-        // OR-ed onto a stale value left by a previous occupant of this slot,
-        // and an entity without `RenderPrimitive` must not keep a sticky
+        // Rebuild the word from scratch: the transparency and lighting bits must
+        // never be OR-ed onto a stale value left by a previous occupant of this
+        // slot, and an entity without `RenderPrimitive` must not keep a sticky
         // bit 8 (audit 2026-07, P3-2).
         let prim_word = world
             .get::<&RenderPrimitive>(entity)
             .map(|p| p.0 as u32)
             .unwrap_or(0);
-        // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
-        let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
-        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit;
+        // Bit 8 = Transparent, bits 9-31 = LightFlags.
+        let transparent_bit =
+            u32::from(world.get::<&Transparent>(entity).is_ok()) * RENDER_META_TRANSPARENT_BIT;
+        let light_bits = world
+            .get::<&LightFlags>(entity)
+            .map(|f| f.bits())
+            .unwrap_or(0);
+        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit | light_bits;
 
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
@@ -741,17 +754,22 @@ impl RenderState {
         if let Ok(mesh) = world.get::<&MeshHandle>(entity) {
             self.gpu_render_meta[s * 2] = mesh.0;
         }
-        // Rebuild the word from scratch: the transparency bit must never be
-        // OR-ed onto a stale value left by a previous occupant of this slot,
-        // and an entity without `RenderPrimitive` must not keep a sticky
+        // Rebuild the word from scratch: the transparency and lighting bits must
+        // never be OR-ed onto a stale value left by a previous occupant of this
+        // slot, and an entity without `RenderPrimitive` must not keep a sticky
         // bit 8 (audit 2026-07, P3-2).
         let prim_word = world
             .get::<&RenderPrimitive>(entity)
             .map(|p| p.0 as u32)
             .unwrap_or(0);
-        // Encode Transparent flag in bit 8 of renderMeta[s*2+1]
-        let transparent_bit = u32::from(world.get::<&Transparent>(entity).is_ok()) << 8;
-        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit;
+        // Bit 8 = Transparent, bits 9-31 = LightFlags.
+        let transparent_bit =
+            u32::from(world.get::<&Transparent>(entity).is_ok()) * RENDER_META_TRANSPARENT_BIT;
+        let light_bits = world
+            .get::<&LightFlags>(entity)
+            .map(|f| f.bits())
+            .unwrap_or(0);
+        self.gpu_render_meta[s * 2 + 1] = prim_word | transparent_bit | light_bits;
         if let Ok(tex) = world.get::<&TextureLayerIndex>(entity) {
             self.gpu_tex_indices[s] = tex.0;
         }
@@ -2074,6 +2092,217 @@ mod tests {
         let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
         assert_eq!(meta & 0xFF, 3);
         assert_eq!(meta & 0x100, 0);
+    }
+
+    // --- Phase 17: renderMeta lighting bits (9-31) ---
+    //
+    // These assert against literal bit positions on purpose. The constants in
+    // `components.rs` and the WGSL that decodes this word are two independent
+    // declarations of the same layout; a test written in terms of the constants
+    // would follow a mistake in them instead of catching it.
+
+    /// Spawn a 3D drawable carrying `flags`, write it, return renderMeta word 1.
+    fn meta_word_for(flags: Option<LightFlags>, prim: u8) -> u32 {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(prim),
+            Active,
+            ExternalId(7),
+        ));
+        if let Some(f) = flags {
+            world.insert_one(ent, f).unwrap();
+        }
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        rs.gpu_render_meta[slot as usize * 2 + 1]
+    }
+
+    #[test]
+    fn light_flags_absent_leaves_bits_9_31_clear() {
+        let meta = meta_word_for(None, 6);
+        assert_eq!(meta & 0xFF, 6, "primType survives");
+        assert_eq!(meta & 0xFFFF_FE00, 0, "no lighting bits set by default");
+    }
+
+    #[test]
+    fn light_flags_round_trip_through_render_meta() {
+        let flags = LightFlags::new(LightType::Spot, LightBlendMode::Mix, 0xBEEF);
+        let meta = meta_word_for(Some(flags), 6);
+
+        assert_eq!(meta & 0xFF, 6, "primType");
+        assert_eq!((meta >> 11) & 0b111, LightType::Spot as u32);
+        assert_eq!((meta >> 14) & 0b11, LightBlendMode::Mix as u32);
+        assert_eq!(meta >> 16, 0xBEEF, "full 16 bits of lightMask");
+    }
+
+    #[test]
+    fn light_mask_uses_all_sixteen_bits() {
+        let flags = LightFlags::new(LightType::Point, LightBlendMode::Add, 0xFFFF);
+        let meta = meta_word_for(Some(flags), 6);
+        assert_eq!(meta >> 16, 0xFFFF);
+        assert_eq!(LightFlags(meta).light_mask(), 0xFFFF);
+    }
+
+    #[test]
+    fn shadow_and_receive_bits_are_independent_of_light_fields() {
+        let mut flags = LightFlags::new(LightType::Directional, LightBlendMode::Sub, 0x00FF);
+        flags.set_casts_shadow(true);
+        let meta = meta_word_for(Some(flags), 0);
+
+        assert_eq!(meta & (1 << 9), 1 << 9, "castsShadow");
+        assert_eq!(meta & (1 << 10), 0, "receivesLight untouched");
+        assert_eq!((meta >> 11) & 0b111, LightType::Directional as u32);
+        assert_eq!((meta >> 14) & 0b11, LightBlendMode::Sub as u32);
+        assert_eq!(meta >> 16, 0x00FF);
+    }
+
+    #[test]
+    fn set_light_preserves_shadow_and_receive_bits() {
+        let mut flags = LightFlags::default();
+        flags.set_casts_shadow(true);
+        flags.set_receives_light(true);
+        flags.set_light(LightType::Global as u8, LightBlendMode::Mix as u8, 0x1234);
+
+        assert!(flags.casts_shadow());
+        assert!(flags.receives_light());
+        assert_eq!(flags.light_type_raw(), LightType::Global as u8);
+        assert_eq!(flags.blend_mode_raw(), LightBlendMode::Mix as u8);
+        assert_eq!(flags.light_mask(), 0x1234);
+    }
+
+    #[test]
+    fn transparent_bit_survives_alongside_light_flags() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let mut flags = LightFlags::new(LightType::Point, LightBlendMode::Add, 0x0003);
+        flags.set_receives_light(true);
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(4),
+            Active,
+            ExternalId(9),
+            Transparent(1),
+            flags,
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot(slot, &world, ent);
+        let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
+
+        assert_eq!(meta & 0xFF, 4, "primType");
+        assert_eq!(meta & (1 << 8), 1 << 8, "transparent");
+        assert_eq!(meta & (1 << 10), 1 << 10, "receivesLight");
+        assert_eq!(meta >> 16, 0x0003, "lightMask");
+    }
+
+    #[test]
+    fn light_flags_cannot_corrupt_prim_type_or_transparent() {
+        // A hand-built LightFlags with every bit set must still leave 0-8 alone.
+        let meta = meta_word_for(Some(LightFlags(u32::MAX)), 5);
+        assert_eq!(meta & 0xFF, 5, "primType not clobbered");
+        assert_eq!(meta & (1 << 8), 0, "transparent not forged");
+        assert_eq!(meta & 0xFFFF_FE00, 0xFFFF_FE00);
+    }
+
+    #[test]
+    fn write_slot_2d_encodes_light_flags() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let flags = LightFlags::new(LightType::Sprite, LightBlendMode::Sub, 0x0F0F);
+        let ent = world.spawn((
+            Transform2D { x: 1.0, y: 2.0, rot: 0.0, sx: 1.0, sy: 1.0 },
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(6),
+            Active,
+            ExternalId(11),
+            flags,
+        ));
+        let slot = rs.assign_slot(ent);
+        rs.write_slot_2d(slot, &world, ent);
+        let meta = rs.gpu_render_meta[slot as usize * 2 + 1];
+
+        assert_eq!(meta & 0xFF, 6);
+        assert_eq!((meta >> 11) & 0b111, LightType::Sprite as u32);
+        assert_eq!((meta >> 14) & 0b11, LightBlendMode::Sub as u32);
+        assert_eq!(meta >> 16, 0x0F0F);
+    }
+
+    #[test]
+    fn collect_gpu_agrees_with_write_slot_on_light_bits() {
+        // The legacy path and the retained path are two separate encoders of the
+        // same word; they diverged once already (audit 2026-07, P3-1).
+        let mut world = World::new();
+        let flags = LightFlags::new(LightType::Spot, LightBlendMode::Mix, 0xA5A5);
+        let ent = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            TextureLayerIndex(0),
+            MeshHandle(0),
+            RenderPrimitive(6),
+            PrimitiveParams([0.0; 8]),
+            ExternalId(3),
+            Active,
+            flags,
+        ));
+
+        let mut legacy = RenderState::new();
+        legacy.collect_gpu(&world);
+        let legacy_meta = legacy.gpu_render_meta[1];
+
+        let mut retained = RenderState::new();
+        let slot = retained.assign_slot(ent);
+        retained.write_slot(slot, &world, ent);
+        let retained_meta = retained.gpu_render_meta[slot as usize * 2 + 1];
+
+        assert_eq!(legacy_meta, retained_meta);
+        assert_eq!(retained_meta >> 16, 0xA5A5);
+    }
+
+    #[test]
+    fn clear_slot_drops_light_flags_from_recycled_slot() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let lit = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(6),
+            Active,
+            ExternalId(1),
+            LightFlags::new(LightType::Point, LightBlendMode::Add, 0xFFFF),
+        ));
+        let slot = rs.assign_slot(lit);
+        rs.write_slot(slot, &world, lit);
+        assert_ne!(rs.gpu_render_meta[slot as usize * 2 + 1] >> 16, 0);
+
+        // A plain quad reusing the slot must not inherit the light's layers.
+        let plain = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(0),
+            Active,
+            ExternalId(2),
+        ));
+        rs.write_slot(slot, &world, plain);
+        assert_eq!(rs.gpu_render_meta[slot as usize * 2 + 1], 0);
     }
 
     // --- Depth SoA column tests ---

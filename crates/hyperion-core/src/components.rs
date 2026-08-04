@@ -219,6 +219,163 @@ pub struct Depth(pub f32);
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Transparent(pub u8);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// renderMeta[slot * 2 + 1] bit layout
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// One u32 carries everything the render passes need to classify an entity.
+// Bits 0-8 predate Phase 17; bits 9-31 are the lighting fields.
+//
+//   bits  0-7   primType      0=Quad 1=Line 2=SDFGlyph 3=BezierPath
+//                             4=Gradient 5=BoxShadow 6=Light2D
+//   bit   8     transparent   entity goes in the transparent draw buckets
+//   bit   9     castsShadow   entity is rasterised into the occluder seed
+//   bit  10     receivesLight entity samples `light-buffer` in the ForwardPass
+//   bits 11-13  lightType     see `LightType`
+//   bits 14-15  lightBlendMode 0=Add 1=Sub 2=Mix
+//   bits 16-31  lightMask     16 light layers
+//
+// Bits 9-31 live in the `LightFlags` component already pre-shifted, so encoding
+// is a single OR at each of the three renderMeta write sites rather than five
+// component reads.
+
+/// Bits 0-7 of `renderMeta[slot*2+1]`: the `RenderPrimitive` discriminant.
+pub const RENDER_META_PRIM_TYPE_MASK: u32 = 0x0000_00FF;
+/// Bit 8: the `Transparent` marker.
+pub const RENDER_META_TRANSPARENT_BIT: u32 = 1 << 8;
+/// Bit 9: the entity is rasterised into the occluder seed texture.
+pub const RENDER_META_CASTS_SHADOW_BIT: u32 = 1 << 9;
+/// Bit 10: the entity samples the light buffer instead of rendering unlit.
+pub const RENDER_META_RECEIVES_LIGHT_BIT: u32 = 1 << 10;
+/// Bits 11-13: `LightType`.
+pub const RENDER_META_LIGHT_TYPE_SHIFT: u32 = 11;
+/// Mask of bits 11-13, unshifted.
+pub const RENDER_META_LIGHT_TYPE_MASK: u32 = 0b111;
+/// Bits 14-15: light blend mode.
+pub const RENDER_META_LIGHT_BLEND_SHIFT: u32 = 14;
+/// Mask of bits 14-15, unshifted.
+pub const RENDER_META_LIGHT_BLEND_MASK: u32 = 0b11;
+/// Bits 16-31: the 16-bit light layer mask.
+pub const RENDER_META_LIGHT_MASK_SHIFT: u32 = 16;
+/// Mask of bits 16-31, unshifted.
+pub const RENDER_META_LIGHT_MASK_MASK: u32 = 0xFFFF;
+
+/// Every bit `LightFlags` owns — 9 through 31.
+///
+/// `LightFlags` is applied to `renderMeta` through this mask, so a caller that
+/// constructs one by hand can never corrupt `primType` or the transparent bit.
+pub const LIGHT_FLAGS_MASK: u32 = 0xFFFF_FE00;
+
+/// `RenderPrimitive` discriminant for a 2D light. Lights are ECS entities like
+/// any other drawable, but no shader is registered for this type in the
+/// ForwardPass — `LightAccumPass` reads their draw bucket directly.
+pub const PRIM_TYPE_LIGHT2D: u8 = 6;
+
+/// Light shape, stored in `renderMeta` bits 11-13.
+///
+/// Values 5-7 are reserved and deliberately unused: a 3D extension needs
+/// somewhere to put `Point3D`, `Spot3D` and `Area` without renumbering the
+/// protocol, and reserving them costs nothing today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LightType {
+    Point = 0,
+    Spot = 1,
+    Directional = 2,
+    Global = 3,
+    Sprite = 4,
+    // 5 = Point3D, 6 = Spot3D, 7 = Area — reserved, see above.
+}
+
+/// How a light's contribution combines in the accumulation buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LightBlendMode {
+    Add = 0,
+    Sub = 1,
+    Mix = 2,
+}
+
+/// Lighting bits 9-31 of `renderMeta`, stored **pre-shifted**.
+///
+/// One field with three meanings depending on the entity's role — a light's
+/// `lightMask` says which layers it illuminates, a drawable's says which layer
+/// it belongs to, an occluder's says which layers it shadows. Godot splits this
+/// into two orthogonal pairs; the cost of doing the same here is a new SoA
+/// column, and the single field covers the normal case (a wall is lit by, and
+/// shadows for, the same layers). Documented limit, not an oversight.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+pub struct LightFlags(pub u32);
+
+impl LightFlags {
+    /// Build the light-description fields. `casts_shadow` / `receives_light`
+    /// are set separately because they apply to drawables too, not just lights.
+    pub fn new(light_type: LightType, blend: LightBlendMode, light_mask: u16) -> Self {
+        Self(
+            ((light_type as u32) << RENDER_META_LIGHT_TYPE_SHIFT)
+                | ((blend as u32) << RENDER_META_LIGHT_BLEND_SHIFT)
+                | ((light_mask as u32) << RENDER_META_LIGHT_MASK_SHIFT),
+        )
+    }
+
+    /// The bits actually written to `renderMeta`. Anything outside 9-31 is
+    /// dropped here rather than silently corrupting `primType`.
+    pub fn bits(self) -> u32 {
+        self.0 & LIGHT_FLAGS_MASK
+    }
+
+    pub fn casts_shadow(self) -> bool {
+        self.0 & RENDER_META_CASTS_SHADOW_BIT != 0
+    }
+
+    pub fn receives_light(self) -> bool {
+        self.0 & RENDER_META_RECEIVES_LIGHT_BIT != 0
+    }
+
+    pub fn set_casts_shadow(&mut self, on: bool) {
+        if on {
+            self.0 |= RENDER_META_CASTS_SHADOW_BIT;
+        } else {
+            self.0 &= !RENDER_META_CASTS_SHADOW_BIT;
+        }
+    }
+
+    pub fn set_receives_light(&mut self, on: bool) {
+        if on {
+            self.0 |= RENDER_META_RECEIVES_LIGHT_BIT;
+        } else {
+            self.0 &= !RENDER_META_RECEIVES_LIGHT_BIT;
+        }
+    }
+
+    /// Raw `lightType` value. Returns the stored 3 bits even for the reserved
+    /// 5-7, so a future protocol addition round-trips through a snapshot taken
+    /// by an older build.
+    pub fn light_type_raw(self) -> u8 {
+        ((self.0 >> RENDER_META_LIGHT_TYPE_SHIFT) & RENDER_META_LIGHT_TYPE_MASK) as u8
+    }
+
+    pub fn blend_mode_raw(self) -> u8 {
+        ((self.0 >> RENDER_META_LIGHT_BLEND_SHIFT) & RENDER_META_LIGHT_BLEND_MASK) as u8
+    }
+
+    pub fn light_mask(self) -> u16 {
+        ((self.0 >> RENDER_META_LIGHT_MASK_SHIFT) & RENDER_META_LIGHT_MASK_MASK) as u16
+    }
+
+    /// Replace `lightType` / `blendMode` / `lightMask`, preserving bits 9-10.
+    pub fn set_light(&mut self, light_type_raw: u8, blend_raw: u8, light_mask: u16) {
+        let keep = self.0 & (RENDER_META_CASTS_SHADOW_BIT | RENDER_META_RECEIVES_LIGHT_BIT);
+        self.0 = keep
+            | ((u32::from(light_type_raw) & RENDER_META_LIGHT_TYPE_MASK)
+                << RENDER_META_LIGHT_TYPE_SHIFT)
+            | ((u32::from(blend_raw) & RENDER_META_LIGHT_BLEND_MASK)
+                << RENDER_META_LIGHT_BLEND_SHIFT)
+            | (u32::from(light_mask) << RENDER_META_LIGHT_MASK_SHIFT);
+    }
+}
+
 /// Marker: entity is active and should be simulated/rendered.
 #[derive(Debug, Clone, Copy)]
 pub struct Active;
