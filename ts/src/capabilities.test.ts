@@ -5,6 +5,7 @@ import {
   detectCompressedFormat,
   detectSubgroupSupport,
   detectSizedBindingArrays,
+  describeAdapter,
   type Capabilities,
 } from "./capabilities";
 
@@ -181,5 +182,36 @@ describe("detectSizedBindingArrays", () => {
     const result = detectSizedBindingArrays(mockDevice);
     expect(result.supported).toBe(true);
     expect(result.maxSize).toBe(256);
+  });
+});
+
+describe("describeAdapter", () => {
+  function info(overrides: Partial<GPUAdapterInfo>): GPUAdapterInfo {
+    return {
+      vendor: "", architecture: "", device: "", description: "",
+      isFallbackAdapter: false, ...overrides,
+    } as GPUAdapterInfo;
+  }
+
+  it("names the adapter and its subgroup sizes", () => {
+    const d = describeAdapter(info({
+      vendor: "nvidia", architecture: "lovelace", subgroupMinSize: 32, subgroupMaxSize: 32,
+    }));
+    expect(d.fallback).toBe(false);
+    expect(d.message).toMatch(/nvidia \/ lovelace.*subgroups 32-32/);
+  });
+
+  it("flags a software fallback adapter: its timings and features are not the hardware's", () => {
+    // Chrome on Linux with only --enable-unsafe-webgpu hands out SwiftShader,
+    // and the engine used to accept it without a word.
+    const d = describeAdapter(info({ vendor: "google", architecture: "swiftshader", isFallbackAdapter: true }));
+    expect(d.fallback).toBe(true);
+    expect(d.message).toMatch(/software fallback/i);
+  });
+
+  it("an adapter without info is unknown, not assumed to be hardware or fallback", () => {
+    const d = describeAdapter(undefined);
+    expect(d.fallback).toBe(false);
+    expect(d.message).toMatch(/unknown/);
   });
 });

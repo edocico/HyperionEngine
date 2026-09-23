@@ -30,7 +30,7 @@ import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
-import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
+import { detectCompressedFormat, detectSubgroupSupport, describeAdapter } from './capabilities';
 import { ParticleSystem, type ParticlePipelines } from './particle-system';
 import type { FrameState, RenderPass } from './render/render-pass';
 import type { GraphMode, GraphPassFactories } from './render/graph-assembly';
@@ -123,6 +123,9 @@ export async function createRenderer(
   // --- 1. Initialize WebGPU ---
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
+  const adapterDescription = describeAdapter(adapter.info);
+  if (adapterDescription.fallback) console.warn(adapterDescription.message);
+  else console.info(adapterDescription.message);
 
   // Detect compression support from adapter
   const compressedFormat = detectCompressedFormat(adapter.features);

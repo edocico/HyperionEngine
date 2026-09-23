@@ -1,4 +1,5 @@
 import { Hyperion } from './hyperion';
+import { harnessMode } from './demo/preferred-mode';
 import { ReportBuilder } from './demo/report';
 import { createTestReporter } from './demo/types';
 import type { DemoSection, TestReporter, SectionStatus } from './demo/types';
@@ -63,7 +64,9 @@ async function main() {
   overlay.textContent = 'Hyperion Engine — initializing...';
 
   // --- Hyperion init ---
-  const engine = await Hyperion.create({ canvas });
+  const preferredMode = harnessMode(location.search);
+  const engine = await Hyperion.create({ canvas, preferredMode });
+  console.info(`[Hyperion] Harness execution mode: ${preferredMode} (override with ?mode=A|B|C|auto)`);
 
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;

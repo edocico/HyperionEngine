@@ -160,3 +160,28 @@ export function detectSizedBindingArrays(device: GPUDevice): SizedBindingArraySu
     return { supported: false, maxSize: 0 };
   }
 }
+
+/**
+ * One log line about the WebGPU adapter, and whether it is a software
+ * fallback (SwiftShader). A fallback renders, so nothing else notices it —
+ * but its GPU timings and feature set are not the hardware's, which silently
+ * invalidates any measurement or feature probe taken on it.
+ */
+export function describeAdapter(info: GPUAdapterInfo | undefined): { message: string; fallback: boolean } {
+  if (!info) {
+    return { message: '[Hyperion] WebGPU adapter: unknown (adapter.info not exposed)', fallback: false };
+  }
+  const name = [info.vendor, info.architecture, info.device].filter(Boolean).join(' / ') || 'unnamed';
+  const subgroups = info.subgroupMinSize !== undefined
+    ? `, subgroups ${info.subgroupMinSize}-${info.subgroupMaxSize ?? '?'}`
+    : '';
+  if (info.isFallbackAdapter) {
+    return {
+      message: `[Hyperion] WebGPU adapter: ${name}${subgroups} — SOFTWARE FALLBACK: GPU timings and features `
+        + 'are not the hardware\'s. On Linux Chrome needs --enable-unsafe-webgpu --enable-features=Vulkan '
+        + '--use-angle=vulkan for the real GPU.',
+      fallback: true,
+    };
+  }
+  return { message: `[Hyperion] WebGPU adapter: ${name}${subgroups}`, fallback: false };
+}

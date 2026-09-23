@@ -21,15 +21,15 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (196 tests, 274 with physics-2d, 224 with dev-tools, 317 with all features)
-cargo test -p hyperion-core --all-features   # + 64 integration tests across 6 files (317 lib + 64 = 381 total)
+cargo test -p hyperion-core                  # All Rust unit tests (196 tests, 274 with physics-2d, 225 with dev-tools, 318 with all features)
+cargo test -p hyperion-core --all-features   # + 64 integration tests across 6 files (318 lib + 64 = 382 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
 
 # Run specific test groups
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (42 tests)
-cargo test -p hyperion-core engine           # Engine tests only (15 tests, 24 with physics-2d, 62 with physics-2d+dev-tools)
+cargo test -p hyperion-core engine           # Engine tests only (15 tests, 24 with physics-2d, 63 with physics-2d+dev-tools)
 cargo test -p hyperion-core render_state     # Render state tests only (58 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (39 tests, 40 with physics-2d)
 cargo test -p hyperion-core systems          # Systems tests only (17 tests, 19 with physics-2d)
@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1009 tests + 5 skipped, 82 files)
+cd ts && npm test                            # All vitest tests (1015 tests + 5 skipped, 83 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -83,11 +83,11 @@ cargo test -p hyperion-core --features physics-2d  # Includes physics simulation
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 317 lib tests (381 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 318 lib tests (382 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (224 lib tests, 261 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (225 lib tests, 262 with integration)
 ```
 
 ### Development Workflow
@@ -215,7 +215,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `camera-api.ts` | `CameraAPI` — zoom support (min 0.01), `x`/`y` position getters |
 | `capabilities.ts` | Browser feature detection, selects ExecutionMode A/B/C, `detectCompressedFormat()` for BC7/ASTC probing, `detectSubgroupSupport()` with `hasSubgroupId` for Chrome 144+ builtins, `detectSizedBindingArrays()` with empirical size probing (256→1024) |
 | `leak-detector.ts` | `LeakDetector` — `FinalizationRegistry` backstop for undisposed EntityHandles |
-| `main.ts` | Tab-based verification harness: 8-section switcher, lazy-loaded demo sections, check panel, JSON report export |
+| `main.ts` | Tab-based verification harness: 8-section switcher, lazy-loaded demo sections, check panel, JSON report export. Runs in **Mode B by default** (`demo/preferred-mode.ts`, override `?mode=A|B|C|auto`): Chrome would pick Mode A, whose main thread has no renderer, so profiling/outlines/bloom/particles/overlays could not be checked |
 
 #### Bridge & Workers
 
@@ -405,6 +405,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **FXAA runs on display-space values, after tonemapping — do not "simplify" it back** — Lottes' contrast test `lumaRange < max(0.0312, lumaMax * 0.125)` has an absolute floor tuned for [0,1]. With `scene-hdr` unbounded, running it on raw HDR is hypersensitive in bright regions and blind in dark ones. Both `fxaa-tonemap.wgsl` and `bloom.wgsl` therefore tonemap **every tap** at the point of sampling (`resolveTexel()` / `resolveComposite()`) and return the result with no second tonemap. Cost: up to 9 tonemaps per pixel; in the bloom composite also 2 samples per tap, because bloom must be added before the edges are detected.
 - **`timestamp-query` resolves to all zeroes on a stock Chrome** — verified 2026-08-04 on macOS/Metal: the adapter advertises the feature, `requestDevice` accepts it, `resolveQuerySet` raises no validation error, and every value reads back as exactly 0 (including with `endOfPassWriteIndex`). So `GpuProfiler` correctly reports nothing at all. Launch Chrome with `--enable-webgpu-developer-features` for real numbers; `GpuProfiler.discardedFrames` distinguishes this from a warm-up and warns once after 120 such frames.
 - **Optional GPU features must be re-checked on the `device`, never the `adapter`** — `createRenderer` catches a failed `requestDevice` and retries with a reduced feature set, so an adapter that advertises a feature can still yield a device without it. `GpuProfiler.isSupported(device.features)` exists for exactly this; reading `adapter.features` instead builds a profiler on a device that cannot serve one and takes down the whole renderer, not just profiling.
+- **Check the adapter line in the console before trusting a GPU session** — `createRenderer` logs `describeAdapter(adapter.info)` (vendor / architecture, subgroup sizes) and WARNS on a software fallback. On this Linux machine Chrome with only `--enable-unsafe-webgpu` hands out SwiftShader, which renders fine but has the wrong timings and features; hardware WebGPU needs `--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=vulkan`.
 - **WebGPU can't be tested in headless browsers** — `requestAdapter()` returns null. Visual testing requires a real browser (`npm run dev` → Chrome).
 - **WGSL *can* be validated without anything rendering** — `npm run dev`, then one chrome-devtools `evaluate_script`: `const code = (await import('/src/shaders/x.wgsl?raw')).default` → `await device.createShaderModule({code}).getCompilationInfo()` returns compile errors with line numbers. Wrap `createRenderPipeline` in `device.pushErrorScope('validation')` / `await device.popErrorScope()` to catch pipeline-vs-attachment format mismatches — the failure class the test suite structurally cannot see. Both work even when the canvas draws nothing. Three details that each cost a round-trip: an adapter is **consumed** by `requestDevice()`, so call `requestAdapter()` once per device; `cull.wgsl` must go through `prepareShaderSource()` first (the raw source does not compile); and its entry point is `cull_main`, not `main`.
 - **`EntityHandle.data()` cleared on pool `init()`** — Recycled handles reset their data map. Plugins storing data via `.data(key, value)` must handle this.

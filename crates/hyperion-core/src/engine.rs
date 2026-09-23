@@ -442,6 +442,9 @@ impl Engine {
         self.listener_pos = [0.0; 3];
         self.listener_prev_pos = [0.0; 3];
         self.listener_vel = [0.0; 3];
+        // Same values as `Engine::new()`.
+        self.ambient_light = [0.0, 0.0, 0.0, 1.0];
+        self.lighting_backend = 0;
     }
 
     /// Serialize the entire engine state into a binary snapshot.
@@ -1697,6 +1700,19 @@ mod tests {
         assert_eq!(engine.tick_count(), 0);
         assert!(engine.entity_map.get(0).is_none());
         assert_eq!(crate::systems::count_active(&engine.world), 0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn reset_restores_engine_level_lighting() {
+        // ReplayPlayer resets before replaying a tape: lighting left over from
+        // the run being replayed would make the replay diverge.
+        let mut engine = Engine::new();
+        engine.process_commands(&[ambient_cmd(0.2, 0.3, 0.4, 0.5), backend_cmd(1)]);
+        assert_eq!(engine.lighting_backend(), 1);
+        engine.reset();
+        assert_eq!(engine.ambient_light(), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(engine.lighting_backend(), 0);
     }
 
     #[cfg(feature = "dev-tools")]
