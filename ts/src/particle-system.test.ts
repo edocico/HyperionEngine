@@ -75,4 +75,46 @@ describe('ParticleSystem', () => {
     ps.destroy();
     expect(ps.emitterCount).toBe(0);
   });
+
+  describe('shader hot-reload', () => {
+    const FORMAT = 'bgra8unorm' as GPUTextureFormat;
+
+    it('installing new pipelines rebinds every existing emitter', () => {
+      // Bind groups made from a 'auto'-layout pipeline fit only that pipeline:
+      // an emitter left on the old ones fails validation every frame.
+      const device = mockDevice();
+      const ps = new ParticleSystem(device);
+      ps.setupPipelines('sim v1', 'render v1', FORMAT);
+      ps.createEmitter(DEFAULT_PARTICLE_CONFIG);
+      ps.createEmitter(DEFAULT_PARTICLE_CONFIG);
+      const bindGroups = vi.mocked(device.createBindGroup).mock.calls.length;
+
+      ps.installPipelines(ps.buildRender('render v2', FORMAT));
+
+      expect(vi.mocked(device.createBindGroup).mock.calls.length).toBe(bindGroups + 4); // 2 per emitter
+    });
+
+    it('building pipelines does not install them', () => {
+      const device = mockDevice();
+      const ps = new ParticleSystem(device);
+      ps.setupPipelines('sim v1', 'render v1', FORMAT);
+      ps.createEmitter(DEFAULT_PARTICLE_CONFIG);
+      const bindGroups = vi.mocked(device.createBindGroup).mock.calls.length;
+
+      ps.buildSimulate('sim v2');
+      ps.buildRender('render v2', FORMAT);
+
+      expect(vi.mocked(device.createBindGroup).mock.calls.length).toBe(bindGroups);
+    });
+
+    it('the quad index buffer is created once, not on every reload', () => {
+      const device = mockDevice();
+      const ps = new ParticleSystem(device);
+      ps.setupPipelines('sim v1', 'render v1', FORMAT);
+      ps.setupPipelines('sim v2', 'render v2', FORMAT);
+      const indexBuffers = vi.mocked(device.createBuffer).mock.calls
+        .filter(([desc]) => (desc as GPUBufferDescriptor).size === 8);
+      expect(indexBuffers).toHaveLength(1);
+    });
+  });
 });

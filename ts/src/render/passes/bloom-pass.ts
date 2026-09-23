@@ -42,6 +42,19 @@ export class BloomPass implements RenderPass {
   private device: GPUDevice | null = null;
 
   constructor(config?: BloomConfig) {
+    this.threshold = 0.7;
+    this.intensity = 1.0;
+    this.levels = 3;
+    this.tonemapMode = 1;
+    this.configure(config);
+  }
+
+  /**
+   * Apply a config in place — omitted fields take their defaults, exactly as
+   * in the constructor. The parameters are uploaded every frame, so a live
+   * pass picks this up without a graph rebuild.
+   */
+  configure(config?: BloomConfig): void {
     this.threshold = config?.threshold ?? 0.7;
     this.intensity = config?.intensity ?? 1.0;
     this.levels = config?.levels ?? 3;

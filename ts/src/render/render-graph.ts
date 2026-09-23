@@ -35,7 +35,7 @@ export class RenderGraph {
 
   /**
    * Attach (or detach, with null) a GPU profiler. The profiler outlives the
-   * graph — `rebuildGraph()` in the renderer constructs a new RenderGraph on
+   * graph — the renderer's RenderGraphHost constructs a new RenderGraph on
    * every outline/bloom toggle and shader hot-reload, so keeping the profiler
    * outside preserves its history across those rebuilds.
    */

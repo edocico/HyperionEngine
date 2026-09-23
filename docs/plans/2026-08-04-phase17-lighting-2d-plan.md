@@ -176,6 +176,24 @@ and separating them costs a new SoA column. Ship one field, document the limit.
 
 ---
 
+## Before Track B — checks for the first GPU session (added 2026-09-23)
+
+Found by code review, not reproducible headless. Check each with the WebGPU
+adapter on the RTX 4060 (Chrome flags in the project memory), Mode B:
+
+- [ ] **`indirect-first-instance`** — `CullPass` writes `firstInstance = slot * 100000`
+  but the device never requests the feature. If Dawn enforces the spec, every
+  bucket but slot 0 draws nothing — Task 9's type-6 draw included.
+- [ ] **Texture tier growth vs. the ResourcePool** — `TextureManager` replaces a
+  tier's texture and view when it grows, but the pool's `tier0..3` views are
+  registered once at init, so `ForwardPass`'s bind group may point at a
+  destroyed texture after the first texture load.
+- [ ] **Bloom blur radius** — `BloomPass` rewrites ONE uniform buffer between its
+  sub-passes of the same submit, so every sub-pass reads the last write (the
+  composite's texel size): the blur is 2-8x too narrow.
+- [ ] **Subgroup size** — the cull path assumes 32; check `adapter.info.subgroupMinSize/MaxSize`.
+- [ ] **HDR baseline** — screenshots of the 8 demo tabs (design §16 rows 1/1b).
+
 ## Track B — Occluders and the signed SDF (needs GPU eyes)
 
 - [ ] **Task 7: `OccluderSeedPass` + `shaders/occluder-seed.wgsl`**
