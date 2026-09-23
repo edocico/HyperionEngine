@@ -12,7 +12,7 @@ export interface QueuedCommand {
 export interface FlushStats {
   /** Commands actually written to the ring buffer this flush. */
   writtenCount: number;
-  /** Commands dropped by last-write-wins deduplication (same entity + command type). */
+  /** Commands folded into a pending one with the same entity + command type (replaced, or merged for partial updates). */
   coalescedCount: number;
   /** Pending overwrites purged because the entity was despawned. */
   purgedByDespawn: number;
@@ -48,10 +48,13 @@ const ENGINE_LEVEL_COMMANDS: ReadonlySet<number> = new Set<number>([
  *
  * The four Phase 17 lighting commands (53-56) are all coalescable: none
  * accumulates, none is a lifecycle edge, none carries a secondary id in its
- * payload, and only the final value of each is observable. That matters in
- * practice — an ambient-light slider dragged while the ring buffer is under
- * backpressure must collapse to one command per frame, not flood the
- * non-coalescable queue.
+ * payload. That matters in practice — an ambient-light slider dragged while
+ * the ring buffer is under backpressure must collapse to one command per
+ * frame, not flood the non-coalescable queue.
+ *
+ * But 53 and 54 are *partial* updates (see `isPartialUpdate`), so for them
+ * "coalesce" means merge field by field, not replace: `castsShadow(true)
+ * .receivesLight(true)` in one frame used to reach Rust as receivesLight only.
  */
 function isNonCoalescable(cmd: CommandType): boolean {
   if (cmd === CommandType.SpawnEntity || cmd === CommandType.DespawnEntity) return true;
@@ -73,6 +76,49 @@ function isNonCoalescable(cmd: CommandType): boolean {
   return false;
 }
 
+/**
+ * Commands whose payload is a *partial* update: some fields carry a "preserve
+ * the stored value" marker instead of a value. Coalescing them by plain
+ * replacement would drop the fields the newer command left alone.
+ */
+function isPartialUpdate(cmd: CommandType): boolean {
+  return cmd === CommandType.SetLightFlags || cmd === CommandType.SetLightingFlags;
+}
+
+/**
+ * Compose two queued partial updates of the same (entity, command) into ONE
+ * payload whose effect on the Rust handler equals applying `prev` then `next`.
+ *
+ * Wire formats (see the producers below and command_processor.rs):
+ * - SetLightFlags (53), 4 bytes: [0] lightType, [1] blendMode — bit 7 set means
+ *   "preserve"; [2..3] lightMask u16 LE, always a value (no preserve form).
+ * - SetLightingFlags (54), 1 byte: bit0 castsShadow, bit1 receivesLight values;
+ *   bit2 / bit3 mean "preserve castsShadow / receivesLight".
+ *
+ * Must return a fresh array: `prev` and `next` may be the caller's buffers.
+ */
+function mergePartialPayload(cmd: CommandType, prev: Uint8Array, next: Uint8Array): Uint8Array {
+  const out = Uint8Array.from(next);
+  // A field `next` preserves defers to `prev`'s field WHOLE, preserve marker
+  // included: if `prev` also said "leave it alone", so must the merge — copying
+  // only the value would turn that into an explicit write of whatever it held.
+  if (cmd === CommandType.SetLightFlags) {
+    if (next[0] & 0x80) out[0] = prev[0];
+    if (next[1] & 0x80) out[1] = prev[1];
+  } else {
+    // SetLightingFlags: each flag is a (value, preserve) bit pair.
+    const CASTS = 0b0101;
+    const RECEIVES = 0b1010;
+    if (next[0] & 0b0100) out[0] = (out[0] & ~CASTS) | (prev[0] & CASTS);
+    if (next[0] & 0b1000) out[0] = (out[0] & ~RECEIVES) | (prev[0] & RECEIVES);
+  }
+  return out;
+}
+
+function asBytes(p: Float32Array | Uint8Array): Uint8Array {
+  return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+}
+
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
   private overwrites = new Map<number, QueuedCommand>(); // key = entityId * 256 + cmd
@@ -90,8 +136,12 @@ export class PrioritizedCommandQueue {
       this.critical.push({ cmd, entityId, payload });
     } else {
       const key = entityId * 256 + cmd;
-      if (this.overwrites.has(key)) {
+      const prev = this.overwrites.get(key);
+      if (prev) {
         this._coalescedCount++;
+        if (isPartialUpdate(cmd) && prev.payload && payload) {
+          payload = mergePartialPayload(cmd, asBytes(prev.payload), asBytes(payload));
+        }
       }
       this.overwrites.set(key, { cmd, entityId, payload });
     }
@@ -185,7 +235,8 @@ export class PrioritizedCommandQueue {
  *
  * ALL commands are queued into a PrioritizedCommandQueue on writeCommand().
  * Lifecycle commands (Spawn/Despawn) go to an ordered critical queue.
- * Non-lifecycle commands use last-write-wins deduplication per (entityId, commandType).
+ * Non-lifecycle commands use last-write-wins deduplication per (entityId, commandType),
+ * except partial updates (53/54), whose payloads are merged field by field.
  * Call flush() once per frame to drain coalesced commands into the ring buffer.
  */
 export class BackpressuredProducer {

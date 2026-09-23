@@ -120,6 +120,18 @@ and separating them costs a new SoA column. Ship one field, document the limit.
   - `backpressure.ts`: `MAX_COMMAND_TYPE` 53 → 57, four producer methods, all
     four coalescable last-write-wins — none carries a secondary id in its
     payload, so the `entityId * 256 + cmd` key is sound.
+
+    > ⚠️ **Erratum, found at the 2026-09-23 resume audit.** The key is sound;
+    > *last-write-wins* is not — not since `3556e08` gave 53 and 54 preserve
+    > bits for `.lightLayers()` / `.castsShadow()` / `.receivesLight()`. A
+    > partial update replaced wholesale drops the fields it left alone:
+    > `castsShadow(true).receivesLight(true)` in one frame reached Rust as
+    > receivesLight only, so the Task 7 occluder filter on bit 9 would have
+    > seen no occluders. Fixed on `feat/phase17-lighting-2d` by merging 53/54
+    > field by field in `PrioritizedCommandQueue.enqueue`
+    > (`mergePartialPayload`). The mock producer in `entity-handle.test.ts` could
+    > not see this; the regression tests drive the real queue and fold the ring
+    > buffer bytes with the Rust handler semantics.
   - `prim-params-schema.ts`: `RenderPrimitiveType.Light2D = 6` and its schema
     entry, mirroring Task 2.
   - `entity-handle.ts`: `RenderPrimitiveType.Light2D = 6` (this file is the
