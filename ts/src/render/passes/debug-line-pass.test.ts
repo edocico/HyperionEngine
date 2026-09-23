@@ -33,7 +33,9 @@ describe('DebugLinePass', () => {
     const pass = new DebugLinePass();
     expect(pass.name).toBe('physics-debug');
     expect(pass.optional).toBe(true);
-    expect(pass.reads).toContain('scene-hdr');
+    // Read-modify-write of the swapchain — see graph-assembly.test.ts for the
+    // ordering this buys (the overlay runs after the final composite).
+    expect(pass.reads).toContain('swapchain');
     expect(pass.writes).toContain('swapchain');
   });
 

@@ -56,6 +56,8 @@ function mockRenderer(): Renderer {
       destroy: vi.fn(),
     } as any,
     graph: { addPass: vi.fn(), removePass: vi.fn(), destroy: vi.fn() } as any,
+    addPass: vi.fn(),
+    removePass: vi.fn(),
     device: {} as any,
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),

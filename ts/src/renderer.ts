@@ -32,7 +32,10 @@ import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
 import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
 import { ParticleSystem } from './particle-system';
-import type { FrameState } from './render/render-pass';
+import type { FrameState, RenderPass } from './render/render-pass';
+import {
+  assembleRenderGraph, ExternalPasses, type GraphMode, type GraphPassFactories,
+} from './render/graph-assembly';
 import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
@@ -57,6 +60,27 @@ export interface Renderer {
   readonly particleSystem: ParticleSystem;
   readonly graph: RenderGraph;
   readonly device: GPUDevice;
+  /**
+   * Add a pass the caller owns (a plugin overlay). The renderer runs its
+   * `setup()` once, carries it over every graph rebuild (outline/bloom
+   * toggle, shader hot-reload) and never destroys it.
+   *
+   * Validated immediately: a pass that makes the graph uncompilable (a
+   * duplicate name, a second blind writer of a resource) throws here and is
+   * not added. Only against the CURRENT mode, though: a name or blind write
+   * that clashes with another mode's passes ('bloom', 'jfa-N', ...) makes
+   * switching to that mode throw — the renderer then keeps its current graph.
+   * Every add runs `setup()`, so re-adding a removed pass without destroying
+   * it first allocates twice. To draw on top of the graph's output, declare 'swapchain' in
+   * both `reads` and `writes`. GPU particles are composited after the whole
+   * graph, so they still draw over overlays.
+   */
+  addPass(pass: RenderPass): void;
+  /**
+   * Detach a pass added with {@link addPass}, WITHOUT destroying it — its
+   * owner does that. Names of the renderer's own passes are ignored.
+   */
+  removePass(name: string): void;
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
@@ -236,45 +260,28 @@ export async function createRenderer(
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
   LineBatchPass.SHADER_SOURCE = debugLineShaderCode;
 
-  const cullPass = new CullPass();
-  const forwardPass = new ForwardPass();
-  const fxaaPass = new FXAATonemapPass();
   CullPass.SUBGROUP_CONFIG = {
     useSubgroups,
     subgroupSize: 32,  // TODO: query actual subgroup size from adapter if API available
     useSubgroupId: useSubgroups && subgroupSupport.hasSubgroupId,
   };
-  cullPass.setup(device, resources);
-  forwardPass.setup(device, resources);
-  fxaaPass.setup(device, resources);
 
-  // --- 6b. Create ScatterPass for partial GPU upload ---
+  // --- 6b. ScatterPass for partial GPU upload (created with the graph, step 8c) ---
   ScatterPass.SHADER_SOURCE = scatterShaderCode;
-  let scatterPass: ScatterPass | null = new ScatterPass();
-  scatterPass.setup(device, resources);
+  let scatterPass: ScatterPass | null = null;
   const resolvedScatterThreshold = scatterThreshold ?? 0.3;
 
-  // --- 6c. Create RadixSortPass for transparent entity ordering ---
+  // --- 6c. RadixSortPass for transparent entity ordering (created with the graph) ---
   RadixSortPass.SHADER_SOURCE = radixSortShaderCode;
-  let radixSortPass: RadixSortPass | null = new RadixSortPass();
-  radixSortPass.setup(device, resources);
 
-  // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
+  // --- 7. GPU profiler state ---
   // Constructed on the first enableGpuProfiling(), never here, so that the
   // "costs nothing when off" claim in gpu-profiler.ts holds literally: until
   // someone asks for timings there is no query set and no readback buffer.
-  // Once built it is re-attached on every rebuildGraph(), so its rolling
+  // Once built it is re-attached on every applyGraph(), so its rolling
   // averages survive outline/bloom toggles and shader hot-reloads.
   let gpuProfiler: GpuProfiler | null = null;
   let gpuProfilingEnabled = false;
-
-  let graph = new RenderGraph();
-  if (scatterPass) graph.addPass(scatterPass);
-  graph.addPass(cullPass);
-  if (radixSortPass) graph.addPass(radixSortPass);
-  graph.addPass(forwardPass);
-  graph.addPass(fxaaPass);
-  graph.compile();
 
   // --- 7b. Create GPU particle system (standalone, outside RenderGraph) ---
   let currentParticleSimSrc = particleSimulateCode;
@@ -339,7 +346,6 @@ export async function createRenderer(
   let outlinesActive = false;
   let outlineCompositePass: OutlineCompositePass | null = null;
   let jfaPasses: JFAPass[] = [];
-  let selectionSeedPass: SelectionSeedPass | null = null;
   let jfaTextureA: GPUTexture | null = null;
   let jfaTextureB: GPUTexture | null = null;
   let jfaTexWidth = 0;
@@ -382,83 +388,101 @@ export async function createRenderer(
     }
   }
 
+  // --- 8c. RenderGraph assembly ---
+  // Caller-owned passes (plugin overlays): set up here once — only the
+  // renderer holds the ResourcePool — carried over every rebuild, and never
+  // destroyed by the renderer. See ExternalPasses in graph-assembly.ts.
+  const externalPasses = new ExternalPasses((pass) => pass.setup(device, resources));
+
+  /** What one assembly built. Committed to the renderer only once it compiles. */
+  interface BuiltPasses {
+    scatter: ScatterPass | null;
+    jfa: JFAPass[];
+    outlineComposite: OutlineCompositePass | null;
+  }
+
+  /** The passes one graph is made of, set up against this device. */
+  function passFactories(
+    built: BuiltPasses,
+    outlineOptions?: OutlineOptions,
+    bloomConfig?: BloomConfig,
+  ): GraphPassFactories {
+    return {
+      scene() {
+        built.scatter = new ScatterPass();
+        built.scatter.setup(device, resources);
+        const cull = new CullPass();
+        cull.setup(device, resources);
+        const radixSort = new RadixSortPass();
+        radixSort.setup(device, resources);
+        const forward = new ForwardPass();
+        forward.setup(device, resources);
+        return [built.scatter, cull, radixSort, forward];
+      },
+
+      outline() {
+        const maxDim = Math.max(canvas.width, canvas.height);
+        const numIterations = JFAPass.iterationsForDimension(maxDim);
+        ensureJFATextures(canvas.width, canvas.height);
+        updateJFATextureViews(numIterations);
+
+        const selectionSeed = new SelectionSeedPass();
+        selectionSeed.setup(device, resources);
+        for (let i = 0; i < numIterations; i++) {
+          const jfaPass = new JFAPass(i, numIterations, maxDim);
+          jfaPass.setup(device, resources);
+          built.jfa.push(jfaPass);
+        }
+        built.outlineComposite = new OutlineCompositePass(JFAPass.finalOutputResource(numIterations));
+        if (outlineOptions) {
+          built.outlineComposite.outlineColor = outlineOptions.color;
+          built.outlineComposite.outlineWidth = outlineOptions.width;
+        }
+        built.outlineComposite.setup(device, resources);
+        return [selectionSeed, ...built.jfa, built.outlineComposite];
+      },
+
+      bloom() {
+        ensureBloomTextures(canvas.width, canvas.height);
+        const bloomPass = new BloomPass(bloomConfig);
+        bloomPass.setup(device, resources);
+        return bloomPass;
+      },
+
+      fxaaTonemap() {
+        const fxaaPass = new FXAATonemapPass();
+        fxaaPass.setup(device, resources);
+        return fxaaPass;
+      },
+    };
+  }
+
+  /** Replaced by the first applyGraph() below; destroyed by it as `previous`. */
+  let graph = new RenderGraph();
+
   /**
-   * Rebuild the render graph to include or exclude the outline/bloom pipelines.
-   * Bloom and outlines are mutually exclusive (both write to swapchain,
-   * dead-culling FXAATonemapPass).
+   * Build the graph for `mode` and, only once it compiles, make it current.
+   * The graph, the pass references render() uses and the mode flags change
+   * together or not at all: on failure the previous graph stays current and
+   * the error propagates to the enable/disable call that asked for it.
+   *
+   * Bloom and outlines are mutually exclusive: each is the graph's single
+   * final composite onto the swapchain, replacing FXAATonemapPass.
    */
-  function rebuildGraph(withOutlines: boolean, options?: OutlineOptions): void {
-    graph.destroy();
-    jfaPasses = [];
-    selectionSeedPass = null;
-    outlineCompositePass = null;
+  function applyGraph(mode: GraphMode, outlineOptions?: OutlineOptions, bloomConfig?: BloomConfig): void {
+    const built: BuiltPasses = {
+      scatter: null, jfa: [], outlineComposite: null,
+    };
+    graph = assembleRenderGraph(
+      mode, passFactories(built, outlineOptions, bloomConfig), externalPasses.values(), graph,
+    );
 
-    // Recreate base passes
-    const newCullPass = new CullPass();
-    const newForwardPass = new ForwardPass();
-    newCullPass.setup(device, resources);
-    newForwardPass.setup(device, resources);
-
-    // Recreate ScatterPass
-    scatterPass = new ScatterPass();
-    scatterPass.setup(device, resources);
-
-    // Recreate RadixSortPass
-    radixSortPass = new RadixSortPass();
-    radixSortPass.setup(device, resources);
-
-    graph = new RenderGraph();
-    if (scatterPass) graph.addPass(scatterPass);
-    graph.addPass(newCullPass);
-    if (radixSortPass) graph.addPass(radixSortPass);
-    graph.addPass(newForwardPass);
-
-    if (withOutlines) {
-      // Determine JFA iteration count based on canvas size
-      const maxDim = Math.max(canvas.width, canvas.height);
-      const numIterations = JFAPass.iterationsForDimension(maxDim);
-
-      // Ensure JFA textures exist
-      ensureJFATextures(canvas.width, canvas.height);
-      updateJFATextureViews(numIterations);
-
-      // SelectionSeedPass
-      selectionSeedPass = new SelectionSeedPass();
-      selectionSeedPass.setup(device, resources);
-      graph.addPass(selectionSeedPass);
-
-      // JFA iterations
-      for (let i = 0; i < numIterations; i++) {
-        const jfaPass = new JFAPass(i, numIterations, maxDim);
-        jfaPass.setup(device, resources);
-        jfaPasses.push(jfaPass);
-        graph.addPass(jfaPass);
-      }
-
-      // OutlineCompositePass writes to swapchain, dead-culling FXAATonemapPass
-      const jfaResultResource = JFAPass.finalOutputResource(numIterations);
-      outlineCompositePass = new OutlineCompositePass(jfaResultResource);
-      if (options) {
-        outlineCompositePass.outlineColor = options.color;
-        outlineCompositePass.outlineWidth = options.width;
-      }
-      outlineCompositePass.setup(device, resources);
-      graph.addPass(outlineCompositePass);
-    } else if (bloomActive) {
-      // Bloom writes to swapchain, dead-culling FXAATonemapPass
-      ensureBloomTextures(canvas.width, canvas.height);
-      const bloomPass = new BloomPass(currentBloomConfig);
-      bloomPass.setup(device, resources);
-      graph.addPass(bloomPass);
-    }
-
-    // FXAATonemapPass is always added; when outlines or bloom are active it gets
-    // dead-pass culled because OutlineCompositePass/BloomPass writes to swapchain.
-    const newFxaaPass = new FXAATonemapPass();
-    newFxaaPass.setup(device, resources);
-    graph.addPass(newFxaaPass);
-
-    graph.compile();
+    scatterPass = built.scatter;
+    jfaPasses = built.jfa;
+    outlineCompositePass = built.outlineComposite;
+    outlinesActive = mode.outlines;
+    bloomActive = mode.bloom && !mode.outlines;
+    currentBloomConfig = bloomActive ? bloomConfig : undefined;
 
     // The graph object is new; re-attach the profiler and drop the history,
     // which measured a different set of passes.
@@ -468,6 +492,14 @@ export async function createRenderer(
     }
   }
 
+  function currentOutlineOptions(): OutlineOptions | undefined {
+    return outlineCompositePass
+      ? { color: outlineCompositePass.outlineColor, width: outlineCompositePass.outlineWidth }
+      : undefined;
+  }
+
+  applyGraph({ outlines: false, bloom: false });
+
   // --- 9. Build the Renderer object ---
   const rendererObj: Renderer = {
     textureManager,
@@ -476,6 +508,14 @@ export async function createRenderer(
 
     get graph() { return graph; },
     get device() { return device; },
+
+    addPass(pass: RenderPass): void {
+      externalPasses.add(graph, pass);
+    },
+
+    removePass(name: string): void {
+      externalPasses.remove(graph, name);
+    },
 
     get outlinesEnabled(): boolean {
       return outlinesActive;
@@ -488,19 +528,16 @@ export async function createRenderer(
         outlineCompositePass.outlineWidth = options.width;
         return;
       }
-      if (bloomActive) {
-        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling bloom.');
-        bloomActive = false;
-        currentBloomConfig = undefined;
+      const hadBloom = bloomActive;
+      applyGraph({ outlines: true, bloom: false }, options);
+      if (hadBloom) {
+        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabled bloom.');
       }
-      outlinesActive = true;
-      rebuildGraph(true, options);
     },
 
     disableOutlines(): void {
       if (!outlinesActive) return;
-      outlinesActive = false;
-      rebuildGraph(false);
+      applyGraph({ outlines: false, bloom: false });
     },
 
     get bloomEnabled(): boolean {
@@ -508,28 +545,17 @@ export async function createRenderer(
     },
 
     enableBloom(config?: BloomConfig): void {
-      currentBloomConfig = config;
-      if (bloomActive) {
-        // Already active — just rebuild with new config
-        rebuildGraph(false);
-        return;
+      // Also the path for a new config while bloom is already on.
+      const hadOutlines = outlinesActive;
+      applyGraph({ outlines: false, bloom: true }, undefined, config);
+      if (hadOutlines) {
+        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabled outlines.');
       }
-      if (outlinesActive) {
-        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling outlines.');
-        outlinesActive = false;
-      }
-      bloomActive = true;
-      rebuildGraph(false);
     },
 
     disableBloom(): void {
       if (!bloomActive) return;
-      bloomActive = false;
-      currentBloomConfig = undefined;
-      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
-        color: outlineCompositePass.outlineColor,
-        width: outlineCompositePass.outlineWidth,
-      } : undefined);
+      applyGraph({ outlines: false, bloom: false });
     },
 
     recompileShader(passName: string, shaderCode: string): void {
@@ -564,7 +590,11 @@ export async function createRenderer(
           break;
         case 'debug-line':
           LineBatchPass.SHADER_SOURCE = shaderCode;
-          break;
+          // No renderer-owned pass uses it, so there is nothing to rebuild.
+          // Overlays are caller-owned and set up once when added: an
+          // installed one keeps its pipeline until its plugin is reinstalled.
+          console.log(`[Hyperion] Shader "${passName}" updated — applies to overlays added from now on`);
+          return;
         case 'selection-seed':
           SelectionSeedPass.SHADER_SOURCE = shaderCode;
           break;
@@ -597,10 +627,7 @@ export async function createRenderer(
           console.warn(`[Hyperion] Unknown shader pass: ${passName}`);
           return;
       }
-      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
-        color: outlineCompositePass.outlineColor,
-        width: outlineCompositePass.outlineWidth,
-      } : undefined);
+      applyGraph({ outlines: outlinesActive, bloom: bloomActive }, currentOutlineOptions(), currentBloomConfig);
       console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
     },
 
@@ -783,6 +810,7 @@ export async function createRenderer(
       bloomQuarterTexture?.destroy();
       bloomEighthTexture?.destroy();
       selectionManager.destroy();
+      externalPasses.detachAll(graph); // caller-owned: their owners destroy them
       graph.destroy();
       resources.destroy();
       textureManager.destroy();

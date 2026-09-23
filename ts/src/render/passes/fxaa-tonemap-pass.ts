@@ -4,7 +4,8 @@ import type { ResourcePool } from '../resource-pool';
 /**
  * Combined FXAA + tonemapping post-process pass.
  * Reads the scene from an intermediate texture, writes to swapchain.
- * Optional: dead-pass culled when not enabled.
+ * The default final composite: registered only when neither outlines nor
+ * bloom is on, since those replace it (see render/graph-assembly.ts).
  */
 export class FXAATonemapPass implements RenderPass {
   readonly name = 'fxaa-tonemap';

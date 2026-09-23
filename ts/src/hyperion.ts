@@ -624,8 +624,8 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Disable selection outlines. The outline pipeline passes are
-   * removed and dead-pass culled from the render graph.
+   * Disable selection outlines. The render graph is rebuilt without the
+   * outline chain, and FXAATonemapPass is the final composite again.
    */
   disableOutlines(): void {
     this.checkDestroyed();

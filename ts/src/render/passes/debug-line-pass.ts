@@ -25,7 +25,13 @@ export class LineBatchPass implements RenderPass {
   static SHADER_SOURCE = '';
 
   readonly name: string;
-  readonly reads: string[] = ['scene-hdr'];
+  // Read-modify-write of the swapchain: `execute()` loads what the final
+  // composite left there (loadOp 'load') and draws on top. Declaring the read
+  // makes this pass the next link of the swapchain's writer chain, ordered
+  // after the composite. Without it the pass is a second BLIND swapchain
+  // writer, which `compile()` rejects — the declaration this class shipped
+  // with until 2026-09-23.
+  readonly reads: string[] = ['swapchain'];
   readonly writes: string[] = ['swapchain'];
   readonly optional = true;
 

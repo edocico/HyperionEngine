@@ -14,7 +14,8 @@ export interface BloomConfig {
  * Dual Kawase Bloom post-process pass.
  *
  * Pipeline: extract bright pixels -> downsample chain -> upsample chain -> composite.
- * Reads scene-hdr and writes to swapchain, dead-culling FXAATonemapPass when active.
+ * Reads scene-hdr and writes to swapchain. When active it is the graph's final
+ * composite, replacing FXAATonemapPass (see render/graph-assembly.ts).
  *
  * Bloom intermediate textures (half, quarter, eighth resolution) are managed by the
  * renderer coordinator, not by this pass. The pass reads/writes them from the ResourcePool.
