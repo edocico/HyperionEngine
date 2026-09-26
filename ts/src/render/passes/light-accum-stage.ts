@@ -2,14 +2,19 @@ import type { FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import type { LightGroup } from '../light-groups';
 import { SCENE_HDR_FORMAT } from '../formats';
-import { BUCKETS_PER_TYPE } from './cull-pass';
+import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
 
 /** RenderPrimitive 6. */
 const LIGHT2D_PRIM_TYPE = 6;
 
-/** The indirect-args slots CullPass fills with visible lights: both material buckets of type 6. */
-export const LIGHT2D_ARG_SLOTS = Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b);
+/**
+ * The indirect-args slots CullPass fills with visible lights: both material
+ * buckets of type 6, in both blend modes. `.transparent()` on a light only
+ * moves it to the transparent buckets; accumulation is additive either way.
+ */
+export const LIGHT2D_ARG_SLOTS = [0, TRANSPARENT_BUCKET_OFFSET].flatMap((blend) =>
+  Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => blend + LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b));
 
 /**
  * Soft-shadow hardness k: the light's apparent angle is at most 1/k. With h

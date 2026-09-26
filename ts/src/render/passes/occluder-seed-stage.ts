@@ -4,7 +4,7 @@ import { JFA_FORMAT } from '../formats';
 import {
   PRIMITIVE_GROUP0_BUFFERS, TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntries,
 } from '../primitive-bindings';
-import { BUCKETS_PER_TYPE } from './cull-pass';
+import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import { SLICE } from './light-accum-stage';
 
 /**
@@ -35,7 +35,7 @@ const CAMERA_UNIFORM_SIZE = 80;
  * primitive shader). A primitive with no `fs_occluder` casts nothing.
  *
  * The set's layers ride in the camera uniform: one 256-byte slice per set, all
- * written once in `prepare()`. Opaque buckets only. The target is cleared to
+ * written once in `prepare()`. Opaque and transparent buckets alike. The target is cleared to
  * (0, 0, 0, 0) — "no occluder" — and gets (u, v, 1, 1) under an occluder.
  */
 export class OccluderSeedStage {
@@ -133,8 +133,12 @@ export class OccluderSeedStage {
       pass.setIndexBuffer(this.indexBuffer, 'uint16');
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, group1);
-      for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
-        pass.drawIndexedIndirect(this.indirectBuffer, (type * BUCKETS_PER_TYPE + bucket) * 20);
+      // Both blend modes: `.transparent()` is a blending flag, and a caster
+      // still casts the coverage fs_occluder keeps (alpha >= 0.5).
+      for (const blend of [0, TRANSPARENT_BUCKET_OFFSET]) {
+        for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
+          pass.drawIndexedIndirect(this.indirectBuffer, (blend + type * BUCKETS_PER_TYPE + bucket) * 20);
+        }
       }
     }
     pass.end();

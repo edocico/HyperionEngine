@@ -93,7 +93,11 @@ describe('LightAccumStage', () => {
     expect(entry.resource).toMatchObject({ offset: 2 * 256, size: 80 });
   });
 
-  it('clears its target to the ambient light and draws the Light2D buckets', () => {
+  // Review 2026-09-26: `.transparent()` is only a blend flag, but CullPass
+  // files a light that has it under the transparent buckets (26-27), which
+  // this stage never drew, so the light lit nothing while the grouping counted
+  // it. Lights are additive: both blend modes draw the same.
+  it('clears its target to the ambient light and draws the Light2D buckets of both blend modes', () => {
     const { stage, device, frame, encode } = setUp();
     stage.prepare(device, frame(), groups3);
     const target = view('layer0');
@@ -102,8 +106,8 @@ describe('LightAccumStage', () => {
     expect(attachment.view).toBe(target);
     expect(attachment.loadOp).toBe('clear');
     expect(attachment.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
-    expect(LIGHT2D_ARG_SLOTS).toEqual([12, 13]);
-    expect(pass.draws).toEqual([240, 260]);
+    expect(LIGHT2D_ARG_SLOTS).toEqual([12, 13, 26, 27]);
+    expect(pass.draws).toEqual([240, 260, 520, 540]);
   });
 
   it('reuses a group bind group until its SDF view or the uniform buffer changes', () => {

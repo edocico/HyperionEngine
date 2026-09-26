@@ -107,7 +107,11 @@ describe('OccluderSeedStage', () => {
     expect(cameraEntry.resource).toMatchObject({ offset: 256, size: 80 });
   });
 
-  it('clears the target to "no occluder" and draws the opaque buckets of each occluder type', () => {
+  // Review 2026-09-26: a caster marked `.transparent()` sits in the
+  // transparent buckets (14-27), which the seed never drew, so it cast nothing
+  // while the grouping counted it (and could pay a flood for an empty seed).
+  // fs_occluder casts the coverage above alpha 0.5 whatever the blend mode.
+  it('clears the target to "no occluder" and draws both blend modes of each occluder type', () => {
     const { stage, device, frame, encode } = setUp({ 0: OCCLUDER_SHADER, 3: OCCLUDER_SHADER });
     stage.prepare(device, frame, sets);
     const target = view('seed');
@@ -115,7 +119,8 @@ describe('OccluderSeedStage', () => {
     const attachment = [...rec.desc!.colorAttachments][0]!;
     expect(attachment.view).toBe(target);
     expect(attachment.clearValue).toEqual({ r: 0, g: 0, b: 0, a: 0 });
-    expect(rec.draws).toEqual([0, 20, 120, 140]);
+    // Types 0 and 3: opaque (type*2+b)*20, transparent (14+type*2+b)*20.
+    expect([...rec.draws].sort((a, b) => a - b)).toEqual([0, 20, 120, 140, 280, 300, 400, 420]);
   });
 
   it('reuses the per-set bind group, and rebuilds it when the camera buffer grows', () => {
