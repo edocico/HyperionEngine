@@ -118,17 +118,35 @@ fn shadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     if (travel < 1.0) {
         return 1.0;
     }
-    // A pixel on or inside an occluder is lit on the side it shows: no self-shadow.
-    let h0 = sdfDistance(vec2i(origin), size);
-    if (h0 <= 0.0) {
-        return 1.0;
-    }
     let dir = (lightPos - origin) / travel;
     let angle = min(1.0 / u.shadowHardness, sourceRadius / travel);
+    var t = 0.0;
+    var h = sdfDistance(vec2i(origin), size);
+    var i = 0u;
+    // A pixel inside an occluder (a sprite that both casts and receives) is not
+    // shadowed by the occluder it belongs to, but must be by every other one:
+    // leave it first, then march. Inside, |h| is the distance to the nearest
+    // free texel, a lower bound on the way out in any direction, so a step of
+    // |h| never overshoots the exit. Returning "lit" here instead left every
+    // such sprite fully lit inside a wall's shadow.
+    while (h <= 0.0 && i < u.shadowSteps) {
+        t += max(-h, 1.0);
+        if (t >= travel) {
+            return 1.0;  // the light is inside the same occluder
+        }
+        h = sdfDistance(vec2i(origin + dir * t), size);
+        i++;
+    }
+    if (h <= 0.0) {
+        return 1.0;  // never got out: no other occluder was tested
+    }
+    // Penumbra distances run from where the ray leaves its own occluder (the
+    // pixel itself, for a pixel in free space). Measured from the pixel, a
+    // sprite would go dark along its own outline, where h is ~0.
+    let start = t;
     var res = 1.0;
-    var t = max(h0, 1.0);
-    var h = h0;
-    for (var i = 0u; i < u.shadowSteps; i++) {
+    t += max(h, 1.0);
+    for (; i < u.shadowSteps; i++) {
         if (t >= travel) {
             break;
         }
@@ -136,7 +154,7 @@ fn shadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
         if (h <= 0.0) {
             return 0.0;
         }
-        res = min(res, h / (t * angle));
+        res = min(res, h / ((t - start) * angle));
         t += h;
     }
     // Out of steps before reaching the light: the rest of the ray is unproven.
@@ -145,7 +163,7 @@ fn shadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     // would darken long rays through open space instead. Assume the clearance
     // stays the last one seen, all the way to the light.
     if (t < travel) {
-        res = min(res, h / (travel * angle));
+        res = min(res, h / ((travel - start) * angle));
     }
     return clamp(res, 0.0, 1.0);
 }

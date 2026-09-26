@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { LightAccumPass, LIGHT2D_ARG_SLOTS, LIGHT_SOURCE_FRACTION } from './light-accum-pass';
 import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
+import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
 
@@ -131,6 +132,12 @@ describe('LightAccumPass', () => {
     expect(new Uint32Array(u, 64, 1)[0]).toBe(17);
   });
 
+  it('defaults the step budget to LightingQuality, the one source of truth', () => {
+    const { record, writes } = setUp();
+    record({});
+    expect(new Uint32Array(writes.at(-1)!.data, 64, 1)[0]).toBe(DEFAULT_LIGHTING_QUALITY.shadowSteps);
+  });
+
   it("uploads the light's source radius as a fraction of its range", () => {
     const { record, writes } = setUp();
     record({});
@@ -149,7 +156,7 @@ describe('light-accum.wgsl', () => {
   it('uses the original Quilez soft-shadow term, not the Aaltonen correction', () => {
     // The correction assumes an exact SDF. A jump-flood field over-estimates,
     // and y = h*h / (2*ph) amplifies that (design §7.3, A2).
-    expect(lightShaderSource).toMatch(/res\s*=\s*min\(\s*res\s*,\s*h\s*\/\s*\(\s*t\s*\*\s*angle\s*\)\s*\)/);
+    expect(lightShaderSource).toMatch(/res\s*=\s*min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*t\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
     expect(lightShaderSource).not.toMatch(/h\s*\*\s*h\s*\/\s*\(\s*2\.0\s*\*/);
   });
 
@@ -162,7 +169,20 @@ describe('light-accum.wgsl', () => {
     const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
     const afterLoop = fn.slice(fn.indexOf('t += h;'));  // the loop's last statement onwards
     expect(afterLoop).toMatch(/if\s*\(\s*t\s*<\s*travel\s*\)/);
-    expect(afterLoop).toMatch(/min\(\s*res\s*,\s*h\s*\/\s*\(\s*travel\s*\*\s*angle\s*\)\s*\)/);
+    expect(afterLoop).toMatch(/min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*travel\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
+  });
+
+  it('a pixel inside an occluder leaves it and keeps marching: only its OWN occluder does not shadow it', () => {
+    // A sprite that both casts and receives (a character, a crate) is inside
+    // the SDF. Returning "lit" there skipped every other occluder too: the
+    // character stood fully lit in a wall's shadow (review 2026-09-26). Inside,
+    // |h| is a lower bound on the way out, so stepping by it never overshoots.
+    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
+    expect(fn).not.toMatch(/if\s*\(\s*h0\s*<=\s*0\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
+    expect(fn).toMatch(/while\s*\(\s*h\s*<=\s*0\.0/);
+    // Penumbra distances are measured from where the ray leaves, or a sprite
+    // would go dark along its own outline.
+    expect(fn).toMatch(/let\s+start\s*=\s*t\s*;/);
   });
 
   it("caps the light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
