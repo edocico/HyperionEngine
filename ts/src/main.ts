@@ -67,6 +67,10 @@ async function main() {
   const preferredMode = harnessMode(location.search);
   const engine = await Hyperion.create({ canvas, preferredMode });
   console.info(`[Hyperion] Harness execution mode: ${preferredMode} (override with ?mode=A|B|C|auto)`);
+  // The one handle on the live engine for GPU sessions driven from devtools
+  // (`evaluate_script`): loading a texture, spawning lights, toggling passes.
+  // Dev builds only.
+  if (__DEV__) (window as unknown as { __hyperion?: Hyperion }).__hyperion = engine;
 
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
