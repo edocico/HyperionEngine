@@ -101,7 +101,10 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     // and counting it could only split groups and add SDF floods.
     if ((word & CASTS_SHADOW) !== 0 && inView(i)) occluderMasks.add(mask === 0 ? 0xffff : mask);
     if ((word & RECEIVES_LIGHT) !== 0) {
-      receiverLayers |= 1 << receiverLayer(mask);
+      // A layer nobody on screen samples would still get a group, and its own
+      // SDF set if the casters in view split it off. Same conservative test
+      // as lights, so every receiver the GPU draws keeps its layer mapped.
+      if (inView(i)) receiverLayers |= 1 << receiverLayer(mask);
       if ((mask & (mask - 1)) !== 0) multiBitReceiver = true;
     }
   }

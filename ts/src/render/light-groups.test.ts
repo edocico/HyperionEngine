@@ -124,6 +124,24 @@ describe('deriveLightGroups', () => {
     expect(g.groups).toEqual([{ layers: 0b11, sdfSet: 0 }]);
   });
 
+  it('receivers out of view occupy no layer: an off-screen layer costs no group and no SDF flood', () => {
+    // Review 2026-09-26: with the layer-1 receiver off screen, the layer-0-only
+    // caster still split layer 1 into a set of its own — a whole flood (~1.8 ms)
+    // for pixels nobody samples.
+    const onScreen = [light(0xffff, 1), drawable(RECV, 0b01), drawable(CAST, 0), drawable(CAST, 0b01)];
+    const g = deriveLightGroups(scene([...onScreen, drawable(RECV, 0b10, { x: 100 })]));
+    expect(g.groups).toEqual([{ layers: 0b01, sdfSet: 0 }]);
+    expect(g.sdfSets).toEqual([{ occluderLayers: 0b01 }]);
+    // Conservative at the edge, like lights: a receiver the GPU could draw keeps its layer.
+    const edge = deriveLightGroups(scene([...onScreen, drawable(RECV, 0b10, { x: 15.02, r: 5 })]));
+    expect(edge.groups).toHaveLength(2);
+    expect(edge.layerToGroup[0]).toBe(0 | (1 << 4));
+  });
+
+  it('a multi-bit receiver is flagged even out of view', () => {
+    expect(deriveLightGroups(scene([light(0xffff), drawable(RECV, 0b110, { x: 100 })])).multiBitReceiver).toBe(true);
+  });
+
   it('a light on an unoccupied layer changes nothing', () => {
     const g = deriveLightGroups(scene([light(0xffff, 1), light(0b1000), drawable(CAST | RECV)]));
     expect(g.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
