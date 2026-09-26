@@ -126,7 +126,7 @@ export function extractPrimType(meta: number): number {
 /**
  * GPU frustum-culling compute pass with 2-bucket material sort and opaque/transparent split.
  *
- * Reads SoA entity buffers (transforms + bounds + renderMeta + texIndices) and writes
+ * Reads SoA entity buffers (bounds + renderMeta + texIndices) and writes
  * per-primitive-type compacted visible-indices lists plus 28 sets of
  * indirect draw arguments: 14 opaque (7 types x 2 material buckets) followed by
  * 14 transparent (7 types x 2 material buckets).
@@ -143,7 +143,7 @@ export function visibilityBufferSize(maxEntities: number): number {
 
 export class CullPass implements RenderPass {
   readonly name = 'cull';
-  readonly reads = ['entity-transforms', 'entity-bounds', 'render-meta', 'tex-indices'];
+  readonly reads = ['entity-bounds', 'render-meta', 'tex-indices'];
   readonly writes = ['visible-indices', 'indirect-args'];
   readonly optional = false;
 
@@ -192,8 +192,6 @@ export class CullPass implements RenderPass {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    const transformBuffer = resources.getBuffer('entity-transforms');
-    if (!transformBuffer) throw new Error("CullPass.setup: missing 'entity-transforms' in ResourcePool");
     const boundsBuffer = resources.getBuffer('entity-bounds');
     if (!boundsBuffer) throw new Error("CullPass.setup: missing 'entity-bounds' in ResourcePool");
     const visibleIndicesBuffer = resources.getBuffer('visible-indices');
@@ -209,11 +207,10 @@ export class CullPass implements RenderPass {
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -243,12 +240,11 @@ export class CullPass implements RenderPass {
       layout: bindGroupLayout0,
       entries: [
         { binding: 0, resource: { buffer: this.cullUniformBuffer } },
-        { binding: 1, resource: { buffer: transformBuffer } },
-        { binding: 2, resource: { buffer: boundsBuffer } },
-        { binding: 3, resource: { buffer: visibleIndicesBuffer } },
-        { binding: 4, resource: { buffer: this.indirectBuffer } },
-        { binding: 5, resource: { buffer: renderMetaBuffer } },
-        { binding: 6, resource: { buffer: texIndexBuffer } },
+        { binding: 1, resource: { buffer: boundsBuffer } },
+        { binding: 2, resource: { buffer: visibleIndicesBuffer } },
+        { binding: 3, resource: { buffer: this.indirectBuffer } },
+        { binding: 4, resource: { buffer: renderMetaBuffer } },
+        { binding: 5, resource: { buffer: texIndexBuffer } },
       ],
     });
 

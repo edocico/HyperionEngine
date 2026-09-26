@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType, computeInvalidationFlag, visibilityBufferSize } from './cull-pass';
 import cullShaderSource from '../../shaders/cull.wgsl?raw';
+import type { ResourcePool } from '../resource-pool';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
     const pass = new CullPass();
     expect(pass.name).toBe('cull');
-    expect(pass.reads).toContain('entity-transforms');
     expect(pass.reads).toContain('entity-bounds');
+    // Culling needs only the bounding sphere. Declaring the transforms as read
+    // would be harmless for ordering, but it would invite binding them again.
+    expect(pass.reads).not.toContain('entity-transforms');
     expect(pass.writes).toContain('visible-indices');
     expect(pass.writes).toContain('indirect-args');
     expect(pass.optional).toBe(false);
@@ -282,5 +285,105 @@ describe('visibilityBufferSize', () => {
 
   it('returns 0 bytes for 0 entities', () => {
     expect(visibilityBufferSize(0)).toBe(0);
+  });
+});
+
+// ── Storage-buffer budget ──────────────────────────────────────────
+//
+// `maxStorageBuffersPerShaderStage` defaults to 8, and `requestDevice` asks for
+// no higher limit. The limit is counted on the bind group LAYOUT entries, not on
+// what the shader reads. Going over it does not throw: the pipeline comes back
+// invalid and the GPU reports the error asynchronously. `cull.wgsl` sat at 9
+// from 4ea6cb5 (temporal culling) until the dead `transforms` binding went away,
+// and in that time no cull pipeline ever ran. Since b4db737 every graph rebuild
+// was also rejected, because each graph contains a CullPass. These tests are the
+// headless half of that check; the other half is an error scope on a real
+// device, which no test can reach.
+const SPEC_MIN_STORAGE_BUFFERS_PER_STAGE = 8;
+
+/** Names of every `var<storage, ...>` the shader declares. */
+function storageVarNames(wgsl: string): string[] {
+  return [...wgsl.matchAll(/var<storage[^>]*>\s+(\w+)\s*:/g)].map((m) => m[1]);
+}
+
+function withoutComments(wgsl: string): string {
+  return wgsl.replace(/\/\/[^\n]*/g, '');
+}
+
+/** Records the layouts `CullPass.setup()` hands to the device. */
+function recordCullSetup(): GPUBindGroupLayoutDescriptor[][] {
+  const g = globalThis as Record<string, unknown>;
+  g.GPUBufferUsage ??= { COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080, INDIRECT: 0x0100 };
+  g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+
+  const pipelineLayouts: GPUBindGroupLayoutDescriptor[][] = [];
+  const buffer = () => ({ destroy() {} });
+  const device = {
+    createShaderModule: () => ({}),
+    createBuffer: buffer,
+    createBindGroupLayout: (desc: GPUBindGroupLayoutDescriptor) => ({ desc }),
+    createPipelineLayout: (desc: { bindGroupLayouts: Array<{ desc: GPUBindGroupLayoutDescriptor }> }) => {
+      pipelineLayouts.push(desc.bindGroupLayouts.map((l) => l.desc));
+      return {};
+    },
+    createComputePipeline: () => ({}),
+    createBindGroup: () => ({}),
+    queue: { writeBuffer() {} },
+  } as unknown as GPUDevice;
+  const resources = { getBuffer: buffer } as unknown as ResourcePool;
+
+  const saved = CullPass.SHADER_SOURCE;
+  CullPass.SHADER_SOURCE = cullShaderSource;
+  try {
+    new CullPass().setup(device, resources);
+  } finally {
+    CullPass.SHADER_SOURCE = saved;
+  }
+  return pipelineLayouts;
+}
+
+function storageEntryCount(layouts: GPUBindGroupLayoutDescriptor[]): number {
+  return layouts
+    .flatMap((l) => [...l.entries])
+    .filter((e) => e.buffer?.type === 'storage' || e.buffer?.type === 'read-only-storage')
+    .length;
+}
+
+describe('cull pipeline storage-buffer budget', () => {
+  it('declares no more storage buffers than the spec guarantees per stage', () => {
+    expect(storageVarNames(cullShaderSource).length).toBeLessThanOrEqual(SPEC_MIN_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('reads every storage buffer it declares — a dead binding still counts against the limit', () => {
+    const code = withoutComments(cullShaderSource);
+    const unread = storageVarNames(cullShaderSource).filter(
+      (name) => (code.match(new RegExp(`\\b${name}\\b`, 'g')) ?? []).length < 2,
+    );
+    expect(unread).toEqual([]);
+  });
+
+  it('hands the device a pipeline layout within the same budget', () => {
+    const [layouts] = recordCullSetup();
+    expect(storageEntryCount(layouts)).toBeLessThanOrEqual(SPEC_MIN_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('gives every binding the shader declares a layout entry of the same buffer type', () => {
+    // A wrong type (`read` vs `read_write`) is a pipeline validation error at
+    // runtime, so the renumbering these layouts go through must keep them paired.
+    const WGSL_TO_LAYOUT: Record<string, GPUBufferBindingType> = {
+      'uniform': 'uniform',
+      'storage, read': 'read-only-storage',
+      'storage, read_write': 'storage',
+    };
+    const [layouts] = recordCullSetup();
+    const declared = [...cullShaderSource.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var<([^>]+)>/g)]
+      .map((m) => ({ group: Number(m[1]), binding: Number(m[2]), type: WGSL_TO_LAYOUT[m[3].trim()] }));
+    expect(declared.length).toBeGreaterThan(0);
+    for (const { group, binding, type } of declared) {
+      const entry = [...(layouts[group]?.entries ?? [])].find((e) => e.binding === binding);
+      expect(entry?.buffer?.type, `@group(${group}) @binding(${binding})`).toBe(type);
+    }
+    const layoutEntries = layouts.reduce((n, l) => n + [...l.entries].length, 0);
+    expect(layoutEntries, 'layout entries with no binding in the shader').toBe(declared.length);
   });
 });

@@ -1,7 +1,8 @@
 // GPU frustum culling compute shader with per-primitive-type grouping,
 // opaque/transparent split, and temporal culling coherence.
 // Dispatched with ceil(totalEntities / 256) workgroups.
-// SoA layout: separate transforms, bounds, and renderMeta buffers.
+// Reads the bounds, renderMeta and texIndices SoA columns. The culling test
+// needs only the bounding sphere, never the transform.
 //
 // Temporal culling: entities that were visible last frame and haven't moved
 // (not dirty) skip the bounds read entirely — the main bandwidth saving.
@@ -47,12 +48,11 @@ struct DrawIndirectArgs {
 
 // Group 0: existing SoA + indirect args
 @group(0) @binding(0) var<uniform> cull: CullUniforms;
-@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
-@group(0) @binding(2) var<storage, read> bounds: array<vec4f>;
-@group(0) @binding(3) var<storage, read_write> visibleIndices: array<u32>;
-@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, TOTAL_BUCKETS>;
-@group(0) @binding(5) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
-@group(0) @binding(6) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
+@group(0) @binding(1) var<storage, read> bounds: array<vec4f>;
+@group(0) @binding(2) var<storage, read_write> visibleIndices: array<u32>;
+@group(0) @binding(3) var<storage, read_write> drawArgs: array<DrawIndirectArgs, TOTAL_BUCKETS>;
+@group(0) @binding(4) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
+@group(0) @binding(5) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
 
 // Group 1: temporal culling buffers
 @group(1) @binding(0) var<storage, read> visibility_prev: array<u32>;
