@@ -61,14 +61,25 @@ const RECEIVES_LIGHT_BIT: u32 = 1u << 10u;
 // Scalars only: see src/shaders/uniform-layout.test.ts.
 struct LightingUniform {
     enabled: u32,
+    // Light layers: receiver layer → light-buffer layer (its light group),
+    // 4 bits per layer. Layers 0-7 here, 8-15 in the next word.
+    groupTableLo: u32,
+    groupTableHi: u32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 };
 
-@group(2) @binding(0) var lightBuffer: texture_2d<f32>;
+// One layer per light group (LightGroupsPass).
+@group(2) @binding(0) var lightBuffer: texture_2d_array<f32>;
 @group(2) @binding(1) var lightSampler: sampler;
 @group(2) @binding(2) var<uniform> lighting: LightingUniform;
+
+// A receiver belongs to ONE layer, the lowest bit of its mask (renderMeta bits
+// 16-31; 0 = layer 0), and samples the light-buffer layer of that layer's group.
+fn lightGroupOf(mask: u32) -> u32 {
+    let layer = select(firstTrailingBit(mask), 0u, mask == 0u);
+    let word = select(lighting.groupTableLo, lighting.groupTableHi, layer >= 8u);
+    return (word >> (4u * (layer % 8u))) & 0xFu;
+}
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
@@ -157,11 +168,12 @@ fn shade(in: VertexOutput) -> vec4f {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let color = shade(in);
+    let meta1 = renderMeta[in.entityIdx * 2u + 1u];
     // entityIdx is flat, so the branch is uniform across the quad. Unlit
     // entities skip the lookup, and keep their full colour.
-    if (lighting.enabled == 1u && (renderMeta[in.entityIdx * 2u + 1u] & RECEIVES_LIGHT_BIT) != 0u) {
+    if (lighting.enabled == 1u && (meta1 & RECEIVES_LIGHT_BIT) != 0u) {
         // A subtractive light can push the buffer below zero: clamp before tinting.
-        let light = max(textureSampleLevel(lightBuffer, lightSampler, in.screenUV, 0.0).rgb, vec3f(0.0));
+        let light = max(textureSampleLevel(lightBuffer, lightSampler, in.screenUV, lightGroupOf(meta1 >> 16u), 0.0).rgb, vec3f(0.0));
         return vec4f(color.rgb * light, color.a);
     }
     return color;

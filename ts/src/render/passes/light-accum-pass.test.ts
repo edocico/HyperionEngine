@@ -31,7 +31,7 @@ function setUp() {
     createTexture: (desc: GPUTextureDescriptor) => {
       const t = { desc, destroyed: false };
       textures.push(t);
-      return { createView: () => ({ of: t }), destroy() { t.destroyed = true; } };
+      return { createView: (d?: GPUTextureViewDescriptor) => ({ of: t, d }), destroy() { t.destroyed = true; } };
     },
     queue: {
       writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
@@ -117,7 +117,9 @@ describe('LightAccumPass', () => {
     const targets = textures.filter((t) => t.desc.format === SCENE_HDR_FORMAT);
     expect(targets).toHaveLength(1);
     expect(targets[0].desc.size).toEqual({ width: 400, height: 300 });
-    expect([...light.desc.colorAttachments][0]!.view).toBe(pool.getTextureView('light-buffer'));
+    // Rendered through a 2d view; the pool gets the 2d-array view ForwardPass samples.
+    expect(([...light.desc.colorAttachments][0]!.view as unknown as { d?: GPUTextureViewDescriptor }).d?.dimension).toBe('2d');
+    expect((pool.getTextureView('light-buffer') as unknown as { d?: GPUTextureViewDescriptor }).d?.dimension).toBe('2d-array');
     record({ canvasWidth: 1024, canvasHeight: 768 });
     expect(textures.filter((t) => t.desc.format === SCENE_HDR_FORMAT)).toHaveLength(2);
     expect(targets[0].destroyed).toBe(true);

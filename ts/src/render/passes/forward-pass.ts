@@ -150,7 +150,8 @@ export class ForwardPass implements RenderPass {
     // --- Group 2: the light buffer ---
     this.bindGroupLayout2 = device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        // One layer per light group (LightGroupsPass).
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
@@ -162,14 +163,16 @@ export class ForwardPass implements RenderPass {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
-    // LightingUniform: enabled (u32) + 3 × pad = 16 bytes. Fixed for the
-    // lifetime of the pass: a graph is either lit or not.
+    // LightingUniform: enabled, the layer→group table (2 × u32), pad = 16
+    // bytes. `enabled` is fixed for the lifetime of the pass (a graph is lit or
+    // not); the table is rewritten every frame in prepare().
     this.lightingBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, 0, 0, 0]));
     this.placeholderTexture = device.createTexture({
-      size: { width: 1, height: 1 },
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      textureBindingViewDimension: '2d-array',
     });
     device.queue.writeTexture(
       { texture: this.placeholderTexture },
@@ -177,7 +180,7 @@ export class ForwardPass implements RenderPass {
       { bytesPerRow: 4 },
       { width: 1, height: 1 },
     );
-    this.placeholderView = this.placeholderTexture.createView();
+    this.placeholderView = this.placeholderTexture.createView({ dimension: '2d-array' });
 
     // ForwardPass writes `scene-hdr`, never the swapchain. Before this was
     // pinned to SCENE_HDR_FORMAT it queried getPreferredCanvasFormat(), which
@@ -255,6 +258,10 @@ export class ForwardPass implements RenderPass {
     if (!this.cameraBuffer) return;
     // Only the matrix: occluderLayers and the pads stay 0 from creation.
     device.queue.writeBuffer(this.cameraBuffer, 0, frame.cameraViewProjection as Float32Array<ArrayBuffer>);
+    if (this.lightingBuffer) {
+      const [lo, hi] = frame.lightGroups?.layerToGroup ?? [0, 0];
+      device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, lo, hi, 0]));
+    }
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {

@@ -173,7 +173,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
       createBindGroup: (d: GPUBindGroupDescriptor) => ({ layout: d.layout, entries: [...d.entries] }),
       createTexture: (d: GPUTextureDescriptor) => {
         textures.push(d);
-        return { createView: () => ({ placeholderOf: d }), destroy() {} };
+        return { createView: (vd?: GPUTextureViewDescriptor) => ({ placeholderOf: d, vd }), destroy() {} };
       },
       queue: {
         writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
@@ -219,20 +219,42 @@ describe('ForwardPass @group(2): the light buffer', () => {
       expect(bound.length).toBeGreaterThan(0);
       return bound.map((c) => c.group!.entries.find((e) => e.binding === 0)!.resource);
     };
-    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture, buffers };
+    const prepare = (over: Partial<FrameState> = {}) =>
+      pass.prepare(device, { cameraViewProjection: new Float32Array(16), ...over } as FrameState);
+    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture, buffers, prepare };
   }
 
   it('builds every pipeline on a three-group layout; group 2 is texture, filtering sampler, uniform', () => {
     const { pipelineLayouts, layouts } = setUp();
     expect(pipelineLayouts.length).toBeGreaterThan(0);
     for (const pl of pipelineLayouts) expect([...pl.bindGroupLayouts]).toHaveLength(3);
-    const group2 = layouts.find((l) => [...l.entries].some((e) => 'buffer' in e && e.buffer?.type === 'uniform') && [...l.entries].some((e) => 'texture' in e && e.texture?.viewDimension !== '2d-array'))!;
+    // Group 0 has 6 entries, group 1 has 9: group 2 is the one with 3.
+    const group2 = layouts.find((l) => [...l.entries].length === 3)!;
     const entries = [...group2.entries].sort((a, b) => a.binding - b.binding);
     expect(entries.map((e) => e.binding)).toEqual([0, 1, 2]);
     expect(entries[0].texture?.sampleType ?? 'float').toBe('float');
     expect(entries[1].sampler?.type ?? 'filtering').toBe('filtering');
     expect(entries[2].buffer?.type).toBe('uniform');
     for (const e of entries) expect(e.visibility).toBe(GPUShaderStage.FRAGMENT);
+  });
+
+  // Light layers (design 2026-09-26): one light-buffer layer per light group.
+  it('group 2 binds the light buffer as a 2d-array, and the placeholder is a 1-layer 2d-array', () => {
+    const { layouts, textures, draw, group2Texture } = setUp();
+    const group2 = layouts.find((l) => [...l.entries].length === 3)!;
+    expect([...group2.entries].find((e) => e.binding === 0)!.texture?.viewDimension).toBe('2d-array');
+    const placeholder = textures.find((t) => t.format === 'rgba8unorm')!;
+    expect(placeholder.textureBindingViewDimension).toBe('2d-array');
+    const bound = group2Texture(draw())[0] as unknown as { vd?: GPUTextureViewDescriptor };
+    expect(bound.vd?.dimension).toBe('2d-array');
+  });
+
+  it('writes the layer→group table every frame, from FrameState.lightGroups', () => {
+    const { writes, prepare } = setUp({ lit: true });
+    prepare({ lightGroups: { layerToGroup: [0x10, 0x2] } as FrameState['lightGroups'] });
+    expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0x10, 0x2, 0]);
+    prepare({});
+    expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0, 0, 0]);
   });
 
   it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
@@ -308,6 +330,17 @@ describe('lit primitive shaders', () => {
     expect(fsMain).toMatch(/lighting\.enabled/);
     expect(beforeFsMain).not.toMatch(/lightBuffer\s*,|textureSample\w*\s*\(\s*lightBuffer/);
     expect(src.slice(src.indexOf('fn fs_occluder'))).not.toMatch(/lightBuffer|lighting\./);
+  });
+
+  it.each(LIT_SHADERS)('%s samples the layer of its group: a 2d-array, the lowest mask bit, a 4-bit table', (name) => {
+    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
+    expect(src).toMatch(/@group\(2\) @binding\(0\) var lightBuffer: texture_2d_array<f32>;/);
+    expect(src).toMatch(/groupTableLo: u32,(?:\s|\/\/[^\n]*)*groupTableHi: u32,/);
+    const fn = src.slice(src.indexOf('fn lightGroupOf'), src.indexOf('}', src.indexOf('fn lightGroupOf')));
+    expect(fn).toMatch(/firstTrailingBit\(mask\)/);
+    expect(fn).toMatch(/0xFu/);
+    const fsMain = src.slice(src.indexOf('fn fs_main'), src.indexOf('fn fs_occluder'));
+    expect(fsMain).toMatch(/textureSampleLevel\(lightBuffer, lightSampler, in\.screenUV, lightGroupOf\(/);
   });
 
   it.each(LIT_SHADERS)('%s: RECEIVES_LIGHT_BIT matches RENDER_META_RECEIVES_LIGHT_BIT in components.rs', (name) => {

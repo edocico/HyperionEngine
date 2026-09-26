@@ -44,6 +44,7 @@ export class LightAccumPass implements RenderPass {
   private indirectBuffer: GPUBuffer | null = null;
   private columns: GPUBuffer[] = [];
   private target: GPUTexture | null = null;
+  private renderView: GPUTextureView | null = null;
   private targetWidth = 0;
   private targetHeight = 0;
   private device: GPUDevice | null = null;
@@ -129,7 +130,7 @@ export class LightAccumPass implements RenderPass {
       this.boundSdf = sdf;
     }
     this.ensureTarget(frame.canvasWidth, frame.canvasHeight, resources);
-    const view = resources.getTextureView('light-buffer');
+    const view = this.renderView;
     if (!view) return;
 
     const [r, g, b, intensity] = frame.ambient ?? [0, 0, 0, 1];
@@ -158,8 +159,11 @@ export class LightAccumPass implements RenderPass {
       size: { width, height },
       format: SCENE_HDR_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      textureBindingViewDimension: '2d-array',
     });
-    resources.setTextureView('light-buffer', this.target.createView());
+    // ForwardPass samples a 2d-array (one layer per light group); this pass has one.
+    this.renderView = this.target.createView({ dimension: '2d' });
+    resources.setTextureView('light-buffer', this.target.createView({ dimension: '2d-array' }));
     this.targetWidth = width;
     this.targetHeight = height;
   }
