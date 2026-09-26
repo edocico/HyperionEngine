@@ -112,4 +112,34 @@ describe('hitTestRay', () => {
       expect(gridResult).toBe(bruteResult);
     }
   });
+
+  // A Light2D's bounding sphere is its RANGE (it drives culling), so a point
+  // light of range 300 would swallow every click within 300 units of it — and
+  // a global light (radius f32::MAX) every click anywhere. A light is not a
+  // surface: picking skips it. renderMeta word 1, bits 0-7, is the primType.
+  describe('lights are never picked', () => {
+    const LIGHT2D = 6;
+    const bounds = new Float32Array([
+      0, 0, 0, 1,      // a sprite at the origin
+      20, 20, 0, 300,  // a point light: range 300
+      0, 0, 0, 3.4028234663852886e38, // a global light
+    ]);
+    const entityIds = new Uint32Array([1, 2, 3]);
+    const renderMeta = new Uint32Array([0, 0, 0, LIGHT2D, 0, LIGHT2D | (3 << 11)]);
+
+    it('brute force: a click inside a light range hits nothing, a click on the sprite hits the sprite', () => {
+      expect(hitTestRay(orthoRay(40, 40), bounds, entityIds, undefined, renderMeta)).toBe(null);
+      expect(hitTestRay(orthoRay(0, 0), bounds, entityIds, undefined, renderMeta)).toBe(1);
+    });
+
+    it('grid path: the same', () => {
+      // Finite light radii here: the grid inserts an entity into every cell
+      // its sphere covers, so it cannot hold a global light at all.
+      const small = new Float32Array([0, 0, 0, 1, 20, 20, 0, 30, 0, 0, 0, 30]);
+      const grid = new SpatialGrid(16);
+      grid.rebuild(small, 3);
+      expect(hitTestRay(orthoRay(25, 25), small, entityIds, grid, renderMeta)).toBe(null);
+      expect(hitTestRay(orthoRay(0, 0), small, entityIds, grid, renderMeta)).toBe(1);
+    });
+  });
 });

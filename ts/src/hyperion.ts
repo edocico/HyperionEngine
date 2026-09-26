@@ -314,7 +314,7 @@ export class Hyperion implements Disposable {
           this.config.canvas.width, this.config.canvas.height,
         );
 
-        return hitTestRay(ray, state.bounds, state.entityIds);
+        return hitTestRay(ray, state.bounds, state.entityIds, undefined, state.renderMeta);
       },
     };
   }

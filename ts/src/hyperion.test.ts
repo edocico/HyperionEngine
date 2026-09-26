@@ -413,6 +413,27 @@ describe('Hyperion picking', () => {
     expect(result).toBeNull();
     engine.destroy();
   });
+
+  it('hitTest never returns a light, whose bounding sphere is its range', () => {
+    const bridge = mockBridge();
+    const state = {
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array([0, 0, 0, 1e6]), // a light whose range covers the world
+      renderMeta: new Uint32Array([0, 6]),     // primType 6 = Light2D
+      texIndices: new Uint32Array(1),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array([7]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => state });
+    const config = { ...defaultConfig(), canvas: { width: 800, height: 600 } as HTMLCanvasElement };
+    const engine = Hyperion.fromParts(config, bridge, mockRenderer());
+    expect(engine.picking.hitTest(400, 300)).toBeNull();
+    state.renderMeta[1] = 0; // the same sphere as a quad is hit
+    expect(engine.picking.hitTest(400, 300)).toBe(7);
+    engine.destroy();
+  });
 });
 
 describe('Hyperion immediate mode', () => {
