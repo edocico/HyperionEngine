@@ -18,24 +18,74 @@ describe('PrioritizedCommandQueue', () => {
     expect(q.overwriteCount).toBe(1); // only latest kept
   });
 
-  // Review 2026-09-26: a Map.set on an existing key keeps the key's FIRST
-  // position, so rotation(q1); rotation(a); rotation(q2) drained as
-  // [SetRotation(q2), SetRotation2D(a)] and the entity ended at `a`. Once both
-  // commands write the same 3D Rotation, the order of the LAST calls matters.
-  it('drains coalesced commands in the order of their last calls', () => {
+  // The overwrite Map keeps each key's FIRST position on purpose: under
+  // backpressure a key that could not be written this frame is drained ahead of
+  // the keys that were, so every entity gets through (round-robin). Moving an
+  // overwritten key to the end (tried 2026-09-26) starved the tail of any update
+  // loop larger than the ring buffer, and the audio listener with it.
+  it('never starves a key under backpressure: every entity and the listener get through', () => {
+    const q = new PrioritizedCommandQueue();
+    let budget = 0;
+    const seen = new Set<number>();
+    const rb = {
+      writeCommand(cmd: number, id: number) {
+        if (budget-- <= 0) return false;
+        seen.add(cmd === CommandType.SetListenerPosition ? -1 : id);
+        return true;
+      },
+    } as any;
+    for (let f = 0; f < 4; f++) {
+      for (let e = 1; e <= 10; e++) q.enqueue(CommandType.SetPosition, e, new Float32Array([f, 0, 0]));
+      q.enqueue(CommandType.SetListenerPosition, 0, new Float32Array([f, 0, 0]));
+      budget = 6;
+      q.drainTo(rb);
+    }
+    for (let e = 1; e <= 10; e++) expect(seen.has(e), `entity ${e}`).toBe(true);
+    expect(seen.has(-1), 'listener').toBe(true);
+  });
+
+  // Where call order DOES matter — two command types writing the same state —
+  // the newer one replaces the pending older one, so there is nothing to order.
+  function drainAll(q: PrioritizedCommandQueue): Array<{ cmd: number; id: number; first: number }> {
+    const out: Array<{ cmd: number; id: number; first: number }> = [];
+    q.drainTo({
+      writeCommand(cmd: number, id: number, payload?: Float32Array) {
+        out.push({ cmd, id, first: payload?.[0] ?? NaN });
+        return true;
+      },
+    } as any);
+    return out;
+  }
+
+  it('a rotation replaces a pending rotation of the other form: the last call wins', () => {
     const q = new PrioritizedCommandQueue();
     q.enqueue(CommandType.SetRotation, 1, new Float32Array([0, 0, 0, 1]));
     q.enqueue(CommandType.SetRotation2D, 1, new Float32Array([0.5]));
     q.enqueue(CommandType.SetRotation, 1, new Float32Array([0.7, 0, 0, 0.714]));
-    const drained: Array<{ cmd: number; first: number }> = [];
-    q.drainTo({
-      writeCommand(cmd: number, _id: number, payload?: Float32Array) {
-        drained.push({ cmd, first: payload?.[0] ?? NaN });
-        return true;
-      },
-    } as any);
-    expect(drained.map((d) => d.cmd)).toEqual([CommandType.SetRotation2D, CommandType.SetRotation]);
-    expect(drained[1].first).toBeCloseTo(0.7);
+    expect(drainAll(q).map((d) => [d.cmd, d.first])).toEqual([[CommandType.SetRotation, expect.closeTo(0.7)]]);
+
+    q.enqueue(CommandType.SetRotation, 2, new Float32Array([0, 0, 0, 1]));
+    q.enqueue(CommandType.SetRotation2D, 2, new Float32Array([0.5]));
+    expect(drainAll(q).map((d) => d.cmd)).toEqual([CommandType.SetRotation2D]);
+  });
+
+  it('a teleport replaces the pending position and rotations of its entity, and a later position still follows it', () => {
+    // TeleportBody is critical, so it drains before every overwrite: without
+    // this, position(p).teleport(t) reached WASM as [teleport, position] and
+    // the body ended at p.
+    const q = new PrioritizedCommandQueue();
+    q.enqueue(CommandType.SetPosition, 1, new Float32Array([100, 50, 0]));
+    q.enqueue(CommandType.SetRotation2D, 1, new Float32Array([1.2]));
+    q.enqueue(CommandType.SetPosition, 2, new Float32Array([7, 7, 0]));
+    q.enqueue(CommandType.TeleportBody, 1, new Float32Array([0, 0, 0, 1]));
+    expect(drainAll(q).map((d) => [d.cmd, d.id])).toEqual([
+      [CommandType.TeleportBody, 1],
+      [CommandType.SetPosition, 2],
+    ]);
+
+    q.enqueue(CommandType.TeleportBody, 1, new Float32Array([0, 0, 0, 1]));
+    q.enqueue(CommandType.SetPosition, 1, new Float32Array([100, 50, 0]));
+    expect(drainAll(q).map((d) => d.cmd)).toEqual([CommandType.TeleportBody, CommandType.SetPosition]);
   });
 
   it('should drain critical commands before overwrites', () => {
