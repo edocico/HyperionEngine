@@ -22,7 +22,7 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 
 ```bash
 cargo test -p hyperion-core                  # All Rust unit tests (193 tests, 271 with physics-2d, 222 with dev-tools, 315 with all features)
-cargo test -p hyperion-core --all-features   # + 68 integration tests across 6 files (315 lib + 68 = 383 total)
+cargo test -p hyperion-core --all-features   # + 69 integration tests across 6 files (315 lib + 69 = 384 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -79,11 +79,11 @@ cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI 
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality (19 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (271 lib tests, 330 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (271 lib tests, 331 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 315 lib tests (383 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 315 lib tests (384 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
@@ -467,7 +467,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Character controller `up` follows gravity** — derived as `-normalize(gravity)`, falling back to +Y for zero gravity. Override per entity with `SetCharacterUp` (52). The engine's documented default gravity is (0, +980), i.e. +Y is DOWN.
 - **`BoundingRadius` is recomputed every frame** from the world matrix by `systems::update_bounding_radii` — except for `Light2D`, whose radius comes from `PrimitiveParams[3]` (range) and deliberately ignores transform scale, because a light's extent IS its range. That is a *second* query inside the same function, and it must run AFTER the matrix-derived one: every entity gets a `ModelMatrix` at spawn, so the first query matches lights too and would otherwise win. The ordering is a correctness invariant with a test on it (`light_radius_ignores_transform_scale`). Pin any radius with `SetBoundingRadius` (50), which attaches `BoundsOverride` and wins over both queries; a negative value releases it.
 - **Staging format is chosen by representability** — format 0 (compressed) only for ROOT `Transform2D` entities; everything else, 2D children included, uses format 1 (full mat4). A 2D child's `Transform2D` is local to its parent, so format 0 would draw it at the wrong place. Both emit 16 words, so there is no bandwidth difference.
-- **GPU rows are world-space: every parented entity takes its transform AND its culling-sphere centre from `ModelMatrix`** — `RenderState::write_world_matrix`. `Position` and `Transform2D` are local for a child. Until 2026-09-26 the writers used them anyway: a 2D child was drawn at its local offset from the origin, and every child, 2D or 3D, was culled against a sphere at its local position, so it could vanish while on screen (`verify_hier.rs` H6/H7). A 2D root still builds its row from `Transform2D`, which is fresh at command time, when `ModelMatrix` is still last frame's.
+- **GPU rows are world-space: every parented entity takes its transform AND its culling-sphere centre from `ModelMatrix`** — `RenderState::write_world_matrix`. `Position` and `Transform2D` are local for a child. The exception is a physics body: `physics_sync_post` writes Rapier's WORLD pose into them, so `propagate_transforms` treats it as a root (`pose_is_world`). A parented body is drawn on its collider, and its children compose on top of it (`verify_physics.rs` P17). Until 2026-09-26 the writers used them anyway: a 2D child was drawn at its local offset from the origin, and every child, 2D or 3D, was culled against a sphere at its local position, so it could vanish while on screen (`verify_hier.rs` H6/H7). A 2D root still builds its row from `Transform2D`, which is fresh at command time, when `ModelMatrix` is still last frame's.
 - **`staging_ptr` / `staging_indices_ptr` are valid for ONE frame** and return null when empty.
 - **External entity ids are capped at `MAX_EXTERNAL_ID` (1_048_575)** — `EntityMap` is a sparse Vec indexed by the id. Out-of-range spawns are rejected and counted (`engine_rejected_command_count`).
 - **An unknown opcode discards the rest of the batch** — counted by `engine_dropped_command_bytes()`. A non-zero value almost always means the TS command table is ahead of the WASM build.
@@ -677,7 +677,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 68 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 24, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16 and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
+Regression coverage: 69 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 25, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16/P17 and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|

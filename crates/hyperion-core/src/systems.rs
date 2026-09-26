@@ -94,6 +94,21 @@ pub fn count_active(world: &World) -> usize {
     world.query::<&Active>().iter().count()
 }
 
+/// Whether an entity's own pose is already in world space whatever its parent.
+///
+/// True for a physics body: `physics_sync_post` writes Rapier's WORLD pose into
+/// its Transform2D. Composing the parent on top of that drew the body away from
+/// its collider, which is what raycasts, events and the debug overlay use.
+#[cfg(feature = "physics-2d")]
+fn pose_is_world(world: &World, entity: hecs::Entity) -> bool {
+    world.get::<&PhysicsControlled>(entity).is_ok()
+}
+
+#[cfg(not(feature = "physics-2d"))]
+fn pose_is_world(_world: &World, _entity: hecs::Entity) -> bool {
+    false
+}
+
 /// Propagate parent transforms down the scene graph, at any depth.
 ///
 /// `transform_system` / `transform_system_2d` leave each entity's **local**
@@ -118,12 +133,15 @@ pub fn propagate_transforms(world: &mut World, ext_to_entity: &HashMap<u32, hecs
     use crate::command_processor::MAX_HIERARCHY_DEPTH;
 
     // Pass 1 — snapshot every parented entity's local matrix and its parent.
+    // A physics body is left out: its pose is already a world pose (see
+    // `pose_is_world`), so it propagates like a root. Its own children still
+    // compose on top of it.
     let mut locals: HashMap<hecs::Entity, ([f32; 16], u32)> = HashMap::new();
     for (entity, parent_comp, matrix, _active) in world
         .query::<(hecs::Entity, &Parent, &ModelMatrix, &Active)>()
         .iter()
     {
-        if parent_comp.0 != u32::MAX {
+        if parent_comp.0 != u32::MAX && !pose_is_world(world, entity) {
             locals.insert(entity, (matrix.0, parent_comp.0));
         }
     }

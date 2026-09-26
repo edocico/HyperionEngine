@@ -633,3 +633,52 @@ fn p16_child_of_a_physics_body_follows_it_on_the_gpu() {
             "GPU word {i} = {} but the ECS world matrix says {}", gpu[i], ecs[i]);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// P17 (found 2026-09-26 by review): a physics body under a parent is drawn on
+// its collider.
+//
+// `physics_sync_post` writes Rapier's WORLD pose into Transform2D, but
+// `propagate_transforms` treated that component as local and composed the
+// parent in. The body's ModelMatrix, and since a25164b its GPU row too, came
+// out as parent x world: 200 units away from the collider that raycasts,
+// events and the debug overlay use. A body's own pose is its world pose. Its
+// children still compose on top of it.
+// ─────────────────────────────────────────────────────────────────
+#[test]
+fn p17_a_parented_physics_body_is_drawn_on_its_collider() {
+    let mut e = Engine::new();
+    let mut to0 = [0u8; 16];
+    to0[0..4].copy_from_slice(&0u32.to_le_bytes());
+    let mut to1 = [0u8; 16];
+    to1[0..4].copy_from_slice(&1u32.to_le_bytes());
+    e.process_commands(&[
+        spawn2d(0), setpos(0, 200.0, 0.0),                        // static container
+        spawn2d(1), body(1, 0), collider(1, 0, 10.0, 0.0),
+        cmd(CommandType::SetParent, 1, to0),                      // body under the container
+        spawn2d(2), setpos(2, 10.0, 0.0), cmd(CommandType::SetParent, 2, to1), // child of the body
+    ]);
+    for _ in 0..10 {
+        e.update(1.0 / 60.0);
+    }
+
+    let ent = e.entity_map.get(1).unwrap();
+    let h = e.world.get::<&PhysicsBodyHandle>(ent).unwrap().0;
+    let rapier = e.physics.rigid_body_set[h].translation();
+    let (rx, ry) = (rapier.x, rapier.y);
+    assert!(ry.abs() > 1.0, "gravity must have moved the body");
+
+    for (id, want) in [(1u32, (rx, ry)), (2u32, (rx + 10.0, ry))] {
+        let ent = e.entity_map.get(id).unwrap();
+        let world = e.world.get::<&ModelMatrix>(ent).unwrap().0;
+        let slot = e.render_state.get_slot(ent).unwrap() as usize;
+        let gpu = &e.render_state.gpu_transforms()[slot * 16..slot * 16 + 16];
+        let sphere = &e.render_state.gpu_bounds()[slot * 4..slot * 4 + 2];
+        println!("P17 id {id}: rapier-derived want ({:.3},{:.3}) world ({:.3},{:.3}) GPU ({:.3},{:.3}) sphere ({:.3},{:.3})",
+            want.0, want.1, world[12], world[13], gpu[12], gpu[13], sphere[0], sphere[1]);
+        for (label, x, y) in [("world", world[12], world[13]), ("GPU", gpu[12], gpu[13]), ("sphere", sphere[0], sphere[1])] {
+            assert!((x - want.0).abs() < 1e-3 && (y - want.1).abs() < 1e-3,
+                "id {id} {label} = ({x}, {y}), expected ({}, {})", want.0, want.1);
+        }
+    }
+}
