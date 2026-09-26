@@ -18,6 +18,12 @@ export interface FrameState {
   ambient?: readonly [number, number, number, number];
   /** Sphere-march steps per shadowed light pixel (`LightingQuality.shadowSteps`). */
   shadowSteps?: number;
+  /**
+   * Light layers (design 2026-09-26): the light groups and SDF sets of this
+   * frame, from `deriveLightGroups`. Set by the renderer only while the live
+   * graph is lit.
+   */
+  lightGroups?: import('./light-groups').LightGroups;
 }
 
 export interface RenderPass {
