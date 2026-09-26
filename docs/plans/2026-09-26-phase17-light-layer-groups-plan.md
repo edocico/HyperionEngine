@@ -546,6 +546,6 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - test counts and status.
 
   Update design §7.3/§7.4 and the plan checkboxes.
-- [ ] **Step 2:** run `scripts/preflight.sh --full` → green.
-- [ ] **Step 3:** run the adversarial review workflow over the task range: 4 dimensions (WebGPU validity, grouping semantics, stage orchestration, docs) plus one verifier per finding. Fix what is confirmed, TDD first.
-- [ ] **Step 4:** commit and push.
+- [x] **Step 2:** run `scripts/preflight.sh --full` → green.
+- [x] **Step 3:** run the adversarial review workflow over the task range: 4 dimensions (WebGPU validity, grouping semantics, stage orchestration, docs) plus one verifier per finding. Fix what is confirmed, TDD first.
+- [x] **Step 4:** commit and push.
