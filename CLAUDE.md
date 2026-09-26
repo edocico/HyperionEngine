@@ -687,7 +687,7 @@ All agent files require YAML frontmatter (`name`, `description`) to be registere
 
 ## Implementation Status
 
-**Current: Phase 17 complete on `feat/phase17-lighting-2d`, light layers included — lights render: occluder seeds from each primitive's exact shape, signed SDF (1+JFA, power-of-two steps), light accumulation with soft shadows, lit sprites and gradients, backend `'lit'` as graph mode `lighting` in ONE node (`LightGroupsPass`), light layers as automatic per-group light buffers (Unity-style), a Lighting tab in the harness, GPU cost measured (design §13.2). Open: `sprite` lights, the `mix` blend, shadows from global/directional lights. Phase 16 + Audit 2026-07 are on master.**
+**Current: Phase 17 complete and merged to master (2026-09-26), light layers included — lights render: occluder seeds from each primitive's exact shape, signed SDF (1+JFA, power-of-two steps), light accumulation with soft shadows, lit sprites and gradients, backend `'lit'` as graph mode `lighting` in ONE node (`LightGroupsPass`), light layers as automatic per-group light buffers (Unity-style), a Lighting tab in the harness, GPU cost measured (design §13.2). Open: `sprite` lights, the `mix` blend, shadows from global/directional lights. Phase 16 + Audit 2026-07 are on master.**
 
 ### Audit 2026-07 — remediation summary
 
