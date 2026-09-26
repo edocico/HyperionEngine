@@ -19,6 +19,7 @@ const TABS: TabDef[] = [
   { key: 'audio',         label: 'Audio' },
   { key: 'particles',     label: 'Particles' },
   { key: 'rendering-fx',  label: 'Rendering FX' },
+  { key: 'lighting',      label: 'Lighting' },
   { key: 'debug-tools',   label: 'Debug Tools' },
   { key: 'lifecycle',     label: 'Lifecycle' },
 ];
@@ -33,6 +34,7 @@ const SECTION_LOADERS: Record<string, () => Promise<{ default: DemoSection }>> =
   audio:          () => import('./demo/audio'),
   particles:      () => import('./demo/particles'),
   'rendering-fx': () => import('./demo/rendering-fx'),
+  lighting:       () => import('./demo/lighting'),
   'debug-tools':  () => import('./demo/debug-tools'),
   lifecycle:      () => import('./demo/lifecycle'),
 };
