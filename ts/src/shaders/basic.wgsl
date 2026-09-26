@@ -60,6 +60,16 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    // Packed index 0 (tier 0, layer 0, not overflow) means "untextured": layer
+    // 0 is reserved and never holds a real texture. Answer it here instead of
+    // sampling. On a compressed tier (BC7/ASTC) layer 0 is never filled
+    // (writeTexture cannot take raw pixels there), and an all-zero BC7 block
+    // decodes to transparent black. The varyings are flat, so the branch is
+    // uniform across the quad.
+    if (in.isOverflow == 0u && in.texTier == 0u && in.texLayer == 0u) {
+        return vec4f(1.0);
+    }
+
     var texColor: vec4f;
 
     // Sample from the correct tier's Texture2DArray (with overflow support).

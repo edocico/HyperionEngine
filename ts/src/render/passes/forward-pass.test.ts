@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ForwardPass } from './forward-pass';
 import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
+import basicShaderSource from '../../shaders/basic.wgsl?raw';
 
 describe('ForwardPass', () => {
   it('should implement RenderPass interface', () => {
@@ -102,5 +103,21 @@ describe('ForwardPass group 1 follows the texture tiers', () => {
     const first = group1Views()[0];
     const second = group1Views()[0];
     expect(second).toEqual(first);
+  });
+});
+
+// An untextured entity carries packed texture index 0: tier 0, layer 0, not
+// overflow. Layer 0 is reserved and never holds a real texture. It is meant to
+// be white, but on a compressed tier (BC7/ASTC) it is never filled, because
+// writeTexture cannot take raw pixels there. An all-zero BC7 block decodes to
+// transparent black, so every untextured quad drew black on desktop and white
+// on an rgba8-only device. The shader answers index 0 itself. WGSL does not run
+// headless, so this pins the rule in the source; the GPU check is visual.
+describe('basic.wgsl draws an untextured quad white on every tier format', () => {
+  it('returns white for packed index 0 before sampling any tier', () => {
+    const fs = basicShaderSource.slice(basicShaderSource.indexOf('fn fs_main'));
+    const untextured = fs.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
+    expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
+    expect(untextured).toBeLessThan(fs.indexOf('textureSampleLevel'));
   });
 });
