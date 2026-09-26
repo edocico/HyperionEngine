@@ -67,6 +67,16 @@ describe('deriveLightGroups', () => {
     expect(g.sdfSets).toEqual([{ occluderLayers: 0b11 }]);
   });
 
+  it('a shadowed layer that no caster shadows needs no SDF: an empty flood would change nothing', () => {
+    // Found on the GPU: layer 1 got a set of its own with an empty seed, a
+    // whole ~1.8 ms flood for nothing. Marching "no occluder" gives the same.
+    const g = deriveLightGroups(scene([light(0xffff, 1), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(CAST, 0b01)]));
+    expect(g.groups).toEqual([{ layers: 0b01, sdfSet: 0 }, { layers: 0b10, sdfSet: -1 }]);
+    expect(g.sdfSets).toEqual([{ occluderLayers: 0b01 }]);
+    const none = deriveLightGroups(scene([light(0xffff, 1), drawable(RECV)]));
+    expect(none.groups).toEqual([{ layers: 1, sdfSet: -1 }]);
+  });
+
   it('casters do not split layers that no shadowed light reaches', () => {
     const g = deriveLightGroups(scene([
       light(0xffff, 0), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(CAST, 0b01), drawable(CAST, 0b10),

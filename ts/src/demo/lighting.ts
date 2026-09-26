@@ -62,9 +62,17 @@ const section: DemoSection = {
       entities.push(engine.spawn().position(0, 0, -0.5).scale(40, 18, 1).receivesLight(true));
 
       // Occluders: two walls and a pillar. Unlit, so they read as solid shapes.
+      // The pillar shadows layer 0 only: the layer-1 sprite below is lit through it.
       entities.push(engine.spawn().position(-3, 2.5, 0).scale(0.8, 5, 1).castsShadow(true));
       entities.push(engine.spawn().position(4, -3, 0).scale(6, 0.8, 1).castsShadow(true));
-      entities.push(engine.spawn().position(9, 3, 0).scale(1.5, 1.5, 1).castsShadow(true));
+      entities.push(engine.spawn().position(9, 3, 0).scale(1.5, 1.5, 1).castsShadow(true).lightLayers(0b01));
+
+      // Light layers: a sprite on layer 1, and a blue light for layer 1 only.
+      // The blue light leaves the floor (layer 0) untouched.
+      entities.push(engine.spawn().position(16, 4, 0).scale(3, 3, 1)
+        .gradient(1, 0, [0, 0.9, 0.9, 0.9, 1, 0.5]).receivesLight(true).lightLayers(0b10));
+      entities.push(engine.spawn().position(12, 5, 0)
+        .light({ type: 'point', color: '#5577ff', energy: 2, range: 9, shadowIntensity: 1, layers: 0b10 }));
 
       // Lit vs unlit: the same gradient twice, inside the same light.
       entities.push(engine.spawn().position(-12, 3, 0).scale(4, 2.5, 1)
@@ -81,7 +89,7 @@ const section: DemoSection = {
         .light({ type: 'global', color: [0.25, 0.2, 0.35], energy: 0.5 });
       entities.push(point, spot, global);
     });
-    reporter.check('Scene', true, '1 lit floor, 3 shadow casters, lit + unlit gradient, point/spot/global light');
+    reporter.check('Scene', true, '1 lit floor, 3 shadow casters, lit + unlit gradient, point/spot/global light, a layer-1 sprite and light');
 
     // ── 1. Backend 'lit', read back from WASM ─────────────────────────
     lighting.setAmbient([0.06, 0.07, 0.12], 1);
@@ -104,9 +112,15 @@ const section: DemoSection = {
     }
 
     // ── 4. Light layers ────────────────────────────────────────────────
-    // The mask is stored, hashed and snapshotted, but one screen-space light
-    // buffer has already summed every light before a receiver reads it.
-    reporter.skip('Light layers', 'mask not applied yet: needs one light buffer per layer group (plan, Task 10 note)');
+    // Layer 0 (floor, gradients) and layer 1 (the sprite) differ in their
+    // lights (the blue one) and their casters (the pillar): two light groups,
+    // two SDF sets.
+    const groups = lighting.groups;
+    reporter.check(
+      'Light layers',
+      groups !== null && groups.groups.length === 2 && groups.sdfSets.length === 2,
+      groups ? `${groups.groups.length} groups, ${groups.sdfSets.length} SDF sets` : 'no frame yet',
+    );
 
     // ── Motion: the point light circles, the spot sweeps ──────────────
     let t = 0;

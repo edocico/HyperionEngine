@@ -124,6 +124,9 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     if (((shadowedLayers >>> layer) & 1) !== 0) {
       casterKey = '';
       for (const o of occluders) casterKey += (o >>> layer) & 1;
+      // No caster shadows this layer: marching "no occluder" gives the same
+      // light as an SDF flooded from an empty seed, for none of its ~1.8 ms.
+      if (!casterKey.includes('1')) casterKey = '-';
     }
     const key = `${lightKey}|${casterKey}`;
     let group = groupByKey.get(key);
