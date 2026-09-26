@@ -109,7 +109,7 @@ for group g with sdfSet == -1:
 
 Tutti gli uniform per set e per gruppo stanno in slice allineate a 256 byte e si scrivono **una volta** in `prepare()`. Come nel gotcha del BloomPass, un `writeBuffer` tra un pass e l'altro dello stesso frame arriva solo con l'ultima scrittura.
 
-`OccluderSeedPass`, `SdfJfaPass` e `LightAccumPass` restano classi con le loro pipeline e i loro test, ma diventano **stadi** del nodo, non più nodi del grafo: `setup(device, resources)`, `destroy()` e un metodo di encode per il singolo set o gruppo.
+`OccluderSeedPass`, `SdfJfaPass` e `LightAccumPass` diventano **stadi** del nodo, non più nodi del grafo: `OccluderSeedStage`, `SdfChainStage` e `LightAccumStage`, nei file `*-stage.ts`. Ognuno ha le sue pipeline, `setup(device, resources)`, `destroy()` e un metodo di encode per il singolo set o gruppo. I loro test seguono.
 
 ### 5.2 Shader
 
@@ -140,9 +140,9 @@ Tutti gli uniform per set e per gruppo stanno in slice allineate a 256 byte e si
 - **ForwardPass:** in `prepare()` legge la tabella da `FrameState.lightGroups` e riscrive il suo uniform da 16 B. Il placeholder diventa un 2d-array a 1 layer.
 - **Hot-reload:** le probe degli slot `sdf-jfa` e `light-accum` usano un `LightGroupsPass` usa-e-getta, il cui setup compila tutti gli stadi. Gli slot dei primitivi compilano anche le pipeline occluder.
 - **Profiler:**
-  - un `RenderPass` può dichiarare `stages?: readonly string[]` e ricevere `mark(encoder, stage)`;
-  - i tempi escono come `light-groups/seed`, `light-groups/sdf` e `light-groups/accum`, sommati sui set;
-  - il query set **cresce** quando serve, invece di fermarsi in silenzio oltre 32 marker come fa oggi.
+  - un `RenderPass` può esporre `profileStages?(frame): string[]`, i nomi degli stadi che marcherà in quel frame, e riceve una funzione `mark(encoder)` come quarto argomento di `execute`;
+  - i tempi escono come `light-groups/seed`, `light-groups/sdf` e `light-groups/accum`, sommati sui set: `consume()` somma gli intervalli con lo stesso nome nello stesso frame;
+  - la capacità del profiler passa da 32 a **256 marker**. Il query set costa 2 KB ed esiste solo con il profiling attivo. Per costruzione un frame ha al massimo circa 20 pass del grafo più 16 set × 3 stadi, quindi non serve un query set che cresce.
 - **Mode A:** lo stesso `renderer.render()` gira nel render worker.
 - **Debug:** `engine.lighting.groups` applica la stessa funzione pura a `latestRenderState`, con la camera del main thread. In Mode A è approssimato, perché la camera del worker non è sincronizzata (gap noto); in B e C è esatto. Restituisce il numero di gruppi e di set e le maschere che li dividono.
 
