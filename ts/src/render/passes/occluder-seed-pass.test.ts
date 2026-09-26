@@ -70,6 +70,33 @@ function setUp(sources: Record<number, string>) {
   return { pass, pool, pipelines, textures, record };
 }
 
+describe('OccluderSeedPass camera uniform', () => {
+  it('is 80 bytes, with every layer in occluderLayers (one set: all casters)', () => {
+    const g = globalThis as Record<string, unknown>;
+    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
+    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+    const buffers: Array<{ size: number; usage: number }> = [];
+    const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
+    const device = {
+      createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
+      createShaderModule: () => ({}), createBindGroupLayout: () => ({}), createPipelineLayout: () => ({}),
+      createRenderPipeline: () => ({}), createBindGroup: () => ({}),
+      queue: { writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
+        writes.push({ buffer, data: data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
+      } },
+    } as unknown as GPUDevice;
+    const pool = new ResourcePool();
+    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) pool.setBuffer(name, {} as GPUBuffer);
+    const pass = new OccluderSeedPass({});
+    pass.setup(device, pool);
+    const camera = buffers.find((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0)!;
+    expect(camera.size).toBe(80);
+    pass.prepare(device, { cameraViewProjection: new Float32Array(16) } as FrameState);
+    const data = writes.filter((w) => w.buffer === camera).at(-1)!.data;
+    expect(new Uint32Array(data, 64, 1)[0]).toBe(0xffff);
+  });
+});
+
 describe('OccluderSeedPass', () => {
   it('writes occluder-seed from the scene columns, and is culled when nothing reads it', () => {
     const pass = new OccluderSeedPass({});
@@ -160,6 +187,17 @@ const primitiveShaders = import.meta.glob(
 describe('every primitive shader can cast its shape', () => {
   it('finds the six primitive shaders', () => {
     expect(Object.keys(primitiveShaders)).toHaveLength(6);
+  });
+
+  // Light layers (design 2026-09-26): an occluder shadows only the layers in
+  // its mask, so a set's seed holds only its casters. The set's layers ride in
+  // the camera uniform, which every primitive shader shares with ForwardPass.
+  it.each(Object.entries(primitiveShaders))('%s seeds only the occluders of the set being drawn', (_file, src) => {
+    expect(src).toMatch(/struct CameraUniform\s*\{\s*viewProjection: mat4x4f,[^}]*occluderLayers: u32,/);
+    expect(src).toMatch(/fn castsInto\(meta1: u32, layers: u32\) -> bool/);
+    // Mask 0 means every layer, for an occluder.
+    expect(src).toMatch(/select\(meta1 >> 16u, 0xFFFFu, \(meta1 >> 16u\) == 0u\)/);
+    expect(src).toMatch(/if \(OCCLUDER_PASS && !castsInto\(renderMeta\[entityIdx \* 2u \+ 1u\], camera\.occluderLayers\)\)/);
   });
 
   it.each(Object.entries(primitiveShaders))('%s has the occluder entry, the override, and the castsShadow bit', (_file, src) => {

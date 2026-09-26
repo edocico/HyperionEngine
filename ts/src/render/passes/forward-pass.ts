@@ -121,9 +121,9 @@ export class ForwardPass implements RenderPass {
     });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
 
-    // --- Camera uniform ---
+    // --- Camera uniform: viewProjection + occluderLayers (unused here) + pads ---
     this.cameraBuffer = device.createBuffer({
-      size: 64,
+      size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -253,6 +253,7 @@ export class ForwardPass implements RenderPass {
 
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.cameraBuffer) return;
+    // Only the matrix: occluderLayers and the pads stay 0 from creation.
     device.queue.writeBuffer(this.cameraBuffer, 0, frame.cameraViewProjection as Float32Array<ArrayBuffer>);
   }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { ForwardPass } from './forward-pass';
+import { primitiveGroup0LayoutEntries } from '../primitive-bindings';
 import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
 import basicShaderSource from '../../shaders/basic.wgsl?raw';
@@ -161,8 +162,9 @@ describe('ForwardPass @group(2): the light buffer', () => {
     const pipelineLayouts: GPUPipelineLayoutDescriptor[] = [];
     const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
     const textures: GPUTextureDescriptor[] = [];
+    const buffers: Array<{ size: number; usage: number }> = [];
     const device = {
-      createBuffer: (d: GPUBufferDescriptor) => ({ size: d.size, destroy() {} }),
+      createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
       createShaderModule: () => ({}),
       createSampler: () => ({ sampler: true }),
       createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return { d }; },
@@ -217,7 +219,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
       expect(bound.length).toBeGreaterThan(0);
       return bound.map((c) => c.group!.entries.find((e) => e.binding === 0)!.resource);
     };
-    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture };
+    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture, buffers };
   }
 
   it('builds every pipeline on a three-group layout; group 2 is texture, filtering sampler, uniform', () => {
@@ -231,6 +233,12 @@ describe('ForwardPass @group(2): the light buffer', () => {
     expect(entries[1].sampler?.type ?? 'filtering').toBe('filtering');
     expect(entries[2].buffer?.type).toBe('uniform');
     for (const e of entries) expect(e.visibility).toBe(GPUShaderStage.FRAGMENT);
+  });
+
+  it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
+    const { buffers } = setUp();
+    expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);
+    expect(primitiveGroup0LayoutEntries()[0].buffer?.minBindingSize).toBe(80);
   });
 
   it('sets group 2 for every pipeline, including shaders that ignore it', () => {

@@ -8,6 +8,13 @@
 
 struct CameraUniform {
     viewProjection: mat4x4f,
+    // The layers the occluder set being seeded shadows (OccluderSeedStage).
+    // 0 in ForwardPass, which never reads it. Scalars only: see
+    // src/shaders/uniform-layout.test.ts.
+    occluderLayers: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -37,6 +44,12 @@ override OCCLUDER_PASS: bool = false;
 // RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-pass.test.ts
 // compares the two.
 const CASTS_SHADOW_BIT: u32 = 1u << 9u;
+// Whether an entity is in the occluder set being seeded: it casts, and its
+// mask (renderMeta bits 16-31, 0 = every layer) meets the set's layers.
+fn castsInto(meta1: u32, layers: u32) -> bool {
+    let mask = select(meta1 >> 16u, 0xFFFFu, (meta1 >> 16u) == 0u);
+    return (meta1 & CASTS_SHADOW_BIT) != 0u && (mask & layers) != 0u;
+}
 // renderMeta[slot*2+1] bit 10 (receivesLight), RENDER_META_RECEIVES_LIGHT_BIT
 // in components.rs; forward-pass.test.ts compares the two.
 const RECEIVES_LIGHT_BIT: u32 = 1u << 10u;
@@ -79,7 +92,7 @@ fn vs_main(
 
     // In the occluder pass an entity that casts no shadow emits a degenerate
     // triangle, so nothing of it is rasterised.
-    if (OCCLUDER_PASS && (renderMeta[entityIdx * 2u + 1u] & CASTS_SHADOW_BIT) == 0u) {
+    if (OCCLUDER_PASS && !castsInto(renderMeta[entityIdx * 2u + 1u], camera.occluderLayers)) {
         out.clipPosition = vec4f(0.0, 0.0, 0.0, 1.0);
         return out;
     }

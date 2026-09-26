@@ -73,7 +73,8 @@ export class OccluderSeedPass implements RenderPass {
     const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
     this.indexBuffer = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
-    this.cameraBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // CameraUniform: viewProjection + occluderLayers + pads = 80 bytes.
+    this.cameraBuffer = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const buffers = PRIMITIVE_GROUP0_BUFFERS.map((name) => {
       const buffer = resources.getBuffer(name);
@@ -114,7 +115,10 @@ export class OccluderSeedPass implements RenderPass {
 
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.cameraBuffer) return;
-    device.queue.writeBuffer(this.cameraBuffer, 0, frame.cameraViewProjection as Float32Array<ArrayBuffer>);
+    const data = new ArrayBuffer(80);
+    new Float32Array(data, 0, 16).set(frame.cameraViewProjection);
+    new Uint32Array(data, 64, 1)[0] = 0xffff;  // one set of every caster
+    device.queue.writeBuffer(this.cameraBuffer, 0, data);
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {

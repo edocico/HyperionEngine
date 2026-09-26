@@ -11,7 +11,10 @@ export function primitiveGroup0LayoutEntries(): GPUBindGroupLayoutEntry[] {
   const vs = GPUShaderStage.VERTEX;
   const vsFs = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   return [
-    { binding: 0, visibility: vs, buffer: { type: 'uniform' } },               // camera
+    // CameraUniform is 80 bytes in every primitive shader (viewProjection +
+    // occluderLayers + pads). Declared, so a smaller buffer fails when the bind
+    // group is created instead of at draw time, where no test can see it.
+    { binding: 0, visibility: vs, buffer: { type: 'uniform', minBindingSize: 80 } }, // camera
     { binding: 1, visibility: vs, buffer: { type: 'read-only-storage' } },     // transforms
     { binding: 2, visibility: vs, buffer: { type: 'read-only-storage' } },     // visibleIndices
     { binding: 3, visibility: vsFs, buffer: { type: 'read-only-storage' } },   // texLayerIndices (gradient reads in fs)
