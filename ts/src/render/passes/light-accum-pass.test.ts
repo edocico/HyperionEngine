@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { LightAccumPass, LIGHT2D_ARG_SLOTS } from './light-accum-pass';
+import { LightAccumPass, LIGHT2D_ARG_SLOTS, LIGHT_SOURCE_FRACTION } from './light-accum-pass';
 import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
 import type { FrameState } from '../render-pass';
@@ -130,6 +130,14 @@ describe('LightAccumPass', () => {
     expect([...new Float32Array(u, 0, 16)]).toEqual([...vp]);
     expect(new Uint32Array(u, 64, 1)[0]).toBe(17);
   });
+
+  it("uploads the light's source radius as a fraction of its range", () => {
+    const { record, writes } = setUp();
+    record({});
+    expect(LIGHT_SOURCE_FRACTION).toBeGreaterThan(0);
+    expect(LIGHT_SOURCE_FRACTION).toBeLessThan(0.1);
+    expect(new Float32Array(writes.at(-1)!.data, 72, 1)[0]).toBeCloseTo(LIGHT_SOURCE_FRACTION, 6);
+  });
 });
 
 describe('light-accum.wgsl', () => {
@@ -141,7 +149,27 @@ describe('light-accum.wgsl', () => {
   it('uses the original Quilez soft-shadow term, not the Aaltonen correction', () => {
     // The correction assumes an exact SDF. A jump-flood field over-estimates,
     // and y = h*h / (2*ph) amplifies that (design §7.3, A2).
-    expect(lightShaderSource).toMatch(/min\(\s*res\s*,[^;]*\*\s*h\s*\/\s*t\s*\)/);
+    expect(lightShaderSource).toMatch(/res\s*=\s*min\(\s*res\s*,\s*h\s*\/\s*\(\s*t\s*\*\s*angle\s*\)\s*\)/);
     expect(lightShaderSource).not.toMatch(/h\s*\*\s*h\s*\/\s*\(\s*2\.0\s*\*/);
+  });
+
+  it('a march that runs out of steps extrapolates its last clearance to the light, never assumes "lit"', () => {
+    // A ray hugging a long wall advances by 1-2 texels and can spend all its
+    // steps before it proves anything. Returning the running `res` then lit
+    // pixels squarely behind the wall (a leak above its top, at 24 steps).
+    // Returning 0 would darken long rays through open space instead. Assume
+    // the clearance stays the last one seen, all the way to the light.
+    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
+    const afterLoop = fn.slice(fn.indexOf('t += h;'));  // the loop's last statement onwards
+    expect(afterLoop).toMatch(/if\s*\(\s*t\s*<\s*travel\s*\)/);
+    expect(afterLoop).toMatch(/min\(\s*res\s*,\s*h\s*\/\s*\(\s*travel\s*\*\s*angle\s*\)\s*\)/);
+  });
+
+  it("caps the light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
+    // k alone makes the light's ANGULAR size constant, i.e. a light whose
+    // radius grows with the pixel's distance (R = D/k). A light beside a wall
+    // then darkened pixels on the far side: the last steps of their march pass
+    // within h of the wall. Measured 2026-09-26: free rays 23-42% darker.
+    expect(lightShaderSource).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
   });
 });

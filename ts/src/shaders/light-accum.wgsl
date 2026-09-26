@@ -16,7 +16,8 @@ struct LightUniform {
     viewProjection: mat4x4f,
     shadowSteps: u32,
     shadowHardness: f32,
-    _pad0: f32,
+    // A light's source radius as a fraction of its range (LIGHT_SOURCE_FRACTION).
+    sourceFraction: f32,
     _pad1: f32,
 };
 
@@ -91,15 +92,24 @@ fn sdfDistance(texel: vec2i, size: vec2i) -> f32 {
 
 // How much of the light reaches a pixel, 0..1. A sphere march on the signed SDF
 // from the pixel toward the light, in SDF texels, with Quilez's soft-shadow
-// term res = min(res, k*h/t): k*h/t is the angle the nearest occluder subtends
-// from the current point, which is what makes the penumbra.
+// term: h/t is the angle the nearest occluder subtends from the current point,
+// compared with the light's own angular radius. That comparison is what makes
+// the penumbra.
+//
+// The light's angular radius is min(1/k, sourceRadius / travel). Quilez's k
+// alone is the first term, a CONSTANT angle, i.e. a light whose radius grows
+// with the pixel's distance (travel/k). Right for a sun, wrong for a torch: a
+// light beside a wall then darkened pixels on the far side of it, because the
+// last steps of their march pass within h of the wall. Measured 2026-09-26:
+// free rays 23-42% darker, in radial bands. The second term is the light's
+// real size, so a far pixel sees a small light.
 //
 // This is deliberately the ORIGINAL form, not the Aaltonen correction
 // (y = h*h / (2*ph), d = sqrt(h*h - y*y), ...). That correction assumes an
 // exact SDF, and a jump-flood field only ever over-estimates h (design §6.2,
 // A1). The y term amplifies exactly that error, so the "better" formula would
 // make shadows worse here (§7.3, A2).
-fn shadow(fromUV: vec2f, toUV: vec2f) -> f32 {
+fn shadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     let size = vec2i(textureDimensions(sdf));
     let fsize = vec2f(size);
     let origin = fromUV * fsize;
@@ -114,18 +124,28 @@ fn shadow(fromUV: vec2f, toUV: vec2f) -> f32 {
         return 1.0;
     }
     let dir = (lightPos - origin) / travel;
+    let angle = min(1.0 / u.shadowHardness, sourceRadius / travel);
     var res = 1.0;
     var t = max(h0, 1.0);
+    var h = h0;
     for (var i = 0u; i < u.shadowSteps; i++) {
         if (t >= travel) {
             break;
         }
-        let h = sdfDistance(vec2i(origin + dir * t), size);
+        h = sdfDistance(vec2i(origin + dir * t), size);
         if (h <= 0.0) {
             return 0.0;
         }
-        res = min(res, u.shadowHardness * h / t);
+        res = min(res, h / (t * angle));
         t += h;
+    }
+    // Out of steps before reaching the light: the rest of the ray is unproven.
+    // A ray hugging a long wall spends its steps 1-2 texels at a time, and the
+    // running `res` alone lit pixels squarely behind the wall. Returning 0
+    // would darken long rays through open space instead. Assume the clearance
+    // stays the last one seen, all the way to the light.
+    if (t < travel) {
+        res = min(res, h / (travel * angle));
     }
     return clamp(res, 0.0, 1.0);
 }
@@ -167,7 +187,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let shadowStrength = clamp(primParams[p + 7u], 0.0, 1.0);
         if (shadowStrength > 0.0 && intensity > 0.0) {
             let lightUV = toScreenUV(u.viewProjection * vec4f(center, 0.0, 1.0));
-            intensity *= mix(1.0, shadow(in.screenUV, lightUV), shadowStrength);
+            // The source radius in SDF texels: a fraction of the range, so it
+            // follows the light's size and the zoom like the rest of the world.
+            let size = vec2f(textureDimensions(sdf));
+            let edgeUV = toScreenUV(u.viewProjection * vec4f(center + vec2f(range, 0.0), 0.0, 1.0));
+            let sourceRadius = max(1.0, distance(lightUV * size, edgeUV * size) * u.sourceFraction);
+            intensity *= mix(1.0, shadow(in.screenUV, lightUV, sourceRadius), shadowStrength);
         }
     }
 

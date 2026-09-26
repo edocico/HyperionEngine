@@ -21,6 +21,15 @@ const DEFAULT_SHADOW_STEPS = 24;
 const SHADOW_HARDNESS = 8;
 
 /**
+ * A light's source radius as a fraction of its range. The shader caps the
+ * light's apparent angle at min(1/k, sourceRadius / distance): without the
+ * cap the light's radius grows with the pixel's distance (D/k), and a light
+ * beside a wall darkens the pixels on the far side of it too. 0.02 keeps a
+ * light that is range/50 or more away from a wall unoccluded on the open side.
+ */
+export const LIGHT_SOURCE_FRACTION = 0.02;
+
+/**
  * Accumulates every visible Light2D into `light-buffer` (Phase 17, Task 9).
  *
  * The target is `halfResolution`, the same texels as the signed SDF, so a
@@ -78,7 +87,7 @@ export class LightAccumPass implements RenderPass {
     const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
     this.indexBuffer = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
-    // LightUniform: viewProjection (64) + shadowSteps, hardness, 2 pads (16) = 80 bytes.
+    // LightUniform: viewProjection (64) + shadowSteps, hardness, sourceFraction, pad (16) = 80 bytes.
     this.uniformBuffer = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     this.columns = ['entity-transforms', 'visible-indices', 'prim-params', 'render-meta'].map((name) => {
@@ -120,6 +129,7 @@ export class LightAccumPass implements RenderPass {
     new Float32Array(data, 0, 16).set(frame.cameraViewProjection);
     new Uint32Array(data, 64, 1)[0] = frame.shadowSteps ?? DEFAULT_SHADOW_STEPS;
     new Float32Array(data, 68, 1)[0] = SHADOW_HARDNESS;
+    new Float32Array(data, 72, 1)[0] = LIGHT_SOURCE_FRACTION;
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
