@@ -589,9 +589,12 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Per-pass GPU timings, one entry per pass measured at least once. Empty when
-   * profiling is off, unsupported, or still warming up — treat a `sampleCount`
-   * below ~30 as not yet meaningful.
+   * Per-pass GPU timings (a staged pass reports `pass/stage` entries), one
+   * entry per name measured in the last 120 resolved frames: a frame without
+   * it counts as 0 ms, so every `averageMs` is a mean per frame and every
+   * entry has the same `sampleCount`. Empty when profiling is off,
+   * unsupported, or still warming up — treat a `sampleCount` below ~30 as not
+   * yet meaningful.
    */
   getGpuTimings(): PassTiming[] {
     return this.renderer?.getGpuTimings() ?? [];

@@ -34,12 +34,19 @@ function makeDevice() {
     mapped,
     createQuerySet: vi.fn(() => ({ destroy: vi.fn() })),
     createBuffer: vi.fn(() => {
+      // Like WebGPU: the range honours its size, and mapping a buffer that is
+      // still mapped rejects.
       const b = {
         destroyed: false,
+        isMapped: false,
         destroy() { this.destroyed = true; },
-        mapAsync: vi.fn(async () => {}),
-        getMappedRange: vi.fn(() => mapped.data.buffer),
-        unmap: vi.fn(),
+        mapAsync: vi.fn(async () => {
+          if (b.isMapped) throw new Error('OperationError: buffer already mapped');
+          b.isMapped = true;
+        }),
+        getMappedRange: vi.fn((offset = 0, size?: number) =>
+          mapped.data.buffer.slice(offset, size === undefined ? undefined : offset + size)),
+        unmap: vi.fn(() => { b.isMapped = false; }),
       };
       buffers.push(b as unknown as { destroyed: boolean });
       return b;
@@ -189,6 +196,46 @@ describe('GpuProfiler', () => {
       for (let i = 0; i < WINDOW; i++) await runFrame(p, ['lg/accum'], [1]);
       expect(p.getTimingsByName().has('lg/seed')).toBe(false);
       expect(p.totalAverageMs()).toBeCloseTo(1, 5);
+    });
+
+    // Second review 2026-09-26: "forget when every sample is 0" dropped a stage
+    // measured at 0 ms on its first missing frame, so it flickered in and out.
+    it('forgets a stage only after a whole window without it, even if it measured 0 ms', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['a', 'z'], [1, 0]);
+      await runFrame(p, ['a'], [1]);
+      expect(p.getTimingsByName().has('z')).toBe(true);
+      for (let i = 0; i < WINDOW - 2; i++) await runFrame(p, ['a'], [1]);
+      expect(p.getTimingsByName().has('z')).toBe(true);
+      await runFrame(p, ['a'], [1]);
+      expect(p.getTimingsByName().has('z')).toBe(false);
+    });
+
+    it('a stage appearing mid-window is averaged per frame too: every name has the same sample count', async () => {
+      const p = new GpuProfiler(device);
+      for (let i = 0; i < 3; i++) await runFrame(p, ['a'], [1]);
+      await runFrame(p, ['a', 'b'], [1, 4]);
+      const b = p.getTimingsByName().get('b')!;
+      expect(b.sampleCount).toBe(4);
+      expect(b.averageMs).toBeCloseTo(1, 5);
+      expect(b.lastMs).toBeCloseTo(4, 5);
+      expect(p.totalAverageMs()).toBeCloseTo(2, 5);
+    });
+
+    it('drops a frame whose marks do not match its names, and keeps its buffer usable', async () => {
+      const p = new GpuProfiler(device);
+      device.mapped.data = stamps([1, 1, 1]);
+      p.beginFrame(['a', 'b', 'c']);
+      const enc = makeEncoder(device);
+      p.mark(enc);
+      p.mark(enc); // one short: a staged pass that marked fewer stages than it listed
+      p.endFrame(enc);
+      await p.poll();
+      expect(p.timings()).toEqual([]);
+      // Every readback buffer still comes back unmapped and free: the next
+      // frames measure normally.
+      for (let i = 0; i < 4; i++) await runFrame(p, ['a'], [1]);
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(4);
     });
 
     it('never forgets a stage that is still measured, even at 0 ms', async () => {

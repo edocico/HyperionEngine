@@ -132,7 +132,10 @@ export interface Renderer {
    */
   enableGpuProfiling(): boolean;
   disableGpuProfiling(): void;
-  /** Per-pass GPU timings. Empty when profiling is off or still warming up. */
+  /**
+   * Per-pass (and per-stage) GPU timings over the last 120 resolved frames.
+   * Empty when profiling is off or still warming up.
+   */
   getGpuTimings(): PassTiming[];
 
   destroy(): void;
@@ -914,7 +917,9 @@ export async function createRenderer(
     },
 
     getGpuTimings() {
-      return gpuProfiler?.timings() ?? [];
+      // The profiler keeps its history after a disable; what it holds then is
+      // frozen, and quoting it as current would mislead.
+      return gpuProfilingEnabled ? gpuProfiler?.timings() ?? [] : [];
     },
 
     destroy() {
