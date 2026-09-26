@@ -142,6 +142,11 @@ export class PrioritizedCommandQueue {
         if (isPartialUpdate(cmd) && prev.payload && payload) {
           payload = mergePartialPayload(cmd, asBytes(prev.payload), asBytes(payload));
         }
+        // Map.set on an existing key keeps its FIRST position: move it to the
+        // end, so the drain follows the order of the last calls. Two command
+        // types can write the same state (SetRotation and SetRotation2D both
+        // set a 3D entity's Rotation), and the last call must win.
+        this.overwrites.delete(key);
       }
       this.overwrites.set(key, { cmd, entityId, payload });
     }
@@ -165,8 +170,9 @@ export class PrioritizedCommandQueue {
   /**
    * Drain queued commands into the ring buffer.
    * Critical (lifecycle) commands are written first, then overwrites.
-   * Map iteration order matches insertion order, so drain order for different
-   * command types on the same entity matches the original call order.
+   * Map iteration order matches insertion order, and a coalesced command moves
+   * to the end on every overwrite, so the drain follows the order of the LAST
+   * call of each command type.
    *
    * @param rb - Ring buffer producer to write into.
    * @param tap - Optional recording tap, called for each written command.

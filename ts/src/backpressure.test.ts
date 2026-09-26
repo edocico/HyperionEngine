@@ -18,6 +18,26 @@ describe('PrioritizedCommandQueue', () => {
     expect(q.overwriteCount).toBe(1); // only latest kept
   });
 
+  // Review 2026-09-26: a Map.set on an existing key keeps the key's FIRST
+  // position, so rotation(q1); rotation(a); rotation(q2) drained as
+  // [SetRotation(q2), SetRotation2D(a)] and the entity ended at `a`. Once both
+  // commands write the same 3D Rotation, the order of the LAST calls matters.
+  it('drains coalesced commands in the order of their last calls', () => {
+    const q = new PrioritizedCommandQueue();
+    q.enqueue(CommandType.SetRotation, 1, new Float32Array([0, 0, 0, 1]));
+    q.enqueue(CommandType.SetRotation2D, 1, new Float32Array([0.5]));
+    q.enqueue(CommandType.SetRotation, 1, new Float32Array([0.7, 0, 0, 0.714]));
+    const drained: Array<{ cmd: number; first: number }> = [];
+    q.drainTo({
+      writeCommand(cmd: number, _id: number, payload?: Float32Array) {
+        drained.push({ cmd, first: payload?.[0] ?? NaN });
+        return true;
+      },
+    } as any);
+    expect(drained.map((d) => d.cmd)).toEqual([CommandType.SetRotation2D, CommandType.SetRotation]);
+    expect(drained[1].first).toBeCloseTo(0.7);
+  });
+
   it('should drain critical commands before overwrites', () => {
     const q = new PrioritizedCommandQueue();
     q.enqueue(CommandType.SetPosition, 1, new Float32Array([1, 2, 3]));
