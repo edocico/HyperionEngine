@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ForwardPass } from './forward-pass';
+import { ResourcePool } from '../resource-pool';
+import type { FrameState } from '../render-pass';
 
 describe('ForwardPass', () => {
   it('should implement RenderPass interface', () => {
@@ -25,5 +27,80 @@ describe('ForwardPass', () => {
     pass.destroy();
     // If no error, pipelines were successfully cleared (even though empty)
     expect(true).toBe(true);
+  });
+});
+
+// ForwardPass binds the texture-tier views in group 1. A tier that grows gets a
+// new texture and view, and the old texture is destroyed. The bind group must
+// follow, or every draw uses a destroyed texture and the frame is dropped.
+describe('ForwardPass group 1 follows the texture tiers', () => {
+  function setUp() {
+    const g = globalThis as Record<string, unknown>;
+    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
+    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+    g.GPUTextureUsage ??= { TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
+
+    const texture = () => ({ createView: () => ({}), destroy() {} });
+    const device = {
+      createBuffer: () => ({ destroy() {} }),
+      createShaderModule: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: () => ({}),
+      createRenderPipeline: () => ({}),
+      createBindGroup: (d: GPUBindGroupDescriptor) => ({ entries: [...d.entries] }),
+      createTexture: texture,
+      queue: { writeBuffer() {} },
+    } as unknown as GPUDevice;
+
+    const pool = new ResourcePool();
+    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
+      pool.setBuffer(name, {} as GPUBuffer);
+    }
+    for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
+      pool.setTextureView(name, { name } as unknown as GPUTextureView);
+    }
+    pool.setSampler('texSampler', {} as GPUSampler);
+
+    const saved = ForwardPass.SHADER_SOURCES;
+    ForwardPass.SHADER_SOURCES = { 0: 'stub' };
+    const pass = new ForwardPass();
+    try {
+      pass.setup(device, pool);
+    } finally {
+      ForwardPass.SHADER_SOURCES = saved;
+    }
+
+    const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
+    const group1Views = () => {
+      const bound: Array<{ entries: GPUBindGroupEntry[] }> = [];
+      const encoder = {
+        beginRenderPass: () => ({
+          setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, end() {},
+          setBindGroup: (i: number, bg: { entries: GPUBindGroupEntry[] }) => { if (i === 1) bound.push(bg); },
+        }),
+      } as unknown as GPUCommandEncoder;
+      pass.execute(encoder, frame, pool);
+      expect(bound.length).toBeGreaterThan(0);
+      return bound.map((bg) => bg.entries.map((e) => e.resource));
+    };
+    return { pool, group1Views };
+  }
+
+  it('binds the views that are in the pool when it draws', () => {
+    const { pool, group1Views } = setUp();
+    group1Views();
+
+    const grown = { name: 'tier0 after growth' } as unknown as GPUTextureView;
+    pool.setTextureView('tier0', grown);
+    for (const views of group1Views()) {
+      expect(views).toContain(grown);
+    }
+  });
+
+  it('keeps the same bind group while nothing changes', () => {
+    const { group1Views } = setUp();
+    const first = group1Views()[0];
+    const second = group1Views()[0];
+    expect(second).toEqual(first);
   });
 });

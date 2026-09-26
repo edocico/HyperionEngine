@@ -35,6 +35,9 @@ export class ForwardPass implements RenderPass {
   private transparentPipelines = new Map<number, GPURenderPipeline>();
   private bindGroup0: GPUBindGroup | null = null;
   private bindGroup1: GPUBindGroup | null = null;
+  private bindGroupLayout1: GPUBindGroupLayout | null = null;
+  /** The pool resources `bindGroup1` was built from, in binding order. */
+  private group1Resources: Array<GPUTextureView | GPUSampler> = [];
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null;
@@ -127,7 +130,7 @@ export class ForwardPass implements RenderPass {
     });
 
     // --- Group 1: fragment-stage textures ---
-    const bindGroupLayout1 = device.createBindGroupLayout({
+    const bindGroupLayout1 = this.bindGroupLayout1 = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
@@ -211,34 +214,36 @@ export class ForwardPass implements RenderPass {
       ],
     });
 
-    // Group 1 bind group requires texture views + sampler from ResourcePool
-    const tier0View = resources.getTextureView('tier0');
-    const tier1View = resources.getTextureView('tier1');
-    const tier2View = resources.getTextureView('tier2');
-    const tier3View = resources.getTextureView('tier3');
-    const sampler = resources.getSampler('texSampler');
-    const ovf0View = resources.getTextureView('ovf0');
-    const ovf1View = resources.getTextureView('ovf1');
-    const ovf2View = resources.getTextureView('ovf2');
-    const ovf3View = resources.getTextureView('ovf3');
+    this.bindTextureTiers(device, resources);
+  }
 
-    if (tier0View && tier1View && tier2View && tier3View && sampler &&
-        ovf0View && ovf1View && ovf2View && ovf3View) {
-      this.bindGroup1 = device.createBindGroup({
-        layout: bindGroupLayout1,
-        entries: [
-          { binding: 0, resource: tier0View },
-          { binding: 1, resource: tier1View },
-          { binding: 2, resource: tier2View },
-          { binding: 3, resource: tier3View },
-          { binding: 4, resource: sampler },
-          { binding: 5, resource: ovf0View },
-          { binding: 6, resource: ovf1View },
-          { binding: 7, resource: ovf2View },
-          { binding: 8, resource: ovf3View },
-        ],
-      });
-    }
+  /** Group 1 resources, in binding order: tier0-3, the sampler, ovf0-3. */
+  private static readonly GROUP1 = [
+    'tier0', 'tier1', 'tier2', 'tier3', 'texSampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3',
+  ] as const;
+
+  /**
+   * (Re)build group 1 when any tier view or the sampler in the pool differs
+   * from what it was built from.
+   *
+   * A texture tier that grows gets a new texture and view, and the old texture
+   * is destroyed (see `TextureManager.onViewsChanged`). A bind group still
+   * holding the old view makes every draw use a destroyed texture, and the
+   * whole frame is dropped. Checked every frame: nine map lookups.
+   */
+  private bindTextureTiers(device: GPUDevice, resources: ResourcePool): void {
+    if (!this.bindGroupLayout1) return;
+    const current = ForwardPass.GROUP1.map((name) =>
+      name === 'texSampler' ? resources.getSampler(name) : resources.getTextureView(name));
+    if (current.some((r) => !r)) return;
+    const resolved = current as Array<GPUTextureView | GPUSampler>;
+    if (this.bindGroup1 && resolved.every((r, i) => r === this.group1Resources[i])) return;
+
+    this.bindGroup1 = device.createBindGroup({
+      layout: this.bindGroupLayout1,
+      entries: resolved.map((resource, binding) => ({ binding, resource })),
+    });
+    this.group1Resources = resolved;
   }
 
   prepare(device: GPUDevice, frame: FrameState): void {
@@ -247,6 +252,7 @@ export class ForwardPass implements RenderPass {
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
+    if (this.device) this.bindTextureTiers(this.device, resources);
     if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
     // Get render target view (scene-hdr intermediate for post-processing)
@@ -338,6 +344,8 @@ export class ForwardPass implements RenderPass {
     this.transparentPipelines.clear();
     this.bindGroup0 = null;
     this.bindGroup1 = null;
+    this.bindGroupLayout1 = null;
+    this.group1Resources = [];
     this.indirectBuffer = null;
     this.device = null;
   }

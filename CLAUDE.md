@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1046 tests + 5 skipped, 84 files)
+cd ts && npm test                            # All vitest tests (1050 tests + 5 skipped, 84 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -522,6 +522,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **No rendering fallback without WebGPU** — Engine runs ECS/WASM simulation but rendering is disabled (`renderer` stays `null`). Future: WebGL 2 fallback.
 - **Retained-slot partial upload (Phase 12)** — DirtyTracker + stable slots + scatter shader replace full re-upload. Remaining future optimizations: double-buffering with `mapAsync`, CPU-side frustum pre-culling.
 - **Texture2DArray maxTextureArrayLayers varies by device** — WebGPU spec guarantees minimum 256. Future: query `device.limits.maxTextureArrayLayers`.
+- **A texture tier that grows DESTROYS its old texture — every holder of the old view must rebind** — `ensureTierCapacity`/`ensureOverflowCapacity` replace the tier's texture and view, including the 1-layer placeholder handed out at init. `TextureManager.onViewsChanged` fires after each growth, `createRenderer` re-registers `tier0-3`/`ovf0-3` in the pool, and `ForwardPass.bindTextureTiers` rebuilds group 1 when the pool's views differ from what it was built with (checked per frame). Until 2026-09-26 none of this existed: the first `loadTexture` gave "Destroyed texture used in a submit" on every frame. It was never seen because no demo tab loads a texture. A new pass binding tier views must do the same.
 - **TextureManager lazy allocation** — Growth: 0→16→32→64→128→256 layers per tier. `getTierView()` creates 1-layer placeholder for bind group validity.
 - **ResourcePool buffer naming** — CullPass: reads `entity-bounds`/`render-meta`/`tex-indices`, writes `visible-indices`/`indirect-args`. ForwardPass: reads `entity-transforms`/`visible-indices`/`indirect-args`/`tex-indices`/`render-meta`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `ovf0`-`ovf3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`. Sampler: `texSampler`.
 - **BackpressuredProducer wraps RingBufferProducer** — All bridge factories use it. `flush()` called at start of every `tick()`.

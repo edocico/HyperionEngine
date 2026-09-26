@@ -630,3 +630,40 @@ describe("TextureManager KTX2 routing", () => {
     expect(createImageBitmapSpy).not.toHaveBeenCalled();
   });
 });
+
+// Growing a tier replaces its texture AND its view, and destroys the old
+// texture. That includes the 1-layer placeholder registered at init. Anything
+// still bound to the old view then references a destroyed texture, which
+// invalidates the whole frame's command buffer. The renderer relies on this
+// notification to re-register the views.
+describe("onViewsChanged", () => {
+  it("fires when a tier grows, and only then", () => {
+    const tm = new TextureManager(createMockDevice());
+    const changed = vi.fn();
+    tm.onViewsChanged = changed;
+
+    const placeholder = tm.getTierView(0);
+    expect(changed).not.toHaveBeenCalled();
+
+    tm.ensureTierCapacity(0, 1);    // placeholder -> 16 layers
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(tm.getTierView(0)).not.toBe(placeholder);
+
+    tm.ensureTierCapacity(0, 5);    // fits: no new texture
+    expect(changed).toHaveBeenCalledTimes(1);
+
+    tm.ensureTierCapacity(0, 17);   // 16 -> 32
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
+  it("fires when an overflow tier grows", () => {
+    const tm = new TextureManager(createMockDevice());
+    const changed = vi.fn();
+    tm.onViewsChanged = changed;
+
+    const placeholder = tm.getOverflowTierView(2);
+    tm.ensureOverflowCapacity(2, 1);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(tm.getOverflowTierView(2)).not.toBe(placeholder);
+  });
+});

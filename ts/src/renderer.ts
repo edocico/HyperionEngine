@@ -230,14 +230,16 @@ export async function createRenderer(
   resources.setBuffer('selection-mask', selectionMaskBuffer);
 
   // --- 4. Populate texture views + sampler in ResourcePool ---
-  resources.setTextureView('tier0', textureManager.getTierView(0));
-  resources.setTextureView('tier1', textureManager.getTierView(1));
-  resources.setTextureView('tier2', textureManager.getTierView(2));
-  resources.setTextureView('tier3', textureManager.getTierView(3));
-  resources.setTextureView('ovf0', textureManager.getOverflowTierView(0));
-  resources.setTextureView('ovf1', textureManager.getOverflowTierView(1));
-  resources.setTextureView('ovf2', textureManager.getOverflowTierView(2));
-  resources.setTextureView('ovf3', textureManager.getOverflowTierView(3));
+  // A tier that grows replaces its view and destroys the old texture, so the
+  // pool is refreshed on every growth; ForwardPass rebinds when it sees it.
+  const registerTextureViews = (): void => {
+    for (let tier = 0; tier < 4; tier++) {
+      resources.setTextureView(`tier${tier}`, textureManager.getTierView(tier));
+      resources.setTextureView(`ovf${tier}`, textureManager.getOverflowTierView(tier));
+    }
+  };
+  registerTextureViews();
+  textureManager.onViewsChanged = registerTextureViews;
   resources.setSampler('texSampler', textureManager.getSampler());
 
   // --- 5. Create intermediate scene-hdr texture for post-processing ---
