@@ -15,6 +15,7 @@
 
 import type { BackpressuredProducer } from './backpressure';
 import type { EngineBridge } from './worker-bridge';
+import { deriveLightGroups, type LightGroups } from './render/light-groups';
 
 /** Which lighting implementation runs, or none at all. */
 export type LightingBackend = 'off' | 'lit' | 'gi';
@@ -75,13 +76,36 @@ export const DEFAULT_LIGHTING_QUALITY: LightingQuality = {
 export class LightingAPI {
   private producer: BackpressuredProducer | null = null;
   private bridge: EngineBridge | null = null;
+  private viewProjection: (() => Float32Array) | null = null;
   private _quality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
   private _qualityDirty = false;
 
-  /** @internal Wired by `Hyperion` at construction. */
-  _init(producer: BackpressuredProducer, bridge: EngineBridge): void {
+  /**
+   * @internal Wired by `Hyperion` at construction.
+   * @param viewProjection the main-thread camera, for {@link groups}.
+   */
+  _init(producer: BackpressuredProducer, bridge: EngineBridge, viewProjection?: () => Float32Array): void {
     this.producer = producer;
     this.bridge = bridge;
+    this.viewProjection = viewProjection ?? null;
+  }
+
+  /**
+   * The light groups of the latest frame (light layers, design 2026-09-26):
+   * which receiver layers share a light buffer, which of those share an SDF,
+   * and the distinct mask values that split them. The renderer forms them
+   * the same way every frame while the backend is `'lit'`.
+   *
+   * Every distinct SDF set costs a full SDF flood — about 1.8 ms at 1080p on
+   * an integrated GPU — and there is no cap, so this is where to look when a
+   * `lightLayers()` call made lighting slower. `null` before the first frame.
+   * In Mode A it uses the main thread's camera, which the render worker's does
+   * not follow yet: an approximation there.
+   */
+  get groups(): LightGroups | null {
+    const rs = this.bridge?.latestRenderState;
+    if (!rs || !this.viewProjection) return null;
+    return deriveLightGroups({ ...rs, cameraViewProjection: this.viewProjection() });
   }
 
   /**

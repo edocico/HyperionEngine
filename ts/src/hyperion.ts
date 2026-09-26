@@ -99,7 +99,7 @@ export class Hyperion implements Disposable {
     this.physicsApi = new PhysicsAPI();
     this.physicsApi._initProducer(bridge.commandBuffer);
     this.lightingApi = new LightingAPI();
-    this.lightingApi._init(bridge.commandBuffer, bridge);
+    this.lightingApi._init(bridge.commandBuffer, bridge, () => this.camera.viewProjection);
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }

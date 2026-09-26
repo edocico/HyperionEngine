@@ -70,7 +70,7 @@ export interface LightOptions {
   shadowIntensity?: number;
   /** Default `'add'`. */
   blend?: LightBlendMode;
-  /** 16-bit layer mask. Default `0xffff` (all layers). */
+  /** The layers this light lights (see `lightLayers()`). Default `0xffff` (all). 0 lights nothing. */
   layers?: number;
 }
 
@@ -518,14 +518,26 @@ export class EntityHandle implements Disposable {
   }
 
   /**
-   * The 16 light layers this entity participates in.
+   * The light layers (16 bits) of this entity. One field, three roles:
+   * - **light**: the layers it lights. Mask 0 lights nothing; `light()`
+   *   defaults to 0xFFFF. Global and directional lights obey it too, so a
+   *   masked global light is a per-layer ambient.
+   * - **receiver** (`receivesLight()`): the ONE layer it belongs to, the lowest
+   *   bit of the mask; mask 0 is layer 0. Extra bits are ignored (a warning,
+   *   once). To light a receiver from several layers, put the bits on the
+   *   lights instead: same image, no ambiguity about shadows.
+   * - **occluder** (`castsShadow()`): the layers whose receivers it shadows.
+   *   Mask 0 is every layer. It is absent from other layers' shadows.
    *
-   * One field with three meanings depending on role: on a light, which layers
-   * it illuminates; on a drawable, which layer it belongs to; on an occluder,
-   * which layers it shadows. Godot splits this into two orthogonal pairs, at
-   * the cost of a second mask — and its users document real confusion from
-   * `shadow_item_cull_mask` doing double duty. A single field cannot express
-   * "lit by layer A but shadowing for layer B"; that is the accepted limit.
+   * Layers that the same lights and casters reach share a light buffer, the
+   * way Unity batches sorting layers (design 2026-09-26). Each distinct set of
+   * casters costs a full SDF flood, about 1.8 ms at 1080p on an integrated
+   * GPU, with no cap: `engine.lighting.groups` shows what splits them.
+   *
+   * The occluder's layers are keyed by RECEIVER layer, not by light (Godot's
+   * `occluder_light_mask`); they agree when each light has one layer. A single
+   * field cannot say "lit by layer A but shadowing for layer B", nor Godot's
+   * "lit by L but not shadowed by L": use two lights for that.
    */
   lightLayers(mask: number): this {
     this.check();

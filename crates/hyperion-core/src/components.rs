@@ -321,11 +321,14 @@ pub enum LightBlendMode {
 /// Lighting bits 9-31 of `renderMeta`, stored **pre-shifted**.
 ///
 /// One field with three meanings depending on the entity's role — a light's
-/// `lightMask` says which layers it illuminates, a drawable's says which layer
-/// it belongs to, an occluder's says which layers it shadows. Godot splits this
-/// into two orthogonal pairs; the cost of doing the same here is a new SoA
-/// column, and the single field covers the normal case (a wall is lit by, and
-/// shadows for, the same layers). Documented limit, not an oversight.
+/// `lightMask` says which layers it illuminates (0: none), a receiver's says
+/// which ONE layer it belongs to (its lowest bit; 0: layer 0), an occluder's
+/// says which layers it shadows (0: all). Godot splits this into two orthogonal
+/// pairs; the cost of doing the same here is a new SoA column, and the single
+/// field covers the normal case (a wall is lit by, and shadows for, the same
+/// layers). Documented limit, not an oversight. The renderer groups layers
+/// into light buffers from these values (`ts/src/render/light-groups.ts`); the
+/// engine only stores and hashes them.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 pub struct LightFlags(pub u32);
