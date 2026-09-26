@@ -116,8 +116,15 @@ fn shade(in: VertexOutput) -> vec4f {
 
     // Read color from texture (with overflow support).
     // textureSampleLevel avoids uniform-control-flow requirement.
-    var color: vec4f;
-    if (in.isOverflow == 0u) {
+    // Packed index 0 (tier 0, layer 0, not overflow) means "untextured": white.
+    // Layer 0 of a compressed tier (BC7/ASTC) is never filled and decodes to
+    // transparent black; see basic.wgsl. Only the colour is replaced here — the
+    // stroke's coverage below still applies.
+    let untextured = in.isOverflow == 0u && in.texTier == 0u && in.texLayer == 0u;
+    var color = vec4f(1.0);
+    if (untextured) {
+        // keep white
+    } else if (in.isOverflow == 0u) {
         switch in.texTier {
             case 1u: { color = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
             case 2u: { color = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }

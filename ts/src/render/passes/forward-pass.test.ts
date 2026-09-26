@@ -122,3 +122,22 @@ describe('basic.wgsl draws an untextured quad white on every tier format', () =>
     expect(untextured).toBeLessThan(fs.indexOf('textureSampleLevel'));
   });
 });
+
+// The same rule for every shader whose colour comes from the texture tiers.
+// Lines and beziers sampled layer 0 of the compressed tier too, and on desktop
+// drew black with alpha 0, so as occluders they cast nothing. MSDF text is
+// excluded, because its "texture" is the glyph atlas, which it cannot render
+// without.
+const tierSamplingShaders = import.meta.glob(
+  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/bezier.wgsl'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+
+describe('packed index 0 is white in every tier-sampling primitive', () => {
+  it.each(Object.entries(tierSamplingShaders))('%s answers index 0 before sampling a tier', (_file, src) => {
+    const shade = src.slice(src.indexOf('fn shade'));
+    const check = shade.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u/);
+    expect(check, 'the untextured check').toBeGreaterThan(-1);
+    expect(check).toBeLessThan(shade.indexOf('textureSampleLevel(tier0Tex'));
+  });
+});
