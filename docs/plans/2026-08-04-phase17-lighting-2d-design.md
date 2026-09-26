@@ -989,3 +989,148 @@ Letture:
 - Con più set la ripartizione tra seed e accum è approssimativa: i marker misurano confini dello stream di comandi (il caveat di `gpu-profiler.ts`). I totali per stadio sono affidabili.
 - Scena di default prima e dopo i light layers, con il motore in pausa: **0 pixel diversi** nel canvas. Le uniche differenze sono le cifre dell'FPS nell'overlay.
 - Un layer raggiunto da una luce con ombra ma da nessun caster non riceve un set: la marcia su "nessun occluder" dà già lo stesso risultato. Ce ne siamo accorti sulla GPU, dove costava un flood vuoto.
+
+---
+
+## 14. Rischi e mitigazioni
+
+| # | Rischio | Prob. | Impatto | Mitigazione |
+|---|---|---|---|---|
+| 1 | Il cambio di `scene-hdr` a float **altera l'aspetto delle scene esistenti** | **Alta** | Medio | È il primo passo, isolato. Screenshot di riferimento prima/dopo sul demo harness |
+| 2 | 🔽 La catena JFA raddoppia e non è mai stata misurata **in casa** | Alta | **Medio** (era Alto) | Ancoraggio esterno: ~0,35 ms half-res+oversize su 2080 Super (§13.2). Misurare comunque con `timestamp-query` |
+| 3 | `indirect-args` da 24 a 28 bucket: disallineamento WGSL/TS/CLAUDE.md | Media | Alto | Check #4 di `wgsl-validator`. Aggiornare `cull.wgsl`, `cull-pass.ts` e CLAUDE.md nello stesso commit |
+| 4 | `@group(2)` rompe la compatibilità dei 6 shader | Bassa | Alto | Layout a 3 gruppi con shader che ne dichiarano 2 è legale. **Verificare sul primo shader prima di toccare gli altri.** Ricordare `setBindGroup(2)` su tutte le pipeline |
+| 5 | 🔽 La SDF unsigned causa **auto-ombreggiamento** | Alta | **Basso** (era Medio) | 🆕 Soluzione nota e provata: il trucco a singola catena di Godot (§6.2). Il canale A della JFA è libero. ⚠️ Richiede però `JFAPass.SHADER_SOURCE` da statico a istanza |
+| 6 | 🆕 **Lo step del sphere march attraversa occluder sottili** (sovrastima JFA) | **Media** | Medio | `1+JFA` (+1 pass) o margine `d × 0.95`. §6.2 |
+| 7 | 🆕 Si usa la correzione Aaltonen alla soft shadow, che con SDF da JFA **amplifica l'errore** | Media | Basso | Usare la forma originale `k·h/t`. Documentarlo nello shader, perché la "versione migliore" è la tentazione naturale |
+| 8 | RC troppo costose anche desktop-first | Media | **Alto** — è uno dei quattro obiettivi | Prototipare su `tmpvar` **prima**, fuori dal repo. Pre-averaging + direction-first non negoziabili. Tarare per prima la spaziatura probe di cascata 0 |
+| 9 | Popping delle RC su pan/zoom | Media | Medio | **Ipotesi non documentata in letteratura per il 2D.** Test dedicato con camera in movimento |
+| 10 | Ringing delle RC visibile | Media | Basso | Partire da vanilla. Il bilinear fix costa 4× i raggi e *"is not typically employed"* |
+| 11 | 🔼 Occluder fuori schermo smettono di ombreggiare, **e l'oversize costa il doppio del previsto** | Alta | **Medio-alto** | 🆕 Il 120% costa +96% di pixel (§6.2). Partire senza oversize, misurare l'artefatto, salire a 110% o 120% consapevolmente |
+| 12 | Nuova colonna SoA per le normal map (stride 32→33) | Media | Alto | **Escludere dalla prima versione.** Il costo di introdurle dopo è identico |
+| 13 | I 4 nuovi CommandType divergono tra Rust e TS | Bassa | Alto | `guard-protocol-drift.sh` blocca il commit. Seguire `/new-command` |
+| 14 | `from_u8` ha un catch-all `_ => None` → **drop silenzioso** | Media | Alto | Unico punto senza enforcement del compilatore. Test esplicito per ciascun nuovo opcode |
+| 15 | 🆕 **Nessun engine di produzione fa JFA→SDF→Quilez**: non c'è da chi copiare | Certa | Medio | `bevy_light_2d` dà l'ossatura (SDF+raymarch, 32 step) ma senza JFA e senza penombra; jason.today dà JFA+SDF ma per la GI. **I due pezzi vanno uniti a mano** |
+| 16 | Compatibility Mode: workgroup 128, `maxTextureDimension2D` 4096 | Bassa | Medio | Tile 8×8 se si vuole coprire compat. Il design non usa MSAA |
+| 17 | Firefox non espone nessuna feature opzionale | Certa | Nullo | **Il design usa solo core features.** `rgba16float` è core |
+
+---
+
+## 15. Cosa resta fuori
+
+| Capacità | Perché |
+|---|---|
+| **Normal map su sprite** | Nuova colonna SoA + cambio stride staging. Sotto-fase separata (§7.5). **È l'unica table stake esclusa** |
+| **Specular / Blinn-Phong** | Dipende dalle normal map |
+| **Poligoni di occlusione espliciti** | La SDF da raster copre tutte le primitive senza authoring |
+| **Occluder dalla fisica Rapier** | Impossibile con l'API attuale (§6.2) |
+| **Bake di lightmap (opzione F)** | Ha senso per Lumière ma è un sotto-sistema separato con formato e tooling propri |
+| **Volumetrico / god rays** | Estensione naturale del light buffer, non un prerequisito |
+| **Luci ad area (LTC)** | Modello 3D. In 2D il concetto è già implicito nella penombra della SDF |
+| **HRC (Holographic Radiance Cascades)** | Migliore delle RC vanilla in 2D (RMSE 2× migliore), ma **nessun port WebGPU esiste** e la reference è in Rust con licenza non dichiarata. Valutabile in futuro |
+| **Terzo buffer `scene-albedo`** | Serve solo per rimbalzi multipli fisicamente corretti (§6.3) |
+
+---
+
+## 16. Ordine di lavoro proposto
+
+| # | Passo | Sblocca | Rischi |
+|---|---|---|---|
+| **0** | ✅ **Fatto** — `timestamp-query` nel RenderGraph (`render/gpu-profiler.ts`, `enableGpuProfiling()`) | Decisioni di budget | #2 |
+| **1** | ✅ **Codice fatto** — `scene-hdr` → `rgba16float` (`render/formats.ts`). ⏳ **Manca la verifica visiva sugli 8 tab del demo** | Tutto il resto | #1 |
+| **1b** | 🆕 Spostare l'FXAA **dopo** il tonemapping (§6.4) | Qualità dell'immagine con HDR reale | #1 |
+| **2** | `renderMeta` bit 9-31 + `primType 6` + `indirect-args` 24→28 | Le luci come entità | #3 |
+| **3** | 4 CommandType (53-56) + API `EntityHandle` | Authoring delle luci | #13, #14 |
+| **4** | `OccluderSeedPass` + catena `sdf-iter-N` **firmata** (§6.2) | Entrambi i backend | #2, #5, #6, #11 |
+| **5** | `LightAccumPass` + `@group(2)` nel ForwardPass | Backend `lit` completo | #4, #7, #15 |
+| **6** | Prototipo RC su `tmpvar` — **fuori dal repo, in parallelo a 1-5** | Decisione informata sul backend `gi` | #8, #9 |
+| **7** | `EmissionPass` + `RadianceCascadePass` | Backend `gi` | #8, #9, #10 |
+| **8** | `LightCullPass` — **solo se il profiling lo giustifica** | Scala oltre ~50 luci | — |
+
+I passi 1-5 producono un sistema di illuminazione 2D completo. Il passo 6 è un **gate di decisione a costo quasi nullo** — `tmpvar` espone probe spacing, ray count, branching e cascade level con frame timing integrato — e va fatto **in parallelo**, non dopo: non tocca il codice, e il suo esito determina quanto lavoro mettere nel passo 7.
+
+---
+
+## 17. Domande aperte
+
+### Chiuse
+
+| Domanda | Risposta |
+|---|---|
+| Target hardware per `gi` | **Desktop-first, mobile best-effort.** Obiettivo esplicito, non un forse |
+| Il sistema deve preparare il 3D? | **Sì, ma solo dove costa poco** (§5.3): riservare i valori dell'enum `lightType`, tenere `color`/`energy` separati nell'API. Nient'altro — ora con le fonti dirette che confermano che RC non si estende (A6) |
+| Serve differenziazione tecnica? | **Sì**, ed è confermata: nessuna libreria di illuminazione 2D WebGPU production-ready esiste in JavaScript |
+
+### Ancora aperte
+
+1. **Oversize della SDF: quanto?** 🆕 Ora che sappiamo che il 120% costa +96% di pixel, la scelta non è ovvia. Proposta: default `1.0` (nessun padding), esporlo come parametro, e alzarlo solo se l'artefatto ai bordi si rivela visibile nei test. Godot lo dà a 120% di default, ma Godot non paga anche un light buffer.
+2. **Il light buffer a metà risoluzione è accettabile per il caso Canvas/design tool?** Unity lo usa nei giochi, ma per un tool tipo Figma i bordi morbidi potrebbero essere visibili su UI ad alta densità. Con desktop-first, `bufferScale: 1.0` è ragionevole come default per quel prodotto — ma raddoppia il costo dell'accumulo.
+3. **Le normal map sono un requisito o un nice-to-have?** 🆕 §4.5 le colloca nelle table stakes: chi arriva da Godot, Unity, Phaser o PixiJS se le aspetta. Sono anche l'unica parte che tocca invasivamente la pipeline dati. Il costo di introdurle dopo è identico a introdurle ora — quindi la decisione è rinviabile senza penalità tecnica, ma non senza penalità di percezione.
+4. **16 light layer bastano?** Godot ne espone 20, Unity usa i sorting layer. 16 è quanto entra in `renderMeta` senza nuove colonne.
+5. **Per Lumière serve il realtime, o il bake è sufficiente?** Se i background sono statici e solo i personaggi animati, l'opzione F (bake con RC come solver) dà qualità superiore a costo runtime zero. Col backend `gi` presente, il solver esisterebbe già.
+6. **Il debito di `RadixSortPass` sempre dead-culled e `gpu_depths` che non arriva a TS va chiuso prima?** Non blocca l'illuminazione, ma è strano progettare sopra una pipeline con un pass morto e una colonna dati che non arriva a destinazione.
+7. **`@typegpu/radiance-cascades` va adottato o si scrive da zero?** 🆕 Aggiornamento: solo **2 versioni mai pubblicate** (v0.11.0 del 28 apr 2026), doc che non espone i parametri di tuning. **In alternativa `kornelski/bevy_flatland_radiance_cascades` è CC0-1.0 con pre-averaging e direction-first già fatti** — meno pronto all'uso ma senza attrito di licenza e con l'architettura giusta. Da decidere al passo 6, leggendo il sorgente di entrambi.
+
+---
+
+## 18. Fonti
+
+### Sorgente Hyperion (letto il 2026-08-02, `master @ 47fd337`)
+`ts/src/renderer.ts` · `ts/src/render/render-graph.ts` · `ts/src/render/render-pass.ts` · `ts/src/render/resource-pool.ts` · `ts/src/render/passes/{forward,cull,jfa,selection-seed,bloom,fxaa-tonemap,debug-line,radix-sort,scatter}-pass.ts` · `ts/src/shaders/*.wgsl` · `ts/src/camera.ts` · `ts/src/prim-params-schema.ts` · `ts/src/backpressure.ts` · `ts/src/worker-bridge.ts` · `crates/hyperion-core/src/{components,render_state,ring_buffer,command_processor,engine,physics,lib}.rs` · `.claude/skills/new-command/SKILL.md` · `.claude/agents/wgsl-validator.md` · `scripts/preflight.sh` · `CLAUDE.md`
+
+### Radiance Cascades
+- Sannikov, A. — *Radiance Cascades: A Novel Approach to Calculating Global Illumination* — [github.com/Raikiri/RadianceCascadesPaper](https://github.com/Raikiri/RadianceCascadesPaper) — CC BY-ND 3.0, mai peer-reviewed, **documento vivo** (`\submitted{\today}`), prima presentazione ExileCon nov 2023
+- Osborne, C. M. J. & Sannikov, A. — [arXiv:2408.14425](https://arxiv.org/abs/2408.14425), **26 ago 2024**, peer-reviewed su RASTI (doi:10.1093/rasti/rzae062) — analisi quantitativa del ringing
+- Freeman, R., Sannikov, A., Margel, A. — *Holographic Radiance Cascades for 2D GI* — [arXiv:2505.02041](https://arxiv.org/abs/2505.02041), **4 mag 2025** — **i numeri di performance più solidi per il 2D**
+- Freeman, R. & Sannikov, A. — *Split Radiance Cascades* — [arXiv:2607.20384](https://arxiv.org/abs/2607.20384), **22 lug 2026** — è 3D
+- mxcop — [*Fundamentals of Radiance Cascades*](https://m4xc.dev/articles/fundamental-rc/) — **22 ott 2024** — penumbra condition, 2× vs 4× branching
+- Xor & Yaazarai — GM Shaders [Parte 1](https://mini.gmshaders.com/p/radiance-cascades) (13 apr 2024) e [Parte 2](https://mini.gmshaders.com/p/radiance-cascades2) (13 lug 2024) — pre-averaging, direction-first, 25,95 ms @1080p RTX 3080
+- McGhee, J. — [*Real-Time GI Parte 1*](https://jason.today/gi) (27 lug 2024) e [*Parte 2*](https://jason.today/rc) — **MIT**, JFA→SDF→raymarching
+- [tmpvar playground](https://tmpvar.com/poc/radiance-cascades/) — **WebGPU**, codice MIT
+- [kornelski/bevy_flatland_radiance_cascades](https://github.com/kornelski/bevy_flatland_radiance_cascades) — **WGSL, CC0-1.0**, 28 set 2025
+- [@typegpu/radiance-cascades](https://docs.swmansion.com/TypeGPU/ecosystem/typegpu-radiance-cascades/) — MIT, npm v0.11.0 (28 apr 2026)
+- [Yaazarai/GMShaders-Radiance-Cascades](https://github.com/Yaazarai/GMShaders-Radiance-Cascades) — Unlicense — le 4 varianti dei fix
+- [Epic Developer Community — *Radiance Cascades in Unreal*](https://forums.unrealengine.com/t/radiance-cascades-in-unreal/1939802) — lug 2024 → feb 2025 — le citazioni di Sannikov, Linietsky, Epic, Bevy
+- [radiance.wiki](https://radiance.wiki/) — hub della community (pagine datate 25 mar 2026 = data del sito, non dei contenuti)
+
+**⚠️ Non verificato:** IEEE Xplore doc. 11307155 *"Radiance Cascades for Real-Time 2D Global Illumination"* — esiste ma è dietro paywall (418/429). DiGRA art. 2775 — bloccato da robots.txt.
+**⚠️ Inesistenti:** "Radiance Cascades 2.0" come release ufficiale; "ring buffer cascades" (probabile confusione con l'artefatto *ringing*); "Kernel-Based JFA".
+
+### JFA e SDF
+- Rong, G. & Tan, T-S. — [*Jump Flooding in GPU*, I3D 2006](https://www.comp.nus.edu.sg/~tants/jfa/i3d06-submitted.pdf) — *"90% of errors as single errors"*
+- Rong, G. & Tan, T-S. — [*Variants of JFA*, ISVD 2007](https://www.comp.nus.edu.sg/~tants/jfa/JFA-Variants.pdf) — 1+JFA, JFA+1, JFA+2
+- Rong, G. & Tan, T-S. — [*Utilizing Jump Flooding in Image-Based Soft Shadows*, 2006](https://www.comp.nus.edu.sg/~tants/softShadow/jfaSoftShadow-techreport.pdf) — *"no significant and noticeable visual differences"*
+- Golus, B. — [*The Quest for Very Wide Outlines*](https://bgolus.medium.com/the-quest-for-very-wide-outlines-ba82ed442cd9), **18 lug 2020** — **67–75 μs per pass @1080p RTX 2080 Super**
+- Quilez, I. — [*Soft shadows in raymarched SDFs*](https://iquilezles.org/articles/rmshadows/) — `k·h/t` e la correzione Aaltonen
+- Ronja — [*2D SDF Shadows*](https://www.ronja-tutorials.com/post/037-2d-shadows/), 1 dic 2018 — 32 sample
+- davidtme — [*SDF Shadows*](https://davidtme.github.io/2026/03/23/sdf-shadows.html), **23 mar 2026** — 10-20 step vs 1000
+
+### Motori di produzione (sorgente letto il 2026-08-02)
+- **Godot 4.7-stable e master (4.8.0-dev)**: `servers/rendering/renderer_rd/renderer_canvas_render_rd.cpp` (atlas 2048×512 `R32_SFLOAT`, `4 × N_occluder` draw/luce + TODO) · `shaders/canvas.glsl` (`light_count & 15u`, PCF 1D) · `shaders/canvas_sdf.glsl` (**il trucco del segno a singola catena**) · `storage_rd/texture_storage.cpp` (`_render_target_get_sdf_rect`, **oversize 1,96× i pixel**) · `doc/classes/{Light2D,PointLight2D,DirectionalLight2D,LightOccluder2D,CanvasTexture}.xml` · `tutorials/2d/2d_lights_and_shadows.rst` (**la SDF come workaround, non come implementazione**)
+- **Unity 6.5 / URP 17.5**: `Runtime/2D/{Renderer2DData,Lights/Light2D,Lights/Light2DBlendStyle,Shadows/ShadowCaster2D,Rendergraph/Renderer2DRendergraph,Passes/Utility/LightBatch}.cs` · `Shaders/2D/Include/{LightingUtility,CombinedShapeLightShared,ShadowProjectVertex,NormalsRenderingShared}.hlsl` — `m_LightRenderTextureScale = 0.5f`, `k_MaxShadowSoftnessAngle = 15`, `m_MaxShadowRenderTextureCount = 1`
+- **`bevy_light_2d`** (jgayfer, MIT, v0.9.0 del **16 mar 2026**): `src/render/sdf/sdf.wgsl` (`MAX_OCCLUDERS = 256`, SDF analitica brute-force) · `src/render/light_map/light_map.wgsl` (raymarch 32 step, **risultato binario**)
+- Ware, R. — [*Fast 2D shadows in Unity using 1D shadow mapping*](https://www.gamedeveloper.com/programming/fast-2d-shadows-in-unity-using-1d-shadow-mapping), 26 feb 2018 — 64 luci in una draw call
+- Slembcke, D. — [*2D Lighting Techniques*](https://www.slembcke.net/blog/2DLightingTechniques/) — ⚠️ senza data, non menziona RC → verosimilmente pre-2023
+- Phaser 4 — [annuncio dynamic lighting, 19 mag 2026](https://phaser.io/news/2026/05/phaser-4-dynamic-lighting) — cap 10 luci, nessun WebGPU
+- `@pixi/lights` v4.1.0 (**12 lug 2023**) — mai portato a PixiJS v8 né a WebGPU
+- Crystal 2D Lighting Engine (GameMaker), v2.3 dell'**8 giu 2026**, $59 — il metro del mercato premium
+- Laigter (azagaya, GPL-3.0), **v1.13.1 del 16 dic 2025** — normal/specular/occlusion/parallax
+
+### WebGPU
+- [WebGPU — W3C CR Draft, 14 luglio 2026](https://www.w3.org/TR/2026/CRD-webgpu-20260714/) e sorgente Bikeshed `spec/index.bs` + `wgsl/index.bs` su `main` (scaricati 2026-08-02) — tabelle limiti e Plain color formats
+- [gpuweb — Implementation Status](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) e [Proposals README](https://github.com/gpuweb/gpuweb/blob/main/proposals/README.md) — stato Merged/Draft/Inactive
+- [Chrome — What's New in WebGPU 146](https://developer.chrome.com/blog/new-in-webgpu-146), 25 feb 2026 — **`TRANSIENT_ATTACHMENT`**, compat mode shipped
+- [Chrome — What's New in WebGPU 142](https://developer.chrome.com/blog/new-in-webgpu-142), 22 ott 2025 — `texture-formats-tier1/tier2`
+- [caniuse — dataset `webgpu.json`](https://raw.githubusercontent.com/Fyrd/caniuse/main/features-json/webgpu.json), aggiornato 2026-07-16 — 82,17% + 2,83%
+- [gpuweb issue #5006](https://github.com/gpuweb/gpuweb/issues/5006) — `shader-f16` esclude tutti i device Qualcomm
+- [arXiv:2605.20706 — *Llamas on the Web*](https://arxiv.org/html/2605.20706v1), 20 mag 2026 — **overhead safety check +14% medio, +42% picco**, su 16 device
+- [WebKit — Safari 26.0](https://webkit.org/blog/17333/webkit-features-in-safari-26-0/), 15 set 2025
+
+**⚠️ Non trovato in letteratura, da misurare in casa:**
+1. Costo di un light-accumulation pass con sphere marching SDF a 1080p con N luci — **nessuno l'ha pubblicato**
+2. Punto di pareggio in numero di luci tra raymarching SDF e Radiance Cascades
+3. Benchmark di Radiance Cascades su GPU mobile o integrata — **cercato ripetutamente, non esiste**
+4. Misure di VRAM in MB pubblicate per RC 2D — i numeri di §8.3 sono aritmetica dalla struttura dati
+5. Interazione tra la correzione Aaltonen e un SDF approssimato da JFA
+6. Costo del blending additivo `rgba16float` a 1080p in WebGPU
+7. Disponibilità di `texture-formats-tier1` su Firefox
