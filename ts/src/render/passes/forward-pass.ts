@@ -2,6 +2,7 @@ import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import { BUCKETS_PER_TYPE, OPAQUE_DRAW_BUCKETS } from './cull-pass';
 import { SCENE_HDR_FORMAT } from '../formats';
+import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 
 /**
  * Forward rendering pass with multi-pipeline per-type dispatch, 2-bucket material sort,
@@ -35,9 +36,7 @@ export class ForwardPass implements RenderPass {
   private transparentPipelines = new Map<number, GPURenderPipeline>();
   private bindGroup0: GPUBindGroup | null = null;
   private bindGroup1: GPUBindGroup | null = null;
-  private bindGroupLayout1: GPUBindGroupLayout | null = null;
-  /** The pool resources `bindGroup1` was built from, in binding order. */
-  private group1Resources: Array<GPUTextureView | GPUSampler> = [];
+  private tierBinding: TextureTierBinding | null = null;
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null;
@@ -118,32 +117,11 @@ export class ForwardPass implements RenderPass {
     if (!primParamsBuffer) throw new Error("ForwardPass.setup: missing 'prim-params' in ResourcePool");
 
     // --- Group 0: vertex-stage data + storage buffers ---
-    const bindGroupLayout0 = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
-        { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // texLayerIndices (gradient reads in fs)
-        { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // renderMeta
-        { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // primParams
-      ],
-    });
+    const bindGroupLayout0 = device.createBindGroupLayout({ entries: primitiveGroup0LayoutEntries() });
 
     // --- Group 1: fragment-stage textures ---
-    const bindGroupLayout1 = this.bindGroupLayout1 = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-        // Overflow tiers (rgba8unorm)
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-        { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } },
-      ],
-    });
+    const bindGroupLayout1 = device.createBindGroupLayout({ entries: textureTierLayoutEntries() });
+    this.tierBinding = new TextureTierBinding(bindGroupLayout1);
 
     // ForwardPass writes `scene-hdr`, never the swapchain. Before this was
     // pinned to SCENE_HDR_FORMAT it queried getPreferredCanvasFormat(), which
@@ -214,36 +192,7 @@ export class ForwardPass implements RenderPass {
       ],
     });
 
-    this.bindTextureTiers(device, resources);
-  }
-
-  /** Group 1 resources, in binding order: tier0-3, the sampler, ovf0-3. */
-  private static readonly GROUP1 = [
-    'tier0', 'tier1', 'tier2', 'tier3', 'texSampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3',
-  ] as const;
-
-  /**
-   * (Re)build group 1 when any tier view or the sampler in the pool differs
-   * from what it was built from.
-   *
-   * A texture tier that grows gets a new texture and view, and the old texture
-   * is destroyed (see `TextureManager.onViewsChanged`). A bind group still
-   * holding the old view makes every draw use a destroyed texture, and the
-   * whole frame is dropped. Checked every frame: nine map lookups.
-   */
-  private bindTextureTiers(device: GPUDevice, resources: ResourcePool): void {
-    if (!this.bindGroupLayout1) return;
-    const current = ForwardPass.GROUP1.map((name) =>
-      name === 'texSampler' ? resources.getSampler(name) : resources.getTextureView(name));
-    if (current.some((r) => !r)) return;
-    const resolved = current as Array<GPUTextureView | GPUSampler>;
-    if (this.bindGroup1 && resolved.every((r, i) => r === this.group1Resources[i])) return;
-
-    this.bindGroup1 = device.createBindGroup({
-      layout: this.bindGroupLayout1,
-      entries: resolved.map((resource, binding) => ({ binding, resource })),
-    });
-    this.group1Resources = resolved;
+    this.bindGroup1 = this.tierBinding.current(device, resources);
   }
 
   prepare(device: GPUDevice, frame: FrameState): void {
@@ -252,7 +201,7 @@ export class ForwardPass implements RenderPass {
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
-    if (this.device) this.bindTextureTiers(this.device, resources);
+    if (this.device && this.tierBinding) this.bindGroup1 = this.tierBinding.current(this.device, resources);
     if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
 
     // Get render target view (scene-hdr intermediate for post-processing)
@@ -344,8 +293,7 @@ export class ForwardPass implements RenderPass {
     this.transparentPipelines.clear();
     this.bindGroup0 = null;
     this.bindGroup1 = null;
-    this.bindGroupLayout1 = null;
-    this.group1Resources = [];
+    this.tierBinding = null;
     this.indirectBuffer = null;
     this.device = null;
   }

@@ -115,7 +115,8 @@ describe('ForwardPass group 1 follows the texture tiers', () => {
 // headless, so this pins the rule in the source; the GPU check is visual.
 describe('basic.wgsl draws an untextured quad white on every tier format', () => {
   it('returns white for packed index 0 before sampling any tier', () => {
-    const fs = basicShaderSource.slice(basicShaderSource.indexOf('fn fs_main'));
+    // The colour/coverage function both entry points (fs_main, fs_occluder) share.
+    const fs = basicShaderSource.slice(basicShaderSource.indexOf('fn shade'));
     const untextured = fs.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
     expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
     expect(untextured).toBeLessThan(fs.indexOf('textureSampleLevel'));

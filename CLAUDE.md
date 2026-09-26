@@ -63,14 +63,14 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1053 tests + 5 skipped, 84 files)
+cd ts && npm test                            # All vitest tests (1062 tests + 5 skipped, 85 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
-# 84 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
+# 85 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (69 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (92 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (75 tests)
@@ -247,6 +247,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/forward-pass.ts` | Multi-pipeline forward pass, `SHADER_SOURCES` per RenderPrimitiveType, renders to `scene-hdr` |
 | `render/passes/fxaa-tonemap-pass.ts` | Full-screen FXAA + tonemap (none/PBR-neutral/ACES), reads `scene-hdr` → `swapchain` |
 | `render/passes/selection-seed-pass.ts` | Renders selected entities as JFA seeds |
+| `render/passes/occluder-seed-pass.ts` | Phase 17 Track B: rasterises shadow casters (renderMeta bit 9) into `occluder-seed`, half resolution, `JFA_FORMAT`, `(u, v, valid, inside)`. It runs each primitive's OWN shader a second time, through its `fs_occluder` entry with `OCCLUDER_PASS = true`, so a caster shadows its real coverage (a sprite casts its silhouette, not its quad). Opaque buckets only. Primitives without `fs_occluder` cast nothing: today only `basic.wgsl` has it |
+| `render/primitive-bindings.ts` | The bind group layouts every primitive shader shares (group 0 columns, group 1 texture tiers), and `TextureTierBinding`, the group-1 bind group that rebinds when a tier's view changes. Used by `ForwardPass` and `OccluderSeedPass` |
 | `render/passes/jfa-pass.ts` | Single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
 | `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
@@ -353,7 +355,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 
 | Shader | Role |
 |---|---|
-| `basic.wgsl` | Quad render: SoA transforms, visibility indirection, multi-tier Texture2DArray |
+| `basic.wgsl` | Quad render: SoA transforms, visibility indirection, multi-tier Texture2DArray. `shade()` is the colour/coverage shared by `fs_main` and `fs_occluder`. `override OCCLUDER_PASS` drops non-casters in the vertex stage (occluder pipelines only). Packed texture index 0 answers white |
 | `line.wgsl` | Screen-space quad expansion, SDF dash pattern |
 | `gradient.wgsl` | 2-stop gradient (linear/radial/conic) |
 | `box-shadow.wgsl` | SDF box shadow (Evan Wallace erf) |
@@ -409,6 +411,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **WebGPU can't be tested in headless browsers** — `requestAdapter()` returns null. Visual testing requires a real browser (`npm run dev` → Chrome).
 - **WGSL *can* be validated without anything rendering** — `npm run dev`, then one chrome-devtools `evaluate_script`: `const code = (await import('/src/shaders/x.wgsl?raw')).default` → `await device.createShaderModule({code}).getCompilationInfo()` returns compile errors with line numbers. Wrap `createRenderPipeline` in `device.pushErrorScope('validation')` / `await device.popErrorScope()` to catch pipeline-vs-attachment format mismatches — the failure class the test suite structurally cannot see. Both work even when the canvas draws nothing. Three details that each cost a round-trip: an adapter is **consumed** by `requestDevice()`, so call `requestAdapter()` once per device; `cull.wgsl` must go through `prepareShaderSource()` first (the raw source does not compile); and its entry point is `cull_main`, not `main`.
 - **`EntityHandle.data()` cleared on pool `init()`** — Recycled handles reset their data map. Plugins storing data via `.data(key, value)` must handle this.
+- **A primitive casts shadows only if its shader exposes `fs_occluder` AND declares `override OCCLUDER_PASS`** — `OccluderSeedPass` builds an occluder pipeline for every `SHADER_SOURCES` entry containing `fn fs_occluder` and sets `OCCLUDER_PASS = 1`. A module with the entry but without the override fails pipeline creation, since setting an unknown constant is a validation error. The pattern, as in `basic.wgsl`: move the fragment body into a shared coverage function; `fs_main` returns it; `fs_occluder` discards below alpha 0.5 and returns `vec4f(screenUV, 1, 1)`; `vs_main` emits a degenerate triangle when `OCCLUDER_PASS` is set and renderMeta bit 9 is clear. The bit is `CASTS_SHADOW_BIT` in WGSL and `RENDER_META_CASTS_SHADOW_BIT` in Rust, and a test compares the two.
 - **Adding a new primitive type requires 3 steps** — (1) add WGSL shader, (2) register in `ForwardPass.SHADER_SOURCES[RenderPrimitiveType]`, (3) optionally extend `EntityHandle`. Types: 0=Quad, 1=Line, 2=SDFGlyph, 3=BezierPath, 4=Gradient, 5=BoxShadow, 6=Light2D. Type 6 is the one exception to step (2): no shader is registered for it, so `ForwardPass` never draws it and `LightAccumPass` reads its bucket directly.
 - **`createImageBitmap` not available in Workers on all browsers** — Safari has partial support. `TextureManager` should only be instantiated where available.
 - **Bezier control points in PrimParams are UV-space** — [0,1] range relative to entity's bounding quad. Entity position+scale define world-space bounding box.

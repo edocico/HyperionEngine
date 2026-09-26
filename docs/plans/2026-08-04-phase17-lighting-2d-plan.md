@@ -217,6 +217,18 @@ All five checks are closed. Track B can start.
 ## Track B — Occluders and the signed SDF (needs GPU eyes)
 
 - [ ] **Task 7: `OccluderSeedPass` + `shaders/occluder-seed.wgsl`**
+  > **Decision (2026-09-26): exact shape per primitive, no `occluder-seed.wgsl`.**
+  > A single seed shader would make every occluder its bounding quad, which
+  > drops the design §6.2 argument for the SDF backend. Instead the pass runs
+  > each primitive's own shader through a second entry point `fs_occluder`
+  > that reuses its coverage, with `override OCCLUDER_PASS` doing the castsShadow
+  > filter in the vertex stage. It lands in stages:
+  > - [x] **Stage 1 — quads and sprites** (`basic.wgsl`: texture alpha ≥ 0.5).
+  >   GPU readback on NVIDIA and AMD: a caster fills its quad with correct UVs, a
+  >   non-caster writes nothing, a checker-alpha sprite writes exactly 50%.
+  > - [ ] Stage 2 — line, gradient, box-shadow, bezier, MSDF: each gets `shade()`
+  >   + `fs_occluder` + the override.
+  > - [ ] Wire into the graph with the lighting backend (needs a reader: Task 8).
   - New pass, **not** a reworked `SelectionSeedPass`: that one filters on
     `selection-mask` and draws 2 of the 24 buckets; this one filters on
     `renderMeta` bit 9 and must iterate every opaque bucket.
