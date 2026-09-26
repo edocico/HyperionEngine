@@ -10,9 +10,15 @@
 @group(0) @binding(1) var inputSampler: sampler;
 @group(0) @binding(2) var<uniform> params: JFAParams;
 
+// Four scalars, 16 bytes, at the offsets JfaIterationPass.prepare() writes
+// (0, 4, 8, 12). A `texelSize: vec2f` member is 8-aligned: it would land at
+// offset 8 and make the struct 24 bytes, which is larger than the 16-byte
+// buffer. That fails validation at draw time, and until 2026-09-26 it dropped
+// every frame with outlines on.
 struct JFAParams {
     stepSize: f32,
-    texelSize: vec2f,
+    texelSizeX: f32,
+    texelSizeY: f32,
     _pad: f32,
 };
 
@@ -34,7 +40,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let step = params.stepSize * params.texelSize;
+    let step = params.stepSize * vec2f(params.texelSizeX, params.texelSizeY);
     var bestSeed = textureSampleLevel(inputTex, inputSampler, in.uv, 0.0);
     var bestDist = 1e10;
 

@@ -81,3 +81,21 @@ describe('JFAPass', () => {
     expect(pass1.name).toBe('jfa-1');
   });
 });
+
+// JfaIterationPass.prepare() writes 16 bytes: stepSize, texelSize.x,
+// texelSize.y, pad, at offsets 0/4/8/12. A `texelSize: vec2f` member is
+// 8-aligned in WGSL: it lands at offset 8 and makes the struct 24 bytes, which
+// is larger than the buffer. That fails validation at DRAW time, so every
+// outline frame was dropped, and even a bigger buffer would read the texel
+// size from the wrong offset. Scalars only.
+const jfaShaders = import.meta.glob(['../../shaders/jfa.wgsl', '../../shaders/sdf-jfa.wgsl'], {
+  query: '?raw', import: 'default', eager: true,
+}) as Record<string, string>;
+
+describe('JFAParams matches the 16 bytes the pass writes', () => {
+  it.each(Object.entries(jfaShaders))('%s declares four f32 scalars', (_file, src) => {
+    const body = /struct JFAParams\s*\{([^}]*)\}/.exec(src)?.[1] ?? '';
+    const types = [...body.matchAll(/\w+\s*:\s*([\w<>]+)\s*,/g)].map((m) => m[1]);
+    expect(types).toEqual(['f32', 'f32', 'f32', 'f32']);
+  });
+});
