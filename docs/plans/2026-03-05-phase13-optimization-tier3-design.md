@@ -358,6 +358,8 @@ engine.spawn()
 
 ## 6. #11 Temporal Culling Coherence
 
+> **Removed 2026-09-26.** The cull pipeline carrying this was invalid from the day it landed (9 storage buffers against a device limit of 8), so it never ran on a GPU. Once it could run, the measured saving was 0 µs, and the invalidation rule was wrong. See `2026-09-26-cull-temporal-firstinstance-brief.md`.
+
 ### Goal
 
 ~50% reduction in GPU culling cost by skipping bounds reads for stable entities.

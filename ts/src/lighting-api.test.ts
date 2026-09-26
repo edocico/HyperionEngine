@@ -18,7 +18,7 @@ function emptyRenderState(overrides: Partial<GPURenderState> = {}): GPURenderSta
     listenerX: 0, listenerY: 0, listenerZ: 0,
     tickCount: 0,
     dirtyCount: 0, dirtyRatio: 0,
-    stagingData: null, dirtyIndices: null, dirtyBits: null,
+    stagingData: null, dirtyIndices: null,
     ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
     ...overrides,
   };

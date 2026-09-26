@@ -876,7 +876,7 @@ engine.physics.raycast(origin, direction, maxToi, (hit) => { /* ... */ });
 
 | # | Ottimizzazione | Area | Headroom | Effort |
 |---|---------------|------|----------|--------|
-| 11 | **Temporal culling coherence** | Rendering | ~50% culling cost | 2–3 settimane |
+| 11 | ~~**Temporal culling coherence**~~ | Rendering | ~~~50% culling cost~~ misurato 0 µs, rimosso 2026-09-26 | — |
 | 12 | **Sized binding arrays** | Textures | Eliminazione tier system | 1 settimana |
 | 13 | **2D component optimization** | ECS | 2× iteration throughput | 1 settimana |
 | 14 | **GPU radix sort for transparency** | Rendering | Correct alpha compositing | 1 settimana |
@@ -1126,7 +1126,7 @@ Sinergie:
 | Stream compaction | Prefix sum → compact output | Phase 4.5 | ✅ |
 | Indirect draw single buffer | Pack all args in one GPUBuffer | Phase 4.5 | ✅ |
 | Material sort keys | 64-bit key per draw call | Phase 10+ | Pianificato |
-| Temporal culling coherence | Frame-to-frame visibility cache | Phase 11+ | Pianificato |
+| Temporal culling coherence | Frame-to-frame visibility cache | Phase 13 | ❌ Rimosso 2026-09-26 (beneficio misurato 0 µs) |
 
 ### Area 3: Post-Processing
 

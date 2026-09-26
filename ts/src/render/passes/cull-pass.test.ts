@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType, computeInvalidationFlag, visibilityBufferSize } from './cull-pass';
+import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType } from './cull-pass';
 import cullShaderSource from '../../shaders/cull.wgsl?raw';
 import type { ResourcePool } from '../resource-pool';
+import type { FrameState } from '../render-pass';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -238,56 +239,6 @@ describe('prepareShaderSource strips subgroup-only code from the real shader', (
   });
 });
 
-describe('temporal culling', () => {
-  it('computeInvalidationFlag returns true when camera teleports in X', () => {
-    const prev = { x: 0, y: 0, frustumWidth: 1000 };
-    const curr = { x: 600, y: 0, frustumWidth: 1000 };
-    expect(computeInvalidationFlag(prev, curr)).toBe(true);
-  });
-
-  it('computeInvalidationFlag returns false for smooth pan', () => {
-    const prev = { x: 0, y: 0, frustumWidth: 1000 };
-    const curr = { x: 5, y: 3, frustumWidth: 1000 };
-    expect(computeInvalidationFlag(prev, curr)).toBe(false);
-  });
-
-  it('computeInvalidationFlag returns true for Y teleport', () => {
-    const prev = { x: 0, y: 0, frustumWidth: 1000 };
-    const curr = { x: 0, y: 600, frustumWidth: 1000 };
-    expect(computeInvalidationFlag(prev, curr)).toBe(true);
-  });
-
-  it('computeInvalidationFlag at exact threshold is false (strict >)', () => {
-    const prev = { x: 0, y: 0, frustumWidth: 1000 };
-    const curr = { x: 500, y: 0, frustumWidth: 1000 };
-    // dx == threshold (500 == 1000*0.5), > is strict so not exceeded
-    expect(computeInvalidationFlag(prev, curr)).toBe(false);
-  });
-});
-
-describe('visibilityBufferSize', () => {
-  it('returns 4 bytes for 1 entity (1 u32 word)', () => {
-    expect(visibilityBufferSize(1)).toBe(4);
-  });
-
-  it('returns 4 bytes for 32 entities (exactly 1 u32 word)', () => {
-    expect(visibilityBufferSize(32)).toBe(4);
-  });
-
-  it('returns 8 bytes for 33 entities (2 u32 words)', () => {
-    expect(visibilityBufferSize(33)).toBe(8);
-  });
-
-  it('returns 12500 bytes for 100000 entities', () => {
-    // ceil(100000/32) * 4 = 3125 * 4 = 12500
-    expect(visibilityBufferSize(100000)).toBe(12500);
-  });
-
-  it('returns 0 bytes for 0 entities', () => {
-    expect(visibilityBufferSize(0)).toBe(0);
-  });
-});
-
 // ── Storage-buffer budget ──────────────────────────────────────────
 //
 // `maxStorageBuffersPerShaderStage` defaults to 8, and `requestDevice` asks for
@@ -310,36 +261,51 @@ function withoutComments(wgsl: string): string {
   return wgsl.replace(/\/\/[^\n]*/g, '');
 }
 
-/** Records the layouts `CullPass.setup()` hands to the device. */
-function recordCullSetup(): GPUBindGroupLayoutDescriptor[][] {
+/** A fake device that records what `CullPass` asks of it. */
+function makeCullDevice() {
   const g = globalThis as Record<string, unknown>;
   g.GPUBufferUsage ??= { COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080, INDIRECT: 0x0100 };
   g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
 
-  const pipelineLayouts: GPUBindGroupLayoutDescriptor[][] = [];
+  const calls = {
+    pipelineLayouts: [] as GPUBindGroupLayoutDescriptor[][],
+    writeBuffer: [] as GPUBuffer[],
+    createBindGroup: 0,
+  };
   const buffer = () => ({ destroy() {} });
   const device = {
     createShaderModule: () => ({}),
     createBuffer: buffer,
     createBindGroupLayout: (desc: GPUBindGroupLayoutDescriptor) => ({ desc }),
     createPipelineLayout: (desc: { bindGroupLayouts: Array<{ desc: GPUBindGroupLayoutDescriptor }> }) => {
-      pipelineLayouts.push(desc.bindGroupLayouts.map((l) => l.desc));
+      calls.pipelineLayouts.push(desc.bindGroupLayouts.map((l) => l.desc));
       return {};
     },
     createComputePipeline: () => ({}),
-    createBindGroup: () => ({}),
-    queue: { writeBuffer() {} },
+    createBindGroup: () => { calls.createBindGroup++; return {}; },
+    queue: { writeBuffer: (target: GPUBuffer) => { calls.writeBuffer.push(target); } },
   } as unknown as GPUDevice;
-  const resources = { getBuffer: buffer } as unknown as ResourcePool;
+  return { device, calls };
+}
 
+/** Runs `CullPass.setup()` on the real shader against a recording device. */
+function setUpCullPass() {
+  const { device, calls } = makeCullDevice();
+  const resources = { getBuffer: () => ({ destroy() {} }) } as unknown as ResourcePool;
   const saved = CullPass.SHADER_SOURCE;
   CullPass.SHADER_SOURCE = cullShaderSource;
+  const pass = new CullPass();
   try {
-    new CullPass().setup(device, resources);
+    pass.setup(device, resources);
   } finally {
     CullPass.SHADER_SOURCE = saved;
   }
-  return pipelineLayouts;
+  return { pass, device, calls };
+}
+
+/** The layouts `CullPass.setup()` hands to the device. */
+function recordCullSetup(): GPUBindGroupLayoutDescriptor[][] {
+  return setUpCullPass().calls.pipelineLayouts;
 }
 
 function storageEntryCount(layouts: GPUBindGroupLayoutDescriptor[]): number {
@@ -385,5 +351,40 @@ describe('cull pipeline storage-buffer budget', () => {
     }
     const layoutEntries = layouts.reduce((n, l) => n + [...l.entries].length, 0);
     expect(layoutEntries, 'layout entries with no binding in the shader').toBe(declared.length);
+  });
+});
+
+// Temporal culling (4ea6cb5) let an entity visible last frame and not dirty skip
+// the frustum test. It never ran on a GPU: its extra bind group pushed the
+// pipeline to 9 storage buffers. Measured once it could run, the skip saved
+// 0 us at 100k and 1M entities, while costing CPU uploads every frame. Its rule
+// was also wrong. Camera motion never invalidated it, and dirty bits reached
+// the GPU only in Mode C. Anything seen once stayed "visible" until the next
+// graph rebuild. See docs/plans/2026-09-26-cull-temporal-firstinstance-brief.md.
+describe('culling keeps no state across frames', () => {
+  it('decides visibility from the frustum test alone', () => {
+    const code = withoutComments(cullShaderSource);
+    expect(code).not.toMatch(/@group\(1\)/);
+    expect(code).not.toMatch(/visibility_prev|visibility_out|dirty_bits|invalidate/);
+  });
+
+  it('builds a pipeline with a single bind group', () => {
+    expect(recordCullSetup()[0]).toHaveLength(1);
+  });
+
+  it('writes only the cull uniform and the indirect-args reset per frame, and builds no bind group', () => {
+    const { pass, device, calls } = setUpCullPass();
+    const writesAtSetup = calls.writeBuffer.length;
+    const bindGroupsAtSetup = calls.createBindGroup;
+    const frame = {
+      entityCount: 1000,
+      cameraViewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+    } as unknown as FrameState;
+
+    pass.prepare(device, frame);
+    pass.prepare(device, frame);
+
+    expect(calls.writeBuffer.length - writesAtSetup).toBe(4);
+    expect(calls.createBindGroup - bindGroupsAtSetup).toBe(0);
   });
 });

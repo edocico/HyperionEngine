@@ -66,19 +66,6 @@ impl BitSet {
         self.count
     }
 
-    /// Pointer to the raw backing words, reinterpreted as `u32`.
-    ///
-    /// Each `u64` word contributes two consecutive `u32` values (little-endian).
-    /// The returned pointer is valid until the next mutation of the BitSet.
-    pub fn words_ptr_u32(&self) -> *const u32 {
-        self.bits.as_ptr() as *const u32
-    }
-
-    /// Number of `u32` values in the backing storage (2× the number of `u64` words).
-    pub fn words_u32_len(&self) -> usize {
-        self.bits.len() * 2
-    }
-
     /// Grow the bitset if needed to hold at least `capacity` bits.
     pub fn ensure_capacity(&mut self, capacity: usize) {
         let words_needed = capacity.div_ceil(64);
@@ -161,33 +148,6 @@ impl DirtyTracker {
         self.meta_dirty.count() as f32 / total as f32
     }
 
-    /// Pointer to the raw transform dirty bitfield as `u32` words.
-    ///
-    /// One bit per entity slot, packed little-endian into `u32` values.
-    /// Suitable for GPU upload (e.g., temporal culling bitmask).
-    pub fn transforms_words_ptr(&self) -> *const u32 {
-        self.transform_dirty.words_ptr_u32()
-    }
-
-    /// Number of `u32` words in the transform dirty bitfield.
-    pub fn transforms_words_len(&self) -> usize {
-        self.transform_dirty.words_u32_len()
-    }
-
-    /// The transform dirty bitfield as a `u32` slice, for copying into the
-    /// per-frame export buffer.
-    pub fn transforms_words(&self) -> &[u32] {
-        // SAFETY: the bitset stores `u64` words; on little-endian wasm32/x86 a
-        // `u64` slice reinterprets as twice as many `u32` words with the same
-        // bit order. `words_u32_len()` is exactly `words.len() * 2`.
-        unsafe {
-            std::slice::from_raw_parts(
-                self.transform_dirty.words_ptr_u32(),
-                self.transform_dirty.words_u32_len(),
-            )
-        }
-    }
-
     /// Pre-size all internal bitsets to hold at least `capacity` entity slots.
     ///
     /// Call this before the query loop each frame to avoid incremental
@@ -239,10 +199,6 @@ pub struct RenderState {
     /// evicted the *live* entity instead.
     pub(crate) pending_despawns: Vec<(hecs::Entity, u32)>,
 
-    /// Snapshot of the dirty-transform bitfield taken just before the tracker
-    /// is cleared. This — not the live tracker — is what JS reads.
-    exported_dirty_bits: Vec<u32>,
-
     // Dirty staging cache (populated by collect_and_cache_dirty)
     staging_cache: Vec<u32>,
     staging_indices_cache: Vec<u32>,
@@ -279,7 +235,6 @@ impl RenderState {
             slot_to_entity: Vec::new(),
             entity_to_slot: Vec::new(),
             pending_despawns: Vec::new(),
-            exported_dirty_bits: Vec::new(),
             staging_cache: Vec::new(),
             staging_indices_cache: Vec::new(),
             staging_dirty_count: 0,
@@ -334,7 +289,6 @@ impl RenderState {
         self.slot_to_entity.clear();
         self.entity_to_slot.clear();
         self.pending_despawns.clear();
-        self.exported_dirty_bits.clear();
 
         self.gpu_transforms.clear();
         self.gpu_bounds.clear();
@@ -916,7 +870,6 @@ impl RenderState {
             // set before the last entity was despawned survived into the next
             // frame and were inherited by whichever entities took those slots
             // (audit 2026-07, P2-9).
-            self.exported_dirty_bits.clear();
             self.dirty_tracker.clear();
             return DirtyStagingResult {
                 staging: Vec::new(),
@@ -1022,21 +975,6 @@ impl RenderState {
             staging.push(if is_root { 0 } else { 1 });
         }
 
-        // Snapshot the transform bitfield into a dedicated export buffer BEFORE
-        // clearing the tracker.
-        //
-        // The pointer handed to JS used to come straight from the tracker, which
-        // this very function clears as its last act — so `engine_dirty_bits_ptr`
-        // always read zeros and the GPU temporal-culling path (which skips the
-        // bounds read for clean entities) was a permanent no-op, the exact
-        // opposite of what its doc promised (audit 2026-07, P1-16).
-        //
-        // Exporting a copy also makes the pointer stable for the whole frame:
-        // `BitSet::set` can reallocate mid-frame, dangling a pointer JS already
-        // took (P2-5).
-        self.exported_dirty_bits.clear();
-        self.exported_dirty_bits
-            .extend_from_slice(self.dirty_tracker.transforms_words());
         self.dirty_tracker.clear();
 
         DirtyStagingResult {
@@ -1104,23 +1042,6 @@ impl RenderState {
         self.staging_dirty_ratio
     }
 
-    /// Pointer to the dirty-transform bitfield (one bit per entity slot).
-    ///
-    /// Packed as little-endian `u32` words. Upload to the GPU for temporal
-    /// culling: a bit value of 1 means the entity's transform changed this frame.
-    pub fn dirty_transform_bits_ptr(&self) -> *const u32 {
-        if self.exported_dirty_bits.is_empty() {
-            std::ptr::null()
-        } else {
-            self.exported_dirty_bits.as_ptr()
-        }
-    }
-
-    /// Number of `u32` words in the dirty-transform bitfield.
-    pub fn dirty_transform_bits_u32_len(&self) -> usize {
-        self.exported_dirty_bits.len()
-    }
-
     /// Release excess heap memory from all internal buffers.
     ///
     /// INVALIDATES EVERY `engine_gpu_*_ptr()` PREVIOUSLY HANDED TO JS: every
@@ -1145,7 +1066,6 @@ impl RenderState {
         self.slot_to_entity.shrink_to_fit();
         self.staging_cache.shrink_to_fit();
         self.staging_indices_cache.shrink_to_fit();
-        self.exported_dirty_bits.shrink_to_fit();
         if let Some(last) = self.entity_to_slot.iter().rposition(|&s| s != u32::MAX) {
             self.entity_to_slot.truncate(last + 1);
         } else {
@@ -2377,130 +2297,6 @@ mod tests {
         assert_eq!(rs.gpu_depths[slot as usize], 0.0);
     }
 
-    #[test]
-    fn dirty_bits_exposed_as_u32_array() {
-        let mut rs = RenderState::new();
-        let mut world = World::new();
-
-        // Spawn two entities and assign slots
-        let ent1 = world.spawn((
-            Position(Vec3::ZERO),
-            Rotation(Quat::IDENTITY),
-            Scale(Vec3::ONE),
-            ModelMatrix([0.0; 16]),
-            BoundingRadius(1.0),
-            Active,
-            ExternalId(1),
-        ));
-        let slot1 = rs.assign_slot(ent1);
-
-        let ent2 = world.spawn((
-            Position(Vec3::ZERO),
-            Rotation(Quat::IDENTITY),
-            Scale(Vec3::ONE),
-            ModelMatrix([0.0; 16]),
-            BoundingRadius(1.0),
-            Active,
-            ExternalId(2),
-        ));
-        let slot2 = rs.assign_slot(ent2);
-
-        // Clear dirty state (assign_slot marks everything dirty)
-        rs.dirty_tracker.clear();
-
-        // Mark only slot1 dirty, then stage the frame — the exported bitfield is
-        // a snapshot taken during staging (audit 2026-07, P1-16).
-        rs.dirty_tracker.mark_transform_dirty(slot1 as usize);
-        let _ = rs.collect_dirty_staging(&world);
-
-        // Check the raw bits
-        let len = rs.dirty_transform_bits_u32_len();
-        assert!(len > 0);
-        let ptr = rs.dirty_transform_bits_ptr();
-        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
-
-        // Slot1 should be dirty (its bit set)
-        assert_ne!(
-            bits[slot1 as usize / 32] & (1 << (slot1 as usize % 32)),
-            0
-        );
-        // Slot2 should NOT be dirty
-        assert_eq!(
-            bits[slot2 as usize / 32] & (1 << (slot2 as usize % 32)),
-            0
-        );
-    }
-
-    #[test]
-    fn dirty_bits_length_covers_all_slots() {
-        let mut rs = RenderState::new();
-        let mut world = World::new();
-
-        // Spawn 100 entities to force the bitset to grow
-        for i in 0..100 {
-            let ent = world.spawn((
-                Position(Vec3::ZERO),
-                Rotation(Quat::IDENTITY),
-                Scale(Vec3::ONE),
-                ModelMatrix([0.0; 16]),
-                BoundingRadius(1.0),
-                Active,
-                ExternalId(i),
-            ));
-            rs.assign_slot(ent);
-        }
-        let _ = rs.collect_dirty_staging(&world);
-
-        let len = rs.dirty_transform_bits_u32_len();
-        // 100 slots need at least ceil(100/32) = 4 u32 words
-        assert!(len >= 4, "expected at least 4 u32 words, got {len}");
-        // BitSet uses u64 internally, so len is always even
-        assert_eq!(len % 2, 0, "u32 count should be even (from u64 backing)");
-    }
-
-    #[test]
-    fn exported_dirty_bits_reflect_the_frame_that_was_staged() {
-        // Audit 2026-07 (P1-16): the exported bitfield is a snapshot taken just
-        // before `collect_dirty_staging` clears the tracker, NOT a live view of
-        // the tracker — which is why it used to read as all zeros from JS.
-        let mut rs = RenderState::new();
-        let mut world = World::new();
-
-        let ent = world.spawn((
-            Position(Vec3::ZERO),
-            Rotation(Quat::IDENTITY),
-            Scale(Vec3::ONE),
-            ModelMatrix([0.0; 16]),
-            BoundingRadius(1.0),
-            Active,
-            ExternalId(1),
-        ));
-        let slot = rs.assign_slot(ent) as usize;
-
-        // Nothing staged yet -> nothing exported, and the pointer is null so a
-        // JS `if (ptr)` guard behaves.
-        assert!(rs.dirty_transform_bits_ptr().is_null());
-        assert_eq!(rs.dirty_transform_bits_u32_len(), 0);
-
-        rs.dirty_tracker.mark_transform_dirty(slot);
-        let _ = rs.collect_dirty_staging(&world);
-
-        let ptr = rs.dirty_transform_bits_ptr();
-        let len = rs.dirty_transform_bits_u32_len();
-        assert!(!ptr.is_null() && len > 0, "the staged frame must export its bits");
-        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert_ne!(bits[slot / 32] & (1 << (slot % 32)), 0,
-            "the slot marked dirty this frame must be set in the export");
-
-        // The tracker itself is cleared, so the NEXT frame with no changes
-        // exports an all-zero mask.
-        let _ = rs.collect_dirty_staging(&world);
-        let ptr = rs.dirty_transform_bits_ptr();
-        let len = rs.dirty_transform_bits_u32_len();
-        let bits = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert_eq!(bits[slot / 32] & (1 << (slot % 32)), 0);
-    }
-
     /// A frame that ends with zero entities must not leave dirty bits behind for
     /// the next frame's slots to inherit (audit 2026-07, P2-9).
     #[test]
@@ -2513,6 +2309,5 @@ mod tests {
         let _ = rs.collect_dirty_staging(&world);
         assert!(!rs.dirty_tracker.is_transform_dirty(0));
         assert!(!rs.dirty_tracker.is_transform_dirty(5));
-        assert!(rs.dirty_transform_bits_ptr().is_null());
     }
 }

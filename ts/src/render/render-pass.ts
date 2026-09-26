@@ -9,8 +9,6 @@ export interface FrameState {
   canvasWidth: number;
   canvasHeight: number;
   deltaTime: number;
-  /** Dirty-transform bitfield (1 bit per entity slot, packed u32). Used by temporal culling. */
-  dirtyBits?: Uint32Array;
   /** Physics debug lines (Phase 16): 8 f32 per line [ax,ay,bx,by,r,g,b,a]. */
   physicsDebugLines?: Float32Array;
 }
