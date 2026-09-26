@@ -11,6 +11,13 @@ export interface FrameState {
   deltaTime: number;
   /** Physics debug lines (Phase 16): 8 f32 per line [ax,ay,bx,by,r,g,b,a]. */
   physicsDebugLines?: Float32Array;
+  /**
+   * Ambient light (Phase 17): r, g, b, intensity. The light buffer is cleared
+   * to rgb × intensity. From `GPURenderState`, i.e. from WASM.
+   */
+  ambient?: readonly [number, number, number, number];
+  /** Sphere-march steps per shadowed light pixel (`LightingQuality.shadowSteps`). */
+  shadowSteps?: number;
 }
 
 export interface RenderPass {
