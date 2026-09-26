@@ -125,3 +125,71 @@ fn h5_overflow_children_are_removed_on_despawn() {
     assert!(e.world.get::<&OverflowChildren>(par).is_err(),
         "an emptied overflow list must be removed entirely");
 }
+
+// ─────────────────────────────────────────────────────────────────
+// H6/H7 (found 2026-09-26): the GPU rows of a child are in WORLD space.
+//
+// The SoA writers took world-space data from LOCAL components, which match
+// the world only for a root. `write_slot_2d` built the transform row of every
+// 2D entity from its own Transform2D, so a 2D child was drawn at its local
+// offset from the origin, even with nothing moving. Both writers also took the
+// culling sphere's centre from the local position, so a child of any
+// archetype was culled against a sphere somewhere else, and could vanish while
+// on screen. The world transform of every entity is its ModelMatrix, which
+// `propagate_transforms` composes for children.
+// ─────────────────────────────────────────────────────────────────
+fn spawn2d(id: u32) -> Command {
+    let mut p = [0u8; 16];
+    p[0] = 1;
+    c(CommandType::SpawnEntity, id, p)
+}
+fn setpos(id: u32, x: f32, y: f32) -> Command {
+    let mut p = [0u8; 16];
+    p[0..4].copy_from_slice(&x.to_le_bytes());
+    p[4..8].copy_from_slice(&y.to_le_bytes());
+    c(CommandType::SetPosition, id, p)
+}
+fn gpu_row(e: &Engine, id: u32) -> (Vec<f32>, [f32; 4], [f32; 16]) {
+    let ent = e.entity_map.get(id).unwrap();
+    let s = e.render_state.get_slot(ent).unwrap() as usize;
+    let t = e.render_state.gpu_transforms()[s * 16..s * 16 + 16].to_vec();
+    let b = e.render_state.gpu_bounds()[s * 4..s * 4 + 4].try_into().unwrap();
+    (t, b, e.world.get::<&ModelMatrix>(ent).unwrap().0)
+}
+
+#[test]
+fn h6_a_2d_child_is_drawn_at_its_world_position() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn2d(0), setpos(0, 100.0, 50.0), spawn2d(1), setpos(1, 10.0, 0.0), parent(1, 0)]);
+    e.update(1.0 / 60.0);
+
+    let (gpu, _, world) = gpu_row(&e, 1);
+    println!("H6 2D child: world t=({}, {}), GPU t=({}, {})", world[12], world[13], gpu[12], gpu[13]);
+    assert_eq!((world[12], world[13]), (110.0, 50.0), "the ECS composes the parent in");
+    for i in 0..16 {
+        assert!((gpu[i] - world[i]).abs() < 1e-4, "GPU word {i} = {}, world = {}", gpu[i], world[i]);
+    }
+}
+
+#[test]
+fn h7_every_culling_sphere_is_centred_on_the_world_position() {
+    let mut e = Engine::new();
+    e.process_commands(&[
+        spawn2d(0), setpos(0, 100.0, 50.0),               // 2D root
+        spawn2d(1), setpos(1, 10.0, 0.0), parent(1, 0),   // 2D child
+        spawn(2), setpos(2, -40.0, 0.0),                  // 3D root
+        spawn(3), setpos(3, 0.0, 7.0), parent(3, 2),      // 3D child
+        spawn(4), setpos(4, 1.0, 1.0), parent(4, 3),      // 3D grandchild
+    ]);
+    e.update(1.0 / 60.0);
+
+    for id in 0..5 {
+        let (_, bounds, world) = gpu_row(&e, id);
+        println!("H7 id {id}: sphere centre ({}, {}, {}), world t ({}, {}, {})",
+            bounds[0], bounds[1], bounds[2], world[12], world[13], world[14]);
+        for k in 0..3 {
+            assert!((bounds[k] - world[12 + k]).abs() < 1e-4,
+                "id {id}: sphere centre[{k}] = {}, world translation = {}", bounds[k], world[12 + k]);
+        }
+    }
+}

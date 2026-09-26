@@ -603,17 +603,26 @@ impl RenderState {
         self.gpu_depths[s] = 0.0;
     }
 
+    /// Write a world matrix into slot `s`, and centre the culling sphere on its
+    /// translation.
+    ///
+    /// Both must be world-space. Taking the centre from `Position` or
+    /// `Transform2D` instead is right only for a root: for a child those are
+    /// local to the parent, and the sphere ended up somewhere the child is not,
+    /// so the child could be culled while on screen.
+    fn write_world_matrix(&mut self, s: usize, matrix: &[f32; 16]) {
+        self.gpu_transforms[s * 16..s * 16 + 16].copy_from_slice(matrix);
+        self.gpu_bounds[s * 4..s * 4 + 3].copy_from_slice(&matrix[12..15]);
+    }
+
     /// Write all SoA data for an entity into its assigned slot.
     /// Used for initial population and dirty updates.
     pub fn write_slot(&mut self, slot: u32, world: &World, entity: hecs::Entity) {
         let s = slot as usize;
 
         if let Ok(matrix) = world.get::<&ModelMatrix>(entity) {
-            let t = s * 16;
-            self.gpu_transforms[t..t + 16].copy_from_slice(&matrix.0);
-        }
-
-        if let Ok(pos) = world.get::<&Position>(entity) {
+            self.write_world_matrix(s, &matrix.0);
+        } else if let Ok(pos) = world.get::<&Position>(entity) {
             let b = s * 4;
             self.gpu_bounds[b] = pos.0.x;
             self.gpu_bounds[b + 1] = pos.0.y;
@@ -667,13 +676,23 @@ impl RenderState {
     }
 
     /// Write all SoA data for a 2D entity (Transform2D archetype) into its assigned slot.
-    /// Builds the ModelMatrix directly from Transform2D fields instead of reading
-    /// Position/Rotation/Scale + pre-computed ModelMatrix.
+    ///
+    /// A root builds its matrix directly from Transform2D, which is fresh even
+    /// at command time, before the systems have run. A child cannot do that:
+    /// its Transform2D is local to the parent. Its world matrix is the
+    /// ModelMatrix that `propagate_transforms` composes.
     pub fn write_slot_2d(&mut self, slot: u32, world: &World, entity: hecs::Entity) {
         let s = slot as usize;
 
-        // Build ModelMatrix from Transform2D directly
-        if let Ok(transform) = world.get::<&Transform2D>(entity) {
+        let parented = world
+            .get::<&Parent>(entity)
+            .map(|p| p.0 != u32::MAX)
+            .unwrap_or(false);
+        if parented {
+            if let Ok(matrix) = world.get::<&ModelMatrix>(entity) {
+                self.write_world_matrix(s, &matrix.0);
+            }
+        } else if let Ok(transform) = world.get::<&Transform2D>(entity) {
             let (sin, cos) = transform.rot.sin_cos();
             let t = s * 16;
             // Column-major 4x4 (same format as transform_system_2d in systems.rs)
@@ -1699,11 +1718,19 @@ mod tests {
     fn write_slot_updates_soa_in_place() {
         let mut rs = RenderState::new();
         let mut world = World::new();
+        // A child: its Position is local (1, 2), its world matrix puts it at (5, 10).
+        let mut world_matrix = [0.0f32; 16];
+        world_matrix[0] = 1.0;
+        world_matrix[5] = 1.0;
+        world_matrix[10] = 1.0;
+        world_matrix[15] = 1.0;
+        world_matrix[12] = 5.0;
+        world_matrix[13] = 10.0;
         let e = world.spawn((
-            Position(Vec3::new(5.0, 10.0, 0.0)),
+            Position(Vec3::new(1.0, 2.0, 0.0)),
             Rotation::default(),
             Scale(Vec3::ONE),
-            ModelMatrix::default(),
+            ModelMatrix(world_matrix),
             BoundingRadius(2.0),
             TextureLayerIndex(7),
             MeshHandle(3),
@@ -1715,10 +1742,12 @@ mod tests {
         let slot = rs.assign_slot(e);
         rs.write_slot(slot, &world, e);
 
-        // Check bounds: position (5, 10, 0) + radius 2
+        // The culling sphere is centred on the WORLD translation, not on the
+        // local Position, and has radius 2.
         assert_eq!(rs.gpu_bounds[slot as usize * 4], 5.0);
         assert_eq!(rs.gpu_bounds[slot as usize * 4 + 1], 10.0);
         assert_eq!(rs.gpu_bounds[slot as usize * 4 + 3], 2.0);
+        assert_eq!(&rs.gpu_transforms[slot as usize * 16..slot as usize * 16 + 16], &world_matrix);
         // Check entity_ids
         assert_eq!(rs.gpu_entity_ids[slot as usize], 42);
     }
