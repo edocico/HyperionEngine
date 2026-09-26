@@ -63,14 +63,14 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1072 tests + 5 skipped, 85 files)
+cd ts && npm test                            # All vitest tests (1081 tests + 5 skipped, 86 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
-# 85 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
+# 86 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (69 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (92 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (75 tests)
@@ -249,7 +249,8 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/selection-seed-pass.ts` | Renders selected entities as JFA seeds |
 | `render/passes/occluder-seed-pass.ts` | Phase 17 Track B: rasterises shadow casters (renderMeta bit 9) into `occluder-seed`, half resolution, `JFA_FORMAT`, `(u, v, valid, inside)`. It runs each primitive's OWN shader a second time, through its `fs_occluder` entry with `OCCLUDER_PASS = true`, so a caster shadows its real coverage (a sprite casts its silhouette, not its quad). Opaque buckets only. All six primitive shaders have `fs_occluder`. Light2D has no shader and never occludes |
 | `render/primitive-bindings.ts` | The bind group layouts every primitive shader shares (group 0 columns, group 1 texture tiers), and `TextureTierBinding`, the group-1 bind group that rebinds when a tier's view changes. Used by `ForwardPass` and `OccluderSeedPass` |
-| `render/passes/jfa-pass.ts` | Single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
+| `render/passes/sdf-jfa-pass.ts` | Phase 17 Track B: `SdfJfaPass`, one iteration of the SIGNED-SDF chain `occluder-seed` → `sdf-iter-N` at `halfResolution`. Each texel stores (nearest-opposite u, v, valid, inside), with the sign as the texel's own kind in alpha. It uses Godot's single-chain trick (a neighbour of the other kind is its own seed) and 1+JFA (a step-1 `LOAD_PASS` first, which also converts the raw seed). `SdfJfaPass.chain(maxDim)` builds it. On GPU it matched an exact distance transform to within 0.1 texel on 100% of texels, sign always right |
+| `render/passes/jfa-pass.ts` | `JfaIterationPass` (shared base: pipeline, params, ping-pong naming) + `JFAPass`, the outline chain: single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |
 | `render/passes/bloom-pass.ts` | Dual Kawase bloom (6-step chain), mutually exclusive with outlines |
 | `render/passes/prefix-sum-reference.ts` | `exclusiveScanCPU()` — CPU reference of Blelloch exclusive scan. `exclusiveScanSubgroupSimCPU()` — subgroup-simulated 3-phase scan reference |

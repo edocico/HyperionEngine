@@ -6,6 +6,15 @@ import {
 } from '../primitive-bindings';
 import { BUCKETS_PER_TYPE } from './cull-pass';
 
+/**
+ * Size of the lighting targets (occluder seed, signed-SDF chain): half the
+ * canvas, rounded down, at least 1×1. One function, because the SDF chain
+ * steps in texels of the seed texture and the two must agree to the texel.
+ */
+export function halfResolution(canvasWidth: number, canvasHeight: number): [number, number] {
+  return [Math.max(1, Math.floor(canvasWidth / 2)), Math.max(1, Math.floor(canvasHeight / 2))];
+}
+
 /** The fragment entry point a primitive shader exposes to cast shadows. */
 const OCCLUDER_ENTRY = 'fs_occluder';
 
@@ -134,10 +143,9 @@ export class OccluderSeedPass implements RenderPass {
     pass.end();
   }
 
-  /** Half the canvas, rounded down, at least 1×1. Registered in the pool as `occluder-seed`. */
+  /** `halfResolution` of the canvas. Registered in the pool as `occluder-seed`. */
   private ensureTarget(canvasWidth: number, canvasHeight: number, resources: ResourcePool): void {
-    const width = Math.max(1, Math.floor(canvasWidth / 2));
-    const height = Math.max(1, Math.floor(canvasHeight / 2));
+    const [width, height] = halfResolution(canvasWidth, canvasHeight);
     if (this.target && width === this.targetWidth && height === this.targetHeight) return;
     this.target?.destroy();
     if (!this.device) return;

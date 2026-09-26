@@ -250,6 +250,18 @@ All five checks are closed. Track B can start.
     (~8 tests)
 
 - [ ] **Task 8: signed SDF chain**
+  > **Landed 2026-09-26, apart from graph wiring:** `SdfJfaPass` plus `sdf-jfa.wgsl`.
+  > - Instead of an instance field, `JfaIterationPass` is a common base with
+  >   `JFAPass` and `SdfJfaPass` as siblings, each with its own static shader slot.
+  >   That keeps one hot-reload slot per WGSL file, and keeps
+  >   `instanceof JFAPass` meaning "outline chain".
+  > - Distances are in texels, not uv: uv is anisotropic on a non-square target.
+  > - Seeds are read with `textureLoad`.
+  > - GPU check against a brute-force exact distance transform (a square plus a
+  >   thin rotated bar, 128×128): sign 100% right, 0 invalid texels, 0
+  >   under-estimates, 100% within 0.1 texel.
+  > - Found on the way: the outline chain's `JFAParams` struct is 24 bytes in
+  >   WGSL against a 16-byte buffer, so every outline frame failed. Fixed separately.
   - Reuse `JFAPass` unmodified for the iterations; resources `sdf-iter-0..N` on
     the same two-physical-texture ping-pong as `jfa-iter-N`.
   - Sign: adopt Godot's single-chain encoding (`canvas_sdf.glsl`) — a neighbour of

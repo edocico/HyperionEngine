@@ -3,23 +3,25 @@ import type { ResourcePool } from '../resource-pool';
 import { JFA_FORMAT } from '../formats';
 
 /**
- * Single JFA iteration pass.
+ * One iteration of a Jump Flood chain, as a `RenderPass` node.
  *
- * The Jump Flood Algorithm requires log2(maxDim) iterations, each halving the
- * step size.  We model each iteration as a separate `RenderPass` node in the
- * `RenderGraph` DAG so that the topological sort naturally orders them.
+ * The Jump Flood Algorithm needs about log2(maxDim) iterations, each halving
+ * the step size. Each iteration is a separate node, so the RenderGraph's
+ * topological sort orders them. The graph allows one writer per resource, so
+ * every iteration writes a uniquely named resource. The renderer maps those
+ * names onto two physical ping-pong textures (`outputPhysical`).
  *
- * To satisfy the RenderGraph's "one writer per resource" constraint, each
- * iteration writes to a uniquely named resource (`jfa-iter-0`, `jfa-iter-1`,
- * etc.).  The renderer coordinator maps these names to actual ping-pong
- * texture views (two physical RGBA16Float textures).
- *
- * Iteration 0 reads `selection-seed`.
- * Iteration N reads `jfa-iter-(N-1)`.
- * The final iteration's output is the JFA result.
+ * Two chains share this base:
+ * - `JFAPass`, the outline chain: `selection-seed` → `jfa-iter-N`, full
+ *   resolution, `jfa.wgsl`;
+ * - `SdfJfaPass`, the signed-SDF chain: `occluder-seed` → `sdf-iter-N`, half
+ *   resolution, `sdf-jfa.wgsl`.
+ * Each subclass owns its shader in a static slot of its own, so shader
+ * hot-reload keeps one slot per WGSL file, and the chains cannot pick up each
+ * other's shader. They are siblings rather than parent and child: the renderer
+ * finds the outline chain with `instanceof JFAPass`.
  */
-export class JFAPass implements RenderPass {
-  readonly name: string;
+export abstract class JfaIterationPass implements RenderPass {
   readonly reads: string[];
   readonly writes: string[];
   readonly optional = true;
@@ -29,78 +31,41 @@ export class JFAPass implements RenderPass {
   private sampler: GPUSampler | null = null;
   private device: GPUDevice | null = null;
 
-  /** Which iteration index (0-based) this pass represents. */
-  readonly iterationIndex: number;
-
-  /** Total iterations for this JFA pipeline. */
-  readonly totalIterations: number;
-
-  /** Step size in pixels for this iteration. */
-  readonly stepSize: number;
-
-  /** Name of the output texture resource written by this pass. */
-  readonly outputResource: string;
-
-  /** Name of the input texture resource read by this pass. */
-  readonly inputResource: string;
-
   /**
-   * Which physical ping-pong texture (0 or 1) backs the output.
-   * The renderer coordinator uses this to set the correct view.
+   * @param name graph node name, unique across the graph
+   * @param inputResource texture resource read by this iteration
+   * @param outputResource texture resource written by this iteration
+   * @param stepSize jump distance, in texels of the chain's target
+   * @param outputPhysical which ping-pong texture (0 or 1) backs the output
    */
-  readonly outputPhysical: number;
-
-  /**
-   * WGSL shader source. Set before calling `setup()`.
-   */
-  static SHADER_SOURCE = '';
-
-  constructor(iterationIndex: number, totalIterations: number, maxDimension: number) {
-    this.iterationIndex = iterationIndex;
-    this.totalIterations = totalIterations;
-
-    // Step size: starts at maxDim/2, halves each iteration
-    this.stepSize = Math.max(1, Math.floor(maxDimension / Math.pow(2, iterationIndex + 1)));
-
-    // Each iteration writes to a unique resource name for the DAG
-    this.outputResource = `jfa-iter-${iterationIndex}`;
-    this.name = `jfa-${iterationIndex}`;
-
-    // First iteration reads from the seed pass output
-    if (iterationIndex === 0) {
-      this.inputResource = 'selection-seed';
-    } else {
-      this.inputResource = `jfa-iter-${iterationIndex - 1}`;
-    }
-
-    // Physical ping-pong: even iterations write to texture 0, odd to texture 1
-    // (but iteration 0 also writes to texture 0)
-    this.outputPhysical = iterationIndex % 2;
-
-    this.reads = [this.inputResource];
-    this.writes = [this.outputResource];
+  constructor(
+    readonly name: string,
+    readonly inputResource: string,
+    readonly outputResource: string,
+    readonly stepSize: number,
+    readonly outputPhysical: number,
+  ) {
+    this.reads = [inputResource];
+    this.writes = [outputResource];
   }
 
-  /**
-   * Compute the number of JFA iterations needed for a given resolution.
-   */
-  static iterationsForDimension(maxDim: number): number {
-    return Math.max(1, Math.ceil(Math.log2(maxDim)));
-  }
+  /** The WGSL module, read at `setup()`. */
+  protected abstract shaderSource(): string;
 
-  /**
-   * Determine the final output resource name for a set of JFA passes.
-   */
-  static finalOutputResource(totalIterations: number): string {
-    if (totalIterations === 0) return 'selection-seed';
-    return `jfa-iter-${totalIterations - 1}`;
+  /** Size in texels of the textures this chain runs on. */
+  protected abstract targetSize(frame: FrameState): [number, number];
+
+  /** Pipeline-overridable constants of the fragment stage. */
+  protected fragmentConstants(): Record<string, number> {
+    return {};
   }
 
   setup(device: GPUDevice, _resources: ResourcePool): void {
     this.device = device;
 
-    if (!JFAPass.SHADER_SOURCE) {
-      throw new Error('JFAPass.SHADER_SOURCE must be set before setup()');
+    const code = this.shaderSource();
+    if (!code) {
+      throw new Error(`${this.constructor.name}.SHADER_SOURCE must be set before setup()`);
     }
 
     this.sampler = device.createSampler({
@@ -116,7 +81,7 @@ export class JFAPass implements RenderPass {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    const shaderModule = device.createShaderModule({ code: JFAPass.SHADER_SOURCE });
+    const shaderModule = device.createShaderModule({ code });
 
     const bindGroupLayout = device.createBindGroupLayout({
       entries: [
@@ -136,6 +101,7 @@ export class JFAPass implements RenderPass {
         module: shaderModule,
         entryPoint: 'fs_main',
         targets: [{ format: JFA_FORMAT }],
+        constants: this.fragmentConstants(),
       },
       primitive: { topology: 'triangle-list' },
     });
@@ -143,11 +109,12 @@ export class JFAPass implements RenderPass {
 
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.paramBuffer) return;
+    const [width, height] = this.targetSize(frame);
     const data = new ArrayBuffer(16);
     const f32 = new Float32Array(data);
     f32[0] = this.stepSize;
-    f32[1] = 1.0 / frame.canvasWidth;
-    f32[2] = 1.0 / frame.canvasHeight;
+    f32[1] = 1.0 / width;
+    f32[2] = 1.0 / height;
     f32[3] = 0; // padding
     device.queue.writeBuffer(this.paramBuffer, 0, data);
   }
@@ -192,5 +159,60 @@ export class JFAPass implements RenderPass {
     this.paramBuffer = null;
     this.sampler = null;
     this.device = null;
+  }
+}
+
+/**
+ * One iteration of the OUTLINE chain.
+ *
+ * Iteration 0 reads `selection-seed`, iteration N reads `jfa-iter-(N-1)`, and
+ * the last iteration's output is the JFA result that OutlineCompositePass reads.
+ * Runs at canvas resolution.
+ */
+export class JFAPass extends JfaIterationPass {
+  /** WGSL shader source (`jfa.wgsl`). Set before calling `setup()`. */
+  static SHADER_SOURCE = '';
+
+  /** Which iteration index (0-based) this pass represents. */
+  readonly iterationIndex: number;
+
+  /** Total iterations for this JFA pipeline. */
+  readonly totalIterations: number;
+
+  constructor(iterationIndex: number, totalIterations: number, maxDimension: number) {
+    super(
+      `jfa-${iterationIndex}`,
+      iterationIndex === 0 ? 'selection-seed' : `jfa-iter-${iterationIndex - 1}`,
+      `jfa-iter-${iterationIndex}`,
+      // Step size: starts at maxDim/2, halves each iteration
+      Math.max(1, Math.floor(maxDimension / Math.pow(2, iterationIndex + 1))),
+      // Physical ping-pong: even iterations write to texture 0, odd to texture 1
+      iterationIndex % 2,
+    );
+    this.iterationIndex = iterationIndex;
+    this.totalIterations = totalIterations;
+  }
+
+  /**
+   * Compute the number of JFA iterations needed for a given resolution.
+   */
+  static iterationsForDimension(maxDim: number): number {
+    return Math.max(1, Math.ceil(Math.log2(maxDim)));
+  }
+
+  /**
+   * Determine the final output resource name for a set of JFA passes.
+   */
+  static finalOutputResource(totalIterations: number): string {
+    if (totalIterations === 0) return 'selection-seed';
+    return `jfa-iter-${totalIterations - 1}`;
+  }
+
+  protected shaderSource(): string {
+    return JFAPass.SHADER_SOURCE;
+  }
+
+  protected targetSize(frame: FrameState): [number, number] {
+    return [frame.canvasWidth, frame.canvasHeight];
   }
 }
