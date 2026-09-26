@@ -8,6 +8,18 @@ const entities: EntityHandle[] = [];
 const hooks: HookFn[] = [];
 let panel: HTMLElement | null = null;
 
+/**
+ * A rotation of `angle` radians about Z, as the quaternion `rotation()` takes.
+ * `engine.spawn()` makes 3D entities, and the one-argument `rotation(angle)`
+ * (SetRotation2D) is ignored on those: the spot used to point along +X forever.
+ */
+function aboutZ(angle: number): [number, number, number, number] {
+  return [0, 0, Math.sin(angle / 2), Math.cos(angle / 2)];
+}
+
+/** The scene's right edge (the layer-1 sprite) in world units, plus a margin. */
+const SCENE_HALF_WIDTH = 17.6;
+
 /** Resolves after `frames` animation frames: long enough for a command to reach WASM and come back. */
 function frames(n: number): Promise<void> {
   return new Promise((resolve) => {
@@ -52,6 +64,14 @@ const section: DemoSection = {
   async setup(engine: Hyperion, reporter: TestReporter) {
     const lighting = engine.lighting;
 
+    // Frame the whole scene whatever the canvas aspect: the "Light layers"
+    // check reads the groups of what is in view, and at a narrow aspect the
+    // layer-1 sprite used to fall off screen and fail it. Zoom 1 at 16:9.
+    engine.cam.position(0, 0, 0);
+    engine.cam.zoom(1);
+    const halfWidth = 1 / engine.cam.viewProjection[0];
+    engine.cam.zoom(Math.min(1, halfWidth / SCENE_HALF_WIDTH));
+
     // ── Scene ──────────────────────────────────────────────────────────
     // A white floor that receives light shows the light buffer itself: the
     // ambient where no light reaches, each light's falloff, the shadows.
@@ -85,8 +105,10 @@ const section: DemoSection = {
 
       point = engine.spawn().position(-7, 0, 0)
         .light({ type: 'point', color: '#ffcc88', energy: 1.4, range: 12, falloff: 1.2, shadowIntensity: 1 });
-      spot = engine.spawn().position(12, -6, 0).rotation(2.3)
-        .light({ type: 'spot', color: '#88bbff', energy: 1.6, range: 18, innerAngle: 18, outerAngle: 30, shadowIntensity: 1 });
+      // Layer 0 only: when its sweep crosses the layer-1 sprite, the sprite
+      // stays dark — the light mask, on screen.
+      spot = engine.spawn().position(12, -6, 0).rotation(...aboutZ(2.3))
+        .light({ type: 'spot', color: '#88bbff', energy: 1.6, range: 18, innerAngle: 18, outerAngle: 30, shadowIntensity: 1, layers: 0b01 });
       // A weak global light, placed off-screen on purpose: it must never be culled.
       global = engine.spawn().position(500, 500, 0)
         .light({ type: 'global', color: [0.25, 0.2, 0.35], energy: 0.5 });
@@ -116,8 +138,8 @@ const section: DemoSection = {
 
     // ── 4. Light layers ────────────────────────────────────────────────
     // Layer 0 (floor, gradients) and layer 1 (the sprite) differ in their
-    // lights (the blue one) and their casters (the upper pillar shadows layer
-    // 0 only): two light groups, two SDF sets.
+    // lights (the blue one, the spot) and their casters (the upper pillar
+    // shadows layer 0 only): two light groups, two SDF sets.
     const groups = lighting.groups;
     reporter.check(
       'Light layers',
@@ -130,7 +152,7 @@ const section: DemoSection = {
     const animate: HookFn = (dt) => {
       t += dt;
       point.position(-7 + Math.cos(t * 0.6) * 4, Math.sin(t * 0.6) * 4, 0);
-      spot.rotation(2.3 + Math.sin(t * 0.4) * 0.5);
+      spot.rotation(...aboutZ(2.3 + Math.sin(t * 0.4) * 0.5));
     };
     engine.addHook('preTick', animate);
     hooks.push(animate);
@@ -147,6 +169,7 @@ const section: DemoSection = {
     panel?.remove();
     panel = null;
     engine.lighting.setBackend('off');
+    engine.cam.zoom(1);
     for (const e of entities) e.destroy();
     entities.length = 0;
   },
