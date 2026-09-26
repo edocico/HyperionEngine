@@ -36,12 +36,12 @@ struct CameraUniform {
 @group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
 @group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
-// Set to true only by the OccluderSeedPass pipelines, which run this module
+// Set to true only by the occluder pipelines (OccluderSeedStage), which run this module
 // with the fs_occluder entry point. The ForwardPass pipelines keep the default,
 // and the check below folds away.
 override OCCLUDER_PASS: bool = false;
 // renderMeta[slot*2+1] bit 9 (castsShadow). It must match
-// RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-pass.test.ts
+// RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-stage.test.ts
 // compares the two.
 const CASTS_SHADOW_BIT: u32 = 1u << 9u;
 // Whether an entity is in the occluder set being seeded: it casts, and its
@@ -54,9 +54,9 @@ fn castsInto(meta1: u32, layers: u32) -> bool {
 // in components.rs; forward-pass.test.ts compares the two.
 const RECEIVES_LIGHT_BIT: u32 = 1u << 10u;
 
-// Group 2: the light buffer (Phase 17), accumulated by LightAccumPass at half
+// Group 2: the light buffer (Phase 17), accumulated by LightGroupsPass at half
 // resolution and cleared to the ambient light. Only fs_main reads it:
-// OccluderSeedPass runs this module through fs_occluder on a layout of two
+// OccluderSeedStage runs this module through fs_occluder on a layout of two
 // groups, where a binding used by that entry point would fail validation.
 // Scalars only: see src/shaders/uniform-layout.test.ts.
 struct LightingUniform {
@@ -179,7 +179,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     return color;
 }
 
-// OccluderSeedPass entry: a seed wherever the gradient is at least half covered.
+// OccluderSeedStage entry: a seed wherever the gradient is at least half covered.
 // (u, v, valid, inside) — the layout the SDF chain floods (design §9.4).
 @fragment
 fn fs_occluder(in: VertexOutput) -> @location(0) vec4f {

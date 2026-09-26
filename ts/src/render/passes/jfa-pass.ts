@@ -11,15 +11,9 @@ import { JFA_FORMAT } from '../formats';
  * every iteration writes a uniquely named resource. The renderer maps those
  * names onto two physical ping-pong textures (`outputPhysical`).
  *
- * Two chains share this base:
- * - `JFAPass`, the outline chain: `selection-seed` → `jfa-iter-N`, full
- *   resolution, `jfa.wgsl`;
- * - `SdfJfaPass`, the signed-SDF chain: `occluder-seed` → `sdf-iter-N`, half
- *   resolution, `sdf-jfa.wgsl`.
- * Each subclass owns its shader in a static slot of its own, so shader
- * hot-reload keeps one slot per WGSL file, and the chains cannot pick up each
- * other's shader. They are siblings rather than parent and child: the renderer
- * finds the outline chain with `instanceof JFAPass`.
+ * Its one subclass is `JFAPass`, the outline chain. The lighting's signed-SDF
+ * chain is not a graph chain: `SdfChainStage` runs it inside LightGroupsPass,
+ * once per SDF set, with its length taken from the target size each frame.
  */
 export abstract class JfaIterationPass implements RenderPass {
   readonly reads: string[];

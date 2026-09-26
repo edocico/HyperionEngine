@@ -135,15 +135,6 @@ export class GraphRequests<O, B> {
     this.disable('bloom', 'Disabling bloom');
   }
 
-  /**
-   * Build the wanted graph again, unchanged: for passes that depend on the
-   * canvas size (the SDF chain length) after a resize. `what` names it in
-   * the log if the GPU rejects it.
-   */
-  rebuild(what: string): void {
-    void this.requestGraph(this.wanted, what);
-  }
-
   /** Switch the light chain (backend 'lit') on or off, keeping the composite and its options. */
   setLighting(enabled: boolean): void {
     if (!enabled) {

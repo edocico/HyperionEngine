@@ -31,9 +31,10 @@ import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
-import { OccluderSeedPass, halfResolution } from './render/passes/occluder-seed-pass';
-import { SdfJfaPass } from './render/passes/sdf-jfa-pass';
-import { LightAccumPass } from './render/passes/light-accum-pass';
+import { LightGroupsPass } from './render/passes/light-groups-pass';
+import { SdfChainStage } from './render/passes/sdf-chain-stage';
+import { LightAccumStage } from './render/passes/light-accum-stage';
+import { deriveLightGroups } from './render/light-groups';
 import { followLightingBackend, unsupportedLightingQuality } from './render/lighting-backend';
 import { DEFAULT_LIGHTING_QUALITY, type LightingQuality } from './lighting-api';
 import { SelectionManager } from './selection';
@@ -291,8 +292,8 @@ export async function createRenderer(
   JFAPass.SHADER_SOURCE = jfaShaderCode;
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
   LineBatchPass.SHADER_SOURCE = debugLineShaderCode;
-  SdfJfaPass.SHADER_SOURCE = sdfJfaShaderCode;
-  LightAccumPass.SHADER_SOURCE = lightAccumShaderCode;
+  SdfChainStage.SHADER_SOURCE = sdfJfaShaderCode;
+  LightAccumStage.SHADER_SOURCE = lightAccumShaderCode;
 
   CullPass.SUBGROUP_CONFIG = {
     useSubgroups,
@@ -423,65 +424,12 @@ export async function createRenderer(
     }
   }
 
-  // --- 8b'. Signed-SDF state (lighting) ---
-  // The SDF chain runs on two ping-pong textures at halfResolution, the size
-  // OccluderSeedPass renders its seed at: the chain steps in texels of that
-  // seed, so the two must agree to the texel. occluder-seed and light-buffer
-  // are allocated by their own passes; these are shared by the whole chain.
-  let sdfPasses: SdfJfaPass[] = [];
-  let sdfTextureA: GPUTexture | null = null;
-  let sdfTextureB: GPUTexture | null = null;
-  let sdfTexWidth = 0;
-  let sdfTexHeight = 0;
+  // --- 8b'. Lighting state ---
+  // LightGroupsPass owns its textures (seed, SDF ping-pong, the light-buffer
+  // array) and sizes them every frame: nothing to allocate here.
   let lightingQuality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
   const reportedQuality = new Set<keyof LightingQuality>();
-
-  /** The SDF chain for the current canvas. */
-  function sdfChain(): SdfJfaPass[] {
-    return SdfJfaPass.chain(Math.max(...halfResolution(canvas.width, canvas.height)));
-  }
-
-  /**
-   * A lit graph whose SDF chain no longer fits the canvas (a resize crossed a
-   * power of two) floods only part of it: rebuild. Called on resize and when
-   * a graph goes live, since it may have been composed at another size.
-   */
-  function ensureSdfChainFits(mode: GraphMode): void {
-    if (!mode.lighting || !graphRequests) return;
-    if (SdfJfaPass.chainLength(Math.max(...halfResolution(canvas.width, canvas.height))) === sdfPasses.length) return;
-    try {
-      graphRequests.rebuild('Resizing the SDF chain');
-    } catch (err) {
-      console.error('[Hyperion] The SDF chain could not be resized:', err);
-    }
-  }
-
-  function ensureSdfTextures(): void {
-    const [width, height] = halfResolution(canvas.width, canvas.height);
-    if (sdfTextureA && sdfTexWidth === width && sdfTexHeight === height) return;
-    sdfTextureA?.destroy();
-    sdfTextureB?.destroy();
-    const make = (label: string) => device.createTexture({
-      size: { width, height },
-      format: JFA_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      label,
-    });
-    sdfTextureA = make('sdf-a');
-    sdfTextureB = make('sdf-b');
-    sdfTexWidth = width;
-    sdfTexHeight = height;
-  }
-
-  /** Map sdf-iter-N onto the ping-pong textures: even iterations write A, odd B. */
-  function updateSdfTextureViews(chainLength: number): void {
-    if (!sdfTextureA || !sdfTextureB) return;
-    const viewA = sdfTextureA.createView();
-    const viewB = sdfTextureB.createView();
-    for (let i = 0; i < chainLength; i++) {
-      resources.setTextureView(`sdf-iter-${i}`, i % 2 === 0 ? viewA : viewB);
-    }
-  }
+  let warnedMultiBitReceiver = false;
 
   // --- 8c. RenderGraph ---
   // RenderGraphHost owns the graph: a new one goes live only once the GPU has
@@ -515,26 +463,13 @@ export async function createRenderer(
     },
     bloom: () => new BloomPass(graphRequests?.requested.bloomConfig),
     fxaaTonemap: () => new FXAATonemapPass(),
-    lighting() {
-      const chain = sdfChain();
-      return [
-        // The primitives' own modules, through fs_occluder: each casts its exact shape.
-        new OccluderSeedPass(ForwardPass.SHADER_SOURCES),
-        ...chain,
-        new LightAccumPass(SdfJfaPass.finalOutputResource(chain.length)),
-      ];
-    },
+    // Seed, SDF and accumulation of every light group, in one node. The
+    // primitives' own modules cast shadows, through fs_occluder.
+    lighting: () => [new LightGroupsPass(ForwardPass.SHADER_SOURCES)],
   };
 
-  /**
-   * GPU textures a mode's passes read by name, sized to the canvas. The chain
-   * lengths are the live graph's; without them, the ones this canvas gets.
-   */
-  function prepareMode(mode: GraphMode, jfaIterations?: number, sdfChainLength?: number): void {
-    if (mode.lighting) {
-      ensureSdfTextures();
-      updateSdfTextureViews(sdfChainLength ?? sdfChain().length);
-    }
+  /** GPU textures a mode's passes read by name, sized to the canvas. */
+  function prepareMode(mode: GraphMode, jfaIterations?: number): void {
     if (mode.outlines) {
       ensureJFATextures(canvas.width, canvas.height);
       updateJFATextureViews(
@@ -553,7 +488,6 @@ export async function createRenderer(
     onSwap(graph, owned, mode) {
       scatterPass = owned.find((p): p is ScatterPass => p instanceof ScatterPass) ?? null;
       jfaPasses = owned.filter((p): p is JFAPass => p instanceof JFAPass);
-      sdfPasses = owned.filter((p): p is SdfJfaPass => p instanceof SdfJfaPass);
       outlineCompositePass =
         owned.find((p): p is OutlineCompositePass => p instanceof OutlineCompositePass) ?? null;
       bloomPass = owned.find((p): p is BloomPass => p instanceof BloomPass) ?? null;
@@ -566,8 +500,7 @@ export async function createRenderer(
       if (wanted && bloomPass) bloomPass.configure(wanted.bloomConfig);
       // The canvas may have been resized while this graph was pending, and
       // the resize branch in render() only handles the live graph's mode.
-      prepareMode(mode, jfaPasses.length, sdfPasses.length);
-      ensureSdfChainFits(mode);
+      prepareMode(mode, jfaPasses.length);
       // The graph object is new; re-attach the profiler and drop the history,
       // which measured a different set of passes.
       if (gpuProfilingEnabled && gpuProfiler) {
@@ -593,12 +526,13 @@ export async function createRenderer(
   const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
   const inLightingMode = (m: GraphMode): boolean => m.lighting;
   // A primitive module has two users: ForwardPass (fs_main, three groups) and
-  // OccluderSeedPass (fs_occluder, two groups). The probe compiles both, so an
-  // edit that breaks only the occluder entry point is caught here too.
+  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups). The
+  // probe compiles both, so an edit that breaks only the occluder entry point
+  // is caught here too.
   const forwardSlot = (i: number): ShaderSlot => ({
     read: () => ForwardPass.SHADER_SOURCES[i],
     write: (src) => { ForwardPass.SHADER_SOURCES[i] = src; },
-    probe: probe(() => [new ForwardPass(), new OccluderSeedPass(ForwardPass.SHADER_SOURCES)]),
+    probe: probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]),
     usedBy: inEveryMode,
   });
   const shaderSlots: Record<string, ShaderSlot> = {
@@ -658,17 +592,18 @@ export async function createRenderer(
       probe: probe(() => new BloomPass()),
       usedBy: inBloomMode,
     },
+    // LightGroupsPass's setup compiles every stage: both SDF pipelines
+    // (LOAD_PASS on and off), the accumulation and the occluder pipelines.
     'sdf-jfa': {
-      read: () => SdfJfaPass.SHADER_SOURCE,
-      write: (src) => { SdfJfaPass.SHADER_SOURCE = src; },
-      // A chain of two: the LOAD_PASS pipeline and a regular one.
-      probe: probe(() => SdfJfaPass.chain(1)),
+      read: () => SdfChainStage.SHADER_SOURCE,
+      write: (src) => { SdfChainStage.SHADER_SOURCE = src; },
+      probe: probe(() => new LightGroupsPass(ForwardPass.SHADER_SOURCES)),
       usedBy: inLightingMode,
     },
     'light-accum': {
-      read: () => LightAccumPass.SHADER_SOURCE,
-      write: (src) => { LightAccumPass.SHADER_SOURCE = src; },
-      probe: probe(() => new LightAccumPass(SdfJfaPass.finalOutputResource(1))),
+      read: () => LightAccumStage.SHADER_SOURCE,
+      write: (src) => { LightAccumStage.SHADER_SOURCE = src; },
+      probe: probe(() => new LightGroupsPass(ForwardPass.SHADER_SOURCES)),
       usedBy: inLightingMode,
     },
   };
@@ -893,10 +828,10 @@ export async function createRenderer(
         sceneHdrWidth = canvas.width;
         sceneHdrHeight = canvas.height;
 
-        // Recreate the live graph's JFA / bloom / SDF textures on resize. A
-        // pending graph catches up when it goes live (onSwap).
-        prepareMode(host.mode, jfaPasses.length, sdfPasses.length);
-        ensureSdfChainFits(host.mode);
+        // Recreate the live graph's JFA / bloom textures on resize (the light
+        // node follows the canvas on its own). A pending graph catches up when
+        // it goes live (onSwap).
+        prepareMode(host.mode, jfaPasses.length);
 
         // Pass cost is roughly proportional to pixel count, so samples taken at
         // the old resolution must not be averaged with the new ones.
@@ -922,6 +857,14 @@ export async function createRenderer(
         ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
         shadowSteps: lightingQuality.shadowSteps,
       };
+      // Light layers: which layers share a light buffer and an SDF, this frame.
+      if (host.mode.lighting) {
+        frameState.lightGroups = deriveLightGroups(frameState);
+        if (frameState.lightGroups.multiBitReceiver && !warnedMultiBitReceiver) {
+          warnedMultiBitReceiver = true;
+          console.warn('[Hyperion] A light receiver has more than one layer bit: it belongs to its lowest one (see lightLayers()).');
+        }
+      }
 
       host.graph.render(device, frameState, resources);
 
@@ -980,8 +923,6 @@ export async function createRenderer(
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();
       jfaTextureB?.destroy();
-      sdfTextureA?.destroy();
-      sdfTextureB?.destroy();
       bloomHalfTexture?.destroy();
       bloomQuarterTexture?.destroy();
       bloomEighthTexture?.destroy();

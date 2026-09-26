@@ -294,7 +294,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
     expect(new Uint32Array(uniform!.data)[0]).toBe(1);
   });
 
-  it('with lighting: follows the light-buffer view when LightAccumPass recreates it (resize)', () => {
+  it('with lighting: follows the light-buffer view when LightGroupsPass recreates it (resize)', () => {
     const { pool, draw, group2Texture } = setUp({ lit: true });
     pool.setTextureView('light-buffer', { name: 'before' } as unknown as GPUTextureView);
     draw();
@@ -306,7 +306,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
 
 // Which shaders apply lighting, and how. Only basic.wgsl (sprites) and
 // gradient.wgsl declare group 2 (design §7.4). The lookup lives in fs_main, not
-// in shade(): OccluderSeedPass runs the same module through fs_occluder on a
+// in shade(): OccluderSeedStage runs the same module through fs_occluder on a
 // TWO-group layout, and a binding statically used there would fail validation.
 const allPrimitiveShaders = import.meta.glob(
   ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/msdf-text.wgsl',

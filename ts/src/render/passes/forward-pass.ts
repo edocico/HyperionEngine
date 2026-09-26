@@ -31,7 +31,8 @@ import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntr
  * lighting (basic.wgsl, gradient.wgsl) declare group 2; a layout may hold groups
  * a shader never uses. It is bound for every pipeline all the same, or the draw
  * fails validation. Constructed `lit`, the pass reads `light-buffer` (written by
- * LightAccumPass) and the uniform says enabled; otherwise group 2 binds a 1×1
+ * LightGroupsPass, one layer per light group) and the uniform says enabled,
+ * with the layer→group table; otherwise group 2 binds a 1×1
  * white placeholder, and a stale `light-buffer` left in the pool by a retired
  * lit graph (its texture destroyed) is never touched.
  */
@@ -336,7 +337,8 @@ export class ForwardPass implements RenderPass {
 
   /**
    * Group 2 for this frame. Lit, it binds the pool's `light-buffer`, which
-   * LightAccumPass recreates on resize, so the group follows the view. Before
+   * LightGroupsPass recreates on resize or when the group count grows, so the
+   * group follows the view. Before
    * that pass has produced one, the white placeholder stands in: lit sprites
    * then draw as if unlit for that frame, rather than not at all.
    */

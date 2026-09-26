@@ -55,7 +55,7 @@ describe('unsupportedLightingQuality', () => {
 
   it('names the settings the lit backend does not honour yet', () => {
     // The light buffer and the SDF are fixed at half resolution without padding
-    // (halfResolution in occluder-seed-pass.ts); shadowSteps is honoured.
+    // (halfResolution in occluder-seed-stage.ts); shadowSteps is honoured.
     expect(unsupportedLightingQuality({ ...DEFAULT_LIGHTING_QUALITY, bufferScale: 0.25, shadowSteps: 8 }))
       .toEqual(['bufferScale']);
     expect(unsupportedLightingQuality({ ...DEFAULT_LIGHTING_QUALITY, sdfOversize: 1.2 }))

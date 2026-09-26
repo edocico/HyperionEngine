@@ -147,3 +147,50 @@ describe('light-accum.wgsl: the group filter', () => {
     expect(vs.indexOf('u.groupLayers')).toBeLessThan(vs.indexOf('lightType(e)'));
   });
 });
+
+describe('light-accum.wgsl', () => {
+  it('reads the SDF with textureLoad: filtering would blend seed coordinates', () => {
+    expect(lightShaderSource).toMatch(/textureLoad\s*\(\s*sdf\b/);
+    expect(lightShaderSource).not.toMatch(/textureSample[^L]/);
+  });
+
+  it('uses the original Quilez soft-shadow term, not the Aaltonen correction', () => {
+    // The correction assumes an exact SDF. A jump-flood field over-estimates,
+    // and y = h*h / (2*ph) amplifies that (design §7.3, A2).
+    expect(lightShaderSource).toMatch(/res\s*=\s*min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*t\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
+    expect(lightShaderSource).not.toMatch(/h\s*\*\s*h\s*\/\s*\(\s*2\.0\s*\*/);
+  });
+
+  it('a march that runs out of steps extrapolates its last clearance to the light, never assumes "lit"', () => {
+    // A ray hugging a long wall advances by 1-2 texels and can spend all its
+    // steps before it proves anything. Returning the running `res` then lit
+    // pixels squarely behind the wall (a leak above its top, at 24 steps).
+    // Returning 0 would darken long rays through open space instead. Assume
+    // the clearance stays the last one seen, all the way to the light.
+    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
+    const afterLoop = fn.slice(fn.indexOf('t += h;'));  // the loop's last statement onwards
+    expect(afterLoop).toMatch(/if\s*\(\s*t\s*<\s*travel\s*\)/);
+    expect(afterLoop).toMatch(/min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*travel\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
+  });
+
+  it('a pixel inside an occluder leaves it and keeps marching: only its OWN occluder does not shadow it', () => {
+    // A sprite that both casts and receives (a character, a crate) is inside
+    // the SDF. Returning "lit" there skipped every other occluder too: the
+    // character stood fully lit in a wall's shadow (review 2026-09-26). Inside,
+    // |h| is a lower bound on the way out, so stepping by it never overshoots.
+    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
+    expect(fn).not.toMatch(/if\s*\(\s*h0\s*<=\s*0\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
+    expect(fn).toMatch(/while\s*\(\s*h\s*<=\s*0\.0/);
+    // Penumbra distances are measured from where the ray leaves, or a sprite
+    // would go dark along its own outline.
+    expect(fn).toMatch(/let\s+start\s*=\s*t\s*;/);
+  });
+
+  it("caps the light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
+    // k alone makes the light's ANGULAR size constant, i.e. a light whose
+    // radius grows with the pixel's distance (R = D/k). A light beside a wall
+    // then darkened pixels on the far side: the last steps of their march pass
+    // within h of the wall. Measured 2026-09-26: free rays 23-42% darker.
+    expect(lightShaderSource).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
+  });
+});

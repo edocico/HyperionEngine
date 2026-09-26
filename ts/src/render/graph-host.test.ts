@@ -53,8 +53,7 @@ function makeHost(opts: { setup?: (p: RenderPass) => void } = {}) {
     bloom: () => new BloomPass(),
     fxaaTonemap: () => new FXAATonemapPass(),
     lighting: () => [
-      mockPass('occluder-seed', [], ['occluder-seed']),
-      mockPass('light-accum', ['occluder-seed'], ['light-buffer']),
+      mockPass('light-groups', [], ['light-buffer']),
     ],
   };
   const { validation, runs } = deferredValidation();
@@ -159,7 +158,7 @@ describe('RenderGraphHost', () => {
       expect(() => host.addExternal(mockPass('stamp', [], ['selection-seed']))).toThrow(/outlines mode/);
       // Lighting is orthogonal to the composite: a clash with the light chain
       // must be caught whatever composite is live.
-      expect(() => host.addExternal(new LineBatchPass('light-accum', 8))).toThrow(/lighting/);
+      expect(() => host.addExternal(new LineBatchPass('light-groups', 8))).toThrow(/lighting/);
       expect(() => host.addExternal(mockPass('stamp', [], ['light-buffer']))).toThrow(/lighting/);
       expect(setup).not.toHaveBeenCalled();
       expect(host.graph.compile()).toEqual(['forward', 'fxaa-tonemap']);

@@ -8,9 +8,7 @@ import { JFAPass } from './passes/jfa-pass';
 import { OutlineCompositePass } from './passes/outline-composite-pass';
 import { DebugLinePass, LineBatchPass } from './passes/debug-line-pass';
 import { ForwardPass } from './passes/forward-pass';
-import { OccluderSeedPass } from './passes/occluder-seed-pass';
-import { SdfJfaPass } from './passes/sdf-jfa-pass';
-import { LightAccumPass } from './passes/light-accum-pass';
+import { LightGroupsPass } from './passes/light-groups-pass';
 
 // Scene passes are stand-ins carrying the real resource names. Every final
 // composite and every overlay is the real class, so what gets compiled is the
@@ -33,12 +31,7 @@ function scene(mode?: GraphMode): RenderPass[] {
 }
 
 function lightingChain(): RenderPass[] {
-  const chain = SdfJfaPass.chain(512);
-  return [
-    new OccluderSeedPass({}),
-    ...chain,
-    new LightAccumPass(SdfJfaPass.finalOutputResource(chain.length)),
-  ];
+  return [new LightGroupsPass({})];
 }
 
 function outlineChain(): RenderPass[] {
@@ -118,10 +111,10 @@ describe('composeRenderGraph', () => {
 });
 
 // Lighting (backend 'lit', Phase 17) is orthogonal to the final composite: any
-// of the three can run over a lit scene. It adds occluder-seed → the signed-SDF
-// chain → light-accum, and a ForwardPass that reads light-buffer — which is
-// what orders the whole chain before it, and what keeps it alive: every
-// lighting pass is optional.
+// of the three can run over a lit scene. It adds ONE node, light-groups (seed,
+// SDF and accumulation for every light group, design 2026-09-26), and a
+// ForwardPass that reads light-buffer — which is what orders the node before
+// it, and what keeps it alive: the node is optional.
 describe('composeRenderGraph — lighting', () => {
   for (const { mode, composite } of MODES) {
     it(`${composite} + lighting: the light chain runs, in order, before forward`, () => {
@@ -129,11 +122,10 @@ describe('composeRenderGraph — lighting', () => {
       const order = graph.compile();
       expect(order.filter((n) => FINAL_COMPOSITES.includes(n))).toEqual([composite]);
       const at = (name: string) => order.indexOf(name);
-      expect(at('occluder-seed')).toBeGreaterThan(-1);
-      expect(at('sdf-0')).toBeGreaterThan(at('occluder-seed'));
-      expect(at('light-accum')).toBeGreaterThan(at('sdf-0'));
-      expect(order.filter((n) => n.startsWith('sdf-'))).toHaveLength(SdfJfaPass.chain(512).length);
-      expect(at('forward')).toBeGreaterThan(at('light-accum'));
+      expect(at('light-groups')).toBeGreaterThan(-1);
+      expect(at('forward')).toBeGreaterThan(at('light-groups'));
+      // One node, whatever the canvas size or the number of groups.
+      expect(order.filter((n) => n.startsWith('sdf-') || n === 'occluder-seed' || n === 'light-accum')).toEqual([]);
     });
   }
 
@@ -153,15 +145,15 @@ describe('composeRenderGraph — lighting', () => {
     expect(owned.find((p) => p.name === 'forward')!.reads).toContain('light-buffer');
   });
 
-  it('owned lists the light passes too', () => {
+  it('owned lists the light node too', () => {
     const { owned } = composeRenderGraph({ outlines: false, bloom: false, lighting: true }, factories(), []);
-    expect(owned.map((p) => p.name)).toEqual(expect.arrayContaining(['occluder-seed', 'sdf-0', 'light-accum']));
+    expect(owned.map((p) => p.name)).toContain('light-groups');
   });
 
-  it('the outline chain and the SDF chain coexist: separate pass and resource names', () => {
+  it('the outline chain and the light node coexist', () => {
     const { graph } = composeRenderGraph({ outlines: true, bloom: false, lighting: true }, factories(), []);
     const order = graph.compile();
     expect(order).toContain('jfa-0');
-    expect(order).toContain('sdf-0');
+    expect(order).toContain('light-groups');
   });
 });

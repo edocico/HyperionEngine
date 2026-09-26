@@ -2,7 +2,7 @@ import type { ResourcePool } from './resource-pool';
 
 /**
  * Bind group layouts shared by every pipeline that runs a primitive shader:
- * the ForwardPass pipelines and the OccluderSeedPass pipelines. Both run the
+ * the ForwardPass pipelines and the occluder pipelines (OccluderSeedStage). Both run the
  * same WGSL modules, so both must hand the device the same layouts.
  */
 

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { OccluderSeedStage, halfResolution } from './occluder-seed-stage';
 import { ResourcePool } from '../resource-pool';
 import { JFA_FORMAT } from '../formats';
 import type { FrameState } from '../render-pass';
+import basicShaderSource from '../../shaders/basic.wgsl?raw';
 
 // OccluderSeedStage rasterises the occluders of ONE SDF set into the seed
 // texture (light layers, design 2026-09-26). It runs each primitive's own
@@ -130,5 +132,62 @@ describe('halfResolution', () => {
   it('is half the canvas, rounded down, at least 1x1', () => {
     expect(halfResolution(801, 600)).toEqual([400, 300]);
     expect(halfResolution(1, 1)).toEqual([1, 1]);
+  });
+});
+
+describe('basic.wgsl occluder entry', () => {
+  it('drops non-casters in the vertex stage only when the pipeline asks for it', () => {
+    // Default false: the ForwardPass pipelines constant-fold the check away.
+    expect(basicShaderSource).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
+  });
+
+  it('agrees with Rust on the castsShadow bit of renderMeta', () => {
+    const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
+    const rustBit = Number(/RENDER_META_CASTS_SHADOW_BIT: u32 = 1 << (\d+);/.exec(rust)?.[1]);
+    const wgslBit = Number(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(basicShaderSource)?.[1]);
+    expect(rustBit).toBe(9);
+    expect(wgslBit).toBe(rustBit);
+  });
+
+  it('exposes fs_occluder', () => {
+    expect(basicShaderSource).toMatch(/fn fs_occluder\s*\(/);
+  });
+});
+
+// Every primitive ForwardPass draws must cast its own shape (design §6.2).
+// Light2D (type 6) has no shader and is not an occluder.
+const primitiveShaders = import.meta.glob(
+  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/gradient.wgsl',
+   '../../shaders/box-shadow.wgsl', '../../shaders/bezier.wgsl', '../../shaders/msdf-text.wgsl'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+
+describe('every primitive shader can cast its shape', () => {
+  it('finds the six primitive shaders', () => {
+    expect(Object.keys(primitiveShaders)).toHaveLength(6);
+  });
+
+  // Light layers (design 2026-09-26): an occluder shadows only the layers in
+  // its mask, so a set's seed holds only its casters. The set's layers ride in
+  // the camera uniform, which every primitive shader shares with ForwardPass.
+  it.each(Object.entries(primitiveShaders))('%s seeds only the occluders of the set being drawn', (_file, src) => {
+    expect(src).toMatch(/struct CameraUniform\s*\{\s*viewProjection: mat4x4f,[^}]*occluderLayers: u32,/);
+    expect(src).toMatch(/fn castsInto\(meta1: u32, layers: u32\) -> bool/);
+    // Mask 0 means every layer, for an occluder.
+    expect(src).toMatch(/select\(meta1 >> 16u, 0xFFFFu, \(meta1 >> 16u\) == 0u\)/);
+    expect(src).toMatch(/if \(OCCLUDER_PASS && !castsInto\(renderMeta\[entityIdx \* 2u \+ 1u\], camera\.occluderLayers\)\)/);
+  });
+
+  it.each(Object.entries(primitiveShaders))('%s has the occluder entry, the override, and the castsShadow bit', (_file, src) => {
+    expect(src).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
+    expect(src).toMatch(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << 9u;/);
+    expect(src).toMatch(/@fragment\s*\n\s*fn fs_occluder\s*\(/);
+    // fs_main and fs_occluder share one coverage function, so the shadow is
+    // exactly what is drawn.
+    const shared = /fn (\w+)\(in: VertexOutput\) -> vec4f \{/.exec(src)?.[1];
+    expect(shared, 'a shared coverage function').toBeDefined();
+    const body = (entry: string) => src.slice(src.indexOf(`fn ${entry}`), src.indexOf('}', src.indexOf(`fn ${entry}`)));
+    expect(body('fs_main')).toContain(`${shared}(in)`);
+    expect(src.slice(src.indexOf('fn fs_occluder'))).toContain(`${shared}(in)`);
   });
 });

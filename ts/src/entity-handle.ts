@@ -27,7 +27,7 @@ export const enum RenderPrimitiveType {
   /**
    * A 2D light. The one primitive type the ForwardPass never draws — no shader
    * is registered for it, so the per-type pipeline loop never finds it and
-   * `LightAccumPass` reads its draw bucket directly.
+   * `LightAccumStage` (inside LightGroupsPass) reads its draw bucket directly.
    */
   Light2D = 6,
 }
