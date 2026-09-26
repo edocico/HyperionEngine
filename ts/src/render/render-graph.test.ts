@@ -201,6 +201,41 @@ describe('RenderGraph', () => {
       expect(profiler.poll).toHaveBeenCalledTimes(1);
     });
 
+    // A pass that runs several stages of its own (LightGroupsPass: seed, sdf,
+    // accum per SDF set) names them for the frame and marks them itself, so the
+    // profiler reports each stage instead of one lump.
+    it('a staged pass marks its own stages, named pass/stage', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('p0', [], ['a']));
+      const staged = mockPass('staged', ['a'], ['b']);
+      const execute = vi.fn((encoder: GPUCommandEncoder, _f: unknown, _r: unknown, mark?: (e: GPUCommandEncoder) => void) => {
+        mark?.(encoder); mark?.(encoder); mark?.(encoder);
+      });
+      Object.assign(staged, { profileStages: () => ['a', 'b', 'a'], execute });
+      graph.addPass(staged);
+      graph.addPass(mockPass('p2', ['b'], ['swapchain']));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+
+      expect(profiler.beginFrame).toHaveBeenCalledWith(['p0', 'staged/a', 'staged/b', 'staged/a', 'p2']);
+      // p0 and p2 by the graph, three stages by the pass itself: not one before it.
+      expect(profiler.mark).toHaveBeenCalledTimes(5);
+      expect(execute.mock.calls[0][3]).toBeTypeOf('function');
+    });
+
+    it('a staged pass gets no mark function when the frame is not measured', () => {
+      const graph = new RenderGraph();
+      const staged = mockPass('staged', [], ['swapchain']);
+      const execute = vi.fn();
+      Object.assign(staged, { profileStages: () => ['a'], execute });
+      graph.addPass(staged);
+      graph.setProfiler(fakeProfiler(false) as never);
+      graph.render(mockDevice(), frame, resources);
+      expect(execute.mock.calls[0][3]).toBeUndefined();
+    });
+
     it('skips marking entirely when beginFrame declines the frame', () => {
       const graph = new RenderGraph();
       graph.addPass(mockPass('forward', [], ['swapchain']));

@@ -203,12 +203,30 @@ export class RenderGraph {
     // buffer is still in flight, or when the graph outgrew the profiler's
     // query set. In all three cases we fall through to the unmeasured path
     // and encode no marker passes at all.
-    const measuring = this.profiler?.beginFrame(this.executionOrder) ?? false;
+    // A staged pass reports its stages (`pass/stage`) instead of itself, and
+    // marks them on its own: the graph marks only before unstaged passes.
+    let names: string[] = this.executionOrder;
+    const stagesOf = new Map<string, readonly string[]>();
+    if (this.profiler) {
+      names = [];
+      for (const name of this.executionOrder) {
+        const stages = this.passes.get(name)!.profileStages?.(frame);
+        if (stages) {
+          stagesOf.set(name, stages);
+          for (const stage of stages) names.push(`${name}/${stage}`);
+        } else {
+          names.push(name);
+        }
+      }
+    }
+    const measuring = this.profiler?.beginFrame(names) ?? false;
+    const mark = measuring ? (e: GPUCommandEncoder) => this.profiler!.mark(e) : undefined;
 
     try {
       for (const name of this.executionOrder) {
-        if (measuring) this.profiler!.mark(encoder);
-        this.passes.get(name)!.execute(encoder, frame, resources);
+        const staged = stagesOf.has(name);
+        if (measuring && !staged) this.profiler!.mark(encoder);
+        this.passes.get(name)!.execute(encoder, frame, resources, staged ? mark : undefined);
       }
     } catch (err) {
       // The encoder is abandoned unfinished, so the frame the profiler opened

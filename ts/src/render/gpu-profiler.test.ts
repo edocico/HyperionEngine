@@ -110,6 +110,11 @@ describe('GpuProfiler', () => {
       expect(device.computePasses).toHaveLength(0);
     });
 
+    it('holds 256 markers by default: ~20 graph passes plus 16 SDF sets x 3 stages fit', () => {
+      const p = new GpuProfiler(device);
+      expect(p.beginFrame(Array(255).fill('p'))).toBe(true);
+    });
+
     it('refuses a graph larger than the query set', () => {
       const p = new GpuProfiler(device, 2);
       expect(p.beginFrame(['a', 'b', 'c'])).toBe(false);
@@ -152,6 +157,15 @@ describe('GpuProfiler', () => {
       const t = p.getTimingsByName();
       expect(t.get('cull')?.lastMs).toBeCloseTo(0.25, 5);
       expect(t.get('forward')?.lastMs).toBeCloseTo(1.5, 5);
+    });
+
+    it('sums the intervals that share a name within one frame (the stages of a staged pass)', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['x/a', 'x/b', 'x/a'], [1, 2, 3]);
+      const t = p.getTimingsByName();
+      expect(t.get('x/a')?.lastMs).toBeCloseTo(4, 5);
+      expect(t.get('x/a')?.sampleCount).toBe(1);
+      expect(t.get('x/b')?.lastMs).toBeCloseTo(2, 5);
     });
 
     it('averages across frames, which is what defeats the 100us quantization', async () => {

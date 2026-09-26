@@ -135,7 +135,12 @@ export class GpuProfiler {
   private zeroFrames = 0;
   private warnedAboutZeros = false;
 
-  constructor(device: GPUDevice, maxPasses = 32) {
+  /**
+   * @param maxPasses markers per frame, minus the closing one. 256: a frame has
+   *   at most ~20 graph passes plus LightGroupsPass's 3 stages per SDF set
+   *   (at most 16 sets). The query set is 2 KB and exists only while profiling.
+   */
+  constructor(device: GPUDevice, maxPasses = 256) {
     // One marker before each pass, plus a closing marker after the last.
     this.capacity = maxPasses + 1;
     const byteSize = this.capacity * TIMESTAMP_SIZE;
@@ -297,12 +302,17 @@ export class GpuProfiler {
       }
     }
 
+    // A staged pass repeats its stage names once per SDF set: one sample per
+    // name and frame, the sum of its intervals.
+    const frameTotals = new Map<string, number>();
     for (let i = 0; i < entry.names.length; i++) {
       const deltaNs = stamps[i + 1] - stamps[i];
       // Timestamps are not guaranteed monotonic across passes; clamp.
       const ms = deltaNs > 0n ? Number(deltaNs) / 1e6 : 0;
-      const name = entry.names[i];
+      frameTotals.set(entry.names[i], (frameTotals.get(entry.names[i]) ?? 0) + ms);
+    }
 
+    for (const [name, ms] of frameTotals) {
       this.latest.set(name, ms);
       let samples = this.history.get(name);
       if (!samples) {
