@@ -1,31 +1,11 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
-import { BUCKETS_PER_TYPE } from './cull-pass';
 import { halfResolution } from './occluder-seed-pass';
 import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
+import { LIGHT2D_ARG_SLOTS, LIGHT_SOURCE_FRACTION, SHADOW_HARDNESS } from './light-accum-stage';
 
-/** RenderPrimitive 6. */
-const LIGHT2D_PRIM_TYPE = 6;
-
-/** The indirect-args slots CullPass fills with visible lights: both material buckets of type 6. */
-export const LIGHT2D_ARG_SLOTS = Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b);
-
-/**
- * Soft-shadow hardness k in Quilez's `res = min(res, k * h / t)`: how fast a
- * penumbra closes. With h and t in texels of the half-resolution SDF, 8 gives
- * a visible, not blurry, penumbra.
- */
-const SHADOW_HARDNESS = 8;
-
-/**
- * A light's source radius as a fraction of its range. The shader caps the
- * light's apparent angle at min(1/k, sourceRadius / distance): without the
- * cap the light's radius grows with the pixel's distance (D/k), and a light
- * beside a wall darkens the pixels on the far side of it too. 0.02 keeps a
- * light that is range/50 or more away from a wall unoccluded on the open side.
- */
-export const LIGHT_SOURCE_FRACTION = 0.02;
+export { LIGHT2D_ARG_SLOTS, LIGHT_SOURCE_FRACTION };
 
 /**
  * Accumulates every visible Light2D into `light-buffer` (Phase 17, Task 9).
@@ -128,6 +108,7 @@ export class LightAccumPass implements RenderPass {
     new Uint32Array(data, 64, 1)[0] = frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps;
     new Float32Array(data, 68, 1)[0] = SHADOW_HARDNESS;
     new Float32Array(data, 72, 1)[0] = LIGHT_SOURCE_FRACTION;
+    new Uint32Array(data, 76, 1)[0] = 0xffff;  // one group of every layer
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 

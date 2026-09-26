@@ -18,7 +18,9 @@ struct LightUniform {
     shadowHardness: f32,
     // A light's source radius as a fraction of its range (LIGHT_SOURCE_FRACTION).
     sourceFraction: f32,
-    _pad1: f32,
+    // The light group being accumulated (design 2026-09-26): a light draws only
+    // if its mask (renderMeta bits 16-31) meets these layers.
+    groupLayers: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: LightUniform;
@@ -62,6 +64,12 @@ fn vs_main(
 ) -> VertexOutput {
     let e = visibleIndices[instanceIdx];
     var out: VertexOutput;
+    // Not in this group's layers: a degenerate triangle, nothing rasterised.
+    // A light with mask 0 lights nothing.
+    if (((renderMeta[e * 2u + 1u] >> 16u) & u.groupLayers) == 0u) {
+        out.position = vec4f(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
     out.entityIdx = e;
     let kind = lightType(e);
     if (kind == GLOBAL || kind == DIRECTIONAL) {
