@@ -155,6 +155,8 @@ Rationale: `SetRotation` with quaternion on 2D entities requires `atan2(2*(qw*qz
 
 Consumer routing:
 - `SetRotation2D` writes `transform.rot` directly; if entity is 3D, log + ignore.
+
+> **Changed 2026-09-26.** On a 3D entity `SetRotation2D` now sets `Rotation = from_rotation_z(angle)` (replacing the whole quaternion) instead of being ignored: `engine.spawn()` only ever creates 3D entities, so the one-argument `EntityHandle.rotation(angle)` did nothing through the public API. On physics bodies both rotation commands reposition the Rapier body with their Z angle. See CLAUDE.md, the `rotation(angle)` and `SetPosition` gotchas.
 - `SetRotation` (quat) on 2D entity remains supported as compatibility fallback with atan2 conversion, but the TS API no longer generates it for 2D entities.
 
 ### Ring Buffer: SpawnEntity Flag
@@ -164,7 +166,7 @@ Consumer routing:
 ### Command Routing in Consumer
 
 - `SetPosition(eid, x, y, z)`: 2D writes `transform.x/y`, ignores z. 3D writes `Position(Vec3)`.
-- `SetRotation2D(eid, angle)`: writes `transform.rot` directly. 3D: error.
+- `SetRotation2D(eid, angle)`: writes `transform.rot` directly. 3D: error. *(Since 2026-09-26: 3D sets a rotation about Z, see the note above.)*
 - `SetRotation(eid, qx, qy, qz, qw)`: 3D writes `Rotation(Quat)`. 2D: atan2 fallback.
 - `SetScale(eid, sx, sy, sz)`: 2D writes `transform.sx/sy`. 3D writes `Scale(Vec3)`.
 

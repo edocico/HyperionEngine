@@ -21,8 +21,8 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (198 tests, 276 with physics-2d, 227 with dev-tools, 320 with all features)
-cargo test -p hyperion-core --all-features   # + 71 integration tests across 6 files (320 lib + 71 = 391 total)
+cargo test -p hyperion-core                  # All Rust unit tests (199 tests, 277 with physics-2d, 228 with dev-tools, 321 with all features)
+cargo test -p hyperion-core --all-features   # + 77 integration tests across 6 files (321 lib + 77 = 398 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -33,7 +33,7 @@ cargo test -p hyperion-core engine           # Engine tests only (16 tests, 25 w
 cargo test -p hyperion-core render_state     # Render state tests only (55 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (41 tests, 42 with physics-2d)
 cargo test -p hyperion-core systems          # Systems tests only (19 tests, 21 with physics-2d)
-cargo test -p hyperion-core components       # Component tests only (27 tests)
+cargo test -p hyperion-core components       # Component tests only (28 tests)
 
 # Run a single test by full path
 cargo test -p hyperion-core engine::tests::spiral_of_death_capped
@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1218 tests + 5 skipped, 91 files)
+cd ts && npm test                            # All vitest tests (1219 tests + 5 skipped, 91 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -72,22 +72,22 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
 # 91 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (69 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (92 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (93 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (75 tests)
 cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (42 tests)
 cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (19 tests)
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality/groups (21 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (276 lib tests, 338 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (277 lib tests, 345 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 320 lib tests (391 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 321 lib tests (398 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (227 lib tests, 267 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (228 lib tests, 268 with integration)
 ```
 
 ### Development Workflow
@@ -416,7 +416,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **The SDF chain must reach the whole texture, or far shadows vanish** — an unreached texel stays `valid = 0`, which `light-accum.wgsl` reads as "no occluder within 1e6". Steps fixed at composition (`floor(maxDim / 2^i)`) broke after ANY growth (review 2026-09-26). `SdfChainStage` now uses power-of-two steps and takes its length from the target size EVERY FRAME, inside `LightGroupsPass`: a resize never needs a new graph. The OUTLINE chain still takes its steps at composition; there only pixels near a selected entity matter.
 - **Shadow march: three rules that each fixed a visible defect (2026-09-26)** — (1) the light's apparent angle is `min(1/k, sourceRadius / D)`: Quilez's k alone is a light whose radius grows with the pixel's distance, and a light beside a wall darkened the open side 23-42% in radial bands. (2) A pixel inside an occluder leaves it (steps of |h|, a lower bound on the exit) and then marches, with penumbra distances measured from the exit: returning "lit" there left every caster-and-receiver sprite fully lit inside a wall's shadow. (3) A march out of steps assumes its last clearance holds to the light, never "lit". Rays grazing a face spend the budget 1-2 texels at a time: `shadowSteps` defaults to 48, which removed every leaking pixel of the repro for +2% light-accum time; 24 leaked.
 - **Global and directional lights have `BoundingRadius = f32::MAX`** — the only way through the sphere-frustum test wherever their transform is (`light-accum.wgsl` draws them full-screen). Finite on purpose: `state_hash` and the snapshot see no infinity. Consequence for any CPU consumer of `bounds`: never iterate over a radius. `SpatialGrid.rebuild` inserts an entity into every cell its sphere covers and would effectively never return — it is not in the live path (`engine.picking` calls `hitTestRay` without a grid), and `hitTestRay` skips Light2D when given `renderMeta`.
-- **`rotation(angle)` is a rotation about Z on ANY entity, and it replaces the whole rotation** — the one-argument form sends `SetRotation2D`. On a `Transform2D` entity it sets `rot`; on a 3D entity (everything `engine.spawn()` makes) it sets `Rotation = Quat::from_rotation_z(angle)`, dropping any X/Y tilt. Until 2026-09-26 it was IGNORED on 3D entities, so on every entity the public API could create: the Lighting demo's spot pointed along +X for that reason. On a physics body it is a reposition that keeps momentum, and the angle reaches Rapier from the COMMAND (a 3D pose carries none). The 4-argument quaternion form is NOT intercepted for physics bodies: the next step overwrites it. Old command tapes that sent it to 3D entities now replay a rotation.
+- **`rotation(angle)` is a rotation about Z on ANY entity, and it replaces the whole rotation** — the one-argument form sends `SetRotation2D`. On a `Transform2D` entity it sets `rot`; on a 3D entity (everything `engine.spawn()` makes) it sets `Rotation = Quat::from_rotation_z(angle)`, dropping any X/Y tilt. Until 2026-09-26 it was IGNORED on 3D entities, so on every entity the public API could create: the Lighting demo's spot pointed along +X for that reason. Old command tapes that sent it to 3D entities now replay a rotation. Physics bodies: see the next bullet.
 - **An out-of-range render primitive is rejected** — `SetRenderPrimitive` past `PRIM_TYPE_LIGHT2D` (6) keeps the old type and counts in `engine_rejected_command_count`. `cull.wgsl` clamps the type to the last one, so a 7 used to render as an invisible Light2D; `deriveLightGroups` applies the same clamp to whatever still reaches it.
 - **`SetParent` uses `0xFFFFFFFF` for unparent** — Special value meaning "remove parent". Same command type for parenting and unparenting.
 - **Multi-tier textures require switch in WGSL** — WGSL cannot dynamically index texture bindings. Adding new tiers requires updating the shader `switch`.
@@ -481,7 +481,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`rapier2d` has NO `wasm-bindgen` feature** — The spike proved this feature does not exist in rapier2d 0.32. Only use `features = ["simd-stable"]`. The design doc incorrectly specifies `wasm-bindgen`.
 - **Physics CommandTypes are 17-47 plus 48-52 (audit 2026-07)** — `SetColliderEvents`(48), `TeleportBody`(49), `SetBoundingRadius`(50), `DestroyCharacterController`(51), `SetCharacterUp`(52).
 - **Collision events are OPT-IN** — colliders are built with `ActiveEvents::empty()`. Nothing fires until `SetColliderEvents` (48) is sent for that entity. `EntityHandle.collider({ sensor: true })` opts in automatically.
-- **`SetPosition` on a physics body teleports it** — for an entity with `PhysicsControlled`, `SetPosition`/`SetRotation2D` enqueue a Rapier reposition (momentum preserved). `SetRotation2D` takes its angle from the command, so it rotates 3D bodies too; `SetPosition` keeps the body's rotation (`verify_physics.rs` P18/P18b). `TeleportBody` (49) additionally clears velocity and forces.
+- **`SetPosition` on a physics body teleports it** — for an entity with `PhysicsControlled`, `SetPosition`, `SetRotation2D` and `SetRotation` enqueue a Rapier reposition (momentum preserved). A rotation takes its angle from the COMMAND (`SetRotation`: its Z angle, `Rotation::z_angle`), since a 3D pose carries none; a non-finite one queues nothing. Repositions of one body are MERGED until the next tick: `rotation(a).position(p)` keeps the angle, and a zero-velocity teleport stays one. A body is BUILT at the entity's rotation too, so a rotation sent in the creation batch (a tilted ramp) lands. `verify_physics.rs` P18-P18h. `TeleportBody` (49) additionally clears velocity and forces.
 - **`SetVelocity` does NOT move a physics body** — `velocity_system_filtered` skips `PhysicsControlled` entities, so `SetVelocity` only writes the ECS `Velocity` component and never reaches Rapier (there is no handler for it in `physics_commands.rs`). Drive physics bodies with gravity, `ApplyForce`/`ApplyImpulse`, or `TeleportBody`. A test or demo built on `SetVelocity` leaves the bodies stationary and passes while exercising nothing.
 - **`engine_push_commands(&[u8])` is the live command path — `engine_attach_ring_buffer` has zero call sites** — TS keeps the SAB on the JS side and pushes unread bytes (`extractUnread` → `engine_push_commands`); it never hands WASM a pointer. Use `engine_push_commands` for any harness. `engine_memory()` returns the `WebAssembly.Memory` (wasm-bindgen `--target web` does not export `memory`), needed to read the SoA pointers.
 - **Physics bit-exactness holds PER TARGET, not across targets** — the same scenario settles at y=2992.6257 on wasm32 and y=2992.6294 on native aarch64. Compare wasm-vs-wasm when validating an upgrade, and never pin a `state_hash` as a golden value in a test — assert behavioural invariants instead (see `tests/verify_determinism.rs`).
@@ -548,6 +548,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Packed texture index 0 = untextured = white, answered by the shader** — `basic.wgsl` returns `vec4f(1.0)` for tier 0 / layer 0 / not overflow, before any sampling. Layer 0 is reserved as the "default white", but on a compressed tier (BC7/ASTC) it is never filled, because `writeTexture` cannot take raw pixels there. An all-zero BC7 block decodes to transparent black. Until 2026-09-26 every untextured quad was black on desktop and white on rgba8-only devices. `line.wgsl` and `bezier.wgsl` do the same, replacing only the COLOUR: their stroke coverage (AA, dashes, discard) still applies. A new shader that samples the tiers must answer index 0 the same way; `forward-pass.test.ts` checks every tier-sampling shader.
 - **TextureManager lazy allocation** — Growth: 0→16→32→64→128→256 layers per tier. `getTierView()` creates 1-layer placeholder for bind group validity.
 - **ResourcePool buffer naming** — CullPass: reads `entity-bounds`/`render-meta`/`tex-indices`, writes `visible-indices`/`indirect-args`. ForwardPass: reads `entity-transforms`/`visible-indices`/`indirect-args`/`tex-indices`/`render-meta`/`prim-params`, writes `scene-hdr`. Post-process passes read `scene-hdr`, write `swapchain`. Texture views: `tier0`-`tier3`, `ovf0`-`ovf3`, `scene-hdr`, `selection-seed`, `jfa-a`/`jfa-b`, `bloom-half`/`bloom-quarter`/`bloom-eighth`, `light-buffer` (a 2d-array view, LightGroupsPass; its seed/SDF textures are private). Sampler: `texSampler`.
+- **Coalesced commands drain in the order of their LAST calls** — `PrioritizedCommandQueue.enqueue` moves an overwritten key to the end of its `Map` (`Map.set` alone keeps the first position). It matters when two command types write the same state: `rotation(q1); rotation(a); rotation(q2)` must end at `q2`.
 - **BackpressuredProducer wraps RingBufferProducer** — All bridge factories use it. `flush()` called at start of every `tick()`.
 - **Worker heartbeat via ring buffer header** — Engine-worker increments atomic counter after each tick. `WorkerSupervisor` checks every 1s. Currently logs warnings only.
 - **`Hyperion.fromParts()` vs `Hyperion.create()`** — `fromParts()` is the test factory; `create()` is production (capability detection + bridge + renderer init).
@@ -703,7 +704,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 71 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 27, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16/P17/P18 and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
+Regression coverage: 77 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 33, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16/P17/P18-P18h and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
