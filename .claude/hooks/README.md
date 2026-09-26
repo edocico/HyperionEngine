@@ -13,8 +13,10 @@ resolves the repo root from `$CLAUDE_PROJECT_DIR`, falling back to `.cwd` from t
 | `guard-generated.sh` | PreToolUse | `Edit`/`Write` | **Blocks** edits under `ts/wasm/`, `ts/wasm-physics/`, `ts/loro-spike-wasm/`, `ts/rapier-spike-wasm/` — wasm-pack overwrites these. |
 | `guard-protocol-drift.sh` | PreToolUse | `Bash` containing `git commit` | **Blocks** the commit when the Rust and TypeScript command tables disagree. |
 | `post-edit-rust.sh` | PostToolUse | `*.rs` | Runs `cargo clippy -p hyperion-core`; warns when `cfg(feature = ...)` code was touched. |
-| `post-edit-ts.sh` | PostToolUse | `ts/src/**/*.ts` | Runs the colocated `*.test.ts` via vitest. |
+| `guard-stale-wasm.sh` | PreToolUse | chrome-devtools `navigate_page` | **Advisory.** Adds context when `ts/wasm/hyperion_core_bg.wasm` is older than `crates/hyperion-core/src` (by mtime, as cargo decides — a checkout also trips it). |
+| `post-edit-ts.sh` | PostToolUse | `ts/src/**/*.ts` | Runs the colocated `*.test.ts` via vitest. A failure after editing the test file itself is returned as context (exit 0, the expected TDD RED); after a source edit it is an error (exit 2). |
 | `post-edit-notices.sh` | PostToolUse | various | Surfaces cross-cutting invariants no compiler checks (WGSL bind groups, protocol files, physics, structural files). |
+| `guard-doc-shrink.sh` | PostToolUse | `Bash`/`Edit`/`Write` | Warns when a `*.md` lost ≥ `DOC_SHRINK_MIN` (40) lines and more than twice what it gained — in the working tree, and in the commit just made when the command was `git commit`/`git merge`. Each distinct finding is reported once (state in `.git/claude-doc-shrink-seen`). |
 
 ## Exit-code contract
 
@@ -64,6 +66,14 @@ Verify a hook by making it **fire**, not by observing silence — a script that 
 non-zero with no output, which is indistinguishable from "ran clean". That is exactly how the
 previous generation of hooks in this repo went unnoticed: they used `grep -oP` (unsupported by
 macOS `/usr/bin/grep`) and `cd` to a hardcoded Linux path, so all six were silent no-ops.
+
+## The two 2026-09-26 guards
+
+`guard-doc-shrink.sh` exists because a scripted "rewrite from an anchor" dropped 142 lines of the
+Phase 17 design doc and nothing said so (`714a8cf`, `+12 -141`). Replayed over the whole branch it
+flags that commit and nothing else. `guard-stale-wasm.sh` exists because a GPU check after a Rust
+change exercises the old engine until `npm --prefix ts run build:wasm` runs; the harness build has
+no `physics-2d` at all.
 
 ## Notes
 

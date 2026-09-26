@@ -6,6 +6,9 @@
 # runs that file directly.
 #
 # Contract: exit 2 feeds stderr back to Claude. Exit 0 silently when green.
+# A failure right after editing a *.test.ts is reported as context, not as an
+# error: in TDD that is the expected RED of a test written before the code, and
+# a "blocking error" on every such edit was noise (a dozen times on 2026-09-26).
 set -uo pipefail
 
 input=$(cat)
@@ -38,6 +41,15 @@ out=$(npx vitest run "$rel" --reporter=dot 2>&1)
 status=$?
 
 if [ $status -ne 0 ]; then
+  case "$file" in
+    *.test.ts)
+      note=$(printf 'vitest RED for %s (expected if this test was just written to fail first):\n%s' \
+        "$rel" "$(printf '%s\n' "$out" | tail -25)")
+      jq -n --arg note "$note" \
+        '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $note}}'
+      exit 0
+      ;;
+  esac
   {
     echo "vitest failed for $rel:"
     printf '%s\n' "$out" | tail -40

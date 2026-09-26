@@ -20,6 +20,16 @@
             "timeout": 20
           }
         ]
+      },
+      {
+        "matcher": "mcp__chrome-devtools-gpu__navigate_page|mcp__chrome-devtools__navigate_page",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-stale-wasm.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -39,6 +49,16 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-notices.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-doc-shrink.sh\"",
             "timeout": 10
           }
         ]
@@ -62,7 +82,7 @@
     "remember@claude-plugins-official": true,
     "lumen@claude-plugins-official": true,
     "rootly@claude-plugins-official": true,
-    "github@claude-plugins-official": true,
+    "github@claude-plugins-official": false,
     "gitkraken@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,

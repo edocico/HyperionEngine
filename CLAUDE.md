@@ -645,9 +645,11 @@ Hook logic lives in standalone, directly testable scripts — see [`.claude/hook
 |---|---|---|
 | `guard-generated.sh` | PreToolUse `Edit\|Write` | **Blocks** edits under `ts/wasm/`, `ts/wasm-physics/`, and the two spike output dirs |
 | `guard-protocol-drift.sh` | PreToolUse `Bash` | **Blocks `git commit`** when the Rust and TS `CommandType` tables disagree, or `MAX_COMMAND_TYPE` is not one past the last discriminant. Bypass once with `touch .claude/.skip-drift-guard` (flag is consumed) |
+| `guard-stale-wasm.sh` | PreToolUse chrome-devtools `navigate_page` | Advisory: adds context when `ts/wasm` is older than the Rust source (by mtime, like cargo: a checkout also trips it) |
 | `post-edit-rust.sh` | PostToolUse | `cargo clippy` on `.rs` edits + feature-matrix warning when `cfg(feature = ...)` code is touched |
-| `post-edit-ts.sh` | PostToolUse | Colocated vitest file on `ts/src/**/*.ts` edits |
+| `post-edit-ts.sh` | PostToolUse | Colocated vitest file on `ts/src/**/*.ts` edits. A failure after editing a `*.test.ts` is reported as context (the expected TDD RED), after a source edit as an error |
 | `post-edit-notices.sh` | PostToolUse | WGSL bind-group, protocol-sync, physics and structural-file reminders |
+| `guard-doc-shrink.sh` | PostToolUse `Bash\|Edit\|Write` | Warns once when a `*.md` lost ≥ 40 lines and more than twice what it gained (working tree, and the commit just made); the `714a8cf` truncation is the only hit in the history |
 
 > Verify a hook by making it **fire**, not by observing silence. A script that fails early exits non-zero with no output, which is indistinguishable from "ran clean" — that is how the previous generation of hooks (using `grep -oP`, unsupported by macOS `/usr/bin/grep`, and a hardcoded Linux path) stayed silently dead.
 
@@ -661,6 +663,7 @@ Hook logic lives in standalone, directly testable scripts — see [`.claude/hook
 - `/new-command` — Add a new ring-buffer CommandType end-to-end (Rust enum + handler + TS producer + fluent API + tests)
 - `/start-phase` — Begin a new engine development phase from the masterplan (9-step workflow)
 - `/close-phase` — Close a phase: full feature matrix, refresh every stale count, append the MEMORY.md record, stage the commit
+- `/gpu-check` — Real-WebGPU check in the harness: rebuild a stale `ts/wasm`, AMD adapter, every tab's `N/M passed`, console errors, pixel sampling at world coordinates (`scripts/pixels.py`)
 
 ### Agents
 
@@ -669,6 +672,7 @@ All agent files require YAML frontmatter (`name`, `description`) to be registere
 - `protocol-sync-checker` — Validates Rust↔TypeScript protocol consistency (CommandType, ring buffer layout, WASM exports)
 - `wgsl-validator` — Cross-validates all 21 WGSL shaders for bind group layout consistency, ResourcePool naming, and tier coverage
 - `physics-integration-checker` — Validates Rapier2D integration consistency (component lifecycle, handle tracking, despawn cleanup, event ordering, command routing)
+- `webgpu-pass-reviewer` — Reviews TS render passes against the GPU contract headless tests cannot see (uniform padding, minBindingSize, per-pass slices, placeholders, view dimensions, storage budget, indirect offsets, missing bind groups). Complements `wgsl-validator`
 - `claude-md-auditor` — Audits this file for factual drift: stale constants, wrong enum/test counts, phantom symbols, and self-contradictory bullets. Read-only. Tell it the merge-base: it will build a worktree there and run the same commands on both sides, which separates drift this branch caused from drift that was already present — otherwise the pre-existing errors stay invisible.
 
 ### MCP (`.mcp.json`)
@@ -676,12 +680,16 @@ All agent files require YAML frontmatter (`name`, `description`) to be registere
 `.mcp.json` is the single source of truth for MCP servers; the equivalent plugins are disabled in `.claude/settings.json` to avoid loading every tool twice.
 
 - **Context7** — Live documentation lookup for WebGPU, KTX2, wasm-bindgen, and other specs
-- **Playwright** — Browser automation for DOM-based checks in the demo harness
+- **Playwright** (`@playwright/mcp`) — Browser automation for DOM-based checks in the demo harness. Until 2026-09-26 `.mcp.json` named `@anthropic-ai/mcp-playwright`, which does not exist (npm 404), so the server never connected
 - **chrome-devtools** — Real Chrome with GPU access. Preferred for anything WebGPU: `requestAdapter()` returns null headless, and this exposes console messages (WGSL validation errors), performance traces, and `evaluate_script` against the live `Hyperion` facade
+
+### Workflows (`.claude/workflows/`)
+
+- `adversarial-review` — one finder per lens over a git range, one skeptical verifier per finding (defaults to refuted), confirmed findings ranked by severity. `args: {range, spec?, plan?, context?, accepted?, lenses?}`; default lenses `webgpu`, `protocol`, `physics`, `docs`. Run with `Workflow({name: 'adversarial-review', args})` (or by `scriptPath` if the registry has not picked it up yet). Grade the findings yourself and fix Critical/Important with a failing test first
 
 ### Claude Code plugins
 
-`.claude/settings.json` carries an explicit `enabledPlugins` map listing **all** installed plugins — 25 enabled, 83 disabled. It is project-scoped, so the global `~/.claude/settings.json` is untouched. Every plugin is listed explicitly (rather than only the disabled ones) so the result is identical whether Claude Code merges the map per-key or replaces it wholesale.
+`.claude/settings.json` carries an explicit `enabledPlugins` map listing **all** installed plugins — 21 enabled, 87 disabled. `github` is disabled because it needs a token this machine does not provide (it failed with "Authorization header is badly formatted"); `git` and `gh` cover the work. It is project-scoped, so the global `~/.claude/settings.json` is untouched. Every plugin is listed explicitly (rather than only the disabled ones) so the result is identical whether Claude Code merges the map per-key or replaces it wholesale.
 
 ### Formatting
 
