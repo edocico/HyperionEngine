@@ -1248,7 +1248,7 @@ fn process_single_command_physics(
         // the body, otherwise the ECS value is silently reverted by the next
         // write-back — there was no reposition path for dynamic or fixed bodies
         // at all (audit 2026-07, P1-9).
-        CommandType::SetPosition | CommandType::SetRotation2D => {
+        CommandType::SetPosition | CommandType::SetRotation2D | CommandType::SetRotation => {
             process_single_command(cmd, world, entity_map, render_state);
             if let Some(entity) = entity_map.get(cmd.entity_id)
                 && world.get::<&crate::physics::PhysicsControlled>(entity).is_ok()
@@ -1257,22 +1257,42 @@ fn process_single_command_physics(
                 // A rotation takes its angle from the command: the pose of a
                 // 3D entity carries none, and reading one back from its
                 // quaternion would make every SetPosition teleport carry a
-                // round-tripped angle too.
-                let rot = if matches!(cmd.cmd_type, CommandType::SetRotation2D) {
-                    read_f32(&cmd.payload).or(pose_rot)
-                } else {
-                    pose_rot
+                // round-tripped angle too. A rotation the base handler
+                // rejected (non-finite) queues nothing, so it cancels nothing.
+                let rot = match cmd.cmd_type {
+                    CommandType::SetRotation2D => match read_f32(&cmd.payload) {
+                        Some(a) => Some(a),
+                        None => return,
+                    },
+                    CommandType::SetRotation => match read_vec4(&cmd.payload, 0)
+                        .and_then(|[qx, qy, qz, qw]| Rotation(glam::Quat::from_xyzw(qx, qy, qz, qw)).z_angle())
+                    {
+                        Some(a) => Some(a),
+                        None => return,
+                    },
+                    _ => pose_rot,
                 };
                 if x.is_finite() && y.is_finite() {
+                    // One reposition per body and batch, merged: a later
+                    // SetPosition (no angle on a 3D pose) keeps the angle a
+                    // rotation queued before it, and a zero-velocity
+                    // teleport stays one (review 2026-09-26).
+                    let earlier = physics
+                        .pending_teleports
+                        .iter()
+                        .rev()
+                        .find(|t| t.ext_id == cmd.entity_id)
+                        .map(|t| (t.rot, t.zero_velocity));
+                    let (earlier_rot, earlier_zero) = earlier.unwrap_or((None, false));
                     physics.pending_teleports.retain(|t| t.ext_id != cmd.entity_id);
                     physics.pending_teleports.push(crate::physics::PendingTeleport {
                         ext_id: cmd.entity_id,
                         x,
                         y,
-                        rot,
+                        rot: rot.or(earlier_rot),
                         // A plain SetPosition is a reposition, not a respawn:
                         // momentum is preserved. Use TeleportBody to clear it.
-                        zero_velocity: false,
+                        zero_velocity: earlier_zero,
                     });
                 }
             }
