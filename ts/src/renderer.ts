@@ -30,7 +30,10 @@ import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
-import { detectCompressedFormat, detectSubgroupSupport, describeAdapter } from './capabilities';
+import {
+  detectCompressedFormat, detectSubgroupSupport, describeAdapter,
+  selectDeviceFeatures, retryDeviceFeatures, indirectFirstInstanceWarning,
+} from './capabilities';
 import { ParticleSystem, type ParticlePipelines } from './particle-system';
 import type { FrameState, RenderPass } from './render/render-pass';
 import type { GraphMode, GraphPassFactories } from './render/graph-assembly';
@@ -133,17 +136,7 @@ export async function createRenderer(
   // Detect subgroup support from adapter
   const subgroupSupport = detectSubgroupSupport(adapter.features);
 
-  // Request device with compression + subgroups features if available
-  const requiredFeatures: GPUFeatureName[] = [];
-  if (compressedFormat === 'bc7-rgba-unorm') requiredFeatures.push('texture-compression-bc');
-  else if (compressedFormat === 'astc-4x4-unorm') requiredFeatures.push('texture-compression-astc');
-  if (subgroupSupport.supported) requiredFeatures.push('subgroups' as GPUFeatureName);
-
-  // GPU timing. Optional everywhere: absent on some mobile drivers, and the
-  // device request must still succeed without it. Chrome quantizes the
-  // timestamps it returns to 100us unless started with
-  // --enable-webgpu-developer-features — see render/gpu-profiler.ts.
-  if (adapter.features.has('timestamp-query')) requiredFeatures.push('timestamp-query');
+  const requiredFeatures = selectDeviceFeatures(adapter.features, compressedFormat, subgroupSupport.supported);
 
   let device: GPUDevice;
   let useSubgroups = subgroupSupport.supported;
@@ -152,12 +145,9 @@ export async function createRenderer(
       requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
     });
   } catch {
-    // Feature request failed — retry with only the texture-compression
-    // features, which are the ones the asset pipeline actually depends on.
+    // Feature request failed — retry without the features the engine can do without.
     useSubgroups = false;
-    const fallbackFeatures = requiredFeatures.filter(
-      f => f !== ('subgroups' as GPUFeatureName) && f !== 'timestamp-query',
-    );
+    const fallbackFeatures = retryDeviceFeatures(requiredFeatures);
     device = await adapter.requestDevice({
       requiredFeatures: fallbackFeatures.length > 0 ? fallbackFeatures : undefined,
     });
@@ -170,6 +160,9 @@ export async function createRenderer(
   // `createQuerySet({ type: 'timestamp' })` fails inside createRenderer — the
   // whole renderer goes down, not just profiling.
   const timestampSupported = GpuProfiler.isSupported(device.features);
+
+  const firstInstanceWarning = indirectFirstInstanceWarning(device.features);
+  if (firstInstanceWarning) console.warn(firstInstanceWarning);
 
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);

@@ -6,6 +6,9 @@ import {
   detectSubgroupSupport,
   detectSizedBindingArrays,
   describeAdapter,
+  selectDeviceFeatures,
+  retryDeviceFeatures,
+  indirectFirstInstanceWarning,
   type Capabilities,
 } from "./capabilities";
 
@@ -213,5 +216,54 @@ describe("describeAdapter", () => {
     const d = describeAdapter(undefined);
     expect(d.fallback).toBe(false);
     expect(d.message).toMatch(/unknown/);
+  });
+});
+
+// cull-pass.ts writes a non-zero firstInstance into 25 of the 26 indirect draws
+// (the offset of each bucket's region in visible-indices). Without the
+// 'indirect-first-instance' feature the spec turns each of those draws into a
+// no-op, with no validation error. Measured on an RTX 4060: 0 pixels without
+// the feature, drawn with it. Only bucket 0 (opaque tier-0 quads) survives,
+// so every other primitive type and every transparent entity vanishes silently.
+describe("selectDeviceFeatures", () => {
+  it("requests indirect-first-instance whenever the adapter offers it", () => {
+    const features = selectDeviceFeatures(new Set(["indirect-first-instance"]), null, false);
+    expect(features).toContain("indirect-first-instance");
+  });
+
+  it("does not request indirect-first-instance from an adapter without it", () => {
+    expect(selectDeviceFeatures(new Set(), null, false)).not.toContain("indirect-first-instance");
+  });
+
+  it("keeps requesting what it already did: compression, subgroups, timestamps", () => {
+    const adapter = new Set(["texture-compression-bc", "subgroups", "timestamp-query"]);
+    expect(selectDeviceFeatures(adapter, "bc7-rgba-unorm", true)).toEqual(
+      expect.arrayContaining(["texture-compression-bc", "subgroups", "timestamp-query"]),
+    );
+    expect(selectDeviceFeatures(new Set(["texture-compression-astc"]), "astc-4x4-unorm", false))
+      .toEqual(["texture-compression-astc"]);
+  });
+});
+
+describe("retryDeviceFeatures", () => {
+  it("drops only the features the engine runs without, and keeps indirect-first-instance", () => {
+    // Dropping it on the retry would turn a rejected feature request into a
+    // canvas that draws only quads, with nothing in the console to say why.
+    const retry = retryDeviceFeatures(
+      ["texture-compression-bc", "subgroups", "timestamp-query", "indirect-first-instance"] as GPUFeatureName[],
+    );
+    expect(retry).toEqual(["texture-compression-bc", "indirect-first-instance"]);
+  });
+});
+
+describe("indirectFirstInstanceWarning", () => {
+  it("is silent on a device that has the feature", () => {
+    expect(indirectFirstInstanceWarning(new Set(["indirect-first-instance"]))).toBeNull();
+  });
+
+  it("warns on a device without it, naming the feature and what goes missing", () => {
+    const warning = indirectFirstInstanceWarning(new Set());
+    expect(warning).toContain("indirect-first-instance");
+    expect(warning).toMatch(/only opaque/i);
   });
 });

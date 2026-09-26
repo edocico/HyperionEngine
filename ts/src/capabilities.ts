@@ -185,3 +185,51 @@ export function describeAdapter(info: GPUAdapterInfo | undefined): { message: st
   }
   return { message: `[Hyperion] WebGPU adapter: ${name}${subgroups}`, fallback: false };
 }
+
+/**
+ * The features `createRenderer` asks `requestDevice` for, given what the
+ * adapter offers. Only features the adapter advertises are included: asking for
+ * one it lacks makes `requestDevice` reject.
+ *
+ * `'indirect-first-instance'` is a correctness requirement, not an
+ * optimisation. `CullPass` encodes each bucket's visible-indices region as a
+ * non-zero `firstInstance`, and without the feature the spec turns every such
+ * indirect draw into a silent no-op.
+ */
+export function selectDeviceFeatures(
+  adapterFeatures: ReadonlySet<string>,
+  compressedFormat: GPUTextureFormat | null,
+  subgroupsSupported: boolean,
+): GPUFeatureName[] {
+  const features: GPUFeatureName[] = [];
+  if (compressedFormat === 'bc7-rgba-unorm') features.push('texture-compression-bc');
+  else if (compressedFormat === 'astc-4x4-unorm') features.push('texture-compression-astc');
+  if (subgroupsSupported) features.push('subgroups' as GPUFeatureName);
+  // GPU timing. Optional everywhere: absent on some mobile drivers, and the
+  // device request must still succeed without it. See render/gpu-profiler.ts.
+  if (adapterFeatures.has('timestamp-query')) features.push('timestamp-query');
+  if (adapterFeatures.has('indirect-first-instance')) features.push('indirect-first-instance');
+  return features;
+}
+
+/**
+ * The features to retry with when `requestDevice` rejects the full set. Drops
+ * the ones the engine runs correctly without (subgroups, GPU timing). Keeps
+ * texture compression, which the asset pipeline depends on, and
+ * `'indirect-first-instance'`, without which most draws vanish.
+ */
+export function retryDeviceFeatures(requested: readonly GPUFeatureName[]): GPUFeatureName[] {
+  return requested.filter(f => f !== ('subgroups' as GPUFeatureName) && f !== 'timestamp-query');
+}
+
+/**
+ * A console warning for a device without `'indirect-first-instance'`, or
+ * `null` when it has it. Must be read from `device.features`, never from the
+ * adapter's: that is the set the draws actually run under.
+ */
+export function indirectFirstInstanceWarning(deviceFeatures: ReadonlySet<string>): string | null {
+  if (deviceFeatures.has('indirect-first-instance')) return null;
+  return "[Hyperion] The GPU device lacks 'indirect-first-instance': indirect draws with a non-zero "
+    + 'firstInstance are no-ops, so only opaque tier-0 quads will render. Every other primitive type '
+    + 'and every transparent entity is missing.';
+}
