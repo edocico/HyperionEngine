@@ -196,7 +196,17 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Set entity rotation. 1 arg = 2D angle (radians). 4 args = quaternion (x,y,z,w). */
+  /**
+   * Set entity rotation. Returns `this` for chaining.
+   * - 1 arg: an angle in radians about Z (the screen normal). It REPLACES the
+   *   whole rotation, on any entity.
+   * - 4 args: a quaternion (x, y, z, w).
+   *
+   * On a physics body both forms reposition the body (momentum kept), like
+   * `position()`, also in the frame that creates it. Rapier is 2D: it keeps
+   * only the angle about Z, so a tilt from the quaternion form is dropped at
+   * the next physics step.
+   */
   rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
     if (qy === undefined) {

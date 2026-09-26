@@ -16,6 +16,25 @@ pub struct Position(pub Vec3);
 #[repr(C)]
 pub struct Rotation(pub Quat);
 
+impl Rotation {
+    /// The angle about Z, in radians: what a 2D consumer (Rapier) keeps of the
+    /// quaternion. The form w² + x² − y² − z² in place of 1 − 2(y² + z²)
+    /// makes it independent of the quaternion's length; `None` for an all-zero
+    /// or non-finite one.
+    pub fn z_angle(&self) -> Option<f32> {
+        let q = self.0;
+        let len2 = q.length_squared();
+        if len2.is_nan() || len2 <= 0.0 {
+            return None;
+        }
+        let a = f32::atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            q.w * q.w + q.x * q.x - q.y * q.y - q.z * q.z,
+        );
+        a.is_finite().then_some(a)
+    }
+}
+
 /// Non-uniform scale.
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -455,6 +474,15 @@ impl Default for BoundingRadius {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_z_angle_is_the_angle_about_z_whatever_the_length() {
+        let a = 1.2f32;
+        assert!((Rotation(Quat::from_rotation_z(a)).z_angle().unwrap() - a).abs() < 1e-6);
+        assert!((Rotation(Quat::from_rotation_z(a) * 3.0).z_angle().unwrap() - a).abs() < 1e-6);
+        assert_eq!(Rotation(Quat::IDENTITY).z_angle(), Some(0.0));
+        assert_eq!(Rotation(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)).z_angle(), None);
+    }
 
     #[test]
     fn default_position_is_origin() {

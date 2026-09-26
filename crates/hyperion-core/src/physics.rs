@@ -533,16 +533,27 @@ pub fn physics_sync_pre(
     let mut cmd = hecs::CommandBuffer::new();
 
     // Pass 1: Consume PendingRigidBody → create Rapier rigid body
-    for (entity, pending, t2d, pos) in world.query_mut::<(
+    for (entity, pending, t2d, pos, rot) in world.query_mut::<(
         hecs::Entity,
         &PendingRigidBody,
         Option<&Transform2D>,
         Option<&Position>,
+        // Ours, not rapier's `Rotation` from the prelude glob.
+        Option<&crate::components::Rotation>,
     )>() {
         let translation = match (t2d, pos) {
             (Some(t), _) => Vector::new(t.x, t.y),
             (_, Some(p)) => Vector::new(p.0.x, p.0.y),
             _ => Vector::ZERO,
+        };
+        // The body starts at the entity's rotation too: a rotation sent in the
+        // creation batch (a tilted ramp) found no body to reposition and was
+        // then overwritten by the first write-back (review 2026-09-26). An
+        // unrotated entity gives exactly 0, the builder's default.
+        let angle = match (t2d, rot) {
+            (Some(t), _) => t.rot,
+            (_, Some(r)) => r.z_angle().unwrap_or(0.0),
+            _ => 0.0,
         };
 
         let rb = match pending.body_type {
@@ -558,6 +569,7 @@ pub fn physics_sync_pre(
             }
         }
         .translation(translation)
+        .rotation(angle)
         .gravity_scale(pending.gravity_scale)
         .linear_damping(pending.linear_damping)
         .angular_damping(pending.angular_damping)

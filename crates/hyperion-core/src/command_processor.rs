@@ -887,14 +887,18 @@ fn process_single_command(
                     if let Ok(mut t) = world.get::<&mut Transform2D>(entity) {
                         t.rot = angle;
                     }
-                    if let Some(slot) = render_state.get_slot(entity) {
-                        render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                        render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                    }
-                } else {
-                    // SetRotation2D on a 3D entity is invalid — log warning and ignore.
-                    #[cfg(debug_assertions)]
-                    eprintln!("warning: SetRotation2D on 3D entity {}", cmd.entity_id);
+                } else if let Ok(mut rot) = world.get::<&mut Rotation>(entity) {
+                    // A 2D angle on a 3D entity is a rotation about Z, the
+                    // screen normal, and it replaces the whole quaternion: the
+                    // same "set the angle" that SetRotation means on a 2D
+                    // entity. engine.spawn() only makes 3D entities, so this
+                    // is what EntityHandle.rotation(angle) does in practice
+                    // (it used to be ignored, 2026-09-26).
+                    rot.0 = glam::Quat::from_rotation_z(angle);
+                }
+                if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                 }
             }
         }
@@ -1244,22 +1248,51 @@ fn process_single_command_physics(
         // the body, otherwise the ECS value is silently reverted by the next
         // write-back — there was no reposition path for dynamic or fixed bodies
         // at all (audit 2026-07, P1-9).
-        CommandType::SetPosition | CommandType::SetRotation2D => {
+        CommandType::SetPosition | CommandType::SetRotation2D | CommandType::SetRotation => {
             process_single_command(cmd, world, entity_map, render_state);
             if let Some(entity) = entity_map.get(cmd.entity_id)
                 && world.get::<&crate::physics::PhysicsControlled>(entity).is_ok()
             {
-                let (x, y, rot) = read_entity_pose(world, entity);
+                let (x, y, pose_rot) = read_entity_pose(world, entity);
+                // A rotation takes its angle from the command: the pose of a
+                // 3D entity carries none, and reading one back from its
+                // quaternion would make every SetPosition teleport carry a
+                // round-tripped angle too. A rotation the base handler
+                // rejected (non-finite) queues nothing, so it cancels nothing.
+                let rot = match cmd.cmd_type {
+                    CommandType::SetRotation2D => match read_f32(&cmd.payload) {
+                        Some(a) => Some(a),
+                        None => return,
+                    },
+                    CommandType::SetRotation => match read_vec4(&cmd.payload, 0)
+                        .and_then(|[qx, qy, qz, qw]| Rotation(glam::Quat::from_xyzw(qx, qy, qz, qw)).z_angle())
+                    {
+                        Some(a) => Some(a),
+                        None => return,
+                    },
+                    _ => pose_rot,
+                };
                 if x.is_finite() && y.is_finite() {
+                    // One reposition per body and batch, merged: a later
+                    // SetPosition (no angle on a 3D pose) keeps the angle a
+                    // rotation queued before it, and a zero-velocity
+                    // teleport stays one (review 2026-09-26).
+                    let earlier = physics
+                        .pending_teleports
+                        .iter()
+                        .rev()
+                        .find(|t| t.ext_id == cmd.entity_id)
+                        .map(|t| (t.rot, t.zero_velocity));
+                    let (earlier_rot, earlier_zero) = earlier.unwrap_or((None, false));
                     physics.pending_teleports.retain(|t| t.ext_id != cmd.entity_id);
                     physics.pending_teleports.push(crate::physics::PendingTeleport {
                         ext_id: cmd.entity_id,
                         x,
                         y,
-                        rot,
+                        rot: rot.or(earlier_rot),
                         // A plain SetPosition is a reposition, not a respawn:
                         // momentum is preserved. Use TeleportBody to clear it.
-                        zero_velocity: false,
+                        zero_velocity: earlier_zero,
                     });
                 }
             }
@@ -1979,8 +2012,12 @@ mod tests {
         assert!((t.rot - 1.5).abs() < 1e-7);
     }
 
+    // EntityHandle.rotation(angle) sends SetRotation2D, and engine.spawn()
+    // makes 3D entities: until 2026-09-26 the one-argument form was ignored on
+    // every entity the public API could create. It is now a rotation about Z,
+    // mirroring SetRotation on a 2D entity (which keeps the quaternion's Z angle).
     #[test]
-    fn set_rotation_2d_on_3d_entity_is_ignored() {
+    fn set_rotation_2d_on_3d_entity_rotates_about_z() {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
@@ -1999,16 +2036,39 @@ mod tests {
             &mut map,
             &mut rs,
         );
-        // 3D entity should NOT have Transform2D
+        // Still a 3D entity: no Transform2D appears.
         let ent = map.get(1).unwrap();
         assert!(world.get::<&Transform2D>(ent).is_err());
-        // Rotation should still be identity (untouched)
         let rot = world.get::<&Rotation>(ent).unwrap();
-        assert_eq!(rot.0, glam::Quat::IDENTITY);
+        assert!(rot.0.abs_diff_eq(glam::Quat::from_rotation_z(1.5), 1e-6), "got {:?}", rot.0);
     }
 
     #[test]
-    fn set_rotation_2d_on_3d_entity_does_not_dirty() {
+    fn set_rotation_2d_replaces_a_3d_tilt_and_ignores_a_non_finite_angle() {
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(&[make_spawn_cmd(1)], &mut world, &mut map, &mut rs);
+        let tilt = glam::Quat::from_rotation_x(0.7);
+        world.get::<&mut Rotation>(map.get(1).unwrap()).unwrap().0 = tilt;
+
+        let mut nan = [0u8; 16];
+        nan[0..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        run_commands(&[Command { cmd_type: CommandType::SetRotation2D, entity_id: 1, payload: nan }],
+            &mut world, &mut map, &mut rs);
+        assert_eq!(world.get::<&Rotation>(map.get(1).unwrap()).unwrap().0, tilt);
+
+        let mut angle = [0u8; 16];
+        angle[0..4].copy_from_slice(&0.5f32.to_le_bytes());
+        run_commands(&[Command { cmd_type: CommandType::SetRotation2D, entity_id: 1, payload: angle }],
+            &mut world, &mut map, &mut rs);
+        // A 2D angle SETS the rotation, like on a 2D entity: the tilt is gone.
+        let rot = world.get::<&Rotation>(map.get(1).unwrap()).unwrap().0;
+        assert!(rot.abs_diff_eq(glam::Quat::from_rotation_z(0.5), 1e-6), "got {rot:?}");
+    }
+
+    #[test]
+    fn set_rotation_2d_on_3d_entity_marks_it_dirty() {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
@@ -2019,7 +2079,7 @@ mod tests {
         // Clear any dirty bits from spawn
         rs.dirty_tracker.clear();
 
-        // Send SetRotation2D to 3D entity — should be ignored, no dirty marking
+        // SetRotation2D on a 3D entity changes its rotation: the GPU row must follow.
         let mut angle_payload = [0u8; 16];
         angle_payload[0..4].copy_from_slice(&1.5f32.to_le_bytes());
         run_commands(
@@ -2033,14 +2093,10 @@ mod tests {
             &mut rs,
         );
 
-        // Entity should NOT be dirty since SetRotation2D on 3D is ignored
         let ent = map.get(1).unwrap();
-        if let Some(slot) = rs.get_slot(ent) {
-            assert!(
-                !rs.dirty_tracker.is_transform_dirty(slot as usize),
-                "3D entity should not be dirty after ignored SetRotation2D"
-            );
-        }
+        let slot = rs.get_slot(ent).expect("a spawned entity has a GPU slot") as usize;
+        assert!(rs.dirty_tracker.is_transform_dirty(slot), "transform must be re-uploaded");
+        assert!(rs.dirty_tracker.is_bounds_dirty(slot), "bounds must be re-uploaded");
     }
 
     #[test]

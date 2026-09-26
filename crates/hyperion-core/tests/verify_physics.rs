@@ -449,6 +449,141 @@ fn p11b_teleport_body_clears_velocity() {
     assert!(v.abs() < falling, "velocity must have been cleared, got {v}");
 }
 
+// 2026-09-26 — `EntityHandle.rotation(angle)` (SetRotation2D) did nothing on
+// a body from `engine.spawn()`: that entity is 3D, the base handler ignored the
+// angle, and the reposition read no rotation off a 3D pose, so Rapier kept its
+// own. The angle now comes from the command.
+fn spawn3d(id: u32) -> Command {
+    cmd(CommandType::SpawnEntity, id, [0u8; 16])
+}
+
+#[test]
+fn p18_rotation_angle_rotates_a_3d_body_and_keeps_its_momentum() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    for _ in 0..10 { e.update(1.0 / 60.0); }
+    let h = e.world.get::<&PhysicsBodyHandle>(e.entity_map.get(0).unwrap()).unwrap().0;
+    let falling = e.physics.rigid_body_set[h].linvel().y;
+    assert!(falling > 1.0, "the body should be falling before the rotation");
+
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0)]);
+    e.update(1.0 / 60.0);
+    let body = &e.physics.rigid_body_set[h];
+    println!("P18 after rotation(1.0): angle={} linvel.y={} (was {falling})", body.rotation().angle(), body.linvel().y);
+    assert!((body.rotation().angle() - 1.0).abs() < 1e-3, "Rapier must take the angle");
+    assert!(body.linvel().y >= falling, "a rotation is a reposition, not a respawn: momentum stays");
+    let rot = e.world.get::<&Rotation>(e.entity_map.get(0).unwrap()).unwrap().0;
+    assert!(rot.abs_diff_eq(glam::Quat::from_rotation_z(body.rotation().angle()), 1e-5));
+}
+
+#[test]
+fn p18b_setposition_on_a_3d_body_still_keeps_its_rotation() {
+    // The angle comes from SetRotation2D only: a SetPosition teleport must not
+    // start carrying a rotation read back from the ECS quaternion.
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[setpos(0, 50.0, 60.0)]);
+    let t = e.physics.pending_teleports.iter().find(|t| t.ext_id == 0).expect("a queued reposition");
+    assert_eq!(t.rot, None);
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 0.25)]);
+    let t = e.physics.pending_teleports.iter().find(|t| t.ext_id == 0).unwrap();
+    assert_eq!(t.rot, Some(0.25));
+}
+
+// Review of 33b9dfe (2026-09-26): the paths a rotation can still be lost on.
+fn f4(t: CommandType, id: u32, v: [f32; 4]) -> Command {
+    let mut p = [0u8; 16];
+    for (i, x) in v.iter().enumerate() {
+        p[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
+    }
+    cmd(t, id, p)
+}
+fn angle_of(e: &Engine, id: u32) -> f32 {
+    let h = e.world.get::<&PhysicsBodyHandle>(e.entity_map.get(id).unwrap()).unwrap().0;
+    e.physics.rigid_body_set[h].rotation().angle()
+}
+fn ecs_rot(e: &Engine, id: u32) -> glam::Quat {
+    e.world.get::<&Rotation>(e.entity_map.get(id).unwrap()).unwrap().0
+}
+
+#[test]
+fn p18c_rotation_then_position_in_one_batch_keeps_the_angle() {
+    // `h.rotation(a).position(x, y, z)`: the SetPosition reposition replaced
+    // the rotation's, and a 3D pose carries no angle.
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0), setpos(0, 50.0, 60.0)]);
+    e.update(1.0 / 60.0);
+    assert!((angle_of(&e, 0) - 1.0).abs() < 1e-3, "got {}", angle_of(&e, 0));
+    assert!(ecs_rot(&e, 0).abs_diff_eq(glam::Quat::from_rotation_z(1.0), 1e-3));
+}
+
+#[test]
+fn p18d_a_kinematic_body_driven_every_frame_neither_loses_nor_flickers_its_angle() {
+    // At 144 Hz most frames run no tick: the ECS showed the angle on those and
+    // the old one on the others, while the collider never turned.
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 2), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    for i in 0..12 {
+        e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0), setpos(0, 50.0 + i as f32, 60.0)]);
+        e.update(1.0 / 144.0);
+        assert!(ecs_rot(&e, 0).abs_diff_eq(glam::Quat::from_rotation_z(1.0), 1e-3), "frame {i}: {:?}", ecs_rot(&e, 0));
+    }
+    assert!((angle_of(&e, 0) - 1.0).abs() < 1e-3, "got {}", angle_of(&e, 0));
+}
+
+#[test]
+fn p18e_a_rotation_in_the_creation_batch_reaches_rapier() {
+    // A tilted ramp: the body used to be built from the translation alone.
+    for (kind, spawn) in [(1u8, spawn3d as fn(u32) -> Command), (0, spawn3d), (1, spawn2d)] {
+        let mut e = Engine::new();
+        e.process_commands(&[spawn(0), setpos(0, 0.0, 100.0), f1(CommandType::SetRotation2D, 0, 0.4),
+            body(0, kind), collider(0, 0, 10.0, 0.0)]);
+        e.update(1.0 / 60.0);
+        assert!((angle_of(&e, 0) - 0.4).abs() < 1e-3, "kind {kind}: got {}", angle_of(&e, 0));
+    }
+}
+
+#[test]
+fn p18f_a_non_finite_angle_cancels_nothing() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 1), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0), f1(CommandType::SetRotation2D, 0, f32::NAN)]);
+    e.update(1.0 / 60.0);
+    assert!((angle_of(&e, 0) - 1.0).abs() < 1e-3, "got {}", angle_of(&e, 0));
+}
+
+#[test]
+fn p18g_the_quaternion_form_rotates_a_sleeping_body_too() {
+    // The quaternion form was not sent to Rapier: on a sleeping body nothing
+    // wrote it back either, so the sprite turned and the collider did not.
+    let mut e = Engine::new();
+    e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    for _ in 0..600 { e.update(1.0 / 60.0); }
+    let h = e.world.get::<&PhysicsBodyHandle>(e.entity_map.get(0).unwrap()).unwrap().0;
+    assert!(e.physics.rigid_body_set[h].is_sleeping(), "the scenario needs a sleeping body");
+    let q = glam::Quat::from_rotation_z(0.8);
+    e.process_commands(&[f4(CommandType::SetRotation, 0, [q.x, q.y, q.z, q.w])]);
+    for _ in 0..3 { e.update(1.0 / 60.0); }
+    assert!((angle_of(&e, 0) - 0.8).abs() < 1e-3, "got {}", angle_of(&e, 0));
+    assert!(ecs_rot(&e, 0).abs_diff_eq(q, 1e-3));
+}
+
+#[test]
+fn p18h_a_rotation_alone_sticks_on_a_kinematic_body() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 2), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0)]);
+    for _ in 0..3 { e.update(1.0 / 60.0); }
+    assert!((angle_of(&e, 0) - 1.0).abs() < 1e-3, "got {}", angle_of(&e, 0));
+}
+
 // P1-10 — reusing a joint id dropped the only handle to the previous joint.
 #[test]
 fn p12_joint_id_reuse_is_rejected() {

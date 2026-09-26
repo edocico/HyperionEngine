@@ -8,15 +8,6 @@ const entities: EntityHandle[] = [];
 const hooks: HookFn[] = [];
 let panel: HTMLElement | null = null;
 
-/**
- * A rotation of `angle` radians about Z, as the quaternion `rotation()` takes.
- * `engine.spawn()` makes 3D entities, and the one-argument `rotation(angle)`
- * (SetRotation2D) is ignored on those: the spot used to point along +X forever.
- */
-function aboutZ(angle: number): [number, number, number, number] {
-  return [0, 0, Math.sin(angle / 2), Math.cos(angle / 2)];
-}
-
 /** The scene's right edge (the layer-1 sprite) in world units, plus a margin. */
 const SCENE_HALF_WIDTH = 17.6;
 
@@ -107,7 +98,7 @@ const section: DemoSection = {
         .light({ type: 'point', color: '#ffcc88', energy: 1.4, range: 12, falloff: 1.2, shadowIntensity: 1 });
       // Layer 0 only: when its sweep crosses the layer-1 sprite, the sprite
       // stays dark — the light mask, on screen.
-      spot = engine.spawn().position(12, -6, 0).rotation(...aboutZ(2.3))
+      spot = engine.spawn().position(12, -6, 0).rotation(2.3)
         .light({ type: 'spot', color: '#88bbff', energy: 1.6, range: 18, innerAngle: 18, outerAngle: 30, shadowIntensity: 1, layers: 0b01 });
       // A weak global light, placed off-screen on purpose: it must never be culled.
       global = engine.spawn().position(500, 500, 0)
@@ -152,7 +143,7 @@ const section: DemoSection = {
     const animate: HookFn = (dt) => {
       t += dt;
       point.position(-7 + Math.cos(t * 0.6) * 4, Math.sin(t * 0.6) * 4, 0);
-      spot.rotation(...aboutZ(2.3 + Math.sin(t * 0.4) * 0.5));
+      spot.rotation(2.3 + Math.sin(t * 0.4) * 0.5);
     };
     engine.addHook('preTick', animate);
     hooks.push(animate);
