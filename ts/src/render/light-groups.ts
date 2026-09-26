@@ -17,9 +17,10 @@ import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
  * Groups whose caster part is the same share one SDF set; a group that no
  * shadowed light reaches has none.
  *
- * Keys come from the distinct mask VALUES, not from entities, so the groups do
- * not change while things move — only when a value appears or goes, or a light
- * or occluder enters or leaves the view.
+ * Keys come from the distinct mask VALUES, not from entities, so moving things
+ * around does not regroup by itself. The groups change when a value appears or
+ * goes, or when a light, an occluder or a lit receiver enters or leaves the
+ * view — a lone receiver on its own layer can bring a whole SDF set with it.
  */
 
 export interface LightGroup {
@@ -99,7 +100,11 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
   for (let i = 0; i < entityCount; i++) {
     const word = renderMeta[i * 2 + 1];
     const mask = word >>> 16;
-    if ((word & 0xff) === LIGHT2D) {
+    // cull.wgsl's own clamp: a type past the last one is drawn as the last,
+    // Light2D. Rust rejects such a type, but the grouping must agree with the
+    // GPU on whatever reaches it.
+    const primType = Math.min(word & 0xff, LIGHT2D);
+    if (primType === LIGHT2D) {
       if (!inView(i)) continue;
       lightMasks.add(mask);
       // The shader's test: point or spot, with a shadow strength above 0.
@@ -111,7 +116,7 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     // The SDF is screen-space: an occluder out of view contributes nothing,
     // and counting it could only split groups and add SDF floods.
     if ((word & CASTS_SHADOW) !== 0 && inView(i)) occluderMasks.add(mask === 0 ? 0xffff : mask);
-    if ((word & RECEIVES_LIGHT) !== 0 && LIT[word & 0xff] === 1) {
+    if ((word & RECEIVES_LIGHT) !== 0 && LIT[primType] === 1) {
       // A layer nobody on screen samples would still get a group, and its own
       // SDF set if the casters in view split it off. Same conservative test
       // as lights, so every receiver the GPU draws keeps its layer mapped.

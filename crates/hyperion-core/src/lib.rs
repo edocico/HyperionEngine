@@ -84,7 +84,8 @@ pub fn engine_dropped_command_bytes() -> u32 {
     }
 }
 
-/// Commands rejected because their external entity id was out of range.
+/// Commands rejected because their external entity id, or the render
+/// primitive they set, was out of range.
 #[wasm_bindgen]
 pub fn engine_rejected_command_count() -> u32 {
     // SAFETY: wasm32 is single-threaded.

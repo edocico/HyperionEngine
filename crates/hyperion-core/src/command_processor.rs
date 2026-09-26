@@ -125,8 +125,9 @@ impl EntityMap {
         true
     }
 
-    /// Number of `insert` calls rejected because the external id exceeded
-    /// [`MAX_EXTERNAL_ID`]. Surfaced to JS via `engine_rejected_command_count`.
+    /// Number of rejected commands: an `insert` whose external id exceeded
+    /// [`MAX_EXTERNAL_ID`], or a `SetRenderPrimitive` past the last type.
+    /// Surfaced to JS via `engine_rejected_command_count`.
     pub fn rejected_ids(&self) -> u32 {
         self.rejected_ids
     }
@@ -138,7 +139,7 @@ impl EntityMap {
         external_id <= MAX_EXTERNAL_ID
     }
 
-    /// Record a rejected command for an out-of-range id.
+    /// Record a rejected command: an out-of-range id or render primitive.
     pub(crate) fn note_rejected_id(&mut self) {
         self.rejected_ids = self.rejected_ids.saturating_add(1);
     }
@@ -787,6 +788,13 @@ fn process_single_command(
         CommandType::SetRenderPrimitive => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 let prim = cmd.payload[0];
+                // Types run 0..=PRIM_TYPE_LIGHT2D. cull.wgsl clamps anything
+                // larger to the last type, so an out-of-range value would be
+                // drawn as a Light2D. Rejected, and the entity keeps its type.
+                if prim > crate::components::PRIM_TYPE_LIGHT2D {
+                    entity_map.note_rejected_id();
+                    return;
+                }
                 if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
                     rp.0 = prim;
                 }
@@ -1560,6 +1568,28 @@ mod tests {
         let entity = map.get(0).unwrap();
         let rp = world.get::<&RenderPrimitive>(entity).unwrap();
         assert_eq!(rp.0, 2);
+    }
+
+    #[test]
+    fn set_render_primitive_out_of_range_is_rejected_and_counted() {
+        // cull.wgsl clamps the type to NUM_PRIM_TYPES - 1, so a 7 used to be
+        // drawn as a Light2D: an invisible light lighting whatever its
+        // primParams[3] said (review 2026-09-26).
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+
+        let mut payload = [0u8; 16];
+        payload[0] = crate::components::PRIM_TYPE_LIGHT2D;
+        let valid = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
+        payload[0] = crate::components::PRIM_TYPE_LIGHT2D + 1;
+        let invalid = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
+        run_commands(&[valid, invalid], &mut world, &mut map, &mut rs);
+
+        let entity = map.get(0).unwrap();
+        assert_eq!(world.get::<&RenderPrimitive>(entity).unwrap().0, crate::components::PRIM_TYPE_LIGHT2D);
+        assert_eq!(map.rejected_ids(), 1);
     }
 
     #[test]

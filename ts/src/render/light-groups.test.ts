@@ -175,6 +175,19 @@ describe('deriveLightGroups', () => {
     expect([...LIT_PRIMITIVE_TYPES].sort()).toEqual(declaresGroup2.sort());
   });
 
+  it('classifies the primitive type exactly as cull.wgsl does: anything past Light2D is a light', () => {
+    // Rust now rejects SetRenderPrimitive > 6, but a value that still arrives
+    // (an old snapshot) is drawn by LightAccumStage as a light: the grouping
+    // must count it as one, or it lights layers its group was not keyed for.
+    const cull = readFileSync(new URL('../shaders/cull.wgsl', import.meta.url), 'utf8');
+    expect(cull).toMatch(/primType = min\(metaVal & 0xFFu, NUM_PRIM_TYPES - 1u\);/);
+    const PAST_LAST = 7;
+    const g = deriveLightGroups(scene([light(0xffff), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(PAST_LAST | CAST, 0b10)]));
+    expect(g.lightMasks).toContain(0b10);
+    expect(g.occluderMasks).toEqual([]);
+    expect(g.groups).toHaveLength(2);
+  });
+
   it('a light on an unoccupied layer changes nothing', () => {
     const g = deriveLightGroups(scene([light(0xffff, 1), light(0b1000), drawable(CAST | RECV)]));
     expect(g.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
