@@ -595,6 +595,8 @@ ph = h;
 
 ⚠️ **Non usarla con un SDF da JFA.** La correzione assume che `map()` sia un SDF **esatto**; con un campo da jump flood `h` è già una sovrastima (A1), e il termine `y = h²/(2·ph)` **amplifica l'errore**. Nessuna fonte analizza questa interazione — l'ho verificato esplicitamente. **Partire dalla forma originale `k·h/t`**, che è anche quella che Ronja usa in 2D.
 
+> 🆕 **Implementato 2026-09-26, con due correzioni misurate.** Resta il termine originale `h/t` (non Aaltonen), ma confrontato con l'angolo **reale** della luce: `min(1/k, sourceRadius / D)`. Con `k` da solo la luce ha un raggio che cresce con la distanza del pixel (`D/k`). Una luce accanto a un muro oscurava così anche il lato aperto, del 23-42% e a bande radiali. Inoltre un pixel dentro un occluder prima ne esce, poi marcia, e la penombra si misura dal punto d'uscita. Infine un raggio che finisce i passi estrapola l'ultima distanza libera fino alla luce. Dettagli in `light-accum.wgsl` e nei commit `2c77d87` e `1675a92`. Il budget di default è **48 passi**, non 16-32: a 24 i raggi che radono una faccia finivano i passi e facevano filtrare luce dietro i muri, mentre 48 costa il 2% in più di `light-accum` (commit `0815e58`).
+
 **Step count**: `bevy_light_2d` usa 32, jason.today 32, Yaazarai indica *"the optimal case seems to be 32-64 steps"*, davidtme (marzo 2026) *"approximately 10-20 steps per pixel"* con SDF. **16–32 è la fascia di lavoro.**
 
 **Costo.** Una luce di raggio 300 px a metà risoluzione copre ~70k pixel; con 24 step sono ~1,7 M campionamenti SDF. Venti luci ≈ **34 M campionamenti/frame**.
@@ -948,6 +950,23 @@ Su GPU integrata attendersi **3-5×**, più l'overhead WebGPU di §3.1.
 **Il backend `lit` completo dovrebbe stare sotto 1,5 ms su GPU discreta a 1080p.** Resta da misurare in casa, ma non è più un salto nel buio.
 
 > ⚠️ **Il numero che non esiste in letteratura**, e che è il più utile: il costo misurato di un light-accumulation pass con sphere marching SDF a 1080p con N luci. **Nessuno l'ha pubblicato.** Va misurato con `timestamp-query`.
+
+#### 🆕 Misurato 2026-09-26 (Task 11)
+
+`timestamp-query` e `GpuProfiler`, `averageMs` su 120 frame. Il tab "Lighting" dell'harness in Mode B: una luce puntiforme (range 12) e una spot (range 18), entrambe con ombre, più una luce globale; tre occluder; un pavimento a schermo intero che riceve la luce; `shadowSteps` 24. **GPU: AMD RDNA 3 integrata** (adapter `amd / rdna-3`, Vulkan). La RTX 4060 della stessa macchina non può presentare su canvas (il compositor gira sull'iGPU), quindi non è misurabile nell'harness.
+
+| Pass | 1920×1081 (SDF 960×540, 11 pass) | 2600×1168 (SDF 1300×584, 12 pass) |
+|---|---|---|
+| `occluder-seed` | 0,031 ms | 0,032 ms |
+| **catena SDF** (1+JFA) | **1,77 ms** (0,016 il load pass, poi 0,13–0,20 ciascuno) | **2,64 ms** (0,02, poi 0,17–0,27) |
+| `light-accum` (3 luci) | 0,22 ms | 0,30 ms |
+| `forward`, delta lit − unlit | +0,30 ms (0,89 contro 0,59) | +0,06 ms |
+| **totale backend `lit`** | **≈ 2,3 ms** | ≈ 3,0 ms |
+
+Letture:
+- La catena SDF è il costo dominante, e sta **2-3× sopra** l'estrapolazione "integrata = 3-5× di 0,18 ms". I pass con lo step più grande sono i più lenti: i campioni lontani rompono la località della cache. Sono 9 `textureLoad` `rgba16float` (8 B) per texel per pass.
+- Leve, se servisse: un formato più stretto (le coordinate in `rg16unorm` o `rg16float` più il segno in un bit, cioè 4 B invece di 8); partire da uno step pari al range massimo delle luci invece che a maxDim/2, perché i pass sopra quel raggio non cambiano nessuna ombra visibile; una SDF a un quarto di risoluzione.
+- Il delta del `forward` dipende da quanta superficie riceve luce. Qui un pavimento a schermo intero la riceve tutta, quindi +0,30 ms è il caso peggiore.
 
 ---
 

@@ -342,7 +342,16 @@ All five checks are closed. Track B can start.
   > light. Layers need one buffer per layer group. So Task 11's "light-layer toggle"
   > has nothing to show until that is designed.
 
-- [ ] **Task 11: demo tab, measurement, docs**
+- [x] **Task 11: demo tab, measurement, docs** — demo tab (`96c0b5c`), measurement (design §13.2 "Misurato 2026-09-26": SDF chain 1.77 ms at 1080p on the AMD iGPU, backend `lit` ≈ 2.3 ms), docs.
+  > The adversarial review of Track C (workflow, 4 reviewers + 7 verifiers)
+  > confirmed 5 findings; all are fixed with tests and, where visible, a GPU
+  > check: caster+receiver sprites were never shadowed by other occluders
+  > (`1675a92`); the SDF chain stopped covering the texture after a resize
+  > (`5f0e8fb`, power-of-two steps + rebuild); a switch-off was lost when a
+  > later request was rejected (`4487bfe`); quality never reached Mode A's
+  > render worker (`bd6087d`); the fixed-k penumbra (`2c77d87`, found on GPU
+  > first). Also found on GPU: light leaking where the 24-step budget ran out
+  > (`2c77d87` extrapolation, `0815e58` default 48 steps).
   - `demo/lighting.ts`: new tab with point/spot/global lights, an occluder wall,
     a shadow-intensity slider, a light-layer toggle. Register in `demo/types.ts`
     and the report.
