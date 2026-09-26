@@ -13,6 +13,7 @@
  */
 
 import type { SpatialGrid } from './spatial-grid';
+import { RenderPrimitiveType } from './entity-handle';
 
 export interface Ray {
   origin: [number, number, number];
@@ -65,6 +66,9 @@ function raySphereT(
  * @param bounds - SoA bounding data: [cx, cy, cz, r] per entity (length = entityCount * 4).
  * @param entityIds - Parallel array of entity IDs (length = entityCount).
  * @param grid - Optional SpatialGrid for accelerated candidate lookup.
+ * @param renderMeta - Optional SoA render metadata (2 u32 per entity). When
+ *   given, lights (primType Light2D) are never hit: a light's bounding sphere
+ *   is its range, and a global light's covers the world.
  * @returns The entityId of the closest intersected sphere, or null if no hit.
  */
 export function hitTestRay(
@@ -72,9 +76,13 @@ export function hitTestRay(
   bounds: Float32Array,
   entityIds: Uint32Array,
   grid?: SpatialGrid,
+  renderMeta?: Uint32Array,
 ): number | null {
   const entityCount = entityIds.length;
   if (entityCount === 0) return null;
+  // renderMeta word 1, bits 0-7: the primitive type (RENDER_META_PRIM_TYPE_MASK).
+  const isLight = (i: number): boolean =>
+    renderMeta !== undefined && (renderMeta[i * 2 + 1] & 0xff) === RenderPrimitiveType.Light2D;
 
   const [ox, oy, oz] = ray.origin;
   const [dx, dy, dz] = ray.direction;
@@ -88,7 +96,7 @@ export function hitTestRay(
 
     for (let k = 0; k < count; k++) {
       const i = indices[k];
-      if (i < 0 || i >= entityCount) continue;
+      if (i < 0 || i >= entityCount || isLight(i)) continue;
 
       const t = raySphereT(ox, oy, oz, dx, dy, dz, bounds, i);
       if (t >= 0 && t < bestT) {
@@ -105,6 +113,7 @@ export function hitTestRay(
   let bestId: number | null = null;
 
   for (let i = 0; i < entityCount; i++) {
+    if (isLight(i)) continue;
     const t = raySphereT(ox, oy, oz, dx, dy, dz, bounds, i);
     if (t >= 0 && t < bestT) {
       bestT = t;

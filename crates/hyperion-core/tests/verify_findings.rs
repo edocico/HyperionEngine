@@ -110,11 +110,17 @@ fn v2b_object_pool_churn_keeps_slots_and_world_in_sync() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// V3 (audit 2026-07, P1-16): the dirty bitfield JS reads is a snapshot taken
-// before the tracker is cleared, so it actually carries this frame's bits.
+// V3: a velocity-driven entity reaches this frame's scatter staging, and a
+// static one does not (mark_post_system_dirty pass 1).
+//
+// Until 2026-09-26 this checked the exported dirty bitfield instead (audit
+// 2026-07, P1-16: it was read after the tracker had been cleared, so it was
+// all zeros). That export fed only temporal culling, and went away with it.
+// The staging indices are built from the same tracker in the same place, so
+// they carry the same guarantee.
 // ─────────────────────────────────────────────────────────────────
 #[test]
-fn v3_dirty_bitfield_reports_this_frame() {
+fn v3_velocity_entity_is_staged_this_frame() {
     let mut e = Engine::new();
     e.process_commands(&[spawn3d(0), spawn3d(1)]);
     let mut p = [0u8; 16];
@@ -123,21 +129,17 @@ fn v3_dirty_bitfield_reports_this_frame() {
     e.update(1.0 / 60.0);
     e.update(1.0 / 60.0);
 
-    let len = e.render_state.dirty_transform_bits_u32_len();
-    let ptr = e.render_state.dirty_transform_bits_ptr();
-    assert!(!ptr.is_null() && len > 0, "a frame with dirty entities must export bits");
-    let words = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let set_bits: u32 = words.iter().map(|w| w.count_ones()).sum();
-    println!("V3 dirty_count={} bitfield={:?} set_bits={}",
-        e.render_state.dirty_count(), words, set_bits);
-    assert!(e.render_state.dirty_count() > 0);
-    assert_eq!(set_bits, e.render_state.dirty_count(),
-        "the bitfield must carry exactly the staged slots");
+    let n = e.render_state.staging_indices_len() as usize;
+    assert!(n > 0, "a frame with a moving entity must stage something");
+    assert_eq!(n, e.render_state.dirty_count() as usize,
+        "one staging index per dirty entity");
+    // SAFETY: the pointer covers `n` u32 and stays valid until the next update.
+    let staged = unsafe { std::slice::from_raw_parts(e.render_state.staging_indices_ptr(), n) };
 
-    // The moving entity's own slot must be the one that is set.
-    let moving = e.entity_map.get(0).unwrap();
-    let slot = e.render_state.get_slot(moving).unwrap() as usize;
-    assert_ne!(words[slot / 32] & (1 << (slot % 32)), 0);
+    let moving = e.render_state.get_slot(e.entity_map.get(0).unwrap()).unwrap();
+    let still = e.render_state.get_slot(e.entity_map.get(1).unwrap()).unwrap();
+    assert!(staged.contains(&moving), "the moving entity's slot must be staged");
+    assert!(!staged.contains(&still), "a static entity must not be re-staged");
 }
 
 // ─────────────────────────────────────────────────────────────────

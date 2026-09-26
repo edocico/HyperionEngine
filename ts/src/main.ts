@@ -1,4 +1,5 @@
 import { Hyperion } from './hyperion';
+import { harnessMode } from './demo/preferred-mode';
 import { ReportBuilder } from './demo/report';
 import { createTestReporter } from './demo/types';
 import type { DemoSection, TestReporter, SectionStatus } from './demo/types';
@@ -18,6 +19,7 @@ const TABS: TabDef[] = [
   { key: 'audio',         label: 'Audio' },
   { key: 'particles',     label: 'Particles' },
   { key: 'rendering-fx',  label: 'Rendering FX' },
+  { key: 'lighting',      label: 'Lighting' },
   { key: 'debug-tools',   label: 'Debug Tools' },
   { key: 'lifecycle',     label: 'Lifecycle' },
 ];
@@ -32,6 +34,7 @@ const SECTION_LOADERS: Record<string, () => Promise<{ default: DemoSection }>> =
   audio:          () => import('./demo/audio'),
   particles:      () => import('./demo/particles'),
   'rendering-fx': () => import('./demo/rendering-fx'),
+  lighting:       () => import('./demo/lighting'),
   'debug-tools':  () => import('./demo/debug-tools'),
   lifecycle:      () => import('./demo/lifecycle'),
 };
@@ -63,7 +66,13 @@ async function main() {
   overlay.textContent = 'Hyperion Engine — initializing...';
 
   // --- Hyperion init ---
-  const engine = await Hyperion.create({ canvas });
+  const preferredMode = harnessMode(location.search);
+  const engine = await Hyperion.create({ canvas, preferredMode });
+  console.info(`[Hyperion] Harness execution mode: ${preferredMode} (override with ?mode=A|B|C|auto)`);
+  // The one handle on the live engine for GPU sessions driven from devtools
+  // (`evaluate_script`): loading a texture, spawning lights, toggling passes.
+  // Dev builds only.
+  if (__DEV__) (window as unknown as { __hyperion?: Hyperion }).__hyperion = engine;
 
   function resizeCanvas() {
     const dpr = window.devicePixelRatio || 1;

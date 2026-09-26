@@ -18,7 +18,7 @@ function emptyRenderState(overrides: Partial<GPURenderState> = {}): GPURenderSta
     listenerX: 0, listenerY: 0, listenerZ: 0,
     tickCount: 0,
     dirtyCount: 0, dirtyRatio: 0,
-    stagingData: null, dirtyIndices: null, dirtyBits: null,
+    stagingData: null, dirtyIndices: null,
     ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
     ...overrides,
   };
@@ -148,6 +148,11 @@ describe('LightingAPI — quality', () => {
     expect(t.api.quality).toEqual(DEFAULT_LIGHTING_QUALITY);
     expect(t.api.quality.sdfOversize).toBe(1.0);   // NOT Godot's 1.2 — see the doc comment
     expect(t.api.quality.deterministic).toBe(true);
+    // 48, not the 16-32 of the literature: at 24 a ray grazing a sprite's face
+    // spends its budget 1-2 texels at a time and leaks light behind a wall.
+    // Measured 2026-09-26 on the AMD iGPU: 48 removes every leaking pixel of
+    // the repro for +2% light-accum time (most rays end early anyway).
+    expect(t.api.quality.shadowSteps).toBe(48);
   });
 
   it('merges partial updates instead of replacing the whole object', () => {
@@ -191,5 +196,43 @@ describe('LightingAPI — before wiring', () => {
     expect(() => api.setAmbient('#fff')).not.toThrow();
     expect(api.backend).toBe('off');
     expect(api.ambient).toEqual([0, 0, 0, 1]);
+  });
+});
+
+// Light layers (design 2026-09-26): which layers share a light buffer and an
+// SDF is derived from the frame's state, so a stray lightLayers() call that
+// adds a whole SDF flood (~1.8 ms at 1080p on an iGPU) can be seen from code.
+describe('LightingAPI — groups (light layers)', () => {
+  const LIGHT = 6, RECV = 1 << 10;
+  const view = new Float32Array([0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+  function withState(rs: GPURenderState | null, viewProjection?: () => Float32Array) {
+    const sab = new SharedArrayBuffer(HEADER + 4096);
+    const producer = new BackpressuredProducer(new RingBufferProducer(sab));
+    const bridge = { get latestRenderState() { return rs; } } as unknown as EngineBridge;
+    const api = new LightingAPI();
+    api._init(producer, bridge, viewProjection);
+    return api;
+  }
+
+  it('is null before wiring, without a frame, or without a camera', () => {
+    expect(new LightingAPI().groups).toBeNull();
+    expect(withState(null, () => view).groups).toBeNull();
+    expect(withState(emptyRenderState(), undefined).groups).toBeNull();
+  });
+
+  it('reports the groups the renderer forms this frame', () => {
+    const renderMeta = new Uint32Array([
+      0, (LIGHT | (0b01 << 16)) >>> 0,
+      0, (LIGHT | (0b10 << 16)) >>> 0,
+      0, (RECV | (0b01 << 16)) >>> 0,
+      0, (RECV | (0b10 << 16)) >>> 0,
+    ]);
+    const bounds = new Float32Array(16).fill(0);
+    for (let i = 0; i < 4; i++) bounds[i * 4 + 3] = 1;
+    const api = withState(emptyRenderState({ entityCount: 4, renderMeta, bounds, primParams: new Float32Array(32) }), () => view);
+    const groups = api.groups!;
+    expect(groups.groups).toEqual([{ layers: 0b01, sdfSet: -1 }, { layers: 0b10, sdfSet: -1 }]);
+    expect(groups.lightMasks.sort()).toEqual([0b01, 0b10]);
   });
 });

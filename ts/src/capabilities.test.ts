@@ -5,6 +5,11 @@ import {
   detectCompressedFormat,
   detectSubgroupSupport,
   detectSizedBindingArrays,
+  describeAdapter,
+  selectDeviceFeatures,
+  retryDeviceFeatures,
+  indirectFirstInstanceWarning,
+  subgroupCullSupported,
   type Capabilities,
 } from "./capabilities";
 
@@ -181,5 +186,112 @@ describe("detectSizedBindingArrays", () => {
     const result = detectSizedBindingArrays(mockDevice);
     expect(result.supported).toBe(true);
     expect(result.maxSize).toBe(256);
+  });
+});
+
+describe("describeAdapter", () => {
+  function info(overrides: Partial<GPUAdapterInfo>): GPUAdapterInfo {
+    return {
+      vendor: "", architecture: "", device: "", description: "",
+      isFallbackAdapter: false, ...overrides,
+    } as GPUAdapterInfo;
+  }
+
+  it("names the adapter and its subgroup sizes", () => {
+    const d = describeAdapter(info({
+      vendor: "nvidia", architecture: "lovelace", subgroupMinSize: 32, subgroupMaxSize: 32,
+    }));
+    expect(d.fallback).toBe(false);
+    expect(d.message).toMatch(/nvidia \/ lovelace.*subgroups 32-32/);
+  });
+
+  it("flags a software fallback adapter: its timings and features are not the hardware's", () => {
+    // Chrome on Linux with only --enable-unsafe-webgpu hands out SwiftShader,
+    // and the engine used to accept it without a word.
+    const d = describeAdapter(info({ vendor: "google", architecture: "swiftshader", isFallbackAdapter: true }));
+    expect(d.fallback).toBe(true);
+    expect(d.message).toMatch(/software fallback/i);
+  });
+
+  it("an adapter without info is unknown, not assumed to be hardware or fallback", () => {
+    const d = describeAdapter(undefined);
+    expect(d.fallback).toBe(false);
+    expect(d.message).toMatch(/unknown/);
+  });
+});
+
+// cull-pass.ts gives every bucket but 0 a non-zero firstInstance (the offset of
+// its region in visible-indices). That is 23 of ForwardPass's 24 indirect
+// draws, plus 1 of SelectionSeedPass's 2 when outlines are on. Without the
+// 'indirect-first-instance' feature the spec turns each of those draws into a
+// no-op, with no validation error. Measured on an RTX 4060: 0 pixels without
+// the feature, drawn with it. Only bucket 0 (opaque tier-0 quads) survives,
+// so every other primitive type and every transparent entity vanishes silently.
+describe("selectDeviceFeatures", () => {
+  it("requests indirect-first-instance whenever the adapter offers it", () => {
+    const features = selectDeviceFeatures(new Set(["indirect-first-instance"]), null, false);
+    expect(features).toContain("indirect-first-instance");
+  });
+
+  it("does not request indirect-first-instance from an adapter without it", () => {
+    expect(selectDeviceFeatures(new Set(), null, false)).not.toContain("indirect-first-instance");
+  });
+
+  it("keeps requesting what it already did: compression, subgroups, timestamps", () => {
+    const adapter = new Set(["texture-compression-bc", "subgroups", "timestamp-query"]);
+    expect(selectDeviceFeatures(adapter, "bc7-rgba-unorm", true)).toEqual(
+      expect.arrayContaining(["texture-compression-bc", "subgroups", "timestamp-query"]),
+    );
+    expect(selectDeviceFeatures(new Set(["texture-compression-astc"]), "astc-4x4-unorm", false))
+      .toEqual(["texture-compression-astc"]);
+  });
+});
+
+describe("retryDeviceFeatures", () => {
+  it("drops only the features the engine runs without, and keeps indirect-first-instance", () => {
+    // Dropping it on the retry would turn a rejected feature request into a
+    // canvas that draws only quads, with nothing in the console to say why.
+    const retry = retryDeviceFeatures(
+      ["texture-compression-bc", "subgroups", "timestamp-query", "indirect-first-instance"] as GPUFeatureName[],
+    );
+    expect(retry).toEqual(["texture-compression-bc", "indirect-first-instance"]);
+  });
+});
+
+describe("indirectFirstInstanceWarning", () => {
+  it("is silent on a device that has the feature", () => {
+    expect(indirectFirstInstanceWarning(new Set(["indirect-first-instance"]))).toBeNull();
+  });
+
+  it("warns on a device without it, naming the feature and what goes missing", () => {
+    const warning = indirectFirstInstanceWarning(new Set());
+    expect(warning).toContain("indirect-first-instance");
+    expect(warning).toMatch(/only opaque/i);
+  });
+});
+
+// cull.wgsl's subgroup path derives the subgroup index as `lid / SUBGROUP_SIZE`
+// with SUBGROUP_SIZE = 32. On hardware whose subgroups are not exactly 32
+// lanes the per-bucket COUNTS stay right while the visible-indices get
+// corrupted: some entities drawn twice, others missing, no error anywhere.
+// Examples are AMD wave64 (RDNA reports 32-64), Intel (8-32), Qualcomm and
+// Mali. The path first ran after 6331b5c made the cull pipeline valid.
+describe("subgroupCullSupported", () => {
+  const info = (min?: number, max?: number) => ({ subgroupMinSize: min, subgroupMaxSize: max }) as unknown as GPUAdapterInfo;
+
+  it("allows the subgroup cull path when subgroups are exactly 32 lanes (NVIDIA, Apple)", () => {
+    expect(subgroupCullSupported(info(32, 32))).toBe(true);
+  });
+
+  it("refuses it when the size can vary or differs from 32", () => {
+    expect(subgroupCullSupported(info(32, 64))).toBe(false);   // AMD RDNA
+    expect(subgroupCullSupported(info(64, 64))).toBe(false);   // AMD GCN
+    expect(subgroupCullSupported(info(8, 32))).toBe(false);    // Intel
+    expect(subgroupCullSupported(info(16, 16))).toBe(false);   // Mali
+  });
+
+  it("refuses it when the adapter does not say", () => {
+    expect(subgroupCullSupported(undefined)).toBe(false);
+    expect(subgroupCullSupported(info())).toBe(false);
   });
 });

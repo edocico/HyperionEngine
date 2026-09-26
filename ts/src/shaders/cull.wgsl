@@ -1,11 +1,8 @@
-// GPU frustum culling compute shader with per-primitive-type grouping,
-// opaque/transparent split, and temporal culling coherence.
+// GPU frustum culling compute shader with per-primitive-type grouping and
+// opaque/transparent split.
 // Dispatched with ceil(totalEntities / 256) workgroups.
-// SoA layout: separate transforms, bounds, and renderMeta buffers.
-//
-// Temporal culling: entities that were visible last frame and haven't moved
-// (not dirty) skip the bounds read entirely — the main bandwidth saving.
-// A camera teleport sets the invalidate_all flag to force full re-cull.
+// Reads the bounds, renderMeta and texIndices SoA columns. The culling test
+// needs only the bounding sphere, never the transform.
 //
 // Pipeline override constants enable a subgroup-accelerated path.
 // When USE_SUBGROUPS is true, `enable subgroups;` must be prepended
@@ -16,8 +13,9 @@ override SUBGROUP_SIZE: u32 = 32u;
 override USE_SUBGROUP_ID: bool = false;
 
 // 7 = Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow, Light2D.
-// Light2D has no material sort and no transparent variant, so three of its four
-// buckets stay empty. Uniform waste, and the alternative — a variable bucket
+// Light2D is filed like any other type (bucket 1 for a tier > 0 texture, the
+// transparent half for bit 8); a plain light fills only slot 12, and
+// LightAccumStage draws all four. Uniform waste, and the alternative — a variable bucket
 // count per type — would break the `blendOff + primType * BUCKETS_PER_TYPE + bk`
 // indexing below and add a branch to the hot loop.
 const NUM_PRIM_TYPES: u32 = 7u;
@@ -30,7 +28,7 @@ struct CullUniforms {
     frustumPlanes: array<vec4f, 6>,
     totalEntities: u32,
     maxEntitiesPerType: u32,  // MAX_ENTITIES — region size per type
-    flags: u32,               // bit 0: invalidate_all (force full frustum test)
+    _pad0: u32,
     _pad1: u32,
 };
 
@@ -45,19 +43,13 @@ struct DrawIndirectArgs {
     firstInstance: u32,
 };
 
-// Group 0: existing SoA + indirect args
+// The only bind group: SoA columns + indirect args.
 @group(0) @binding(0) var<uniform> cull: CullUniforms;
-@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
-@group(0) @binding(2) var<storage, read> bounds: array<vec4f>;
-@group(0) @binding(3) var<storage, read_write> visibleIndices: array<u32>;
-@group(0) @binding(4) var<storage, read_write> drawArgs: array<DrawIndirectArgs, TOTAL_BUCKETS>;
-@group(0) @binding(5) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
-@group(0) @binding(6) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
-
-// Group 1: temporal culling buffers
-@group(1) @binding(0) var<storage, read> visibility_prev: array<u32>;
-@group(1) @binding(1) var<storage, read> dirty_bits: array<u32>;
-@group(1) @binding(2) var<storage, read_write> visibility_out: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read> bounds: array<vec4f>;
+@group(0) @binding(2) var<storage, read_write> visibleIndices: array<u32>;
+@group(0) @binding(3) var<storage, read_write> drawArgs: array<DrawIndirectArgs, TOTAL_BUCKETS>;
+@group(0) @binding(4) var<storage, read> renderMeta: array<u32>;  // 2 u32/entity: [mesh, prim|flags]
+@group(0) @binding(5) var<storage, read> texIndices: array<u32>;  // packed tex index per entity
 
 // Shared memory for subgroup prefix-sum compaction.
 // Reduces global atomics from TOTAL_BUCKETS × MAX_SUBGROUPS per workgroup to at
@@ -76,43 +68,24 @@ var<workgroup> wg_bases: array<u32, TOTAL_BUCKETS>;
 fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     let idx = gid.x;
 
-    // Frustum culling — with temporal coherence skip-bounds optimisation
+    // Frustum culling: a bounding sphere against the 6 planes, every frame.
     var visible = false;
     var primType = 0u;
     var bucket = 0u;  // 0 = tier0 compressed, 1 = other tiers
     var isTransparent = false;
     if (idx < cull.totalEntities) {
-        // Temporal culling: check if we can skip the bounds read
-        let word = idx / 32u;
-        let bit = idx % 32u;
-        let was_visible = (visibility_prev[word] >> bit) & 1u;
-        let is_dirty = (dirty_bits[word] >> bit) & 1u;
-        let invalidate_all = (cull.flags & 1u) != 0u;
+        let sphere = bounds[idx];
+        let center = sphere.xyz;
+        let radius = sphere.w;
 
-        if (invalidate_all || is_dirty == 1u || was_visible == 0u) {
-            // Full frustum test — entity moved, wasn't visible, or camera teleported
-            let sphere = bounds[idx];
-            let center = sphere.xyz;
-            let radius = sphere.w;
-
-            var vis = true;
-            for (var i = 0u; i < 6u; i = i + 1u) {
-                let plane = cull.frustumPlanes[i];
-                let dist = dot(plane.xyz, center) + plane.w;
-                if (dist < -radius) {
-                    vis = false;
-                    break;
-                }
+        visible = true;
+        for (var i = 0u; i < 6u; i = i + 1u) {
+            let plane = cull.frustumPlanes[i];
+            let dist = dot(plane.xyz, center) + plane.w;
+            if (dist < -radius) {
+                visible = false;
+                break;
             }
-            visible = vis;
-        } else {
-            // Skip bounds read — was visible + not dirty + no invalidation
-            visible = true;
-        }
-
-        // Write visibility result for next frame's temporal culling
-        if (visible) {
-            atomicOr(&visibility_out[word], 1u << bit);
         }
 
         if (visible) {
@@ -178,7 +151,7 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
         workgroupBarrier();
 
         // --- Phase 2: Cross-subgroup exclusive prefix sum + global reserve ---
-        // First 24 threads each handle one bucket: scan across subgroup totals,
+        // First TOTAL_BUCKETS (28) threads each handle one bucket: scan across subgroup totals,
         // write per-subgroup prefix sums, then one atomicAdd for the whole
         // workgroup's contribution to that bucket.
         if (lid < TOTAL_BUCKETS) {
@@ -218,8 +191,8 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     } else {
         // Original atomic path — one global atomic per visible entity
         if (visible) {
-            // Opaque slots: primType * 2 + bucket (indices 0-11)
-            // Transparent slots: 12 + primType * 2 + bucket (indices 12-23)
+            // Opaque slots: primType * 2 + bucket (indices 0-13)
+            // Transparent slots: OPAQUE_BUCKETS (14) + primType * 2 + bucket (indices 14-27)
             let blendOffset = select(0u, OPAQUE_BUCKETS, isTransparent);
             let argSlot = blendOffset + primType * BUCKETS_PER_TYPE + bucket;
             let slot = atomicAdd(&drawArgs[argSlot].instanceCount, 1u);

@@ -80,6 +80,81 @@ describe('RenderGraph', () => {
     expect(() => graph.compile()).toThrow(/multiple writers/i);
   });
 
+  describe('read-modify-write chains', () => {
+    // A pass that both reads and writes a resource layers on top of the
+    // previous writer's version — an overlay drawn with loadOp 'load' onto the
+    // swapchain. Two blind writes of one resource remain an error: the result
+    // would depend on which one happened to run last.
+
+    it('orders a read-modify-write pass after the blind writer it layers on', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('forward', [], ['scene-hdr']));
+      graph.addPass(mockPass('composite', ['scene-hdr'], ['swapchain']));
+      graph.addPass(mockPass('overlay', ['swapchain'], ['swapchain'], true));
+      expect(graph.compile()).toEqual(['forward', 'composite', 'overlay']);
+    });
+
+    it('chains several read-modify-write passes in registration order', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('composite', [], ['swapchain']));
+      graph.addPass(mockPass('overlay-b', ['swapchain'], ['swapchain']));
+      graph.addPass(mockPass('overlay-a', ['swapchain'], ['swapchain']));
+      expect(graph.compile()).toEqual(['composite', 'overlay-b', 'overlay-a']);
+    });
+
+    it('a reader outside the chain sees the final version and keeps the whole chain alive', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('base', [], ['mask'], true));
+      graph.addPass(mockPass('consumer', ['mask'], ['swapchain']));
+      graph.addPass(mockPass('stamp', ['mask'], ['mask'], true));
+      // consumer is registered before stamp but must read stamp's version;
+      // base is optional and only reachable through stamp.
+      expect(graph.compile()).toEqual(['base', 'stamp', 'consumer']);
+    });
+
+    it('still rejects a blind writer registered after a read-modify-write one', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('composite', [], ['swapchain']));
+      graph.addPass(mockPass('overlay', ['swapchain'], ['swapchain']));
+      graph.addPass(mockPass('bloom', ['scene-hdr'], ['swapchain']));
+      expect(() => graph.compile()).toThrow(/multiple writers/i);
+    });
+
+    it('a blind writer registered after a layering pass says to reorder, not to add a read', () => {
+      // Adding the read would make the composite link #2 of the chain: it
+      // would run AFTER the overlay and paint over it.
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('overlay', ['swapchain'], ['swapchain']));
+      graph.addPass(mockPass('composite', ['scene-hdr'], ['swapchain']));
+      expect(() => graph.compile()).toThrow(/register 'overlay' after 'composite'/);
+    });
+
+    it('a cycle error names the passes caught in it', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('free', [], ['x']));
+      graph.addPass(mockPass('a', ['b-out'], ['a-out']));
+      graph.addPass(mockPass('b', ['a-out'], ['b-out']));
+      expect(() => graph.compile()).toThrow(/cycle.*'a'.*'b'/);
+    });
+
+    it('a pass reading and writing a resource nobody wrote before is simply its first writer', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('overlay', ['swapchain'], ['swapchain']));
+      expect(graph.compile()).toEqual(['overlay']);
+    });
+  });
+
+  it('detachPass removes a pass without destroying it', () => {
+    const destroy = vi.fn();
+    const pass = { ...mockPass('overlay', ['swapchain'], ['swapchain']), destroy };
+    const graph = new RenderGraph();
+    graph.addPass(pass);
+    expect(graph.detachPass('overlay')).toBe(pass);
+    graph.destroy();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(graph.compile()).toEqual([]);
+  });
+
   describe('GPU profiler hook', () => {
     function mockDevice() {
       return {
@@ -124,6 +199,41 @@ describe('RenderGraph', () => {
       expect(profiler.mark).toHaveBeenCalledTimes(2);
       expect(profiler.endFrame).toHaveBeenCalledTimes(1);
       expect(profiler.poll).toHaveBeenCalledTimes(1);
+    });
+
+    // A pass that runs several stages of its own (LightGroupsPass: seed, sdf,
+    // accum per SDF set) names them for the frame and marks them itself, so the
+    // profiler reports each stage instead of one lump.
+    it('a staged pass marks its own stages, named pass/stage', () => {
+      const graph = new RenderGraph();
+      graph.addPass(mockPass('p0', [], ['a']));
+      const staged = mockPass('staged', ['a'], ['b']);
+      const execute = vi.fn((encoder: GPUCommandEncoder, _f: unknown, _r: unknown, mark?: (e: GPUCommandEncoder) => void) => {
+        mark?.(encoder); mark?.(encoder); mark?.(encoder);
+      });
+      Object.assign(staged, { profileStages: () => ['a', 'b', 'a'], execute });
+      graph.addPass(staged);
+      graph.addPass(mockPass('p2', ['b'], ['swapchain']));
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+
+      graph.render(mockDevice(), frame, resources);
+
+      expect(profiler.beginFrame).toHaveBeenCalledWith(['p0', 'staged/a', 'staged/b', 'staged/a', 'p2']);
+      // p0 and p2 by the graph, three stages by the pass itself: not one before it.
+      expect(profiler.mark).toHaveBeenCalledTimes(5);
+      expect(execute.mock.calls[0][3]).toBeTypeOf('function');
+    });
+
+    it('a staged pass gets no mark function when the frame is not measured', () => {
+      const graph = new RenderGraph();
+      const staged = mockPass('staged', [], ['swapchain']);
+      const execute = vi.fn();
+      Object.assign(staged, { profileStages: () => ['a'], execute });
+      graph.addPass(staged);
+      graph.setProfiler(fakeProfiler(false) as never);
+      graph.render(mockDevice(), frame, resources);
+      expect(execute.mock.calls[0][3]).toBeUndefined();
     });
 
     it('skips marking entirely when beginFrame declines the frame', () => {

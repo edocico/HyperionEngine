@@ -6,8 +6,8 @@ use glam::Mat4;
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, BoundsOverride, ModelMatrix, Parent, Position, PrimitiveParams,
-    RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D,
+    Active, BoundingRadius, BoundsOverride, LightFlags, LightType, ModelMatrix, Parent, Position,
+    PrimitiveParams, RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D,
 };
 
 #[cfg(feature = "physics-2d")]
@@ -94,6 +94,21 @@ pub fn count_active(world: &World) -> usize {
     world.query::<&Active>().iter().count()
 }
 
+/// Whether an entity's own pose is already in world space whatever its parent.
+///
+/// True for a physics body: `physics_sync_post` writes Rapier's WORLD pose into
+/// its Transform2D. Composing the parent on top of that drew the body away from
+/// its collider, which is what raycasts, events and the debug overlay use.
+#[cfg(feature = "physics-2d")]
+fn pose_is_world(world: &World, entity: hecs::Entity) -> bool {
+    world.get::<&PhysicsControlled>(entity).is_ok()
+}
+
+#[cfg(not(feature = "physics-2d"))]
+fn pose_is_world(_world: &World, _entity: hecs::Entity) -> bool {
+    false
+}
+
 /// Propagate parent transforms down the scene graph, at any depth.
 ///
 /// `transform_system` / `transform_system_2d` leave each entity's **local**
@@ -118,12 +133,15 @@ pub fn propagate_transforms(world: &mut World, ext_to_entity: &HashMap<u32, hecs
     use crate::command_processor::MAX_HIERARCHY_DEPTH;
 
     // Pass 1 — snapshot every parented entity's local matrix and its parent.
+    // A physics body is left out: its pose is already a world pose (see
+    // `pose_is_world`), so it propagates like a root. Its own children still
+    // compose on top of it.
     let mut locals: HashMap<hecs::Entity, ([f32; 16], u32)> = HashMap::new();
     for (entity, parent_comp, matrix, _active) in world
         .query::<(hecs::Entity, &Parent, &ModelMatrix, &Active)>()
         .iter()
     {
-        if parent_comp.0 != u32::MAX {
+        if parent_comp.0 != u32::MAX && !pose_is_world(world, entity) {
             locals.insert(entity, (matrix.0, parent_comp.0));
         }
     }
@@ -221,16 +239,26 @@ pub fn update_bounding_radii(world: &mut World) {
     //
     // `BoundsOverride` still wins — `SetBoundingRadius` is the documented way
     // to pin a radius, and a light is no exception.
-    for (prim, params, radius, _active) in world.query_mut::<hecs::Without<
+    //
+    // Global and directional lights light the whole screen, wherever their
+    // transform is, so they get a radius no frustum plane can cull: f32::MAX,
+    // finite so the snapshot and `state_hash` never see an infinity.
+    for (prim, params, radius, _active, flags) in world.query_mut::<hecs::Without<
         (
             &RenderPrimitive,
             &PrimitiveParams,
             &mut BoundingRadius,
             &Active,
+            Option<&LightFlags>,
         ),
         &BoundsOverride,
     >>() {
         if prim.0 != PRIM_TYPE_LIGHT2D {
+            continue;
+        }
+        let kind = flags.map_or(LightType::Point as u8, |f| f.light_type_raw());
+        if kind == LightType::Global as u8 || kind == LightType::Directional as u8 {
+            radius.0 = f32::MAX;
             continue;
         }
         // A light's transform scale does NOT affect its culling radius: a
@@ -597,6 +625,37 @@ mod tests {
             let r = world.get::<&BoundingRadius>(e).unwrap().0;
             assert_eq!(r, 0.0, "range {bad} must collapse to 0, got {r}");
             assert!(r.is_finite());
+        }
+    }
+
+    #[test]
+    fn global_and_directional_lights_are_never_culled() {
+        // They light the whole screen (light-accum.wgsl draws them full-screen),
+        // so wherever their transform sits they must pass the sphere-frustum
+        // test. f32::MAX, not infinity: finite values keep state_hash and the
+        // snapshot free of non-finite floats, and `dist < -radius` still holds
+        // for every finite distance.
+        for kind in [LightType::Directional, LightType::Global] {
+            let mut world = World::new();
+            let e = spawn_light(&mut world, 50.0, 1.0);
+            world
+                .insert_one(e, LightFlags::new(kind, LightBlendMode::Add, 1))
+                .unwrap();
+            update_bounding_radii(&mut world);
+            assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, f32::MAX, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn point_spot_and_sprite_lights_keep_their_range() {
+        for kind in [LightType::Point, LightType::Spot, LightType::Sprite] {
+            let mut world = World::new();
+            let e = spawn_light(&mut world, 50.0, 1.0);
+            world
+                .insert_one(e, LightFlags::new(kind, LightBlendMode::Add, 1))
+                .unwrap();
+            update_bounding_radii(&mut world);
+            assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 50.0, "{kind:?}");
         }
     }
 

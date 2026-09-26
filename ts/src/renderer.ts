@@ -15,6 +15,8 @@ import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import scatterShaderCode from './shaders/scatter.wgsl?raw';
 import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
+import sdfJfaShaderCode from './shaders/sdf-jfa.wgsl?raw';
+import lightAccumShaderCode from './shaders/light-accum.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
@@ -29,10 +31,22 @@ import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
+import { LightGroupsPass } from './render/passes/light-groups-pass';
+import { SdfChainStage } from './render/passes/sdf-chain-stage';
+import { LightAccumStage } from './render/passes/light-accum-stage';
+import { deriveLightGroups } from './render/light-groups';
+import { followLightingBackend, unsupportedLightingQuality } from './render/lighting-backend';
+import { DEFAULT_LIGHTING_QUALITY, type LightingQuality } from './lighting-api';
 import { SelectionManager } from './selection';
-import { detectCompressedFormat, detectSubgroupSupport } from './capabilities';
-import { ParticleSystem } from './particle-system';
-import type { FrameState } from './render/render-pass';
+import {
+  detectCompressedFormat, detectSubgroupSupport, describeAdapter,
+  selectDeviceFeatures, retryDeviceFeatures, indirectFirstInstanceWarning, subgroupCullSupported,
+} from './capabilities';
+import { ParticleSystem, type ParticlePipelines } from './particle-system';
+import type { FrameState, RenderPass } from './render/render-pass';
+import type { GraphMode, GraphPassFactories } from './render/graph-assembly';
+import { RenderGraphHost, createGpuValidation } from './render/graph-host';
+import { GraphRequests, type ShaderSlot } from './render/graph-requests';
 import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
@@ -57,12 +71,53 @@ export interface Renderer {
   readonly particleSystem: ParticleSystem;
   readonly graph: RenderGraph;
   readonly device: GPUDevice;
+  /**
+   * Add a pass the caller owns (a plugin overlay). The renderer runs its
+   * `setup()` once, carries it over every graph rebuild (outline/bloom
+   * toggle, shader hot-reload) and never destroys it.
+   *
+   * Validated immediately against the graph of EVERY mode (fxaa-tonemap,
+   * outlines, bloom): a duplicate name or a second blind writer of a resource
+   * in any of them throws here and adds nothing. The pass then joins the
+   * graph only once the GPU has validated its `setup()` — a frame or two
+   * later; if the GPU reports errors it is never added, and they are logged.
+   * Every add runs `setup()`, so re-adding a removed pass without destroying
+   * it first allocates twice.
+   * To draw on top of the graph's output, declare 'swapchain' in both
+   * `reads` and `writes`. GPU particles are composited after the whole
+   * graph, so they still draw over overlays.
+   */
+  addPass(pass: RenderPass): void;
+  /**
+   * Detach a pass added with {@link addPass}, WITHOUT destroying it — its
+   * owner does that. Names of the renderer's own passes are ignored.
+   */
+  removePass(name: string): void;
+  /**
+   * Mode switches (and shader hot-reloads) take effect once the GPU has
+   * validated the new graph — a frame or two later. Until then the previous
+   * graph keeps drawing; `outlinesEnabled` / `bloomEnabled` report the
+   * requested mode at once and fall back if the GPU rejects it (the error is
+   * logged). A graph that does not compile throws synchronously instead.
+   */
   enableOutlines(options: OutlineOptions): void;
   disableOutlines(): void;
   readonly outlinesEnabled: boolean;
   enableBloom(config?: BloomConfig): void;
   disableBloom(): void;
   readonly bloomEnabled: boolean;
+  /**
+   * Whether the lit graph is requested. It follows the engine's lighting
+   * backend (`LightingAPI.setBackend`, read back from `GPURenderState`) and,
+   * like bloom, goes live once the GPU has validated it.
+   */
+  readonly lightingEnabled: boolean;
+  /**
+   * Lighting quality (`LightingAPI.setQuality`). `shadowSteps` applies from
+   * the next frame. `bufferScale` and `sdfOversize` are fixed at their
+   * defaults for now; a different value is reported once.
+   */
+  setLightingQuality(quality: LightingQuality): void;
   recompileShader(passName: string, shaderCode: string): void;
 
   /**
@@ -73,11 +128,14 @@ export interface Renderer {
   /**
    * Start measuring per-pass GPU time. Returns false when unsupported.
    * Read the numbers with {@link getGpuTimings}; quote `averageMs`, not
-   * `lastMs`, because Chrome quantizes timestamps to 100us by default.
+   * `lastMs`: Chrome may quantize timestamps (see render/gpu-profiler.ts).
    */
   enableGpuProfiling(): boolean;
   disableGpuProfiling(): void;
-  /** Per-pass GPU timings. Empty when profiling is off or still warming up. */
+  /**
+   * Per-pass (and per-stage) GPU timings over the last 120 resolved frames.
+   * Empty when profiling is off or still warming up.
+   */
   getGpuTimings(): PassTiming[];
 
   destroy(): void;
@@ -91,6 +149,9 @@ export async function createRenderer(
   // --- 1. Initialize WebGPU ---
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
+  const adapterDescription = describeAdapter(adapter.info);
+  if (adapterDescription.fallback) console.warn(adapterDescription.message);
+  else console.info(adapterDescription.message);
 
   // Detect compression support from adapter
   const compressedFormat = detectCompressedFormat(adapter.features);
@@ -98,17 +159,7 @@ export async function createRenderer(
   // Detect subgroup support from adapter
   const subgroupSupport = detectSubgroupSupport(adapter.features);
 
-  // Request device with compression + subgroups features if available
-  const requiredFeatures: GPUFeatureName[] = [];
-  if (compressedFormat === 'bc7-rgba-unorm') requiredFeatures.push('texture-compression-bc');
-  else if (compressedFormat === 'astc-4x4-unorm') requiredFeatures.push('texture-compression-astc');
-  if (subgroupSupport.supported) requiredFeatures.push('subgroups' as GPUFeatureName);
-
-  // GPU timing. Optional everywhere: absent on some mobile drivers, and the
-  // device request must still succeed without it. Chrome quantizes the
-  // timestamps it returns to 100us unless started with
-  // --enable-webgpu-developer-features — see render/gpu-profiler.ts.
-  if (adapter.features.has('timestamp-query')) requiredFeatures.push('timestamp-query');
+  const requiredFeatures = selectDeviceFeatures(adapter.features, compressedFormat, subgroupSupport.supported);
 
   let device: GPUDevice;
   let useSubgroups = subgroupSupport.supported;
@@ -117,12 +168,9 @@ export async function createRenderer(
       requiredFeatures: requiredFeatures.length > 0 ? requiredFeatures : undefined,
     });
   } catch {
-    // Feature request failed — retry with only the texture-compression
-    // features, which are the ones the asset pipeline actually depends on.
+    // Feature request failed — retry without the features the engine can do without.
     useSubgroups = false;
-    const fallbackFeatures = requiredFeatures.filter(
-      f => f !== ('subgroups' as GPUFeatureName) && f !== 'timestamp-query',
-    );
+    const fallbackFeatures = retryDeviceFeatures(requiredFeatures);
     device = await adapter.requestDevice({
       requiredFeatures: fallbackFeatures.length > 0 ? fallbackFeatures : undefined,
     });
@@ -135,6 +183,16 @@ export async function createRenderer(
   // `createQuerySet({ type: 'timestamp' })` fails inside createRenderer — the
   // whole renderer goes down, not just profiling.
   const timestampSupported = GpuProfiler.isSupported(device.features);
+
+  const firstInstanceWarning = indirectFirstInstanceWarning(device.features);
+  if (firstInstanceWarning) console.warn(firstInstanceWarning);
+
+  // `useSubgroups` drives only the cull shader, whose subgroup path is correct
+  // only at exactly 32 lanes. The device keeps the feature either way.
+  if (useSubgroups && !subgroupCullSupported(adapter.info)) {
+    useSubgroups = false;
+    console.info('[Hyperion] Cull: atomic path (the subgroup path needs subgroups of exactly 32 lanes)');
+  }
 
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);
@@ -195,14 +253,16 @@ export async function createRenderer(
   resources.setBuffer('selection-mask', selectionMaskBuffer);
 
   // --- 4. Populate texture views + sampler in ResourcePool ---
-  resources.setTextureView('tier0', textureManager.getTierView(0));
-  resources.setTextureView('tier1', textureManager.getTierView(1));
-  resources.setTextureView('tier2', textureManager.getTierView(2));
-  resources.setTextureView('tier3', textureManager.getTierView(3));
-  resources.setTextureView('ovf0', textureManager.getOverflowTierView(0));
-  resources.setTextureView('ovf1', textureManager.getOverflowTierView(1));
-  resources.setTextureView('ovf2', textureManager.getOverflowTierView(2));
-  resources.setTextureView('ovf3', textureManager.getOverflowTierView(3));
+  // A tier that grows replaces its view and destroys the old texture, so the
+  // pool is refreshed on every growth; ForwardPass rebinds when it sees it.
+  const registerTextureViews = (): void => {
+    for (let tier = 0; tier < 4; tier++) {
+      resources.setTextureView(`tier${tier}`, textureManager.getTierView(tier));
+      resources.setTextureView(`ovf${tier}`, textureManager.getOverflowTierView(tier));
+    }
+  };
+  registerTextureViews();
+  textureManager.onViewsChanged = registerTextureViews;
   resources.setSampler('texSampler', textureManager.getSampler());
 
   // --- 5. Create intermediate scene-hdr texture for post-processing ---
@@ -235,46 +295,31 @@ export async function createRenderer(
   JFAPass.SHADER_SOURCE = jfaShaderCode;
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
   LineBatchPass.SHADER_SOURCE = debugLineShaderCode;
+  SdfChainStage.SHADER_SOURCE = sdfJfaShaderCode;
+  LightAccumStage.SHADER_SOURCE = lightAccumShaderCode;
 
-  const cullPass = new CullPass();
-  const forwardPass = new ForwardPass();
-  const fxaaPass = new FXAATonemapPass();
   CullPass.SUBGROUP_CONFIG = {
     useSubgroups,
-    subgroupSize: 32,  // TODO: query actual subgroup size from adapter if API available
+    subgroupSize: 32,  // the only width the subgroup path supports: see subgroupCullSupported
     useSubgroupId: useSubgroups && subgroupSupport.hasSubgroupId,
   };
-  cullPass.setup(device, resources);
-  forwardPass.setup(device, resources);
-  fxaaPass.setup(device, resources);
 
-  // --- 6b. Create ScatterPass for partial GPU upload ---
+  // --- 6b. ScatterPass for partial GPU upload (created with the graph, step 8c) ---
   ScatterPass.SHADER_SOURCE = scatterShaderCode;
-  let scatterPass: ScatterPass | null = new ScatterPass();
-  scatterPass.setup(device, resources);
+  let scatterPass: ScatterPass | null = null;
   const resolvedScatterThreshold = scatterThreshold ?? 0.3;
 
-  // --- 6c. Create RadixSortPass for transparent entity ordering ---
+  // --- 6c. RadixSortPass for transparent entity ordering (created with the graph) ---
   RadixSortPass.SHADER_SOURCE = radixSortShaderCode;
-  let radixSortPass: RadixSortPass | null = new RadixSortPass();
-  radixSortPass.setup(device, resources);
 
-  // --- 7. Build the RenderGraph (base pipeline, no outlines) ---
+  // --- 7. GPU profiler state ---
   // Constructed on the first enableGpuProfiling(), never here, so that the
   // "costs nothing when off" claim in gpu-profiler.ts holds literally: until
   // someone asks for timings there is no query set and no readback buffer.
-  // Once built it is re-attached on every rebuildGraph(), so its rolling
+  // Once built it is re-attached on every graph swap (onSwap), so its rolling
   // averages survive outline/bloom toggles and shader hot-reloads.
   let gpuProfiler: GpuProfiler | null = null;
   let gpuProfilingEnabled = false;
-
-  let graph = new RenderGraph();
-  if (scatterPass) graph.addPass(scatterPass);
-  graph.addPass(cullPass);
-  if (radixSortPass) graph.addPass(radixSortPass);
-  graph.addPass(forwardPass);
-  graph.addPass(fxaaPass);
-  graph.compile();
 
   // --- 7b. Create GPU particle system (standalone, outside RenderGraph) ---
   let currentParticleSimSrc = particleSimulateCode;
@@ -283,13 +328,11 @@ export async function createRenderer(
   particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
 
   // --- 8a. Bloom state ---
-  let bloomActive = false;
   let bloomHalfTexture: GPUTexture | null = null;
   let bloomQuarterTexture: GPUTexture | null = null;
   let bloomEighthTexture: GPUTexture | null = null;
   let bloomTexWidth = 0;
   let bloomTexHeight = 0;
-  let currentBloomConfig: BloomConfig | undefined;
 
   BloomPass.SHADER_SOURCE = bloomShaderCode;
 
@@ -336,10 +379,8 @@ export async function createRenderer(
   }
 
   // --- 8b. JFA outline state ---
-  let outlinesActive = false;
   let outlineCompositePass: OutlineCompositePass | null = null;
   let jfaPasses: JFAPass[] = [];
-  let selectionSeedPass: SelectionSeedPass | null = null;
   let jfaTextureA: GPUTexture | null = null;
   let jfaTextureB: GPUTexture | null = null;
   let jfaTexWidth = 0;
@@ -348,7 +389,11 @@ export async function createRenderer(
   /**
    * Create or recreate the JFA ping-pong textures to match the canvas size.
    */
-  function ensureJFATextures(width: number, height: number): void {
+  function ensureJFATextures(requestedWidth: number, requestedHeight: number): void {
+    // A 0x0 canvas (hidden, not laid out yet) must not fail createTexture:
+    // inside a graph build that error would be blamed on the outline shaders.
+    const width = Math.max(1, requestedWidth);
+    const height = Math.max(1, requestedHeight);
     if (jfaTextureA && jfaTexWidth === width && jfaTexHeight === height) return;
     jfaTextureA?.destroy();
     jfaTextureB?.destroy();
@@ -382,90 +427,248 @@ export async function createRenderer(
     }
   }
 
-  /**
-   * Rebuild the render graph to include or exclude the outline/bloom pipelines.
-   * Bloom and outlines are mutually exclusive (both write to swapchain,
-   * dead-culling FXAATonemapPass).
-   */
-  function rebuildGraph(withOutlines: boolean, options?: OutlineOptions): void {
-    graph.destroy();
-    jfaPasses = [];
-    selectionSeedPass = null;
-    outlineCompositePass = null;
+  // --- 8b'. Lighting state ---
+  // LightGroupsPass owns its textures (seed, SDF ping-pong, the light-buffer
+  // array) and sizes them every frame: nothing to allocate here.
+  let lightingQuality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
+  const reportedQuality = new Set<keyof LightingQuality>();
+  let warnedMultiBitReceiver = false;
 
-    // Recreate base passes
-    const newCullPass = new CullPass();
-    const newForwardPass = new ForwardPass();
-    newCullPass.setup(device, resources);
-    newForwardPass.setup(device, resources);
+  // --- 8c. RenderGraph ---
+  // RenderGraphHost owns the graph: a new one goes live only once the GPU has
+  // validated it, and plugin overlays are validated against every mode
+  // (graph-host.ts). GraphRequests owns what the caller asked for and shader
+  // hot-reload (graph-requests.ts).
+  const BASE_MODE: GraphMode = { outlines: false, bloom: false, lighting: false };
+  const gpuValidation = createGpuValidation(device);
+  let bloomPass: BloomPass | null = null;
+  // Read by onSwap, which first runs inside the RenderGraphHost constructor —
+  // before this is assigned.
+  let graphRequests: GraphRequests<OutlineOptions, BloomConfig> | undefined;
 
-    // Recreate ScatterPass
-    scatterPass = new ScatterPass();
-    scatterPass.setup(device, resources);
-
-    // Recreate RadixSortPass
-    radixSortPass = new RadixSortPass();
-    radixSortPass.setup(device, resources);
-
-    graph = new RenderGraph();
-    if (scatterPass) graph.addPass(scatterPass);
-    graph.addPass(newCullPass);
-    if (radixSortPass) graph.addPass(radixSortPass);
-    graph.addPass(newForwardPass);
-
-    if (withOutlines) {
-      // Determine JFA iteration count based on canvas size
+  /** Constructs the passes of one graph. No GPU work: see GraphPassFactories. */
+  const graphFactories: GraphPassFactories = {
+    scene: (mode) => [new ScatterPass(), new CullPass(), new RadixSortPass(), new ForwardPass({ lit: mode.lighting })],
+    outline() {
       const maxDim = Math.max(canvas.width, canvas.height);
-      const numIterations = JFAPass.iterationsForDimension(maxDim);
-
-      // Ensure JFA textures exist
-      ensureJFATextures(canvas.width, canvas.height);
-      updateJFATextureViews(numIterations);
-
-      // SelectionSeedPass
-      selectionSeedPass = new SelectionSeedPass();
-      selectionSeedPass.setup(device, resources);
-      graph.addPass(selectionSeedPass);
-
-      // JFA iterations
-      for (let i = 0; i < numIterations; i++) {
-        const jfaPass = new JFAPass(i, numIterations, maxDim);
-        jfaPass.setup(device, resources);
-        jfaPasses.push(jfaPass);
-        graph.addPass(jfaPass);
-      }
-
-      // OutlineCompositePass writes to swapchain, dead-culling FXAATonemapPass
-      const jfaResultResource = JFAPass.finalOutputResource(numIterations);
-      outlineCompositePass = new OutlineCompositePass(jfaResultResource);
+      const n = JFAPass.iterationsForDimension(maxDim);
+      const composite = new OutlineCompositePass(JFAPass.finalOutputResource(n));
+      const options = graphRequests?.requested.outlineOptions;
       if (options) {
-        outlineCompositePass.outlineColor = options.color;
-        outlineCompositePass.outlineWidth = options.width;
+        composite.outlineColor = options.color;
+        composite.outlineWidth = options.width;
       }
-      outlineCompositePass.setup(device, resources);
-      graph.addPass(outlineCompositePass);
-    } else if (bloomActive) {
-      // Bloom writes to swapchain, dead-culling FXAATonemapPass
+      return [
+        new SelectionSeedPass(),
+        ...Array.from({ length: n }, (_, i) => new JFAPass(i, n, maxDim)),
+        composite,
+      ];
+    },
+    bloom: () => new BloomPass(graphRequests?.requested.bloomConfig),
+    fxaaTonemap: () => new FXAATonemapPass(),
+    // Seed, SDF and accumulation of every light group, in one node. The
+    // primitives' own modules cast shadows, through fs_occluder.
+    lighting: () => [new LightGroupsPass(ForwardPass.SHADER_SOURCES)],
+  };
+
+  /** GPU textures a mode's passes read by name, sized to the canvas. */
+  function prepareMode(mode: GraphMode, jfaIterations?: number): void {
+    if (mode.outlines) {
+      ensureJFATextures(canvas.width, canvas.height);
+      updateJFATextureViews(
+        jfaIterations ?? JFAPass.iterationsForDimension(Math.max(canvas.width, canvas.height)),
+      );
+    } else if (mode.bloom) {
       ensureBloomTextures(canvas.width, canvas.height);
-      const bloomPass = new BloomPass(currentBloomConfig);
-      bloomPass.setup(device, resources);
-      graph.addPass(bloomPass);
     }
+  }
 
-    // FXAATonemapPass is always added; when outlines or bloom are active it gets
-    // dead-pass culled because OutlineCompositePass/BloomPass writes to swapchain.
-    const newFxaaPass = new FXAATonemapPass();
-    newFxaaPass.setup(device, resources);
-    graph.addPass(newFxaaPass);
+  const host = new RenderGraphHost({
+    factories: graphFactories,
+    setup: (pass) => pass.setup(device, resources),
+    prepare: (mode) => prepareMode(mode),
+    validation: gpuValidation,
+    onSwap(graph, owned, mode) {
+      scatterPass = owned.find((p): p is ScatterPass => p instanceof ScatterPass) ?? null;
+      jfaPasses = owned.filter((p): p is JFAPass => p instanceof JFAPass);
+      outlineCompositePass =
+        owned.find((p): p is OutlineCompositePass => p instanceof OutlineCompositePass) ?? null;
+      bloomPass = owned.find((p): p is BloomPass => p instanceof BloomPass) ?? null;
+      // Options set while this graph was pending went to the old live pass.
+      const wanted = graphRequests?.requested;
+      if (wanted?.outlineOptions && outlineCompositePass) {
+        outlineCompositePass.outlineColor = wanted.outlineOptions.color;
+        outlineCompositePass.outlineWidth = wanted.outlineOptions.width;
+      }
+      if (wanted && bloomPass) bloomPass.configure(wanted.bloomConfig);
+      // The canvas may have been resized while this graph was pending, and
+      // the resize branch in render() only handles the live graph's mode.
+      prepareMode(mode, jfaPasses.length);
+      // The graph object is new; re-attach the profiler and drop the history,
+      // which measured a different set of passes.
+      if (gpuProfilingEnabled && gpuProfiler) {
+        graph.setProfiler(gpuProfiler);
+        gpuProfiler.reset();
+      }
+    },
+    onError: (message) => console.error(message),
+  }, BASE_MODE);
 
-    graph.compile();
-
-    // The graph object is new; re-attach the profiler and drop the history,
-    // which measured a different set of passes.
-    if (gpuProfilingEnabled && gpuProfiler) {
-      graph.setProfiler(gpuProfiler);
-      gpuProfiler.reset();
+  /** Set up, then destroy, throwaway passes: compiles their shaders and pipelines on this device. */
+  const probe = (make: () => RenderPass | RenderPass[]) => (): void => {
+    const passes = [make()].flat();
+    try {
+      for (const pass of passes) pass.setup(device, resources);
+    } finally {
+      for (const pass of passes) pass.destroy();
     }
+  };
+  const inEveryMode = (): boolean => true;
+  const inBaseMode = (m: GraphMode): boolean => !m.outlines && !m.bloom;
+  const inOutlineMode = (m: GraphMode): boolean => m.outlines;
+  const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
+  const inLightingMode = (m: GraphMode): boolean => m.lighting;
+  // A primitive module has two users: ForwardPass (fs_main, three groups) and
+  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups). The
+  // probe compiles both, so an edit that breaks only the occluder entry point
+  // is caught here too.
+  const forwardSlot = (i: number): ShaderSlot => ({
+    read: () => ForwardPass.SHADER_SOURCES[i],
+    write: (src) => { ForwardPass.SHADER_SOURCES[i] = src; },
+    probe: probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]),
+    usedBy: inEveryMode,
+  });
+  const shaderSlots: Record<string, ShaderSlot> = {
+    cull: {
+      read: () => CullPass.SHADER_SOURCE,
+      write: (src) => { CullPass.SHADER_SOURCE = src; },
+      prepare: (src) => prepareShaderSource(src, useSubgroups, useSubgroups && subgroupSupport.hasSubgroupId),
+      probe: probe(() => new CullPass()),
+      usedBy: inEveryMode,
+    },
+    basic: forwardSlot(0),
+    quad: forwardSlot(0),
+    line: forwardSlot(1),
+    'msdf-text': forwardSlot(2),
+    bezier: forwardSlot(3),
+    gradient: forwardSlot(4),
+    'box-shadow': forwardSlot(5),
+    scatter: {
+      read: () => ScatterPass.SHADER_SOURCE,
+      write: (src) => { ScatterPass.SHADER_SOURCE = src; },
+      probe: probe(() => new ScatterPass()),
+      usedBy: inEveryMode,
+    },
+    'radix-sort': {
+      read: () => RadixSortPass.SHADER_SOURCE,
+      write: (src) => { RadixSortPass.SHADER_SOURCE = src; },
+      probe: probe(() => new RadixSortPass()),
+      usedBy: inEveryMode,
+    },
+    'fxaa-tonemap': {
+      read: () => FXAATonemapPass.SHADER_SOURCE,
+      write: (src) => { FXAATonemapPass.SHADER_SOURCE = src; },
+      probe: probe(() => new FXAATonemapPass()),
+      usedBy: inBaseMode,
+    },
+    'selection-seed': {
+      read: () => SelectionSeedPass.SHADER_SOURCE,
+      write: (src) => { SelectionSeedPass.SHADER_SOURCE = src; },
+      probe: probe(() => new SelectionSeedPass()),
+      usedBy: inOutlineMode,
+    },
+    jfa: {
+      read: () => JFAPass.SHADER_SOURCE,
+      write: (src) => { JFAPass.SHADER_SOURCE = src; },
+      probe: probe(() => new JFAPass(0, 1, 1)),
+      usedBy: inOutlineMode,
+    },
+    'outline-composite': {
+      read: () => OutlineCompositePass.SHADER_SOURCE,
+      write: (src) => { OutlineCompositePass.SHADER_SOURCE = src; },
+      probe: probe(() => new OutlineCompositePass(JFAPass.finalOutputResource(1))),
+      usedBy: inOutlineMode,
+    },
+    bloom: {
+      read: () => BloomPass.SHADER_SOURCE,
+      write: (src) => { BloomPass.SHADER_SOURCE = src; },
+      probe: probe(() => new BloomPass()),
+      usedBy: inBloomMode,
+    },
+    // LightGroupsPass's setup compiles every stage: both SDF pipelines
+    // (LOAD_PASS on and off), the accumulation and the occluder pipelines.
+    'sdf-jfa': {
+      read: () => SdfChainStage.SHADER_SOURCE,
+      write: (src) => { SdfChainStage.SHADER_SOURCE = src; },
+      probe: probe(() => new LightGroupsPass(ForwardPass.SHADER_SOURCES)),
+      usedBy: inLightingMode,
+    },
+    'light-accum': {
+      read: () => LightAccumStage.SHADER_SOURCE,
+      write: (src) => { LightAccumStage.SHADER_SOURCE = src; },
+      probe: probe(() => new LightGroupsPass(ForwardPass.SHADER_SOURCES)),
+      usedBy: inLightingMode,
+    },
+  };
+
+  const requests = new GraphRequests<OutlineOptions, BloomConfig>({
+    host,
+    validation: gpuValidation,
+    slots: shaderSlots,
+    applyOutlineOptions(options) {
+      if (!outlineCompositePass) return;
+      outlineCompositePass.outlineColor = options.color;
+      outlineCompositePass.outlineWidth = options.width;
+    },
+    applyBloomConfig: (config) => bloomPass?.configure(config),
+    log: console,
+  });
+  graphRequests = requests;
+
+  // The lighting backend lives in WASM and arrives with every frame's state.
+  // A throw here would escape render() and stop the RAF loop for good.
+  const followBackend = followLightingBackend((lit) => {
+    try {
+      requests.setLighting(lit);
+    } catch (err) {
+      console.error(`[Hyperion] Lighting could not be ${lit ? 'enabled' : 'disabled'}:`, err);
+    }
+  }, (message) => console.warn(message));
+
+  /**
+   * Particles live outside the RenderGraph. Same rule as GraphRequests: each
+   * stage's new pipelines are built into locals, validated by the GPU, and
+   * installed (rebinding every emitter) only on a clean verdict — the ones in
+   * use are never replaced by something that has not compiled.
+   */
+  const particleReloads = { simulate: 0, render: 0 };
+  function reloadParticleShader(stage: 'simulate' | 'render', code: string): void {
+    let built: Partial<ParticlePipelines> = {};
+    let verdict: Promise<string[]>;
+    try {
+      verdict = gpuValidation.run(() => {
+        built = stage === 'simulate'
+          ? particleSystem.buildSimulate(code)
+          : particleSystem.buildRender(code, format);
+      });
+    } catch (err) {
+      console.error(`[Hyperion] Shader "particle-${stage}" did not compile — keeping the previous source:`, err);
+      return;
+    }
+    const version = ++particleReloads[stage];
+    void verdict.then((messages) => {
+      if (version !== particleReloads[stage]) return; // a newer reload of this stage owns it
+      if (messages.length > 0) {
+        console.error(
+          `[Hyperion] Shader "particle-${stage}" rejected by the GPU — keeping the previous source:\n${messages.join('\n')}`,
+        );
+        return;
+      }
+      particleSystem.installPipelines(built);
+      if (stage === 'simulate') currentParticleSimSrc = code;
+      else currentParticleRenderSrc = code;
+      console.log(`[Hyperion] Shader "particle-${stage}" hot-reloaded`);
+    });
   }
 
   // --- 9. Build the Renderer object ---
@@ -474,137 +677,78 @@ export async function createRenderer(
     selectionManager,
     particleSystem,
 
-    get graph() { return graph; },
+    get graph() { return host.graph; },
     get device() { return device; },
 
+    addPass(pass: RenderPass): void {
+      host.addExternal(pass);
+    },
+
+    removePass(name: string): void {
+      host.removeExternal(name);
+    },
+
     get outlinesEnabled(): boolean {
-      return outlinesActive;
+      return requests.requested.mode.outlines;
     },
 
     enableOutlines(options: OutlineOptions): void {
-      if (outlinesActive && outlineCompositePass) {
-        // Just update parameters without rebuilding
-        outlineCompositePass.outlineColor = options.color;
-        outlineCompositePass.outlineWidth = options.width;
-        return;
-      }
-      if (bloomActive) {
-        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling bloom.');
-        bloomActive = false;
-        currentBloomConfig = undefined;
-      }
-      outlinesActive = true;
-      rebuildGraph(true, options);
+      requests.enableOutlines(options);
     },
 
     disableOutlines(): void {
-      if (!outlinesActive) return;
-      outlinesActive = false;
-      rebuildGraph(false);
+      requests.disableOutlines();
     },
 
     get bloomEnabled(): boolean {
-      return bloomActive;
+      return requests.requested.mode.bloom;
+    },
+
+    get lightingEnabled(): boolean {
+      return requests.requested.mode.lighting;
+    },
+
+    setLightingQuality(quality: LightingQuality): void {
+      lightingQuality = { ...quality };
+      const fresh = unsupportedLightingQuality(quality).filter((key) => !reportedQuality.has(key));
+      if (fresh.length > 0) {
+        for (const key of fresh) reportedQuality.add(key);
+        console.warn(
+          `[Hyperion] Lighting quality ${fresh.join(', ')} not supported yet: ` +
+          'the light buffer and the SDF stay at half resolution, without padding.',
+        );
+      }
     },
 
     enableBloom(config?: BloomConfig): void {
-      currentBloomConfig = config;
-      if (bloomActive) {
-        // Already active — just rebuild with new config
-        rebuildGraph(false);
-        return;
-      }
-      if (outlinesActive) {
-        console.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabling outlines.');
-        outlinesActive = false;
-      }
-      bloomActive = true;
-      rebuildGraph(false);
+      requests.enableBloom(config);
     },
 
     disableBloom(): void {
-      if (!bloomActive) return;
-      bloomActive = false;
-      currentBloomConfig = undefined;
-      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
-        color: outlineCompositePass.outlineColor,
-        width: outlineCompositePass.outlineWidth,
-      } : undefined);
+      requests.disableBloom();
     },
 
     recompileShader(passName: string, shaderCode: string): void {
       switch (passName) {
-        case 'cull':
-          CullPass.SHADER_SOURCE = prepareShaderSource(
-            shaderCode,
-            useSubgroups,
-            useSubgroups && subgroupSupport.hasSubgroupId,
-          );
-          break;
-        case 'basic': case 'quad':
-          ForwardPass.SHADER_SOURCES[0] = shaderCode;
-          break;
-        case 'line':
-          ForwardPass.SHADER_SOURCES[1] = shaderCode;
-          break;
-        case 'msdf-text':
-          ForwardPass.SHADER_SOURCES[2] = shaderCode;
-          break;
-        case 'bezier':
-          ForwardPass.SHADER_SOURCES[3] = shaderCode;
-          break;
-        case 'gradient':
-          ForwardPass.SHADER_SOURCES[4] = shaderCode;
-          break;
-        case 'box-shadow':
-          ForwardPass.SHADER_SOURCES[5] = shaderCode;
-          break;
-        case 'fxaa-tonemap':
-          FXAATonemapPass.SHADER_SOURCE = shaderCode;
-          break;
         case 'debug-line':
           LineBatchPass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'selection-seed':
-          SelectionSeedPass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'jfa':
-          JFAPass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'outline-composite':
-          OutlineCompositePass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'bloom':
-          BloomPass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'scatter':
-          ScatterPass.SHADER_SOURCE = shaderCode;
-          break;
-        case 'radix-sort':
-          RadixSortPass.SHADER_SOURCE = shaderCode;
-          break;
+          // No renderer-owned pass uses it, so there is nothing to rebuild.
+          // Overlays are caller-owned and set up once when added: an
+          // installed one keeps its pipeline until its plugin is reinstalled.
+          console.log(`[Hyperion] Shader "${passName}" updated — applies to overlays added from now on`);
+          return;
         case 'particle-simulate':
-          currentParticleSimSrc = shaderCode;
-          particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
-          console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
+          reloadParticleShader('simulate', shaderCode);
           return;
         case 'particle-render':
-          currentParticleRenderSrc = shaderCode;
-          particleSystem.setupPipelines(currentParticleSimSrc, currentParticleRenderSrc, format);
-          console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
-          return;
-        default:
-          console.warn(`[Hyperion] Unknown shader pass: ${passName}`);
+          reloadParticleShader('render', shaderCode);
           return;
       }
-      rebuildGraph(outlinesActive, outlinesActive && outlineCompositePass ? {
-        color: outlineCompositePass.outlineColor,
-        width: outlineCompositePass.outlineWidth,
-      } : undefined);
-      console.log(`[Hyperion] Shader "${passName}" hot-reloaded`);
+      void requests.reloadShader(passName, shaderCode);
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
+      followBackend(state.lightingBackend);
       if (state.entityCount === 0) return;
 
       // Scatter/full upload branching:
@@ -670,7 +814,7 @@ export async function createRenderer(
       }
 
       // Upload selection mask if dirty
-      if (outlinesActive) {
+      if (requests.requested.mode.outlines || host.mode.outlines) {
         selectionManager.uploadMask(device, selectionMaskBuffer);
       }
 
@@ -687,16 +831,10 @@ export async function createRenderer(
         sceneHdrWidth = canvas.width;
         sceneHdrHeight = canvas.height;
 
-        // Recreate JFA textures on resize
-        if (outlinesActive) {
-          ensureJFATextures(canvas.width, canvas.height);
-          updateJFATextureViews(jfaPasses.length);
-        }
-
-        // Recreate bloom textures on resize
-        if (bloomActive) {
-          ensureBloomTextures(canvas.width, canvas.height);
-        }
+        // Recreate the live graph's JFA / bloom textures on resize (the light
+        // node follows the canvas on its own). A pending graph catches up when
+        // it goes live (onSwap).
+        prepareMode(host.mode, jfaPasses.length);
 
         // Pass cost is roughly proportional to pixel count, so samples taken at
         // the old resolution must not be averaged with the new ones.
@@ -718,11 +856,20 @@ export async function createRenderer(
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
         deltaTime: dt ?? 0,
-        dirtyBits: state.dirtyBits ?? undefined,
         physicsDebugLines: state.physicsDebugLines ?? undefined,
+        ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
+        shadowSteps: lightingQuality.shadowSteps,
       };
+      // Light layers: which layers share a light buffer and an SDF, this frame.
+      if (host.mode.lighting) {
+        frameState.lightGroups = deriveLightGroups(frameState);
+        if (frameState.lightGroups.multiBitReceiver && !warnedMultiBitReceiver) {
+          warnedMultiBitReceiver = true;
+          console.warn('[Hyperion] A light receiver has more than one layer bit: it belongs to its lowest one (see lightLayers()).');
+        }
+      }
 
-      graph.render(device, frameState, resources);
+      host.graph.render(device, frameState, resources);
 
       // --- Particle system: simulate + render AFTER the scene graph ---
       if (particleSystem.emitterCount > 0) {
@@ -759,18 +906,20 @@ export async function createRenderer(
       if (!timestampSupported) return false;
       gpuProfiler ??= new GpuProfiler(device);
       gpuProfilingEnabled = true;
-      graph.setProfiler(gpuProfiler);
+      host.graph.setProfiler(gpuProfiler);
       gpuProfiler.reset();
       return true;
     },
 
     disableGpuProfiling() {
       gpuProfilingEnabled = false;
-      graph.setProfiler(null);
+      host.graph.setProfiler(null);
     },
 
     getGpuTimings() {
-      return gpuProfiler?.timings() ?? [];
+      // The profiler keeps its history after a disable; what it holds then is
+      // frozen, and quoting it as current would mislead.
+      return gpuProfilingEnabled ? gpuProfiler?.timings() ?? [] : [];
     },
 
     destroy() {
@@ -783,7 +932,7 @@ export async function createRenderer(
       bloomQuarterTexture?.destroy();
       bloomEighthTexture?.destroy();
       selectionManager.destroy();
-      graph.destroy();
+      host.destroy(); // overlays are detached, not destroyed: their owners do that
       resources.destroy();
       textureManager.destroy();
       device.destroy();
@@ -833,6 +982,12 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/radix-sort.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('radix-sort', mod.default);
+    });
+    import.meta.hot.accept('./shaders/sdf-jfa.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('sdf-jfa', mod.default);
+    });
+    import.meta.hot.accept('./shaders/light-accum.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('light-accum', mod.default);
     });
     import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('particle-simulate', mod.default);

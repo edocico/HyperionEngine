@@ -56,6 +56,8 @@ function mockRenderer(): Renderer {
       destroy: vi.fn(),
     } as any,
     graph: { addPass: vi.fn(), removePass: vi.fn(), destroy: vi.fn() } as any,
+    addPass: vi.fn(),
+    removePass: vi.fn(),
     device: {} as any,
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),
@@ -68,6 +70,8 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    lightingEnabled: false,
+    setLightingQuality: vi.fn(),
     destroy: vi.fn(),
   };
 }
@@ -226,7 +230,7 @@ describe('Hyperion', () => {
       primParams: new Float32Array(0), entityIds: new Uint32Array(0),
       listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 42,
       ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
-      dirtyCount: 0, dirtyRatio: 0, stagingData: null, dirtyIndices: null, dirtyBits: null,
+      dirtyCount: 0, dirtyRatio: 0, stagingData: null, dirtyIndices: null,
     };
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
     expect(engine.stats.tickCount).toBe(42);
@@ -409,6 +413,27 @@ describe('Hyperion picking', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     const result = engine.picking.hitTest(400, 300);
     expect(result).toBeNull();
+    engine.destroy();
+  });
+
+  it('hitTest never returns a light, whose bounding sphere is its range', () => {
+    const bridge = mockBridge();
+    const state = {
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array([0, 0, 0, 1e6]), // a light whose range covers the world
+      renderMeta: new Uint32Array([0, 6]),     // primType 6 = Light2D
+      texIndices: new Uint32Array(1),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array([7]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => state });
+    const config = { ...defaultConfig(), canvas: { width: 800, height: 600 } as HTMLCanvasElement };
+    const engine = Hyperion.fromParts(config, bridge, mockRenderer());
+    expect(engine.picking.hitTest(400, 300)).toBeNull();
+    state.renderMeta[1] = 0; // the same sphere as a quad is hit
+    expect(engine.picking.hitTest(400, 300)).toBe(7);
     engine.destroy();
   });
 });
@@ -677,6 +702,75 @@ describe('Hyperion SystemViews', () => {
 
     expect(receivedViews.length).toBe(1);
     expect(receivedViews[0]).toBeUndefined();
+    engine.destroy();
+  });
+});
+
+// LightingAPI.setQuality() is renderer-side only: nothing crosses the ring
+// buffer. The facade hands the settings over on the next frame, once, and
+// clears the flag — otherwise every frame would re-apply them.
+describe('Hyperion lighting quality', () => {
+  let rafCallbacks: ((time: number) => void)[];
+  let originalRAF: typeof globalThis.requestAnimationFrame;
+  let originalCAF: typeof globalThis.cancelAnimationFrame;
+
+  beforeEach(() => {
+    rafCallbacks = [];
+    originalRAF = globalThis.requestAnimationFrame;
+    originalCAF = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = vi.fn((cb) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    }) as unknown as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = vi.fn();
+  });
+
+  afterEach(() => {
+    globalThis.requestAnimationFrame = originalRAF;
+    globalThis.cancelAnimationFrame = originalCAF;
+  });
+
+  it('hands the quality to the renderer on the next frame, once per setQuality', () => {
+    const bridge = mockBridge();
+    const state = {
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array(4),
+      renderMeta: new Uint32Array(2),
+      texIndices: new Uint32Array(1),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array([1]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => state });
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, renderer);
+
+    engine.lighting.setQuality({ shadowSteps: 12 });
+    engine.start();
+    rafCallbacks.shift()!(16.67);
+    expect(renderer.setLightingQuality).toHaveBeenCalledTimes(1);
+    expect(renderer.setLightingQuality).toHaveBeenCalledWith(expect.objectContaining({ shadowSteps: 12 }));
+    expect(engine.lighting._needsRebuild).toBe(false);
+
+    rafCallbacks.shift()!(33.34);
+    expect(renderer.setLightingQuality).toHaveBeenCalledTimes(1);
+    engine.destroy();
+  });
+
+  it('Mode A (no renderer on this thread): hands the quality to the bridge, for the render worker', () => {
+    const bridge = mockBridge();
+    const toWorker = vi.fn();
+    (bridge as EngineBridge).setLightingQuality = toWorker;
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, null);
+
+    engine.lighting.setQuality({ shadowSteps: 12 });
+    engine.start();
+    rafCallbacks.shift()!(16.67);
+    rafCallbacks.shift()!(33.34);
+    expect(toWorker).toHaveBeenCalledTimes(1);
+    expect(toWorker).toHaveBeenCalledWith(expect.objectContaining({ shadowSteps: 12 }));
+    expect(engine.lighting._needsRebuild).toBe(false);
     engine.destroy();
   });
 });

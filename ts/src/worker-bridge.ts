@@ -1,4 +1,5 @@
 import { ExecutionMode } from "./capabilities";
+import type { LightingQuality } from "./lighting-api";
 import {
   createRingBuffer,
   RingBufferProducer,
@@ -27,8 +28,6 @@ export interface GPURenderState {
   dirtyRatio: number;
   stagingData: Uint32Array | null;    // 32 u32 per dirty entity
   dirtyIndices: Uint32Array | null;   // slot index per dirty entity
-  // Dirty bitfield for temporal culling (1 bit per entity slot, packed u32)
-  dirtyBits: Uint32Array | null;
   // Physics debug lines (Phase 16): 8 f32 per line [ax,ay,bx,by,r,g,b,a].
   // Non-null only on physics-debug builds while debug rendering is enabled.
   physicsDebugLines?: Float32Array | null;
@@ -56,6 +55,11 @@ export interface EngineBridge {
   latestRenderState: GPURenderState | null;
   /** Resize the rendering surface. Only needed for Mode A (render worker). */
   resize?(width: number, height: number): void;
+  /**
+   * Lighting quality for a renderer that is not on this thread: Mode A's
+   * render worker. `LightingAPI.setQuality` emits no ring-buffer command.
+   */
+  setLightingQuality?(quality: LightingQuality): void;
   /**
    * Determinism harness (Phase 16): canonical FNV-1a 64 state hash.
    * Resolves null on non-dev-tools WASM builds. Optional: present on all
@@ -132,7 +136,6 @@ export function createWorkerBridge(
         dirtyRatio: rs.dirtyRatio ?? 0,
         stagingData: rs.stagingData ? new Uint32Array(rs.stagingData) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(rs.dirtyIndices) : null,
-        dirtyBits: rs.dirtyBits ? new Uint32Array(rs.dirtyBits) : null,
         physicsDebugLines: rs.physicsDebugLines ? new Float32Array(rs.physicsDebugLines) : null,
       };
     }
@@ -258,7 +261,6 @@ export function createFullIsolationBridge(
         dirtyRatio: rs.dirtyRatio ?? 0,
         stagingData: rs.stagingData ? new Uint32Array(new Uint32Array(rs.stagingData)) : null,
         dirtyIndices: rs.dirtyIndices ? new Uint32Array(new Uint32Array(rs.dirtyIndices)) : null,
-        dirtyBits: rs.dirtyBits ? new Uint32Array(new Uint32Array(rs.dirtyBits)) : null,
         physicsDebugLines: rs.physicsDebugLines ? new Float32Array(new Float32Array(rs.physicsDebugLines)) : null,
       };
 
@@ -326,6 +328,9 @@ export function createFullIsolationBridge(
     resize(width: number, height: number) {
       renderWorker.postMessage({ type: "resize", width, height });
     },
+    setLightingQuality(quality: LightingQuality) {
+      renderWorker.postMessage({ type: "lighting-quality", quality });
+    },
   };
 }
 
@@ -389,9 +394,6 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_staging_u32_len(): number;
     engine_staging_indices_ptr(): number;
     engine_staging_indices_len(): number;
-    // Dirty bitfield exports (temporal culling)
-    engine_dirty_bits_ptr(): number;
-    engine_dirty_bits_u32_len(): number;
     // Physics debug exports (physics-debug builds only)
     engine_physics_debug_ptr?(): number;
     engine_physics_debug_f32_len?(): number;
@@ -442,16 +444,6 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           : null;
       }
 
-      // Read dirty bitfield for temporal culling
-      let dirtyBitsArr: Uint32Array | null = null;
-      const dbLen = engine.engine_dirty_bits_u32_len();
-      if (dbLen > 0) {
-        const dbPtr = engine.engine_dirty_bits_ptr();
-        if (dbPtr) {
-          dirtyBitsArr = new Uint32Array(new Uint32Array(engine.engine_memory().buffer, dbPtr, dbLen));
-        }
-      }
-
       if (count > 0) {
         const tPtr = engine.engine_gpu_transforms_ptr();
         const tLen = engine.engine_gpu_transforms_f32_len();
@@ -488,7 +480,6 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           dirtyRatio,
           stagingData,
           dirtyIndices: dirtyIndicesArr,
-          dirtyBits: dirtyBitsArr,
           physicsDebugLines: (() => {
             const len = engine.engine_physics_debug_f32_len?.() ?? 0;
             if (len === 0) return null;
@@ -518,7 +509,6 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           dirtyRatio: 0,
           stagingData: null,
           dirtyIndices: null,
-          dirtyBits: null,
         };
       }
     },

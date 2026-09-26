@@ -120,6 +120,18 @@ and separating them costs a new SoA column. Ship one field, document the limit.
   - `backpressure.ts`: `MAX_COMMAND_TYPE` 53 → 57, four producer methods, all
     four coalescable last-write-wins — none carries a secondary id in its
     payload, so the `entityId * 256 + cmd` key is sound.
+
+    > ⚠️ **Erratum, found at the 2026-09-23 resume audit.** The key is sound;
+    > *last-write-wins* is not — not since `3556e08` gave 53 and 54 preserve
+    > bits for `.lightLayers()` / `.castsShadow()` / `.receivesLight()`. A
+    > partial update replaced wholesale drops the fields it left alone:
+    > `castsShadow(true).receivesLight(true)` in one frame reached Rust as
+    > receivesLight only, so the Task 7 occluder filter on bit 9 would have
+    > seen no occluders. Fixed on `feat/phase17-lighting-2d` by merging 53/54
+    > field by field in `PrioritizedCommandQueue.enqueue`
+    > (`mergePartialPayload`). The mock producer in `entity-handle.test.ts` could
+    > not see this; the regression tests drive the real queue and fold the ring
+    > buffer bytes with the Rust handler semantics.
   - `prim-params-schema.ts`: `RenderPrimitiveType.Light2D = 6` and its schema
     entry, mirroring Task 2.
   - `entity-handle.ts`: `RenderPrimitiveType.Light2D = 6` (this file is the
@@ -164,9 +176,68 @@ and separating them costs a new SoA column. Ship one field, document the limit.
 
 ---
 
+## Before Track B — checks for the first GPU session (added 2026-09-23)
+
+Found by code review, not reproducible headless. Check each with the WebGPU
+adapter on the RTX 4060 (Chrome flags in the project memory), Mode B:
+
+- [x] **`indirect-first-instance`** — `CullPass` writes `firstInstance = slot * 100000`
+  but the device never requests the feature. If Dawn enforces the spec, every
+  bucket but slot 0 draws nothing — Task 9's type-6 draw included.
+  → Confirmed on hardware, fixed in `a65cb59`. The cull pipeline itself had been
+  invalid since March (9 storage buffers), fixed in `6331b5c`. See
+  `2026-09-26-cull-temporal-firstinstance-brief.md`.
+- [x] **Texture tier growth vs. the ResourcePool** — `TextureManager` replaces a
+  tier's texture and view when it grows, but the pool's `tier0..3` views are
+  registered once at init, so `ForwardPass`'s bind group may point at a
+  destroyed texture after the first texture load.
+  → Confirmed on hardware ("Destroyed texture used in a submit" on every frame
+  after one `loadTexture`). Fixed with `onViewsChanged` + a per-frame group-1
+  rebind in `ForwardPass`.
+- [x] **Bloom blur radius** — `BloomPass` rewrites ONE uniform buffer between its
+  sub-passes of the same submit, so every sub-pass reads the last write (the
+  composite's texel size): the blur is 2-8x too narrow.
+  → Fixed in `d0b3cee`, together with a worse one: pass 3 sampled its own
+  render target, which dropped every bloom frame.
+- [x] **Subgroup size** — the cull path assumes 32; check `adapter.info.subgroupMinSize/MaxSize`.
+  → It corrupts indices at other widths. Gated to exactly 32 in `369e385`.
+- [x] **HDR baseline** — screenshots of the 8 demo tabs (design §16 rows 1/1b).
+  → `assets/2026-09-26-hdr-baseline/` (AMD RDNA 3 iGPU, Mode B, 1600×900).
+  All 8 tabs render with **0 WebGPU messages**. The only console noise left is
+  LeakDetector warnings from demo handles never destroyed on a tab switch. The
+  baseline turned up two more defects, both fixed before it was taken:
+  - particles dropped every frame (bind groups not built from their own
+    pipeline's auto layout);
+  - untextured quads were black on BC7 devices. Now white: packed index 0 is
+    answered by `basic.wgsl`.
+  The white quads also make the bloom halo visible in the Rendering FX tab.
+
+All five checks are closed. Track B can start.
+
 ## Track B — Occluders and the signed SDF (needs GPU eyes)
 
 - [ ] **Task 7: `OccluderSeedPass` + `shaders/occluder-seed.wgsl`**
+  > **Decision (2026-09-26): exact shape per primitive, no `occluder-seed.wgsl`.**
+  > A single seed shader would make every occluder its bounding quad, which
+  > drops the design §6.2 argument for the SDF backend. Instead the pass runs
+  > each primitive's own shader through a second entry point `fs_occluder`
+  > that reuses its coverage, with `override OCCLUDER_PASS` doing the castsShadow
+  > filter in the vertex stage. It lands in stages:
+  > - [x] **Stage 1 — quads and sprites** (`basic.wgsl`: texture alpha ≥ 0.5).
+  >   GPU readback on NVIDIA and AMD: a caster fills its quad with correct UVs, a
+  >   non-caster writes nothing, a checker-alpha sprite writes exactly 50%.
+  > - [x] **Stage 2 — line, gradient, box-shadow, bezier, MSDF** (one agent per
+  >   shader, same pattern). GPU check: all 12 ForwardPass and 6 occluder pipelines
+  >   are valid. Measured seed coverage: quad/MSDF/gradient 1.0, a bezier its
+  >   arch (0.117 of the quad, arch visible in readback), box-shadow as drawn, a
+  >   non-caster 0. Lines cast from width ≈ 2 world units up. The shadow follows
+  >   `shade()`, which is the same code that draws the line.
+  >   Caveats, from the conversion:
+  >   - box-shadow alpha is opacity, so a shadow with a < 0.5 does not occlude;
+  >   - transparent-bucket entities never occlude (opaque buckets only);
+  >   - untextured lines and beziers sampled black on BC7. Fixed in the next
+  >     commit.
+  > - [ ] Wire into the graph with the lighting backend (needs a reader: Task 8).
   - New pass, **not** a reworked `SelectionSeedPass`: that one filters on
     `selection-mask` and draws 2 of the 24 buckets; this one filters on
     `renderMeta` bit 9 and must iterate every opaque bucket.
@@ -179,6 +250,18 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     (~8 tests)
 
 - [ ] **Task 8: signed SDF chain**
+  > **Landed 2026-09-26, apart from graph wiring:** `SdfJfaPass` plus `sdf-jfa.wgsl`.
+  > - Instead of an instance field, `JfaIterationPass` is a common base with
+  >   `JFAPass` and `SdfJfaPass` as siblings, each with its own static shader slot.
+  >   That keeps one hot-reload slot per WGSL file, and keeps
+  >   `instanceof JFAPass` meaning "outline chain".
+  > - Distances are in texels, not uv: uv is anisotropic on a non-square target.
+  > - Seeds are read with `textureLoad`.
+  > - GPU check against a brute-force exact distance transform (a square plus a
+  >   thin rotated bar, 128×128): sign 100% right, 0 invalid texels, 0
+  >   under-estimates, 100% within 0.1 texel.
+  > - Found on the way: the outline chain's `JFAParams` struct is 24 bytes in
+  >   WGSL against a 16-byte buffer, so every outline frame failed. Fixed separately.
   - Reuse `JFAPass` unmodified for the iterations; resources `sdf-iter-0..N` on
     the same two-physical-texture ping-pong as `jfa-iter-N`.
   - Sign: adopt Godot's single-chain encoding (`canvas_sdf.glsl`) — a neighbour of
@@ -204,7 +287,7 @@ and separating them costs a new SoA column. Ship one field, document the limit.
 
 ## Track C — Light accumulation (needs GPU eyes)
 
-- [ ] **Task 9: `LightAccumPass` + `shaders/light-accum.wgsl`**
+- [x] **Task 9: `LightAccumPass` + `shaders/light-accum.wgsl`** (`e72a332`)
   - Target `light-buffer`, `SCENE_HDR_FORMAT`, half resolution, additive blend
     (`one`/`one`, core WebGPU). **Clear colour is the ambient light** — free, the
     way Unity does it.
@@ -220,8 +303,11 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     reader to reach for.
   - Tests: pass lifecycle, resource declarations, blend state, clear colour
     tracks ambient, no-lights no-op. (~10 tests)
+  > **Done 2026-09-26.** GPU readback on NVIDIA: attenuation 0.601 where 0.600
+  > is expected, 0.1 in the umbra, radial profile within 0.001. Not yet: the
+  > `sprite` type, the `mix` blend, shadows from global/directional lights.
 
-- [ ] **Task 10: `@group(2)` in `ForwardPass`**
+- [x] **Task 10: `@group(2)` in `ForwardPass`**
   - Three bindings: `light-buffer` texture, sampler, `lighting-uniform`.
   - A 3-group `pipelineLayout` where a shader declares only groups 0-1 is legal —
     validation requires that bindings *used* exist in the layout, not the
@@ -237,8 +323,40 @@ and separating them costs a new SoA column. Ship one field, document the limit.
     (~8 tests)
   - Gate: **wgsl-validator**; visual check — a lit sprite and an unlit sprite in
     the same scene.
+  > **Done 2026-09-26, with the graph wiring the plan left implicit.**
+  > - The lookup lives in `fs_main`, not in the shared `shade()`: OccluderSeedPass
+  >   runs the same modules through `fs_occluder` on a two-group layout.
+  > - `GraphMode.lighting`, orthogonal to the composite; `GraphRequests.setLighting`;
+  >   the host validates overlays against all six graphs; the renderer requests the
+  >   lit graph when `GPURenderState.lightingBackend` CHANGES (`followLightingBackend`:
+  >   following the value would retry a GPU-rejected graph every frame).
+  > - Found on the GPU: global/directional lights were culled like point lights.
+  >   They now get `BoundingRadius = f32::MAX`. And picking hit lights, whose sphere
+  >   is their range; `hitTestRay` now skips Light2D.
+  > - Visual check (AMD adapter, harness Mode B): lit vs unlit gradient in the same
+  >   light, soft shadow from a wall, an off-screen global light tinting the scene,
+  >   bloom/outlines/off/on toggles and a resize — 0 WebGPU messages.
+  >
+  > ⚠️ **The light mask cannot be applied as designed.** §7.3 says "applied on read,
+  > in the ForwardPass", but a single screen-space buffer has already summed every
+  > light. Layers need one buffer per layer group. So Task 11's "light-layer toggle"
+  > has nothing to show until that is designed.
+  >
+  > 🆕 **Resolved 2026-09-26** by the light-layer groups (spec and plan
+  > `2026-09-26-phase17-light-layer-groups-*.md`): one light buffer per group
+  > of layers, shadows per layer, one `LightGroupsPass` node. The harness's
+  > "Light layers" check exercises it.
 
-- [ ] **Task 11: demo tab, measurement, docs**
+- [x] **Task 11: demo tab, measurement, docs** — demo tab (`96c0b5c`), measurement (design §13.2 "Misurato 2026-09-26": SDF chain 1.77 ms at 1080p on the AMD iGPU, backend `lit` ≈ 2.3 ms), docs.
+  > The adversarial review of Track C (workflow, 4 reviewers + 7 verifiers)
+  > confirmed 5 findings; all are fixed with tests and, where visible, a GPU
+  > check: caster+receiver sprites were never shadowed by other occluders
+  > (`1675a92`); the SDF chain stopped covering the texture after a resize
+  > (`5f0e8fb`, power-of-two steps + rebuild); a switch-off was lost when a
+  > later request was rejected (`4487bfe`); quality never reached Mode A's
+  > render worker (`bd6087d`); the fixed-k penumbra (`2c77d87`, found on GPU
+  > first). Also found on GPU: light leaking where the 24-step budget ran out
+  > (`2c77d87` extrapolation, `0815e58` default 48 steps).
   - `demo/lighting.ts`: new tab with point/spot/global lights, an occluder wall,
     a shadow-intensity slider, a light-layer toggle. Register in `demo/types.ts`
     and the report.

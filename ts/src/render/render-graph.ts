@@ -35,7 +35,7 @@ export class RenderGraph {
 
   /**
    * Attach (or detach, with null) a GPU profiler. The profiler outlives the
-   * graph — `rebuildGraph()` in the renderer constructs a new RenderGraph on
+   * graph — the renderer's RenderGraphHost constructs a new RenderGraph on
    * every outline/bloom toggle and shader hot-reload, so keeping the profiler
    * outside preserves its history across those rebuilds.
    */
@@ -53,14 +53,33 @@ export class RenderGraph {
   }
 
   /**
+   * Remove a pass WITHOUT destroying it, and return it. For passes the graph
+   * does not own — a plugin's overlay must survive the renderer rebuilding
+   * its graph, and only the plugin may destroy it.
+   */
+  detachPass(name: string): RenderPass | undefined {
+    const pass = this.passes.get(name);
+    if (pass) {
+      this.passes.delete(name);
+      this._needsRecompile = true;
+    }
+    return pass;
+  }
+
+  /**
    * Build topologically sorted execution order and cull dead optional passes.
    *
    * Returns the ordered list of pass names that will execute each frame.
    * Throws if the dependency graph contains a cycle.
    */
   compile(): string[] {
-    // --- 1. Build adjacency list from resource dependencies ---
-    const resourceWriters = new Map<string, string>();
+    // --- 1. Writers per resource, in registration order ---
+    // A resource normally has one writer. A later pass may write it too only
+    // if it also READS it: a read-modify-write that layers on the previous
+    // version (an overlay drawn with loadOp 'load' onto the swapchain). Such
+    // writers form a chain in registration order. A second *blind* write is
+    // still an error — which pass wins would depend on execution order.
+    const writers = new Map<string, string[]>();
     const adj = new Map<string, string[]>();
     const inDegree = new Map<string, number>();
 
@@ -68,19 +87,45 @@ export class RenderGraph {
       adj.set(name, []);
       inDegree.set(name, 0);
       for (const w of pass.writes) {
-        const existing = resourceWriters.get(w);
-        if (existing) {
+        const chain = writers.get(w);
+        if (!chain) {
+          writers.set(w, [name]);
+        } else if (pass.reads.includes(w)) {
+          chain.push(name);
+        } else if (this.passes.get(chain[0])!.reads.includes(w)) {
+          // The chain opened with a layering pass and a blind writer follows.
+          // Adding the read to the blind writer would make it the next link —
+          // run after the layering pass and paint over it. The fix is order.
           throw new Error(
-            `Resource '${w}' has multiple writers: '${existing}' and '${name}'`,
+            `Resource '${w}' has multiple writers: blind writer '${name}' is registered after ` +
+            `'${chain[0]}', which layers on top of it — register '${chain[0]}' after '${name}'`,
+          );
+        } else {
+          throw new Error(
+            `Resource '${w}' has multiple writers: '${chain[chain.length - 1]}' and '${name}'` +
+            ` — list '${w}' in reads too if '${name}' layers on top of it`,
           );
         }
-        resourceWriters.set(w, name);
       }
     }
 
+    // The pass that produced the version of `resource` that `reader` sees:
+    // a link of the chain reads the link before it; anyone else reads the
+    // final version, whatever the registration order. So an intermediate
+    // version is visible only to the next link: a pass that needs the
+    // pre-layering image (say, to feed the layer) must read a separately
+    // named resource, or the dependency becomes a cycle.
+    const producerOf = (reader: string, resource: string): string | undefined => {
+      const chain = writers.get(resource);
+      if (!chain) return undefined;
+      const i = chain.indexOf(reader);
+      if (i === -1) return chain[chain.length - 1];
+      return i > 0 ? chain[i - 1] : undefined;
+    };
+
     for (const [name, pass] of this.passes) {
       for (const r of pass.reads) {
-        const writer = resourceWriters.get(r);
+        const writer = producerOf(name, r);
         if (writer && writer !== name) {
           adj.get(writer)!.push(name);
           inDegree.set(name, (inDegree.get(name) ?? 0) + 1);
@@ -107,7 +152,11 @@ export class RenderGraph {
     }
 
     if (sorted.length !== this.passes.size) {
-      throw new Error('RenderGraph has a cycle — cannot compile');
+      const stuck = [...this.passes.keys()].filter((n) => !sorted.includes(n));
+      throw new Error(
+        `RenderGraph has a cycle — cannot compile. Passes left unscheduled: ` +
+        stuck.map((n) => `'${n}'`).join(', '),
+      );
     }
 
     // --- 3. Dead-pass culling ---
@@ -125,7 +174,7 @@ export class RenderGraph {
       const name = worklist.pop()!;
       const pass = this.passes.get(name)!;
       for (const r of pass.reads) {
-        const writer = resourceWriters.get(r);
+        const writer = producerOf(name, r);
         if (writer && !alive.has(writer)) {
           alive.add(writer);
           worklist.push(writer);
@@ -154,12 +203,30 @@ export class RenderGraph {
     // buffer is still in flight, or when the graph outgrew the profiler's
     // query set. In all three cases we fall through to the unmeasured path
     // and encode no marker passes at all.
-    const measuring = this.profiler?.beginFrame(this.executionOrder) ?? false;
+    // A staged pass reports its stages (`pass/stage`) instead of itself, and
+    // marks them on its own: the graph marks only before unstaged passes.
+    let names: string[] = this.executionOrder;
+    const stagesOf = new Map<string, readonly string[]>();
+    if (this.profiler) {
+      names = [];
+      for (const name of this.executionOrder) {
+        const stages = this.passes.get(name)!.profileStages?.(frame);
+        if (stages) {
+          stagesOf.set(name, stages);
+          for (const stage of stages) names.push(`${name}/${stage}`);
+        } else {
+          names.push(name);
+        }
+      }
+    }
+    const measuring = this.profiler?.beginFrame(names) ?? false;
+    const mark = measuring ? (e: GPUCommandEncoder) => this.profiler!.mark(e) : undefined;
 
     try {
       for (const name of this.executionOrder) {
-        if (measuring) this.profiler!.mark(encoder);
-        this.passes.get(name)!.execute(encoder, frame, resources);
+        const staged = stagesOf.has(name);
+        if (measuring && !staged) this.profiler!.mark(encoder);
+        this.passes.get(name)!.execute(encoder, frame, resources, staged ? mark : undefined);
       }
     } catch (err) {
       // The encoder is abandoned unfinished, so the frame the profiler opened

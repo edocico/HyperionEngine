@@ -109,6 +109,7 @@ CullPass → [ScatterPass] → ForwardPass (→ scene-hdr) → FXAATonemapPass (
 
 - `ForwardPass`: due sub-pass (opaco con depth-write, trasparente con alpha blend), `depth24plus`, 24 bucket indiretti (6 tipi × 2 material sort × 2 blend).
 - `RenderGraph`: DAG con Kahn + dead-pass culling. **Un solo writer per risorsa**.
+  > **Aggiornato 2026-09-23.** Resta un solo writer *cieco* per risorsa, ma un pass che elenca la risorsa sia in `reads` sia in `writes` è un read-modify-write e si accoda al writer precedente, in ordine di registrazione (overlay con `loadOp: 'load'` sulla swapchain). Il controllo sui writer avviene *prima* del culling: il vecchio "FXAATonemapPass viene dead-culled da outline/bloom" non è mai successo, e `compile()` lanciava. Ora `render/graph-assembly.ts` registra un solo composite finale. Per le Track B/C: `occluder-seed`, `sdf-iter-N`, `light-buffer` hanno ciascuno un solo writer, quindi il vincolo non cambia nulla — **a patto che** la catena SDF usi nomi di pass e di risorse suoi. Oggi `JFAPass` li cabla (`jfa-N`, `jfa-iter-N`): con gli outline attivi una seconda catena collide (`already registered` / `multiple writers`). Parametrizzarli è già prerequisito del Task 8. E `rebuildGraph()`, citato più sotto come il meccanismo di `setBackend()`, non esiste più: il grafo lo gestisce `RenderGraphHost` (`render/graph-host.ts`), e un grafo nuovo diventa live solo dopo che la GPU lo ha validato (error scope). Aggiungere il backend `lit` significa un nuovo `GraphMode` e una factory in più, non un rebuild a mano.
 - `ResourcePool`: registry nominato per buffer / texture / view / sampler.
 - Pattern ping-pong già collaudato: `jfa-iter-N` come nomi logici su 2 texture fisiche.
 
@@ -576,6 +577,8 @@ Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (`dra
 3. Blend mode (Add / Sub / Mix) in-shader.
 4. Il `lightMask` si applica in lettura, nel ForwardPass (§7.4).
 
+> 🆕 **Corretto 2026-09-26: così non si può.** Un unico buffer in screen-space ha già sommato tutte le luci, e il ForwardPass non ha più modo di separarle per layer. La maschera è implementata con **un light buffer per gruppo di layer**, come i batch di sorting layer di Unity 2D: `deriveLightGroups` forma i gruppi a ogni frame dai valori di maschera in vista, e `LightGroupsPass` (un solo nodo del grafo, set-major) accumula ogni gruppo nel proprio layer di un `2d-array`. Anche le ombre sono per layer: un occluder manca dalla SDF dei gruppi che non ombreggia. Spec: `2026-09-26-phase17-light-layer-groups-design.md`.
+
 #### 🆕 A2 — Quale versione della soft shadow di Quilez usare
 
 La formula base:
@@ -594,6 +597,8 @@ ph = h;
 
 ⚠️ **Non usarla con un SDF da JFA.** La correzione assume che `map()` sia un SDF **esatto**; con un campo da jump flood `h` è già una sovrastima (A1), e il termine `y = h²/(2·ph)` **amplifica l'errore**. Nessuna fonte analizza questa interazione — l'ho verificato esplicitamente. **Partire dalla forma originale `k·h/t`**, che è anche quella che Ronja usa in 2D.
 
+> 🆕 **Implementato 2026-09-26, con due correzioni misurate.** Resta il termine originale `h/t` (non Aaltonen), ma confrontato con l'angolo **reale** della luce: `min(1/k, sourceRadius / D)`. Con `k` da solo la luce ha un raggio che cresce con la distanza del pixel (`D/k`). Una luce accanto a un muro oscurava così anche il lato aperto, del 23-42% e a bande radiali. Inoltre un pixel dentro un occluder prima ne esce, poi marcia, e la penombra si misura dal punto d'uscita. Infine un raggio che finisce i passi estrapola l'ultima distanza libera fino alla luce. Dettagli in `light-accum.wgsl` e nei commit `2c77d87` e `1675a92`. Il budget di default è **48 passi**, non 16-32: a 24 i raggi che radono una faccia finivano i passi e facevano filtrare luce dietro i muri, mentre 48 costa il 2% in più di `light-accum` (commit `0815e58`).
+
 **Step count**: `bevy_light_2d` usa 32, jason.today 32, Yaazarai indica *"the optimal case seems to be 32-64 steps"*, davidtme (marzo 2026) *"approximately 10-20 steps per pixel"* con SDF. **16–32 è la fascia di lavoro.**
 
 **Costo.** Una luce di raggio 300 px a metà risoluzione copre ~70k pixel; con 24 step sono ~1,7 M campionamenti SDF. Venti luci ≈ **34 M campionamenti/frame**.
@@ -607,6 +612,8 @@ ph = h;
 Un `pipelineLayout` a 3 gruppi dove un dato shader dichiara solo i primi 2 è legale: la validazione WebGPU richiede che i binding **usati** esistano nel layout, non il contrario. **Solo gli shader che vogliono l'illuminazione dichiarano `@group(2)`.**
 
 > ⚠️ **Ma il bind group va comunque legato.** `ForwardPass.execute()` deve chiamare `setBindGroup(2, ...)` **per tutte** le pipeline, anche quelle che non lo usano. Una sola chiamata prima del loop — ma dimenticarla produce un errore di validazione oscuro.
+
+> 🆕 **Con i light layers (2026-09-26)** `lightBuffer` è un `texture_2d_array<f32>` (un layer per gruppo) e `LightingUniform` porta la tabella layer → gruppo (`groupTableLo/Hi`, 4 bit per layer): il receiver campiona il layer `lightGroupOf(mask)`, cioè il gruppo del suo bit più basso. Gli snippet qui sotto sono la forma originale, a buffer singolo.
 
 ```wgsl
 @group(2) @binding(0) var lightBuffer: texture_2d<f32>;
@@ -742,6 +749,8 @@ Gli altri numeri che circolano, elencati per non doverli ricercare:
 Esattamente 32 bit. **Zero nuove colonne SoA, zero nuovi export WASM, stride dello staging invariato.**
 
 **Semantica di `lightMask`** — un campo, tre significati secondo il ruolo: su una **luce**, quali layer illumina; su un **disegnabile**, a quale layer appartiene; su un **occluder**, per quali layer proietta ombra.
+
+> 🆕 **Precisato 2026-09-26 (light layers).** Il disegnabile appartiene a **un solo** layer, il suo bit più basso (come Unity); maschera 0 vale per ruolo: luce → nessun layer, receiver → layer 0, occluder → tutti i layer.
 
 > **Limite accettato.** Godot usa due coppie ortogonali (`range_item_cull_mask` ∩ `light_mask` per la ricezione, `shadow_item_cull_mask` ∩ `occluder_light_mask` per l'ombra), il che significa che `shadow_item_cull_mask` fa **doppio lavoro**: decide sia chi riceve l'ombra sia chi la proietta. 🆕 È la sorgente documentata di una confusione reale — c'è un articolo che descrive **sei mesi di tentativi** per risolvere l'auto-ombreggiamento delle tile in Godot 4, finito con un workaround a due TileMap. La nostra maschera singola è più semplice e copre il caso normale (un muro riceve luce e ombreggia dagli stessi layer); separarle costerebbe una nuova colonna SoA. **Da documentare come limite noto, non da nascondere.**
 
@@ -947,6 +956,39 @@ Su GPU integrata attendersi **3-5×**, più l'overhead WebGPU di §3.1.
 **Il backend `lit` completo dovrebbe stare sotto 1,5 ms su GPU discreta a 1080p.** Resta da misurare in casa, ma non è più un salto nel buio.
 
 > ⚠️ **Il numero che non esiste in letteratura**, e che è il più utile: il costo misurato di un light-accumulation pass con sphere marching SDF a 1080p con N luci. **Nessuno l'ha pubblicato.** Va misurato con `timestamp-query`.
+
+#### 🆕 Misurato 2026-09-26 (Task 11)
+
+`timestamp-query` e `GpuProfiler`, `averageMs` su 120 frame. Il tab "Lighting" dell'harness in Mode B: una luce puntiforme (range 12) e una spot (range 18), entrambe con ombre, più una luce globale; tre occluder; un pavimento a schermo intero che riceve la luce; `shadowSteps` 24. **GPU: AMD RDNA 3 integrata** (adapter `amd / rdna-3`, Vulkan). La RTX 4060 della stessa macchina non può presentare su canvas (il compositor gira sull'iGPU), quindi non è misurabile nell'harness.
+
+| Pass | 1920×1081 (SDF 960×540, 11 pass) | 2600×1168 (SDF 1300×584, 12 pass) |
+|---|---|---|
+| `occluder-seed` | 0,031 ms | 0,032 ms |
+| **catena SDF** (1+JFA) | **1,77 ms** (0,016 il load pass, poi 0,13–0,20 ciascuno) | **2,64 ms** (0,02, poi 0,17–0,27) |
+| `light-accum` (3 luci) | 0,22 ms | 0,30 ms |
+| `forward`, delta lit − unlit | +0,30 ms (0,89 contro 0,59) | +0,06 ms |
+| **totale backend `lit`** | **≈ 2,3 ms** | ≈ 3,0 ms |
+
+Letture:
+- La catena SDF è il costo dominante, e sta **2-3× sopra** l'estrapolazione "integrata = 3-5× di 0,18 ms". I pass con lo step più grande sono i più lenti: i campioni lontani rompono la località della cache. Sono 9 `textureLoad` `rgba16float` (8 B) per texel per pass.
+- Leve, se servisse: un formato più stretto (le coordinate in `rg16unorm` o `rg16float` più il segno in un bit, cioè 4 B invece di 8); partire da uno step pari al range massimo delle luci invece che a maxDim/2, perché i pass sopra quel raggio non cambiano nessuna ombra visibile; una SDF a un quarto di risoluzione.
+- Il delta del `forward` dipende da quanta superficie riceve luce. Qui un pavimento a schermo intero la riceve tutta, quindi +0,30 ms è il caso peggiore.
+
+#### 🆕 Light layers, misurato 2026-09-26
+
+`LightGroupsPass`, stessa iGPU, 1920×1081. È una scena statica di prova: una luce puntiforme e una spot con ombre, un muro e una cassa. Poi, per i gruppi, uno sprite e una luce sul layer 1, e infine un occluder con maschera `0b01`.
+
+| Configurazione | seed | sdf | accum | Totale illuminazione |
+|---|---|---|---|---|
+| 1 set, 1 gruppo (scena di default) | 0,030 | 1,584 | 0,211 | **1,83 ms** |
+| 1 set, 2 gruppi | 0,031 | 1,592 | 0,544 | **2,17 ms** (+0,34) |
+| 2 set, 2 gruppi | 0,406 | 3,042 | 0,213 | **3,66 ms** (+1,84) |
+
+- **Ogni SDF set in più costa circa 1,8 ms**, come previsto: un flood intero. Non costa memoria in più, perché il seed e il ping-pong sono condivisi.
+- **Un gruppo che condivide un set costa il suo clear più le sue luci disegnate di nuovo.** Qui 0,34 ms, perché le luci 0xFFFF raggiungono entrambi i gruppi. In memoria è un layer da 4,15 MB.
+- Con più set la ripartizione tra seed e accum è approssimativa: i marker misurano confini dello stream di comandi (il caveat di `gpu-profiler.ts`). I totali per stadio sono affidabili.
+- Scena di default prima e dopo i light layers, con il motore in pausa: **0 pixel diversi** nel canvas. Le uniche differenze sono le cifre dell'FPS nell'overlay.
+- Un layer raggiunto da una luce con ombra ma da nessun caster non riceve un set: la marcia su "nessun occluder" dà già lo stesso risultato. Ce ne siamo accorti sulla GPU, dove costava un flood vuoto.
 
 ---
 

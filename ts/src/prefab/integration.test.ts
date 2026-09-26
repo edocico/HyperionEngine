@@ -52,6 +52,8 @@ function mockRenderer(): Renderer {
       destroy: vi.fn(),
     } as any,
     graph: { addPass: vi.fn(), removePass: vi.fn(), destroy: vi.fn() } as any,
+    addPass: vi.fn(),
+    removePass: vi.fn(),
     device: {} as any,
     enableOutlines: vi.fn(),
     disableOutlines: vi.fn(),
@@ -64,6 +66,8 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    lightingEnabled: false,
+    setLightingQuality: vi.fn(),
     destroy: vi.fn(),
   };
 }

@@ -29,7 +29,9 @@
  *    which is why {@link PassTiming.averageMs} exists and is the number to
  *    quote — over {@link WINDOW} frames the quantization averages out.
  *
- *    Measured behaviour is stricter still. On macOS/Metal with a stock Chrome
+ *    Measured behaviour depends on the platform. On Linux/Vulkan (Chrome 154,
+ *    RTX 4060, checked 2026-09-26) a stock build returns real values in steps
+ *    of about 1.024 us. On macOS/Metal with a stock Chrome
  *    build (checked 2026-08-04) every resolved query is **exactly 0**: the
  *    adapter advertises `timestamp-query`, `requestDevice` accepts it,
  *    `resolveQuerySet` raises no validation error, and the readback is all
@@ -109,6 +111,10 @@ export class GpuProfiler {
 
   private readonly history = new Map<string, number[]>();
   private readonly latest = new Map<string, number>();
+  /** Consecutive resolved frames a name has been missing from. */
+  private readonly missing = new Map<string, number>();
+  /** Resolved frames consumed since the last {@link reset}. */
+  private resolvedFrames = 0;
 
   private frameNames: string[] = [];
   private markerIndex = 0;
@@ -133,7 +139,12 @@ export class GpuProfiler {
   private zeroFrames = 0;
   private warnedAboutZeros = false;
 
-  constructor(device: GPUDevice, maxPasses = 32) {
+  /**
+   * @param maxPasses markers per frame, minus the closing one. 256: a frame has
+   *   at most ~20 graph passes plus LightGroupsPass's 3 stages per SDF set
+   *   (at most 16 sets). The query set is 2 KB and exists only while profiling.
+   */
+  constructor(device: GPUDevice, maxPasses = 256) {
     // One marker before each pass, plus a closing marker after the last.
     this.capacity = maxPasses + 1;
     const byteSize = this.capacity * TIMESTAMP_SIZE;
@@ -225,8 +236,10 @@ export class GpuProfiler {
     const markerCount = this.markerIndex;
     this.active = false;
 
-    // Fewer than two markers means nothing to diff.
-    if (markerCount < 2) return;
+    // Fewer than two markers means nothing to diff. A count that does not
+    // match the names (a staged pass that marked more or fewer stages than it
+    // listed) would put every later time on the wrong name: drop the frame.
+    if (markerCount < 2 || markerCount !== this.frameNames.length + 1) return;
 
     const buffer = this.freeReadbacks.pop();
     if (!buffer) return;
@@ -261,8 +274,13 @@ export class GpuProfiler {
         if (this.destroyed) return;
         try {
           await entry.buffer.mapAsync(GPUMapMode.READ);
-          this.consume(entry);
-          entry.buffer.unmap();
+          // Unmapped whatever consume() does: a buffer returned to the pool
+          // still mapped would fail every later copy into it.
+          try {
+            this.consume(entry);
+          } finally {
+            entry.buffer.unmap();
+          }
         } catch {
           // Device lost, or the buffer was destroyed mid-flight. Drop the
           // frame — timing data is never worth surfacing an error for.
@@ -295,16 +313,46 @@ export class GpuProfiler {
       }
     }
 
+    // A staged pass repeats its stage names once per SDF set: one sample per
+    // name and frame, the sum of its intervals.
+    const frameTotals = new Map<string, number>();
     for (let i = 0; i < entry.names.length; i++) {
       const deltaNs = stamps[i + 1] - stamps[i];
       // Timestamps are not guaranteed monotonic across passes; clamp.
       const ms = deltaNs > 0n ? Number(deltaNs) / 1e6 : 0;
-      const name = entry.names[i];
+      frameTotals.set(entry.names[i], (frameTotals.get(entry.names[i]) ?? 0) + ms);
+    }
 
+    // A staged pass can drop a stage between frames with no graph change, so
+    // no reset(): LightGroupsPass loses seed/sdf when its SDF sets go to zero.
+    // Every mean is a mean per frame over the same frames. A name missing
+    // from this frame took 0 ms in it; a name seen for the first time took
+    // 0 ms in the earlier frames of the window. A staged pass changes its
+    // stages with no graph change, so no reset(): LightGroupsPass drops
+    // seed/sdf when its SDF sets go to zero. A name missing for a whole
+    // window is forgotten.
+    this.resolvedFrames++;
+    for (const [name, samples] of this.history) {
+      if (frameTotals.has(name)) continue;
+      this.latest.set(name, 0);
+      samples.push(0);
+      if (samples.length > WINDOW) samples.shift();
+      const missing = (this.missing.get(name) ?? 0) + 1;
+      if (missing >= WINDOW) {
+        this.history.delete(name);
+        this.latest.delete(name);
+        this.missing.delete(name);
+      } else {
+        this.missing.set(name, missing);
+      }
+    }
+
+    for (const [name, ms] of frameTotals) {
       this.latest.set(name, ms);
+      this.missing.delete(name);
       let samples = this.history.get(name);
       if (!samples) {
-        samples = [];
+        samples = new Array<number>(Math.min(this.resolvedFrames - 1, WINDOW - 1)).fill(0);
         this.history.set(name, samples);
       }
       samples.push(ms);
@@ -352,7 +400,12 @@ export class GpuProfiler {
     return this.zeroFrames;
   }
 
-  /** Current timings, one entry per pass measured at least once. */
+  /**
+   * Current timings, one entry per pass or stage measured in the last
+   * {@link WINDOW} resolved frames. A frame without it counts as 0 ms, so
+   * `averageMs` is a mean per frame, not per run, and every entry has the same
+   * `sampleCount`.
+   */
   timings(): PassTiming[] {
     const out: PassTiming[] = [];
     for (const [name, samples] of this.history) {
@@ -396,6 +449,8 @@ export class GpuProfiler {
   reset(): void {
     this.history.clear();
     this.latest.clear();
+    this.missing.clear();
+    this.resolvedFrames = 0;
     this.skipped = 0;
     this.generation++;
     // `zeroFrames` deliberately survives: it describes what this browser is

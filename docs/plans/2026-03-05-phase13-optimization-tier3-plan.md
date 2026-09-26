@@ -1031,6 +1031,8 @@ git commit -m "feat(#14): depth SoA column + WASM exports for GPU radix sort"
 
 ## Task 13: Temporal Culling — DirtyTracker GPU Upload
 
+> **Removed 2026-09-26.** The cull pipeline carrying this was invalid from the day it landed (9 storage buffers against a device limit of 8), so it never ran on a GPU. Once it could run, the measured saving was 0 µs, and the invalidation rule was wrong. See `2026-09-26-cull-temporal-firstinstance-brief.md`.
+
 **Files:**
 - Modify: `crates/hyperion-core/src/render_state.rs` (expose dirty bitfield)
 - Modify: `crates/hyperion-core/src/lib.rs` (WASM export for dirty bits)

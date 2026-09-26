@@ -250,7 +250,10 @@ impl Engine {
     ///
     /// - Entities with non-zero velocity: velocity_system moved their Position,
     ///   transform_system recomputed their ModelMatrix.
-    /// - Children of dirty parents: propagate_transforms updated their ModelMatrix.
+    /// - Physics bodies: physics_sync_post wrote Rapier's state back.
+    /// - Descendants of any of the above: propagate_transforms updated their
+    ///   ModelMatrix. This pass must run LAST, because it can only follow
+    ///   parents that are already marked.
     fn mark_post_system_dirty(&mut self) {
         // Pass 1: velocity-driven entities (both 3D and 2D — query is archetype-agnostic)
         for (entity, vel, _active) in
@@ -264,7 +267,28 @@ impl Engine {
             }
         }
 
-        // Pass 2: descendants of dirty parents, at ANY depth.
+        // Pass 2 (physics): mark non-sleeping physics entities as dirty.
+        // physics_sync_post wrote Rapier body state back to ECS — these entities
+        // need their SoA data updated. It must run before the descendant pass:
+        // when it ran after, a body moved by Rapier never had its children staged,
+        // and they stayed frozen on the GPU while their ECS matrix moved.
+        #[cfg(feature = "physics-2d")]
+        {
+            use crate::physics::PhysicsBodyHandle;
+            for (entity, handle, _active) in
+                self.world.query::<(hecs::Entity, &PhysicsBodyHandle, &Active)>().iter()
+            {
+                if let Some(body) = self.physics.rigid_body_set.get(handle.0)
+                    && !body.is_sleeping()
+                    && let Some(slot) = self.render_state.get_slot(entity)
+                {
+                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                }
+            }
+        }
+
+        // Pass 3: descendants of dirty parents, at ANY depth.
         //
         // `propagate_transforms` composes the whole ancestor chain (audit
         // 2026-07, P1-18), so marking only direct children left grandchildren
@@ -293,25 +317,6 @@ impl Engine {
             rounds += 1;
             if newly_marked == 0 || rounds >= crate::command_processor::MAX_HIERARCHY_DEPTH {
                 break;
-            }
-        }
-
-        // Pass 3 (physics): mark non-sleeping physics entities as dirty.
-        // physics_sync_post wrote Rapier body state back to ECS — these entities
-        // need their SoA data updated.
-        #[cfg(feature = "physics-2d")]
-        {
-            use crate::physics::PhysicsBodyHandle;
-            for (entity, handle, _active) in
-                self.world.query::<(hecs::Entity, &PhysicsBodyHandle, &Active)>().iter()
-            {
-                if let Some(body) = self.physics.rigid_body_set.get(handle.0)
-                    && !body.is_sleeping()
-                    && let Some(slot) = self.render_state.get_slot(entity)
-                {
-                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                }
             }
         }
     }
@@ -442,6 +447,9 @@ impl Engine {
         self.listener_pos = [0.0; 3];
         self.listener_prev_pos = [0.0; 3];
         self.listener_vel = [0.0; 3];
+        // Same values as `Engine::new()`.
+        self.ambient_light = [0.0, 0.0, 0.0, 1.0];
+        self.lighting_backend = 0;
     }
 
     /// Serialize the entire engine state into a binary snapshot.
@@ -1701,6 +1709,19 @@ mod tests {
 
     #[cfg(feature = "dev-tools")]
     #[test]
+    fn reset_restores_engine_level_lighting() {
+        // ReplayPlayer resets before replaying a tape: lighting left over from
+        // the run being replayed would make the replay diverge.
+        let mut engine = Engine::new();
+        engine.process_commands(&[ambient_cmd(0.2, 0.3, 0.4, 0.5), backend_cmd(1)]);
+        assert_eq!(engine.lighting_backend(), 1);
+        engine.reset();
+        assert_eq!(engine.ambient_light(), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(engine.lighting_backend(), 0);
+    }
+
+    #[cfg(feature = "dev-tools")]
+    #[test]
     fn snapshot_create_produces_valid_bytes() {
         let mut engine = Engine::new();
         engine.process_commands(&[spawn_cmd(0), make_position_cmd(0, 5.0, 10.0, 0.0)]);
@@ -1901,6 +1922,42 @@ mod tests {
         assert_eq!(engine.world.len(), 1);
         assert!(engine.world.contains(e));
         assert_eq!(engine.ambient_light(), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn switching_a_light_to_global_reaches_the_gpu_bounds() {
+        // SetLightFlags marks only `meta` dirty, yet the radius it changes
+        // (range -> f32::MAX -> range) must reach the GPU: the staging record
+        // carries bounds too, and update_bounding_radii runs before collection.
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let mut prim = [0u8; 16];
+        prim[0] = crate::components::PRIM_TYPE_LIGHT2D;
+        let mut range = [0u8; 16];
+        range[12..16].copy_from_slice(&80.0f32.to_le_bytes());
+        engine.process_commands(&[
+            Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload: prim },
+            Command { cmd_type: CommandType::SetPrimParams0, entity_id: 0, payload: range },
+        ]);
+        engine.update(FIXED_DT);
+        let e = engine.entity_map.get(0).unwrap();
+        let slot = engine.render_state.get_slot(e).unwrap() as usize;
+        let gpu_radius = |engine: &Engine| engine.render_state.gpu_bounds()[slot * 4 + 3];
+        assert_eq!(gpu_radius(&engine), 80.0);
+
+        let set_type = |t: u8| {
+            let mut p = [0u8; 16];
+            p[0] = t;
+            p[2..4].copy_from_slice(&1u16.to_le_bytes());
+            Command { cmd_type: CommandType::SetLightFlags, entity_id: 0, payload: p }
+        };
+        engine.process_commands(&[set_type(crate::components::LightType::Global as u8)]);
+        engine.update(FIXED_DT);
+        assert_eq!(gpu_radius(&engine), f32::MAX, "a global light is never culled");
+
+        engine.process_commands(&[set_type(crate::components::LightType::Point as u8)]);
+        engine.update(FIXED_DT);
+        assert_eq!(gpu_radius(&engine), 80.0, "back to its range");
     }
 
     #[cfg(feature = "dev-tools")]

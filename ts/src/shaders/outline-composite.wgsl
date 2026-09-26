@@ -11,10 +11,16 @@
 @group(0) @binding(2) var inputSampler: sampler;
 @group(0) @binding(3) var<uniform> params: OutlineParams;
 
+// Packed exactly as OutlineCompositePass writes it: f32[0..3] colour,
+// f32[4] width, f32[5..6] texel size, f32[7] pad, 32 bytes. A `texelSize:
+// vec2f` member is 8-aligned: it would sit at offset 24 instead of 20, and the
+// struct would be 48 bytes against a 32-byte buffer. That fails validation at
+// draw time, and until 2026-09-26 it dropped every frame with outlines on.
 struct OutlineParams {
     outlineColor: vec4f,
     outlineWidth: f32,
-    texelSize: vec2f,
+    texelSizeX: f32,
+    texelSizeY: f32,
     _pad: f32,
 };
 
@@ -86,7 +92,7 @@ fn applyFXAA(uv: vec2f, ts: vec2f) -> vec3f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let ts = params.texelSize;
+    let ts = vec2f(params.texelSizeX, params.texelSizeY);
 
     // Apply FXAA to the scene
     let scene = vec4f(applyFXAA(in.uv, ts), 1.0);

@@ -99,7 +99,7 @@ export class Hyperion implements Disposable {
     this.physicsApi = new PhysicsAPI();
     this.physicsApi._initProducer(bridge.commandBuffer);
     this.lightingApi = new LightingAPI();
-    this.lightingApi._init(bridge.commandBuffer, bridge);
+    this.lightingApi._init(bridge.commandBuffer, bridge, () => this.camera.viewProjection);
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }
@@ -314,7 +314,7 @@ export class Hyperion implements Disposable {
           this.config.canvas.width, this.config.canvas.height,
         );
 
-        return hitTestRay(ray, state.bounds, state.entityIds);
+        return hitTestRay(ray, state.bounds, state.entityIds, undefined, state.renderMeta);
       },
     };
   }
@@ -589,9 +589,12 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Per-pass GPU timings, one entry per pass measured at least once. Empty when
-   * profiling is off, unsupported, or still warming up — treat a `sampleCount`
-   * below ~30 as not yet meaningful.
+   * Per-pass GPU timings (a staged pass reports `pass/stage` entries), one
+   * entry per name measured in the last 120 resolved frames: a frame without
+   * it counts as 0 ms, so every `averageMs` is a mean per frame and every
+   * entry has the same `sampleCount`. Empty when profiling is off,
+   * unsupported, or still warming up — treat a `sampleCount` below ~30 as not
+   * yet meaningful.
    */
   getGpuTimings(): PassTiming[] {
     return this.renderer?.getGpuTimings() ?? [];
@@ -624,8 +627,8 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Disable selection outlines. The outline pipeline passes are
-   * removed and dead-pass culled from the render graph.
+   * Disable selection outlines. The render graph is rebuilt without the
+   * outline chain, and FXAATonemapPass is the final composite again.
    */
   disableOutlines(): void {
     this.checkDestroyed();
@@ -711,6 +714,14 @@ export class Hyperion implements Disposable {
     if (state && state.entityIds && this.immediateState.count > 0) {
       this.immediateState.patchTransforms(state.transforms, state.entityIds, state.entityCount);
       this.immediateState.patchBounds(state.bounds, state.entityIds, state.entityCount);
+    }
+    // Quality is renderer-side only: nothing crosses the ring buffer for it.
+    // In Mode A the renderer is in the render worker, reached via the bridge.
+    if (this.lightingApi._needsRebuild) {
+      const quality = this.lightingApi.quality;
+      if (this.renderer) this.renderer.setLightingQuality(quality);
+      else this.bridge.setLightingQuality?.(quality);
+      this.lightingApi._clearRebuildFlag();
     }
     if (this.renderer && state && state.entityCount > 0) {
       this.renderer.render(state, this.camera, dt);

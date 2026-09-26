@@ -32,8 +32,16 @@ interface EmitterState {
   configBuffer: GPUBuffer;
   cameraBuffer: GPUBuffer;
   simulateBindGroup: GPUBindGroup | null;
+  spawnBindGroup: GPUBindGroup | null;
   renderBindGroup: GPUBindGroup | null;
   spawnAccumulator: number;
+}
+
+/** The GPU pipelines a ParticleSystem draws with. */
+export interface ParticlePipelines {
+  simulate: GPUComputePipeline;
+  spawn: GPUComputePipeline;
+  render: GPURenderPipeline;
 }
 
 export class ParticleSystem {
@@ -56,7 +64,7 @@ export class ParticleSystem {
   }
 
   /**
-   * Compile the compute and render pipelines from shader source.
+   * Compile and install the compute and render pipelines from shader source.
    * Called once by the renderer after creation.
    */
   setupPipelines(
@@ -64,63 +72,91 @@ export class ParticleSystem {
     renderSource: string,
     format: GPUTextureFormat,
   ): void {
-    const simModule = this.device.createShaderModule({ code: simulateSource });
-    const renderModule = this.device.createShaderModule({ code: renderSource });
+    this.installPipelines({ ...this.buildSimulate(simulateSource), ...this.buildRender(renderSource, format) });
+  }
 
-    // Compute pipeline for particle simulation (advance physics)
-    this.simulatePipeline = this.device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: simModule, entryPoint: 'simulate' },
-    });
+  /**
+   * Compile the simulate + spawn compute pipelines WITHOUT installing them,
+   * so a hot-reload can have the GPU validate them first.
+   */
+  buildSimulate(simulateSource: string): Pick<ParticlePipelines, 'simulate' | 'spawn'> {
+    const module = this.device.createShaderModule({ code: simulateSource });
+    return {
+      // Advance physics
+      simulate: this.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'simulate' },
+      }),
+      // Spawn new particles
+      spawn: this.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'spawn' },
+      }),
+    };
+  }
 
-    // Compute pipeline for spawning new particles
-    this.spawnPipeline = this.device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: simModule, entryPoint: 'spawn' },
-    });
-
-    // Render pipeline for instanced point sprites with alpha blending
-    this.renderPipeline = this.device.createRenderPipeline({
-      layout: 'auto',
-      vertex: {
-        module: renderModule,
-        entryPoint: 'vs_main',
-      },
-      fragment: {
-        module: renderModule,
-        entryPoint: 'fs_main',
-        targets: [{
-          format,
-          blend: {
-            color: {
-              srcFactor: 'src-alpha',
-              dstFactor: 'one-minus-src-alpha',
-              operation: 'add',
+  /** Compile the instanced point-sprite render pipeline WITHOUT installing it. */
+  buildRender(renderSource: string, format: GPUTextureFormat): Pick<ParticlePipelines, 'render'> {
+    const module = this.device.createShaderModule({ code: renderSource });
+    return {
+      render: this.device.createRenderPipeline({
+        layout: 'auto',
+        vertex: {
+          module,
+          entryPoint: 'vs_main',
+        },
+        fragment: {
+          module,
+          entryPoint: 'fs_main',
+          targets: [{
+            format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
             },
-            alpha: {
-              srcFactor: 'one',
-              dstFactor: 'one-minus-src-alpha',
-              operation: 'add',
-            },
-          },
-          writeMask: 0xF, // GPUColorWrite.ALL
-        }],
-      },
-      primitive: {
-        topology: 'triangle-strip',
-        stripIndexFormat: 'uint16',
-      },
-    });
+            writeMask: 0xF, // GPUColorWrite.ALL
+          }],
+        },
+        primitive: {
+          topology: 'triangle-strip',
+          stripIndexFormat: 'uint16',
+        },
+      }),
+    };
+  }
 
-    // Shared index buffer for quad triangle strip: [0, 1, 2, 3]
-    this.indexBuffer = this.device.createBuffer({
-      size: 8, // 4 x uint16
-      usage: INDEX | COPY_DST,
-    });
-    this.device.queue.writeBuffer(
-      this.indexBuffer, 0,
-      new Uint16Array([0, 1, 2, 3]),
-    );
+  /**
+   * Make the given pipelines current and rebind every emitter. Bind groups
+   * built from an `'auto'` layout fit only the pipeline that produced it, so
+   * an emitter left on the old ones would fail validation every frame.
+   */
+  installPipelines(pipelines: Partial<ParticlePipelines>): void {
+    if (pipelines.simulate) this.simulatePipeline = pipelines.simulate;
+    if (pipelines.spawn) this.spawnPipeline = pipelines.spawn;
+    if (pipelines.render) this.renderPipeline = pipelines.render;
+
+    // Shared index buffer for quad triangle strip: [0, 1, 2, 3]. Once — it
+    // does not depend on the shaders.
+    if (!this.indexBuffer) {
+      this.indexBuffer = this.device.createBuffer({
+        size: 8, // 4 x uint16
+        usage: INDEX | COPY_DST,
+      });
+      this.device.queue.writeBuffer(
+        this.indexBuffer, 0,
+        new Uint16Array([0, 1, 2, 3]),
+      );
+    }
+
+    for (const state of this.emitters.values()) this.rebuildBindGroups(state);
   }
 
   /**
@@ -162,6 +198,7 @@ export class ParticleSystem {
       configBuffer,
       cameraBuffer,
       simulateBindGroup: null,
+      spawnBindGroup: null,
       renderBindGroup: null,
       spawnAccumulator: 0,
     };
@@ -240,7 +277,7 @@ export class ParticleSystem {
       if (spawnCount > 0) {
         const spawnPass = encoder.beginComputePass();
         spawnPass.setPipeline(this.spawnPipeline);
-        spawnPass.setBindGroup(0, state.simulateBindGroup!);
+        spawnPass.setBindGroup(0, state.spawnBindGroup!);
         spawnPass.dispatchWorkgroups(Math.ceil(spawnCount / 64));
         spawnPass.end();
       }
@@ -342,25 +379,34 @@ export class ParticleSystem {
 
   /** Create or recreate bind groups for an emitter. */
   private rebuildBindGroups(state: EmitterState): void {
-    if (!this.simulatePipeline || !this.renderPipeline) return;
+    if (!this.simulatePipeline || !this.spawnPipeline || !this.renderPipeline) return;
 
-    // Compute bind group (shared by simulate and spawn)
+    // Every pipeline here uses `layout: 'auto'`. An auto layout accepts only
+    // bind groups built from that same pipeline's getBindGroupLayout(), even
+    // when another pipeline's looks identical. So simulate and spawn each get
+    // their own, with the same buffers. Sharing one dropped every frame that
+    // spawned a particle.
+    const computeEntries = (): GPUBindGroupEntry[] => [
+      { binding: 0, resource: { buffer: state.particleBuffer } },
+      { binding: 1, resource: { buffer: state.configBuffer } },
+      { binding: 2, resource: { buffer: state.counterBuffer } },
+    ];
     state.simulateBindGroup = this.device.createBindGroup({
       layout: this.simulatePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: state.particleBuffer } },
-        { binding: 1, resource: { buffer: state.configBuffer } },
-        { binding: 2, resource: { buffer: state.counterBuffer } },
-      ],
+      entries: computeEntries(),
+    });
+    state.spawnBindGroup = this.device.createBindGroup({
+      layout: this.spawnPipeline.getBindGroupLayout(0),
+      entries: computeEntries(),
     });
 
-    // Render bind group
+    // An auto layout also holds only the bindings the shader uses: binding a
+    // buffer the render shader does not read is a createBindGroup error.
     state.renderBindGroup = this.device.createBindGroup({
       layout: this.renderPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: state.particleBuffer } },
         { binding: 1, resource: { buffer: state.cameraBuffer } },
-        { binding: 2, resource: { buffer: state.counterBuffer } },
       ],
     });
   }

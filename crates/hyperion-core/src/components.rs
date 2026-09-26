@@ -60,7 +60,8 @@ pub struct MeshHandle(pub u32);
 ///
 /// `6 = Light2D` is the one type the ForwardPass never draws: no shader is
 /// registered for it in `SHADER_SOURCES`, so the per-type pipeline loop simply
-/// never finds it. `LightAccumPass` reads its draw bucket directly.
+/// never finds it. `LightAccumStage` (inside `LightGroupsPass`) reads its draw
+/// bucket directly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct RenderPrimitive(pub u8);
@@ -290,7 +291,8 @@ pub const LIGHT_FLAGS_MASK: u32 = 0xFFFF_FE00;
 
 /// `RenderPrimitive` discriminant for a 2D light. Lights are ECS entities like
 /// any other drawable, but no shader is registered for this type in the
-/// ForwardPass — `LightAccumPass` reads their draw bucket directly.
+/// ForwardPass — `LightAccumStage` (inside `LightGroupsPass`) reads their draw
+/// bucket directly.
 pub const PRIM_TYPE_LIGHT2D: u8 = 6;
 
 /// Light shape, stored in `renderMeta` bits 11-13.
@@ -321,11 +323,14 @@ pub enum LightBlendMode {
 /// Lighting bits 9-31 of `renderMeta`, stored **pre-shifted**.
 ///
 /// One field with three meanings depending on the entity's role — a light's
-/// `lightMask` says which layers it illuminates, a drawable's says which layer
-/// it belongs to, an occluder's says which layers it shadows. Godot splits this
-/// into two orthogonal pairs; the cost of doing the same here is a new SoA
-/// column, and the single field covers the normal case (a wall is lit by, and
-/// shadows for, the same layers). Documented limit, not an oversight.
+/// `lightMask` says which layers it illuminates (0: none), a receiver's says
+/// which ONE layer it belongs to (its lowest bit; 0: layer 0), an occluder's
+/// says which layers it shadows (0: all). Godot splits this into two orthogonal
+/// pairs; the cost of doing the same here is a new SoA column, and the single
+/// field covers the normal case (a wall is lit by, and shadows for, the same
+/// layers). Documented limit, not an oversight. The renderer groups layers
+/// into light buffers from these values (`ts/src/render/light-groups.ts`); the
+/// engine only stores and hashes them.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 pub struct LightFlags(pub u32);

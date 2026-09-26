@@ -883,7 +883,7 @@ describe('phase 17 lighting commands (53-56)', () => {
     return { bp, sab };
   }
 
-  it('all four are coalescable — last write wins', () => {
+  it('all four are coalescable — one pending command per entity and type', () => {
     const queue = new PrioritizedCommandQueue();
     for (const cmd of [
       CommandType.SetLightFlags,
@@ -1033,5 +1033,120 @@ describe('phase 17 lighting commands (53-56)', () => {
     expect(kinds).toContain(CommandType.SetLightingBackend);
     expect(kinds).toContain(CommandType.SetListenerPosition);
     expect(kinds).not.toContain(CommandType.SetLightFlags);
+  });
+
+  // ── Partial updates through the real queue ──────────────────────────
+  //
+  // 53 and 54 carry "preserve" bits: a field marked preserved must keep what an
+  // earlier command in the same frame set. These tests drive the real
+  // BackpressuredProducer, read the bytes the ring buffer would hand to Rust,
+  // and fold them with the handlers' semantics (command_processor.rs,
+  // SetLightFlags / SetLightingFlags). They assert the final state, so they
+  // hold whether the queue merges the payloads or forwards every one in order.
+
+  interface LightState { type: number; blend: number; mask: number; casts: boolean; receives: boolean }
+
+  /** Reference model of the Rust handlers for 53/54, starting from `LightFlags::default()`. */
+  function foldLighting(bytes: Uint8Array, entityId: number): LightState {
+    const s: LightState = { type: 0, blend: 0, mask: 0, casts: false, receives: false };
+    let off = 0;
+    while (off < bytes.length) {
+      const cmd = bytes[off] as CommandType;
+      const id = (bytes[off + 1] | (bytes[off + 2] << 8) | (bytes[off + 3] << 16) | (bytes[off + 4] << 24)) >>> 0;
+      const p = bytes.subarray(off + 5, off + 5 + PAYLOAD_SIZES[cmd]);
+      if (id === entityId && cmd === CommandType.SetLightFlags) {
+        if (!(p[0] & 0x80)) s.type = p[0] & 0b111;
+        if (!(p[1] & 0x80)) s.blend = p[1] & 0b11;
+        s.mask = p[2] | (p[3] << 8);
+      } else if (id === entityId && cmd === CommandType.SetLightingFlags) {
+        if (!(p[0] & 0b0100)) s.casts = (p[0] & 0b01) !== 0;
+        if (!(p[0] & 0b1000)) s.receives = (p[0] & 0b10) !== 0;
+      }
+      off += 5 + PAYLOAD_SIZES[cmd];
+    }
+    return s;
+  }
+
+  it('castsShadow then receivesLight in one frame: both survive', () => {
+    // EntityHandle.castsShadow(true).receivesLight(true) — design §11's wall.
+    const { bp, sab } = createProducer();
+    bp.setLightingFlags(7, true, null);
+    bp.setLightingFlags(7, null, true);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.casts).toBe(true);
+    expect(s.receives).toBe(true);
+  });
+
+  it('a preserved flag keeps the earlier explicit value, not the default', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightingFlags(7, true, true);
+    bp.setLightingFlags(7, null, false);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.casts).toBe(true);
+    expect(s.receives).toBe(false);
+  });
+
+  it('three partial SetLightingFlags in one frame compose in order', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightingFlags(7, null, true);
+    bp.setLightingFlags(7, false, null);
+    bp.setLightingFlags(7, true, null);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.casts).toBe(true);
+    expect(s.receives).toBe(true);
+  });
+
+  it('light() then lightLayers() in one frame keeps the shape and blend', () => {
+    // .light({ type, blend }) followed by .lightLayers(mask) on the same handle.
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(7, 2, 3, 0xffff);
+    bp.setLightFlags(7, null, null, 0x0003);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.type).toBe(2);
+    expect(s.blend).toBe(3);
+    expect(s.mask).toBe(0x0003);
+  });
+
+  it('a lighting flag every command in the frame preserves keeps the previous frame value', () => {
+    // A merge that copies prev's value bit but drops its preserve bit would turn
+    // "leave receivesLight alone" into an explicit false and clear frame 1's true.
+    const { bp, sab } = createProducer();
+    bp.setLightingFlags(7, null, true);
+    bp.flush();
+    bp.setLightingFlags(7, true, null);
+    bp.setLightingFlags(7, false, null);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.casts).toBe(false);
+    expect(s.receives).toBe(true);
+  });
+
+  it('a light shape every command in the frame preserves keeps the previous frame value', () => {
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(7, 2, 3, 0xffff);
+    bp.flush();
+    bp.setLightFlags(7, null, null, 0x0001);
+    bp.setLightFlags(7, null, null, 0x0002);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.type).toBe(2);
+    expect(s.blend).toBe(3);
+    expect(s.mask).toBe(0x0002);
+  });
+
+  it('an explicit SetLightFlags after a preserving one wins outright', () => {
+    // Guard for the fix: merging must never let the older payload beat a newer explicit field.
+    const { bp, sab } = createProducer();
+    bp.setLightFlags(7, null, null, 5);
+    bp.setLightFlags(7, 1, 0, 7);
+    bp.flush();
+    const s = foldLighting(extractUnread(sab).bytes, 7);
+    expect(s.type).toBe(1);
+    expect(s.blend).toBe(0);
+    expect(s.mask).toBe(7);
   });
 });

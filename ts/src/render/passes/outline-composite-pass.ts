@@ -6,9 +6,9 @@ import type { ResourcePool } from '../resource-pool';
  *
  * Reads the scene (scene-hdr) and the final JFA texture, computes an SDF
  * outline around selected entities, and writes the composited result directly
- * to the swapchain.  When active, the existing FXAATonemapPass is dead-pass
- * culled by the RenderGraph since this pass writes to swapchain and includes
- * its own simplified FXAA.
+ * to the swapchain.  When active it is the graph's final composite and
+ * FXAATonemapPass is not registered at all (see render/graph-assembly.ts) —
+ * it includes its own simplified FXAA.
  *
  * The JFA result texture name is configurable (depends on which ping-pong
  * buffer the last JFA iteration wrote to).

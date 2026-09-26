@@ -111,8 +111,11 @@ export class PluginContext {
       emit: (event, data) => deps.eventBus.emit(event, data),
     };
     this.rendering = deps.renderer ? {
-      addPass: (pass) => deps.renderer!.graph.addPass(pass),
-      removePass: (name) => deps.renderer!.graph.removePass(name),
+      // Through the renderer, not its current graph: the graph object is
+      // replaced on every outline/bloom toggle, and a pass added to it
+      // directly used to be destroyed along with it.
+      addPass: (pass) => deps.renderer!.addPass(pass),
+      removePass: (name) => deps.renderer!.removePass(name),
     } : null;
     this.gpu = deps.renderer ? createPluginGpuAPI(deps.renderer.device) : null;
     this.storage = createPluginStorageAPI();

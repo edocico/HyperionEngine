@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { ForwardPass } from './forward-pass';
+import { primitiveGroup0LayoutEntries } from '../primitive-bindings';
+import { ResourcePool } from '../resource-pool';
+import type { FrameState } from '../render-pass';
+import basicShaderSource from '../../shaders/basic.wgsl?raw';
 
 describe('ForwardPass', () => {
   it('should implement RenderPass interface', () => {
@@ -25,5 +30,325 @@ describe('ForwardPass', () => {
     pass.destroy();
     // If no error, pipelines were successfully cleared (even though empty)
     expect(true).toBe(true);
+  });
+});
+
+// ForwardPass binds the texture-tier views in group 1. A tier that grows gets a
+// new texture and view, and the old texture is destroyed. The bind group must
+// follow, or every draw uses a destroyed texture and the frame is dropped.
+describe('ForwardPass group 1 follows the texture tiers', () => {
+  function setUp() {
+    const g = globalThis as Record<string, unknown>;
+    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
+    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+    g.GPUTextureUsage ??= { TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
+
+    const texture = () => ({ createView: () => ({}), destroy() {} });
+    const device = {
+      createBuffer: () => ({ destroy() {} }),
+      createShaderModule: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: () => ({}),
+      createRenderPipeline: () => ({}),
+      createBindGroup: (d: GPUBindGroupDescriptor) => ({ entries: [...d.entries] }),
+      createSampler: () => ({}),
+      createTexture: texture,
+      queue: { writeBuffer() {}, writeTexture() {} },
+    } as unknown as GPUDevice;
+
+    const pool = new ResourcePool();
+    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
+      pool.setBuffer(name, {} as GPUBuffer);
+    }
+    for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
+      pool.setTextureView(name, { name } as unknown as GPUTextureView);
+    }
+    pool.setSampler('texSampler', {} as GPUSampler);
+
+    const saved = ForwardPass.SHADER_SOURCES;
+    ForwardPass.SHADER_SOURCES = { 0: 'stub' };
+    const pass = new ForwardPass();
+    try {
+      pass.setup(device, pool);
+    } finally {
+      ForwardPass.SHADER_SOURCES = saved;
+    }
+
+    const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
+    const group1Views = () => {
+      const bound: Array<{ entries: GPUBindGroupEntry[] }> = [];
+      const encoder = {
+        beginRenderPass: () => ({
+          setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, end() {},
+          setBindGroup: (i: number, bg: { entries: GPUBindGroupEntry[] }) => { if (i === 1) bound.push(bg); },
+        }),
+      } as unknown as GPUCommandEncoder;
+      pass.execute(encoder, frame, pool);
+      expect(bound.length).toBeGreaterThan(0);
+      return bound.map((bg) => bg.entries.map((e) => e.resource));
+    };
+    return { pool, group1Views };
+  }
+
+  it('binds the views that are in the pool when it draws', () => {
+    const { pool, group1Views } = setUp();
+    group1Views();
+
+    const grown = { name: 'tier0 after growth' } as unknown as GPUTextureView;
+    pool.setTextureView('tier0', grown);
+    for (const views of group1Views()) {
+      expect(views).toContain(grown);
+    }
+  });
+
+  it('keeps the same bind group while nothing changes', () => {
+    const { group1Views } = setUp();
+    const first = group1Views()[0];
+    const second = group1Views()[0];
+    expect(second).toEqual(first);
+  });
+});
+
+// An untextured entity carries packed texture index 0: tier 0, layer 0, not
+// overflow. Layer 0 is reserved and never holds a real texture. It is meant to
+// be white, but on a compressed tier (BC7/ASTC) it is never filled, because
+// writeTexture cannot take raw pixels there. An all-zero BC7 block decodes to
+// transparent black, so every untextured quad drew black on desktop and white
+// on an rgba8-only device. The shader answers index 0 itself. WGSL does not run
+// headless, so this pins the rule in the source; the GPU check is visual.
+describe('basic.wgsl draws an untextured quad white on every tier format', () => {
+  it('returns white for packed index 0 before sampling any tier', () => {
+    // The colour/coverage function both entry points (fs_main, fs_occluder) share.
+    const fs = basicShaderSource.slice(basicShaderSource.indexOf('fn shade'));
+    const untextured = fs.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
+    expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
+    expect(untextured).toBeLessThan(fs.indexOf('textureSampleLevel'));
+  });
+});
+
+// The same rule for every shader whose colour comes from the texture tiers.
+// Lines and beziers sampled layer 0 of the compressed tier too, and on desktop
+// drew black with alpha 0, so as occluders they cast nothing. MSDF text is
+// excluded, because its "texture" is the glyph atlas, which it cannot render
+// without.
+const tierSamplingShaders = import.meta.glob(
+  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/bezier.wgsl'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+
+describe('packed index 0 is white in every tier-sampling primitive', () => {
+  it.each(Object.entries(tierSamplingShaders))('%s answers index 0 before sampling a tier', (_file, src) => {
+    const shade = src.slice(src.indexOf('fn shade'));
+    const check = shade.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u/);
+    expect(check, 'the untextured check').toBeGreaterThan(-1);
+    expect(check).toBeLessThan(shade.indexOf('textureSampleLevel(tier0Tex'));
+  });
+});
+
+// Phase 17, Task 10: ForwardPass reads the light buffer through a third bind
+// group. All six primitive shaders share one pipeline layout, now of three
+// groups; only the shaders that apply lighting declare group 2. A layout may
+// hold groups a shader does not use, but the bind group must still be set for
+// every pipeline, or the draw fails validation. With lighting off, group 2
+// binds a 1×1 placeholder and the lighting uniform says "disabled".
+describe('ForwardPass @group(2): the light buffer', () => {
+  function setUp(options?: { lit?: boolean }) {
+    const g = globalThis as Record<string, unknown>;
+    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
+    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+    g.GPUTextureUsage ??= { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
+
+    const layouts: GPUBindGroupLayoutDescriptor[] = [];
+    const pipelineLayouts: GPUPipelineLayoutDescriptor[] = [];
+    const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
+    const textures: GPUTextureDescriptor[] = [];
+    const buffers: Array<{ size: number; usage: number }> = [];
+    const device = {
+      createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
+      createShaderModule: () => ({}),
+      createSampler: () => ({ sampler: true }),
+      createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return { d }; },
+      createPipelineLayout: (d: GPUPipelineLayoutDescriptor) => { pipelineLayouts.push(d); return {}; },
+      createRenderPipeline: () => ({}),
+      createBindGroup: (d: GPUBindGroupDescriptor) => ({ layout: d.layout, entries: [...d.entries] }),
+      createTexture: (d: GPUTextureDescriptor) => {
+        textures.push(d);
+        return { createView: (vd?: GPUTextureViewDescriptor) => ({ placeholderOf: d, vd }), destroy() {} };
+      },
+      queue: {
+        writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
+          writes.push({ buffer, data: data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
+        },
+        writeTexture() {},
+      },
+    } as unknown as GPUDevice;
+
+    const pool = new ResourcePool();
+    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
+      pool.setBuffer(name, {} as GPUBuffer);
+    }
+    for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
+      pool.setTextureView(name, { name } as unknown as GPUTextureView);
+    }
+    pool.setSampler('texSampler', {} as GPUSampler);
+
+    const saved = ForwardPass.SHADER_SOURCES;
+    ForwardPass.SHADER_SOURCES = { 0: 'stub', 1: 'stub', 4: 'stub' };
+    const pass = new ForwardPass(options);
+    try {
+      pass.setup(device, pool);
+    } finally {
+      ForwardPass.SHADER_SOURCES = saved;
+    }
+
+    const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
+    const draw = () => {
+      const calls: Array<{ op: string; index?: number; group?: { entries: GPUBindGroupEntry[] } }> = [];
+      const encoder = {
+        beginRenderPass: () => ({
+          setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, end() {},
+          setPipeline: () => { calls.push({ op: 'pipeline' }); },
+          setBindGroup: (index: number, group: { entries: GPUBindGroupEntry[] }) => { calls.push({ op: 'group', index, group }); },
+        }),
+      } as unknown as GPUCommandEncoder;
+      pass.execute(encoder, frame, pool);
+      return calls;
+    };
+    const group2Texture = (calls: ReturnType<typeof draw>) => {
+      const bound = calls.filter((c) => c.op === 'group' && c.index === 2);
+      expect(bound.length).toBeGreaterThan(0);
+      return bound.map((c) => c.group!.entries.find((e) => e.binding === 0)!.resource);
+    };
+    const prepare = (over: Partial<FrameState> = {}) =>
+      pass.prepare(device, { cameraViewProjection: new Float32Array(16), ...over } as FrameState);
+    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture, buffers, prepare };
+  }
+
+  it('builds every pipeline on a three-group layout; group 2 is texture, filtering sampler, uniform', () => {
+    const { pipelineLayouts, layouts } = setUp();
+    expect(pipelineLayouts.length).toBeGreaterThan(0);
+    for (const pl of pipelineLayouts) expect([...pl.bindGroupLayouts]).toHaveLength(3);
+    // Group 0 has 6 entries, group 1 has 9: group 2 is the one with 3.
+    const group2 = layouts.find((l) => [...l.entries].length === 3)!;
+    const entries = [...group2.entries].sort((a, b) => a.binding - b.binding);
+    expect(entries.map((e) => e.binding)).toEqual([0, 1, 2]);
+    expect(entries[0].texture?.sampleType ?? 'float').toBe('float');
+    expect(entries[1].sampler?.type ?? 'filtering').toBe('filtering');
+    expect(entries[2].buffer?.type).toBe('uniform');
+    for (const e of entries) expect(e.visibility).toBe(GPUShaderStage.FRAGMENT);
+  });
+
+  // Light layers (design 2026-09-26): one light-buffer layer per light group.
+  it('group 2 binds the light buffer as a 2d-array, and the placeholder is a 1-layer 2d-array', () => {
+    const { layouts, textures, draw, group2Texture } = setUp();
+    const group2 = layouts.find((l) => [...l.entries].length === 3)!;
+    expect([...group2.entries].find((e) => e.binding === 0)!.texture?.viewDimension).toBe('2d-array');
+    const placeholder = textures.find((t) => t.format === 'rgba8unorm')!;
+    expect(placeholder.textureBindingViewDimension).toBe('2d-array');
+    const bound = group2Texture(draw())[0] as unknown as { vd?: GPUTextureViewDescriptor };
+    expect(bound.vd?.dimension).toBe('2d-array');
+  });
+
+  it('writes the layer→group table every frame, from FrameState.lightGroups', () => {
+    const { writes, prepare } = setUp({ lit: true });
+    prepare({ lightGroups: { layerToGroup: [0x10, 0x2] } as FrameState['lightGroups'] });
+    expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0x10, 0x2, 0]);
+    prepare({});
+    expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0, 0, 0]);
+  });
+
+  it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
+    const { buffers } = setUp();
+    expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);
+    expect(primitiveGroup0LayoutEntries()[0].buffer?.minBindingSize).toBe(80);
+  });
+
+  it('sets group 2 for every pipeline, including shaders that ignore it', () => {
+    const { draw } = setUp();
+    const calls = draw();
+    const pipelines = calls.filter((c) => c.op === 'pipeline').length;
+    expect(pipelines).toBe(6); // 3 types, opaque + transparent
+    expect(calls.filter((c) => c.op === 'group' && c.index === 2)).toHaveLength(pipelines);
+  });
+
+  it('without lighting: does not read light-buffer, binds a placeholder, and the uniform says disabled', () => {
+    const { pass, pool, writes, draw, group2Texture } = setUp();
+    expect(pass.reads).not.toContain('light-buffer');
+    // A view left in the pool by a lit graph that has since been retired: its
+    // texture is destroyed, and binding it would drop the frame.
+    const stale = { name: 'stale light buffer' } as unknown as GPUTextureView;
+    pool.setTextureView('light-buffer', stale);
+    for (const view of group2Texture(draw())) expect(view).not.toBe(stale);
+    const uniform = writes.find((w) => w.data.byteLength === 16);
+    expect(uniform, 'the 16-byte lighting uniform').toBeDefined();
+    expect(new Uint32Array(uniform!.data)[0]).toBe(0);
+  });
+
+  it('with lighting: reads light-buffer, binds the pool view, and the uniform says enabled', () => {
+    const { pass, pool, writes, draw, group2Texture } = setUp({ lit: true });
+    expect(pass.reads).toContain('light-buffer');
+    const lightBuffer = { name: 'light-buffer' } as unknown as GPUTextureView;
+    pool.setTextureView('light-buffer', lightBuffer);
+    for (const view of group2Texture(draw())) expect(view).toBe(lightBuffer);
+    const uniform = writes.find((w) => w.data.byteLength === 16);
+    expect(new Uint32Array(uniform!.data)[0]).toBe(1);
+  });
+
+  it('with lighting: follows the light-buffer view when LightGroupsPass recreates it (resize)', () => {
+    const { pool, draw, group2Texture } = setUp({ lit: true });
+    pool.setTextureView('light-buffer', { name: 'before' } as unknown as GPUTextureView);
+    draw();
+    const resized = { name: 'after resize' } as unknown as GPUTextureView;
+    pool.setTextureView('light-buffer', resized);
+    for (const view of group2Texture(draw())) expect(view).toBe(resized);
+  });
+});
+
+// Which shaders apply lighting, and how. Only basic.wgsl (sprites) and
+// gradient.wgsl declare group 2 (design §7.4). The lookup lives in fs_main, not
+// in shade(): OccluderSeedStage runs the same module through fs_occluder on a
+// TWO-group layout, and a binding statically used there would fail validation.
+const allPrimitiveShaders = import.meta.glob(
+  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/msdf-text.wgsl',
+    '../../shaders/bezier.wgsl', '../../shaders/gradient.wgsl', '../../shaders/box-shadow.wgsl'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+const LIT_SHADERS = ['basic.wgsl', 'gradient.wgsl'];
+
+describe('lit primitive shaders', () => {
+  it.each(Object.entries(allPrimitiveShaders))('%s declares group 2 only if it is lit', (file, src) => {
+    const lit = LIT_SHADERS.some((name) => file.endsWith(name));
+    expect(/@group\(2\)/.test(src)).toBe(lit);
+  });
+
+  it.each(LIT_SHADERS)('%s samples the light buffer in fs_main only, with textureSampleLevel, gated on receivesLight', (name) => {
+    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
+    const fsMain = src.slice(src.indexOf('fn fs_main'), src.indexOf('fn fs_occluder'));
+    const beforeFsMain = src.slice(0, src.indexOf('fn fs_main'));
+    expect(fsMain).toMatch(/textureSampleLevel\s*\(\s*lightBuffer\b/);
+    expect(fsMain).toMatch(/RECEIVES_LIGHT_BIT/);
+    expect(fsMain).toMatch(/lighting\.enabled/);
+    expect(beforeFsMain).not.toMatch(/lightBuffer\s*,|textureSample\w*\s*\(\s*lightBuffer/);
+    expect(src.slice(src.indexOf('fn fs_occluder'))).not.toMatch(/lightBuffer|lighting\./);
+  });
+
+  it.each(LIT_SHADERS)('%s samples the layer of its group: a 2d-array, the lowest mask bit, a 4-bit table', (name) => {
+    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
+    expect(src).toMatch(/@group\(2\) @binding\(0\) var lightBuffer: texture_2d_array<f32>;/);
+    expect(src).toMatch(/groupTableLo: u32,(?:\s|\/\/[^\n]*)*groupTableHi: u32,/);
+    const fn = src.slice(src.indexOf('fn lightGroupOf'), src.indexOf('}', src.indexOf('fn lightGroupOf')));
+    expect(fn).toMatch(/firstTrailingBit\(mask\)/);
+    expect(fn).toMatch(/0xFu/);
+    const fsMain = src.slice(src.indexOf('fn fs_main'), src.indexOf('fn fs_occluder'));
+    expect(fsMain).toMatch(/textureSampleLevel\(lightBuffer, lightSampler, in\.screenUV, lightGroupOf\(/);
+  });
+
+  it.each(LIT_SHADERS)('%s: RECEIVES_LIGHT_BIT matches RENDER_META_RECEIVES_LIGHT_BIT in components.rs', (name) => {
+    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
+    const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
+    const rustBit = Number(/RENDER_META_RECEIVES_LIGHT_BIT: u32 = 1 << (\d+);/.exec(rust)?.[1]);
+    const wgslBit = Number(/const RECEIVES_LIGHT_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(src)?.[1]);
+    expect(rustBit).toBe(10);
+    expect(wgslBit).toBe(rustBit);
   });
 });

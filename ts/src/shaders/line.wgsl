@@ -4,6 +4,13 @@
 
 struct CameraUniform {
     viewProjection: mat4x4f,
+    // The layers the occluder set being seeded shadows (OccluderSeedStage).
+    // 0 in ForwardPass, which never reads it. Scalars only: see
+    // src/shaders/uniform-layout.test.ts.
+    occluderLayers: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -25,6 +32,21 @@ struct CameraUniform {
 @group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
 @group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
+// Set to true only by the occluder pipelines (OccluderSeedStage), which run this module
+// with the fs_occluder entry point. The ForwardPass pipelines keep the default,
+// and the check below folds away.
+override OCCLUDER_PASS: bool = false;
+// renderMeta[slot*2+1] bit 9 (castsShadow). It must match
+// RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-stage.test.ts
+// compares the two.
+const CASTS_SHADOW_BIT: u32 = 1u << 9u;
+// Whether an entity is in the occluder set being seeded: it casts, and its
+// mask (renderMeta bits 16-31, 0 = every layer) meets the set's layers.
+fn castsInto(meta1: u32, layers: u32) -> bool {
+    let mask = select(meta1 >> 16u, 0xFFFFu, (meta1 >> 16u) == 0u);
+    return (meta1 & CASTS_SHADOW_BIT) != 0u && (mask & layers) != 0u;
+}
+
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
     @location(0) uv: vec2f,
@@ -32,6 +54,9 @@ struct VertexOutput {
     @location(2) @interpolate(flat) texTier: u32,
     @location(3) @interpolate(flat) texLayer: u32,
     @location(4) @interpolate(flat) isOverflow: u32,
+    // This fragment's position on screen in [0,1], y down: the seed that
+    // fs_occluder writes. Unused by fs_main.
+    @location(5) screenUV: vec2f,
 };
 
 @vertex
@@ -40,6 +65,15 @@ fn vs_main(
     @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
     let entityIdx = visibleIndices[instanceIdx];
+    var out: VertexOutput;
+
+    // In the occluder pass an entity that casts no shadow emits a degenerate
+    // triangle, so nothing of it is rasterised.
+    if (OCCLUDER_PASS && !castsInto(renderMeta[entityIdx * 2u + 1u], camera.occluderLayers)) {
+        out.clipPosition = vec4f(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
+
     let model = transforms[entityIdx];
 
     // Read line params
@@ -72,8 +106,9 @@ fn vs_main(
     let tier = (packed >> 16u) & 0x7u;
     let layer = packed & 0xFFFFu;
 
-    var out: VertexOutput;
     out.clipPosition = camera.viewProjection * model * vec4f(worldPos, 0.0, 1.0);
+    let ndc = out.clipPosition.xy / out.clipPosition.w;
+    out.screenUV = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     out.uv = vec2f(along, across + 0.5);
     out.entityIdx = entityIdx;
     out.texTier = tier;
@@ -83,8 +118,9 @@ fn vs_main(
     return out;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+// The line's colour and coverage. Shared by both entry points: a line casts
+// the shadow of exactly what it draws, dash gaps and anti-aliased edges included.
+fn shade(in: VertexOutput) -> vec4f {
     // Read line params for potential dash pattern
     let base = in.entityIdx * 8u;
     let width = primParams[base + 4u];
@@ -93,8 +129,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     // Read color from texture (with overflow support).
     // textureSampleLevel avoids uniform-control-flow requirement.
-    var color: vec4f;
-    if (in.isOverflow == 0u) {
+    // Packed index 0 (tier 0, layer 0, not overflow) means "untextured": white.
+    // Layer 0 of a compressed tier (BC7/ASTC) is never filled and decodes to
+    // transparent black; see basic.wgsl. Only the colour is replaced here — the
+    // stroke's coverage below still applies.
+    let untextured = in.isOverflow == 0u && in.texTier == 0u && in.texLayer == 0u;
+    var color = vec4f(1.0);
+    if (untextured) {
+        // keep white
+    } else if (in.isOverflow == 0u) {
         switch in.texTier {
             case 1u: { color = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
             case 2u: { color = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }
@@ -132,4 +175,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     color.a *= aa;
 
     return color;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    return shade(in);
+}
+
+// OccluderSeedStage entry: a seed wherever the line is at least half covered.
+// (u, v, valid, inside) — the layout the SDF chain floods (design §9.4).
+@fragment
+fn fs_occluder(in: VertexOutput) -> @location(0) vec4f {
+    if (shade(in).a < 0.5) {
+        discard;
+    }
+    return vec4f(in.screenUV, 1.0, 1.0);
 }

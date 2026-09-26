@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { PluginContext } from './plugin-context';
 import { GameLoop } from './game-loop';
 import { EventBus } from './event-bus';
+import { RenderGraph } from './render/render-graph';
+import { LineBatchPass } from './render/passes/debug-line-pass';
 
 function createTestContext() {
   const loop = new GameLoop(vi.fn());
@@ -57,6 +59,24 @@ describe('PluginRenderingAPI', () => {
   it('is null when no renderer', () => {
     const { ctx } = createTestContext();
     expect(ctx.rendering).toBeNull();
+  });
+
+  it('routes passes through the renderer, not into the graph it will replace', () => {
+    // The renderer swaps in a new RenderGraph on every outline/bloom toggle;
+    // a pass added to the current graph directly died with it.
+    const graph = new RenderGraph();
+    const renderer = { graph, device: {} as GPUDevice, addPass: vi.fn(), removePass: vi.fn() };
+    const ctx = new PluginContext({
+      engine: {} as any, loop: new GameLoop(vi.fn()), eventBus: new EventBus(), renderer: renderer as any,
+    });
+    const pass = new LineBatchPass('overlay', 8);
+
+    ctx.rendering!.addPass(pass);
+    ctx.rendering!.removePass('overlay');
+
+    expect(renderer.addPass).toHaveBeenCalledWith(pass);
+    expect(renderer.removePass).toHaveBeenCalledWith('overlay');
+    expect(graph.compile()).toEqual([]);
   });
 });
 

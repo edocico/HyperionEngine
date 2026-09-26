@@ -194,6 +194,15 @@ export class TextureManager {
   private total = 0;
   onProgress: ((loaded: number, total: number) => void) | null = null;
 
+  /**
+   * Called after a tier or overflow tier grows. Growth replaces the tier's
+   * texture and view and destroys the old texture, including the placeholder
+   * handed out at init. So whoever registered a view (`getTierView`,
+   * `getOverflowTierView`) must fetch it again, or everything bound to it
+   * references a destroyed texture.
+   */
+  onViewsChanged: (() => void) | null = null;
+
   /** When true, ImageBitmaps are kept in memory after upload for device-lost re-upload. */
   readonly retainBitmaps: boolean;
 
@@ -420,6 +429,7 @@ export class TextureManager {
     state.overflowTexture = newTexture;
     state.overflowView = newTexture.createView({ dimension: "2d-array" });
     state.overflowAllocatedLayers = newAllocation;
+    this.onViewsChanged?.();
   }
 
   /**
@@ -516,6 +526,7 @@ export class TextureManager {
     state.texture = newTexture;
     state.view = newTexture.createView({ dimension: "2d-array" });
     state.allocatedLayers = newAllocation;
+    this.onViewsChanged?.();
   }
 
   /**

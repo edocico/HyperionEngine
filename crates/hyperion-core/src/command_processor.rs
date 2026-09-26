@@ -125,8 +125,9 @@ impl EntityMap {
         true
     }
 
-    /// Number of `insert` calls rejected because the external id exceeded
-    /// [`MAX_EXTERNAL_ID`]. Surfaced to JS via `engine_rejected_command_count`.
+    /// Number of rejected commands: an `insert` whose external id exceeded
+    /// [`MAX_EXTERNAL_ID`], or a `SetRenderPrimitive` past the last type.
+    /// Surfaced to JS via `engine_rejected_command_count`.
     pub fn rejected_ids(&self) -> u32 {
         self.rejected_ids
     }
@@ -138,7 +139,7 @@ impl EntityMap {
         external_id <= MAX_EXTERNAL_ID
     }
 
-    /// Record a rejected command for an out-of-range id.
+    /// Record a rejected command: an out-of-range id or render primitive.
     pub(crate) fn note_rejected_id(&mut self) {
         self.rejected_ids = self.rejected_ids.saturating_add(1);
     }
@@ -415,7 +416,12 @@ fn would_create_cycle(
 /// Called before the entity leaves the world so its parent stops listing it and
 /// its children become roots instead of pointing at a dead — and later recycled
 /// — external id (audit 2026-07, P2-1b, P2-1c).
-fn unlink_hierarchy(world: &mut World, entity_map: &EntityMap, entity: hecs::Entity) {
+fn unlink_hierarchy(
+    world: &mut World,
+    entity_map: &EntityMap,
+    render_state: &mut RenderState,
+    entity: hecs::Entity,
+) {
     detach_from_parent(world, entity_map, entity);
 
     let mut child_ids: Vec<u32> = world
@@ -430,6 +436,15 @@ fn unlink_hierarchy(world: &mut World, entity_map: &EntityMap, entity: hecs::Ent
             && let Ok(mut parent) = world.get::<&mut Parent>(child_entity)
         {
             parent.0 = u32::MAX;
+            // The orphan is a root now: its world transform is its local one.
+            // Without this, its GPU row and culling sphere stayed at the dead
+            // parent's world position until something else dirtied it. The
+            // descendant pass of `mark_post_system_dirty` carries the mark on to
+            // the grandchildren.
+            if let Some(slot) = render_state.get_slot(child_entity) {
+                render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+            }
         }
     }
 }
@@ -453,7 +468,7 @@ fn retire_previous_binding(
     match entity_map.get(external_id) {
         Some(previous) => {
             render_state.queue_despawn(previous);
-            unlink_hierarchy(world, entity_map, previous);
+            unlink_hierarchy(world, entity_map, render_state, previous);
             let _ = world.despawn(previous);
             entity_map.remove(external_id);
             true
@@ -671,7 +686,7 @@ fn process_single_command(
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 render_state.queue_despawn(entity);
-                unlink_hierarchy(world, entity_map, entity);
+                unlink_hierarchy(world, entity_map, render_state, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
@@ -773,6 +788,13 @@ fn process_single_command(
         CommandType::SetRenderPrimitive => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 let prim = cmd.payload[0];
+                // Types run 0..=PRIM_TYPE_LIGHT2D. cull.wgsl clamps anything
+                // larger to the last type, so an out-of-range value would be
+                // drawn as a Light2D. Rejected, and the entity keeps its type.
+                if prim > crate::components::PRIM_TYPE_LIGHT2D {
+                    entity_map.note_rejected_id();
+                    return;
+                }
                 if let Ok(mut rp) = world.get::<&mut RenderPrimitive>(entity) {
                     rp.0 = prim;
                 }
@@ -1058,7 +1080,7 @@ fn process_single_command_physics(
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 despawn_physics_cleanup(world, entity, physics);
                 render_state.queue_despawn(entity);
-                unlink_hierarchy(world, entity_map, entity);
+                unlink_hierarchy(world, entity_map, render_state, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
@@ -1546,6 +1568,28 @@ mod tests {
         let entity = map.get(0).unwrap();
         let rp = world.get::<&RenderPrimitive>(entity).unwrap();
         assert_eq!(rp.0, 2);
+    }
+
+    #[test]
+    fn set_render_primitive_out_of_range_is_rejected_and_counted() {
+        // cull.wgsl clamps the type to NUM_PRIM_TYPES - 1, so a 7 used to be
+        // drawn as a Light2D: an invisible light lighting whatever its
+        // primParams[3] said (review 2026-09-26).
+        let mut world = World::new();
+        let mut map = EntityMap::new();
+        let mut rs = RenderState::new();
+        run_commands(&[make_spawn_cmd(0)], &mut world, &mut map, &mut rs);
+
+        let mut payload = [0u8; 16];
+        payload[0] = crate::components::PRIM_TYPE_LIGHT2D;
+        let valid = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
+        payload[0] = crate::components::PRIM_TYPE_LIGHT2D + 1;
+        let invalid = Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload };
+        run_commands(&[valid, invalid], &mut world, &mut map, &mut rs);
+
+        let entity = map.get(0).unwrap();
+        assert_eq!(world.get::<&RenderPrimitive>(entity).unwrap().0, crate::components::PRIM_TYPE_LIGHT2D);
+        assert_eq!(map.rejected_ids(), 1);
     }
 
     #[test]
