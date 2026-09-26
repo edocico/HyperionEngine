@@ -78,7 +78,7 @@ interface LightGroups {
 
 Con più di 16 gruppi non ci si arriva: i layer sono 16, quindi i gruppi sono al massimo 16 e i set al massimo 16. Con zero ricevitori resta un gruppo fittizio, che mantiene valido il binding del ForwardPass.
 
-Le chiavi dipendono dai **valori** delle maschere, non dalle entità. I gruppi non cambiano quando le cose si muovono: cambiano quando un valore compare o sparisce, o quando una luce entra o esce dalla vista.
+Le chiavi dipendono dai **valori** delle maschere, non dalle entità. Spostare le cose non basta a rifare i gruppi: cambiano quando un valore compare o sparisce, o quando una luce, un occluder o un ricevitore illuminato entra o esce dalla vista (review 2026-09-26: da quando i ricevitori hanno il filtro frustum, anche uno sprite da solo sul suo layer può portarsi dietro un intero SDF set).
 
 Costo misurato del prototipo (Node 24, dati sintetici, senza filtro frustum): 0,018 ms a 10k entità, 0,15-0,19 ms a 100k. Il filtro frustum si applicava allora solo a luci e occluder; dal 2026-09-26 anche ai ricevitori.
 
@@ -101,7 +101,7 @@ for set s:
     sdfChain(s)        1 + iterationsForDimension(maxDim) passes, power-of-two steps, over seed → sdfA/sdfB
     for group g with sdfSet == s:
         accumulate(g)  render pass on lightBuffer layer g, clear = ambient,
-                       Light2D buckets (args 12, 13), uniform slice {…, groupLayers = g.layers},
+                       Light2D buckets (args 12, 13, 26, 27), uniform slice {…, groupLayers = g.layers},
                        SDF = final ping-pong texture of s
 for group g with sdfSet == -1:
     accumulate(g)      SDF = noOccluder

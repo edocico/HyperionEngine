@@ -13,8 +13,9 @@ override SUBGROUP_SIZE: u32 = 32u;
 override USE_SUBGROUP_ID: bool = false;
 
 // 7 = Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow, Light2D.
-// Light2D has no material sort and no transparent variant, so three of its four
-// buckets stay empty. Uniform waste, and the alternative — a variable bucket
+// Light2D is filed like any other type (bucket 1 for a tier > 0 texture, the
+// transparent half for bit 8); a plain light fills only slot 12, and
+// LightAccumStage draws all four. Uniform waste, and the alternative — a variable bucket
 // count per type — would break the `blendOff + primType * BUCKETS_PER_TYPE + bk`
 // indexing below and add a branch to the hot loop.
 const NUM_PRIM_TYPES: u32 = 7u;

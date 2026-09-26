@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { LightAccumStage, LIGHT2D_ARG_SLOTS, SLICE } from './light-accum-stage';
 import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
+import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
 
@@ -108,6 +109,18 @@ describe('LightAccumStage', () => {
     expect(attachment.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
     expect(LIGHT2D_ARG_SLOTS).toEqual([12, 13, 26, 27]);
     expect(pass.draws).toEqual([240, 260, 520, 540]);
+  });
+
+  it('draws every slot CullPass can file a Light2D under, and only those', () => {
+    // cull.wgsl: argSlot = blendOffset + primType * BUCKETS_PER_TYPE + bucket,
+    // bucket 1 for a tier > 0 texture, blendOffset 14 for bit 8.
+    const reachable = new Set<number>();
+    for (const transparent of [false, true]) {
+      for (const texturedTier of [false, true]) {
+        reachable.add((transparent ? TRANSPARENT_BUCKET_OFFSET : 0) + 6 * BUCKETS_PER_TYPE + (texturedTier ? 1 : 0));
+      }
+    }
+    expect(new Set(LIGHT2D_ARG_SLOTS)).toEqual(reachable);
   });
 
   it('reuses a group bind group until its SDF view or the uniform buffer changes', () => {
