@@ -15,6 +15,8 @@ import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import scatterShaderCode from './shaders/scatter.wgsl?raw';
 import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
+import sdfJfaShaderCode from './shaders/sdf-jfa.wgsl?raw';
+import lightAccumShaderCode from './shaders/light-accum.wgsl?raw';
 import { TextureManager } from './texture-manager';
 import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
@@ -29,6 +31,11 @@ import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
 import { RadixSortPass } from './render/passes/radix-sort-pass';
+import { OccluderSeedPass, halfResolution } from './render/passes/occluder-seed-pass';
+import { SdfJfaPass } from './render/passes/sdf-jfa-pass';
+import { LightAccumPass } from './render/passes/light-accum-pass';
+import { followLightingBackend, unsupportedLightingQuality } from './render/lighting-backend';
+import { DEFAULT_LIGHTING_QUALITY, type LightingQuality } from './lighting-api';
 import { SelectionManager } from './selection';
 import {
   detectCompressedFormat, detectSubgroupSupport, describeAdapter,
@@ -98,6 +105,18 @@ export interface Renderer {
   enableBloom(config?: BloomConfig): void;
   disableBloom(): void;
   readonly bloomEnabled: boolean;
+  /**
+   * Whether the lit graph is requested. It follows the engine's lighting
+   * backend (`LightingAPI.setBackend`, read back from `GPURenderState`) and,
+   * like bloom, goes live once the GPU has validated it.
+   */
+  readonly lightingEnabled: boolean;
+  /**
+   * Lighting quality (`LightingAPI.setQuality`). `shadowSteps` applies from
+   * the next frame. `bufferScale` and `sdfOversize` are fixed at their
+   * defaults for now; a different value is reported once.
+   */
+  setLightingQuality(quality: LightingQuality): void;
   recompileShader(passName: string, shaderCode: string): void;
 
   /**
@@ -272,6 +291,8 @@ export async function createRenderer(
   JFAPass.SHADER_SOURCE = jfaShaderCode;
   OutlineCompositePass.SHADER_SOURCE = outlineCompositeShaderCode;
   LineBatchPass.SHADER_SOURCE = debugLineShaderCode;
+  SdfJfaPass.SHADER_SOURCE = sdfJfaShaderCode;
+  LightAccumPass.SHADER_SOURCE = lightAccumShaderCode;
 
   CullPass.SUBGROUP_CONFIG = {
     useSubgroups,
@@ -402,12 +423,57 @@ export async function createRenderer(
     }
   }
 
+  // --- 8b'. Signed-SDF state (lighting) ---
+  // The SDF chain runs on two ping-pong textures at halfResolution, the size
+  // OccluderSeedPass renders its seed at: the chain steps in texels of that
+  // seed, so the two must agree to the texel. occluder-seed and light-buffer
+  // are allocated by their own passes; these are shared by the whole chain.
+  let sdfPasses: SdfJfaPass[] = [];
+  let sdfTextureA: GPUTexture | null = null;
+  let sdfTextureB: GPUTexture | null = null;
+  let sdfTexWidth = 0;
+  let sdfTexHeight = 0;
+  let lightingQuality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
+  const reportedQuality = new Set<keyof LightingQuality>();
+
+  /** The SDF chain for the current canvas. */
+  function sdfChain(): SdfJfaPass[] {
+    return SdfJfaPass.chain(Math.max(...halfResolution(canvas.width, canvas.height)));
+  }
+
+  function ensureSdfTextures(): void {
+    const [width, height] = halfResolution(canvas.width, canvas.height);
+    if (sdfTextureA && sdfTexWidth === width && sdfTexHeight === height) return;
+    sdfTextureA?.destroy();
+    sdfTextureB?.destroy();
+    const make = (label: string) => device.createTexture({
+      size: { width, height },
+      format: JFA_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      label,
+    });
+    sdfTextureA = make('sdf-a');
+    sdfTextureB = make('sdf-b');
+    sdfTexWidth = width;
+    sdfTexHeight = height;
+  }
+
+  /** Map sdf-iter-N onto the ping-pong textures: even iterations write A, odd B. */
+  function updateSdfTextureViews(chainLength: number): void {
+    if (!sdfTextureA || !sdfTextureB) return;
+    const viewA = sdfTextureA.createView();
+    const viewB = sdfTextureB.createView();
+    for (let i = 0; i < chainLength; i++) {
+      resources.setTextureView(`sdf-iter-${i}`, i % 2 === 0 ? viewA : viewB);
+    }
+  }
+
   // --- 8c. RenderGraph ---
   // RenderGraphHost owns the graph: a new one goes live only once the GPU has
   // validated it, and plugin overlays are validated against every mode
   // (graph-host.ts). GraphRequests owns what the caller asked for and shader
   // hot-reload (graph-requests.ts).
-  const BASE_MODE: GraphMode = { outlines: false, bloom: false };
+  const BASE_MODE: GraphMode = { outlines: false, bloom: false, lighting: false };
   const gpuValidation = createGpuValidation(device);
   let bloomPass: BloomPass | null = null;
   // Read by onSwap, which first runs inside the RenderGraphHost constructor —
@@ -416,7 +482,7 @@ export async function createRenderer(
 
   /** Constructs the passes of one graph. No GPU work: see GraphPassFactories. */
   const graphFactories: GraphPassFactories = {
-    scene: () => [new ScatterPass(), new CullPass(), new RadixSortPass(), new ForwardPass()],
+    scene: (mode) => [new ScatterPass(), new CullPass(), new RadixSortPass(), new ForwardPass({ lit: mode.lighting })],
     outline() {
       const maxDim = Math.max(canvas.width, canvas.height);
       const n = JFAPass.iterationsForDimension(maxDim);
@@ -434,10 +500,26 @@ export async function createRenderer(
     },
     bloom: () => new BloomPass(graphRequests?.requested.bloomConfig),
     fxaaTonemap: () => new FXAATonemapPass(),
+    lighting() {
+      const chain = sdfChain();
+      return [
+        // The primitives' own modules, through fs_occluder: each casts its exact shape.
+        new OccluderSeedPass(ForwardPass.SHADER_SOURCES),
+        ...chain,
+        new LightAccumPass(SdfJfaPass.finalOutputResource(chain.length)),
+      ];
+    },
   };
 
-  /** GPU textures a mode's passes read by name, sized to the canvas. */
-  function prepareMode(mode: GraphMode, jfaIterations?: number): void {
+  /**
+   * GPU textures a mode's passes read by name, sized to the canvas. The chain
+   * lengths are the live graph's; without them, the ones this canvas gets.
+   */
+  function prepareMode(mode: GraphMode, jfaIterations?: number, sdfChainLength?: number): void {
+    if (mode.lighting) {
+      ensureSdfTextures();
+      updateSdfTextureViews(sdfChainLength ?? sdfChain().length);
+    }
     if (mode.outlines) {
       ensureJFATextures(canvas.width, canvas.height);
       updateJFATextureViews(
@@ -456,6 +538,7 @@ export async function createRenderer(
     onSwap(graph, owned, mode) {
       scatterPass = owned.find((p): p is ScatterPass => p instanceof ScatterPass) ?? null;
       jfaPasses = owned.filter((p): p is JFAPass => p instanceof JFAPass);
+      sdfPasses = owned.filter((p): p is SdfJfaPass => p instanceof SdfJfaPass);
       outlineCompositePass =
         owned.find((p): p is OutlineCompositePass => p instanceof OutlineCompositePass) ?? null;
       bloomPass = owned.find((p): p is BloomPass => p instanceof BloomPass) ?? null;
@@ -468,7 +551,7 @@ export async function createRenderer(
       if (wanted && bloomPass) bloomPass.configure(wanted.bloomConfig);
       // The canvas may have been resized while this graph was pending, and
       // the resize branch in render() only handles the live graph's mode.
-      prepareMode(mode, jfaPasses.length);
+      prepareMode(mode, jfaPasses.length, sdfPasses.length);
       // The graph object is new; re-attach the profiler and drop the history,
       // which measured a different set of passes.
       if (gpuProfilingEnabled && gpuProfiler) {
@@ -479,23 +562,27 @@ export async function createRenderer(
     onError: (message) => console.error(message),
   }, BASE_MODE);
 
-  /** Set up, then destroy, a throwaway pass: compiles its shaders and pipelines on this device. */
-  const probe = (make: () => RenderPass) => (): void => {
-    const pass = make();
+  /** Set up, then destroy, throwaway passes: compiles their shaders and pipelines on this device. */
+  const probe = (make: () => RenderPass | RenderPass[]) => (): void => {
+    const passes = [make()].flat();
     try {
-      pass.setup(device, resources);
+      for (const pass of passes) pass.setup(device, resources);
     } finally {
-      pass.destroy();
+      for (const pass of passes) pass.destroy();
     }
   };
   const inEveryMode = (): boolean => true;
   const inBaseMode = (m: GraphMode): boolean => !m.outlines && !m.bloom;
   const inOutlineMode = (m: GraphMode): boolean => m.outlines;
   const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
+  const inLightingMode = (m: GraphMode): boolean => m.lighting;
+  // A primitive module has two users: ForwardPass (fs_main, three groups) and
+  // OccluderSeedPass (fs_occluder, two groups). The probe compiles both, so an
+  // edit that breaks only the occluder entry point is caught here too.
   const forwardSlot = (i: number): ShaderSlot => ({
     read: () => ForwardPass.SHADER_SOURCES[i],
     write: (src) => { ForwardPass.SHADER_SOURCES[i] = src; },
-    probe: probe(() => new ForwardPass()),
+    probe: probe(() => [new ForwardPass(), new OccluderSeedPass(ForwardPass.SHADER_SOURCES)]),
     usedBy: inEveryMode,
   });
   const shaderSlots: Record<string, ShaderSlot> = {
@@ -555,6 +642,19 @@ export async function createRenderer(
       probe: probe(() => new BloomPass()),
       usedBy: inBloomMode,
     },
+    'sdf-jfa': {
+      read: () => SdfJfaPass.SHADER_SOURCE,
+      write: (src) => { SdfJfaPass.SHADER_SOURCE = src; },
+      // A chain of two: the LOAD_PASS pipeline and a regular one.
+      probe: probe(() => SdfJfaPass.chain(1)),
+      usedBy: inLightingMode,
+    },
+    'light-accum': {
+      read: () => LightAccumPass.SHADER_SOURCE,
+      write: (src) => { LightAccumPass.SHADER_SOURCE = src; },
+      probe: probe(() => new LightAccumPass(SdfJfaPass.finalOutputResource(1))),
+      usedBy: inLightingMode,
+    },
   };
 
   const requests = new GraphRequests<OutlineOptions, BloomConfig>({
@@ -570,6 +670,16 @@ export async function createRenderer(
     log: console,
   });
   graphRequests = requests;
+
+  // The lighting backend lives in WASM and arrives with every frame's state.
+  // A throw here would escape render() and stop the RAF loop for good.
+  const followBackend = followLightingBackend((lit) => {
+    try {
+      requests.setLighting(lit);
+    } catch (err) {
+      console.error(`[Hyperion] Lighting could not be ${lit ? 'enabled' : 'disabled'}:`, err);
+    }
+  }, (message) => console.warn(message));
 
   /**
    * Particles live outside the RenderGraph. Same rule as GraphRequests: each
@@ -640,6 +750,22 @@ export async function createRenderer(
       return requests.requested.mode.bloom;
     },
 
+    get lightingEnabled(): boolean {
+      return requests.requested.mode.lighting;
+    },
+
+    setLightingQuality(quality: LightingQuality): void {
+      lightingQuality = { ...quality };
+      const fresh = unsupportedLightingQuality(quality).filter((key) => !reportedQuality.has(key));
+      if (fresh.length > 0) {
+        for (const key of fresh) reportedQuality.add(key);
+        console.warn(
+          `[Hyperion] Lighting quality ${fresh.join(', ')} not supported yet: ` +
+          'the light buffer and the SDF stay at half resolution, without padding.',
+        );
+      }
+    },
+
     enableBloom(config?: BloomConfig): void {
       requests.enableBloom(config);
     },
@@ -668,6 +794,7 @@ export async function createRenderer(
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
+      followBackend(state.lightingBackend);
       if (state.entityCount === 0) return;
 
       // Scatter/full upload branching:
@@ -750,9 +877,9 @@ export async function createRenderer(
         sceneHdrWidth = canvas.width;
         sceneHdrHeight = canvas.height;
 
-        // Recreate the live graph's JFA / bloom textures on resize. A pending
-        // graph catches up when it goes live (onSwap).
-        prepareMode(host.mode, jfaPasses.length);
+        // Recreate the live graph's JFA / bloom / SDF textures on resize. A
+        // pending graph catches up when it goes live (onSwap).
+        prepareMode(host.mode, jfaPasses.length, sdfPasses.length);
 
         // Pass cost is roughly proportional to pixel count, so samples taken at
         // the old resolution must not be averaged with the new ones.
@@ -775,6 +902,8 @@ export async function createRenderer(
         canvasHeight: canvas.height,
         deltaTime: dt ?? 0,
         physicsDebugLines: state.physicsDebugLines ?? undefined,
+        ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
+        shadowSteps: lightingQuality.shadowSteps,
       };
 
       host.graph.render(device, frameState, resources);
@@ -834,6 +963,8 @@ export async function createRenderer(
       sceneHdrTexture.destroy();
       jfaTextureA?.destroy();
       jfaTextureB?.destroy();
+      sdfTextureA?.destroy();
+      sdfTextureB?.destroy();
       bloomHalfTexture?.destroy();
       bloomQuarterTexture?.destroy();
       bloomEighthTexture?.destroy();
@@ -888,6 +1019,12 @@ export async function createRenderer(
     });
     import.meta.hot.accept('./shaders/radix-sort.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('radix-sort', mod.default);
+    });
+    import.meta.hot.accept('./shaders/sdf-jfa.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('sdf-jfa', mod.default);
+    });
+    import.meta.hot.accept('./shaders/light-accum.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('light-accum', mod.default);
     });
     import.meta.hot.accept('./shaders/particle-simulate.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('particle-simulate', mod.default);

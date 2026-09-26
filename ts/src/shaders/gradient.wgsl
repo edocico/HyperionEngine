@@ -37,6 +37,25 @@ override OCCLUDER_PASS: bool = false;
 // RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-pass.test.ts
 // compares the two.
 const CASTS_SHADOW_BIT: u32 = 1u << 9u;
+// renderMeta[slot*2+1] bit 10 (receivesLight), RENDER_META_RECEIVES_LIGHT_BIT
+// in components.rs; forward-pass.test.ts compares the two.
+const RECEIVES_LIGHT_BIT: u32 = 1u << 10u;
+
+// Group 2: the light buffer (Phase 17), accumulated by LightAccumPass at half
+// resolution and cleared to the ambient light. Only fs_main reads it:
+// OccluderSeedPass runs this module through fs_occluder on a layout of two
+// groups, where a binding used by that entry point would fail validation.
+// Scalars only: see src/shaders/uniform-layout.test.ts.
+struct LightingUniform {
+    enabled: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(2) @binding(0) var lightBuffer: texture_2d<f32>;
+@group(2) @binding(1) var lightSampler: sampler;
+@group(2) @binding(2) var<uniform> lighting: LightingUniform;
 
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
@@ -46,7 +65,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) texLayer: u32,
     @location(4) @interpolate(flat) isOverflow: u32,
     // This fragment's position on screen in [0,1], y down: the seed that
-    // fs_occluder writes. Unused by fs_main.
+    // fs_occluder writes, and where fs_main reads the light buffer.
     @location(5) screenUV: vec2f,
 };
 
@@ -124,7 +143,15 @@ fn shade(in: VertexOutput) -> vec4f {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return shade(in);
+    let color = shade(in);
+    // entityIdx is flat, so the branch is uniform across the quad. Unlit
+    // entities skip the lookup, and keep their full colour.
+    if (lighting.enabled == 1u && (renderMeta[in.entityIdx * 2u + 1u] & RECEIVES_LIGHT_BIT) != 0u) {
+        // A subtractive light can push the buffer below zero: clamp before tinting.
+        let light = max(textureSampleLevel(lightBuffer, lightSampler, in.screenUV, 0.0).rgb, vec3f(0.0));
+        return vec4f(color.rgb * light, color.a);
+    }
+    return color;
 }
 
 // OccluderSeedPass entry: a seed wherever the gradient is at least half covered.

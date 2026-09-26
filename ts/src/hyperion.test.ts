@@ -70,6 +70,8 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    lightingEnabled: false,
+    setLightingQuality: vi.fn(),
     destroy: vi.fn(),
   };
 }
@@ -700,6 +702,59 @@ describe('Hyperion SystemViews', () => {
 
     expect(receivedViews.length).toBe(1);
     expect(receivedViews[0]).toBeUndefined();
+    engine.destroy();
+  });
+});
+
+// LightingAPI.setQuality() is renderer-side only: nothing crosses the ring
+// buffer. The facade hands the settings over on the next frame, once, and
+// clears the flag — otherwise every frame would re-apply them.
+describe('Hyperion lighting quality', () => {
+  let rafCallbacks: ((time: number) => void)[];
+  let originalRAF: typeof globalThis.requestAnimationFrame;
+  let originalCAF: typeof globalThis.cancelAnimationFrame;
+
+  beforeEach(() => {
+    rafCallbacks = [];
+    originalRAF = globalThis.requestAnimationFrame;
+    originalCAF = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = vi.fn((cb) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    }) as unknown as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = vi.fn();
+  });
+
+  afterEach(() => {
+    globalThis.requestAnimationFrame = originalRAF;
+    globalThis.cancelAnimationFrame = originalCAF;
+  });
+
+  it('hands the quality to the renderer on the next frame, once per setQuality', () => {
+    const bridge = mockBridge();
+    const state = {
+      entityCount: 1,
+      transforms: new Float32Array(16),
+      bounds: new Float32Array(4),
+      renderMeta: new Uint32Array(2),
+      texIndices: new Uint32Array(1),
+      primParams: new Float32Array(8),
+      entityIds: new Uint32Array([1]),
+      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    Object.defineProperty(bridge, 'latestRenderState', { get: () => state });
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, renderer);
+
+    engine.lighting.setQuality({ shadowSteps: 12 });
+    engine.start();
+    rafCallbacks.shift()!(16.67);
+    expect(renderer.setLightingQuality).toHaveBeenCalledTimes(1);
+    expect(renderer.setLightingQuality).toHaveBeenCalledWith(expect.objectContaining({ shadowSteps: 12 }));
+    expect(engine.lighting._needsRebuild).toBe(false);
+
+    rafCallbacks.shift()!(33.34);
+    expect(renderer.setLightingQuality).toHaveBeenCalledTimes(1);
     engine.destroy();
   });
 });

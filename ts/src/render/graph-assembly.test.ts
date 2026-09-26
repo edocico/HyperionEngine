@@ -7,6 +7,10 @@ import { SelectionSeedPass } from './passes/selection-seed-pass';
 import { JFAPass } from './passes/jfa-pass';
 import { OutlineCompositePass } from './passes/outline-composite-pass';
 import { DebugLinePass, LineBatchPass } from './passes/debug-line-pass';
+import { ForwardPass } from './passes/forward-pass';
+import { OccluderSeedPass } from './passes/occluder-seed-pass';
+import { SdfJfaPass } from './passes/sdf-jfa-pass';
+import { LightAccumPass } from './passes/light-accum-pass';
 
 // Scene passes are stand-ins carrying the real resource names. Every final
 // composite and every overlay is the real class, so what gets compiled is the
@@ -20,10 +24,20 @@ function mockPass(name: string, reads: string[], writes: string[]): RenderPass {
   };
 }
 
-function scene(): RenderPass[] {
+function scene(mode?: GraphMode): RenderPass[] {
   return [
     mockPass('cull', ['entity-transforms'], ['visible-indices', 'indirect-args']),
-    mockPass('forward', ['visible-indices', 'indirect-args'], ['scene-hdr']),
+    // The real ForwardPass: its reads are what orders it after the light chain.
+    new ForwardPass({ lit: mode?.lighting ?? false }),
+  ];
+}
+
+function lightingChain(): RenderPass[] {
+  const chain = SdfJfaPass.chain(512);
+  return [
+    new OccluderSeedPass({}),
+    ...chain,
+    new LightAccumPass(SdfJfaPass.finalOutputResource(chain.length)),
   ];
 }
 
@@ -43,15 +57,16 @@ function factories() {
     outline: vi.fn(outlineChain),
     bloom: vi.fn(() => new BloomPass()),
     fxaaTonemap: vi.fn(() => new FXAATonemapPass()),
+    lighting: vi.fn(lightingChain),
   };
 }
 
 const FINAL_COMPOSITES = ['fxaa-tonemap', 'outline-composite', 'bloom'];
 
 const MODES: Array<{ mode: GraphMode; composite: string }> = [
-  { mode: { outlines: false, bloom: false }, composite: 'fxaa-tonemap' },
-  { mode: { outlines: true, bloom: false }, composite: 'outline-composite' },
-  { mode: { outlines: false, bloom: true }, composite: 'bloom' },
+  { mode: { outlines: false, bloom: false, lighting: false }, composite: 'fxaa-tonemap' },
+  { mode: { outlines: true, bloom: false, lighting: false }, composite: 'outline-composite' },
+  { mode: { outlines: false, bloom: true, lighting: false }, composite: 'bloom' },
 ];
 
 describe('composeRenderGraph', () => {
@@ -71,32 +86,82 @@ describe('composeRenderGraph', () => {
 
   it('does not construct an fxaa-tonemap pass it will not run', () => {
     const f = factories();
-    composeRenderGraph({ outlines: true, bloom: false }, f, []);
-    composeRenderGraph({ outlines: false, bloom: true }, f, []);
+    composeRenderGraph({ outlines: true, bloom: false, lighting: false }, f, []);
+    composeRenderGraph({ outlines: false, bloom: true, lighting: false }, f, []);
     expect(f.fxaaTonemap).not.toHaveBeenCalled();
   });
 
   it('overlays execute in registration order', () => {
     const overlays = [new DebugLinePass(), new LineBatchPass('bounds-visualizer', 64)];
-    const { graph } = composeRenderGraph({ outlines: false, bloom: false }, factories(), overlays);
+    const { graph } = composeRenderGraph({ outlines: false, bloom: false, lighting: false }, factories(), overlays);
     expect(graph.compile().slice(-2)).toEqual(['physics-debug', 'bounds-visualizer']);
   });
 
   it('owned lists the renderer passes it built, not the overlays', () => {
-    const { owned } = composeRenderGraph({ outlines: false, bloom: true }, factories(), [new DebugLinePass()]);
+    const { owned } = composeRenderGraph({ outlines: false, bloom: true, lighting: false }, factories(), [new DebugLinePass()]);
     expect(owned.map((p) => p.name)).toEqual(['cull', 'forward', 'bloom']);
   });
 
   it('does no GPU work: no pass is set up', () => {
     const passes = scene();
+    for (const p of passes) vi.spyOn(p, 'setup');
     const f = factories();
     f.scene = vi.fn(() => passes);
-    composeRenderGraph({ outlines: false, bloom: false }, f, []);
+    composeRenderGraph({ outlines: false, bloom: false, lighting: false }, f, []);
     for (const p of passes) expect(p.setup).not.toHaveBeenCalled();
   });
 
   it('throws when the graph does not compile, e.g. an overlay named like a mode pass', () => {
-    expect(() => composeRenderGraph({ outlines: false, bloom: true }, factories(), [new LineBatchPass('bloom', 8)]))
+    expect(() => composeRenderGraph({ outlines: false, bloom: true, lighting: false }, factories(), [new LineBatchPass('bloom', 8)]))
       .toThrow(/already registered/);
+  });
+});
+
+// Lighting (backend 'lit', Phase 17) is orthogonal to the final composite: any
+// of the three can run over a lit scene. It adds occluder-seed → the signed-SDF
+// chain → light-accum, and a ForwardPass that reads light-buffer — which is
+// what orders the whole chain before it, and what keeps it alive: every
+// lighting pass is optional.
+describe('composeRenderGraph — lighting', () => {
+  for (const { mode, composite } of MODES) {
+    it(`${composite} + lighting: the light chain runs, in order, before forward`, () => {
+      const { graph } = composeRenderGraph({ ...mode, lighting: true }, factories(), []);
+      const order = graph.compile();
+      expect(order.filter((n) => FINAL_COMPOSITES.includes(n))).toEqual([composite]);
+      const at = (name: string) => order.indexOf(name);
+      expect(at('occluder-seed')).toBeGreaterThan(-1);
+      expect(at('sdf-0')).toBeGreaterThan(at('occluder-seed'));
+      expect(at('light-accum')).toBeGreaterThan(at('sdf-0'));
+      expect(order.filter((n) => n.startsWith('sdf-'))).toHaveLength(SdfJfaPass.chain(512).length);
+      expect(at('forward')).toBeGreaterThan(at('light-accum'));
+    });
+  }
+
+  it('without lighting, no light pass is constructed, and forward does not read light-buffer', () => {
+    const f = factories();
+    const { owned } = composeRenderGraph({ outlines: false, bloom: false, lighting: false }, f, []);
+    expect(f.lighting).not.toHaveBeenCalled();
+    const forward = owned.find((p) => p.name === 'forward')!;
+    expect(forward.reads).not.toContain('light-buffer');
+  });
+
+  it('with lighting, the scene factory is told, so forward reads light-buffer', () => {
+    const f = factories();
+    const mode = { outlines: false, bloom: false, lighting: true };
+    const { owned } = composeRenderGraph(mode, f, []);
+    expect(f.scene).toHaveBeenCalledWith(mode);
+    expect(owned.find((p) => p.name === 'forward')!.reads).toContain('light-buffer');
+  });
+
+  it('owned lists the light passes too', () => {
+    const { owned } = composeRenderGraph({ outlines: false, bloom: false, lighting: true }, factories(), []);
+    expect(owned.map((p) => p.name)).toEqual(expect.arrayContaining(['occluder-seed', 'sdf-0', 'light-accum']));
+  });
+
+  it('the outline chain and the SDF chain coexist: separate pass and resource names', () => {
+    const { graph } = composeRenderGraph({ outlines: true, bloom: false, lighting: true }, factories(), []);
+    const order = graph.compile();
+    expect(order).toContain('jfa-0');
+    expect(order).toContain('sdf-0');
   });
 });

@@ -36,8 +36,13 @@ export interface GraphRequestsDeps<O, B> {
 
 export type ReloadOutcome = RequestResult['outcome'] | 'validated' | 'unknown';
 
-const BASE: GraphMode = { outlines: false, bloom: false };
-type Feature = 'outlines' | 'bloom';
+const BASE: GraphMode = { outlines: false, bloom: false, lighting: false };
+type Feature = 'outlines' | 'bloom' | 'lighting';
+const DISABLING: Record<Feature, string> = {
+  outlines: 'Disabling outlines',
+  bloom: 'Disabling bloom',
+  lighting: 'Disabling lighting',
+};
 
 /**
  * The renderer's side of graph requests: which mode the caller asked for, and
@@ -53,6 +58,9 @@ type Feature = 'outlines' | 'bloom';
  *
  * If the GPU nevertheless rejects a graph, every slot goes back to the source
  * the live graph was built from, and `requested` to the live mode.
+ *
+ * Lighting is orthogonal to the composite (outlines / bloom / fxaa-tonemap):
+ * switching one keeps the other.
  */
 export class GraphRequests<O, B> {
   private wanted: GraphRequest<O, B> = { mode: BASE };
@@ -85,7 +93,8 @@ export class GraphRequests<O, B> {
       return;
     }
     const hadBloom = this.wanted.mode.bloom;
-    void this.requestGraph({ mode: { outlines: true, bloom: false }, outlineOptions: options }, 'Outlines')
+    const mode = { ...this.wanted.mode, outlines: true, bloom: false };
+    void this.requestGraph({ mode, outlineOptions: options }, 'Outlines')
       .then((r) => {
         if (r.outcome === 'swapped' && hadBloom) {
           this.deps.log.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabled bloom.');
@@ -105,7 +114,8 @@ export class GraphRequests<O, B> {
       return;
     }
     const hadOutlines = this.wanted.mode.outlines;
-    void this.requestGraph({ mode: { outlines: false, bloom: true }, bloomConfig: config }, 'Bloom')
+    const mode = { ...this.wanted.mode, outlines: false, bloom: true };
+    void this.requestGraph({ mode, bloomConfig: config }, 'Bloom')
       .then((r) => {
         if (r.outcome === 'swapped' && hadOutlines) {
           this.deps.log.warn('[Hyperion] Bloom and outlines are mutually exclusive. Disabled outlines.');
@@ -115,6 +125,17 @@ export class GraphRequests<O, B> {
 
   disableBloom(): void {
     this.disable('bloom', 'Disabling bloom');
+  }
+
+  /** Switch the light chain (backend 'lit') on or off, keeping the composite and its options. */
+  setLighting(enabled: boolean): void {
+    if (!enabled) {
+      this.disable('lighting', DISABLING.lighting);
+      return;
+    }
+    this.offIntents.delete('lighting');
+    if (this.wanted.mode.lighting) return;
+    void this.requestGraph({ ...this.wanted, mode: { ...this.wanted.mode, lighting: true } }, 'Lighting');
   }
 
   /**
@@ -178,7 +199,7 @@ export class GraphRequests<O, B> {
 
   private disable(feature: Feature, what: string): void {
     if (this.wanted.mode[feature]) {
-      void this.requestGraph({ mode: BASE }, what);
+      void this.requestGraph(this.without(feature), what);
     } else if (this.deps.host.mode[feature]) {
       // A pending request already drops it — unless the GPU rejects that request.
       this.offIntents.add(feature);
@@ -243,11 +264,20 @@ export class GraphRequests<O, B> {
     let requested = false;
     for (const feature of intents) {
       if (this.wanted.mode[feature]) {
-        void this.requestGraph({ mode: BASE }, feature === 'bloom' ? 'Disabling bloom' : 'Disabling outlines');
+        void this.requestGraph(this.without(feature), DISABLING[feature]);
         requested = true;
       }
     }
     return requested;
+  }
+
+  /**
+   * The wanted request with `feature` off. Dropping a composite drops its
+   * options too; dropping lighting keeps the composite's.
+   */
+  private without(feature: Feature): GraphRequest<O, B> {
+    const mode = { ...this.wanted.mode, [feature]: false };
+    return feature === 'lighting' ? { ...this.wanted, mode } : { mode };
   }
 
   private snapshotSources(): Map<string, string> {

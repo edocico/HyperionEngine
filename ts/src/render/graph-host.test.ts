@@ -29,9 +29,9 @@ function mockPass(name: string, reads: string[], writes: string[]): RenderPass {
   };
 }
 
-const FXAA: GraphMode = { outlines: false, bloom: false };
-const BLOOM: GraphMode = { outlines: false, bloom: true };
-const OUTLINES: GraphMode = { outlines: true, bloom: false };
+const FXAA: GraphMode = { outlines: false, bloom: false, lighting: false };
+const BLOOM: GraphMode = { outlines: false, bloom: true, lighting: false };
+const OUTLINES: GraphMode = { outlines: true, bloom: false, lighting: false };
 
 /** A host over real composite/overlay classes; every scene build is recorded. */
 function makeHost(opts: { setup?: (p: RenderPass) => void } = {}) {
@@ -52,6 +52,10 @@ function makeHost(opts: { setup?: (p: RenderPass) => void } = {}) {
     },
     bloom: () => new BloomPass(),
     fxaaTonemap: () => new FXAATonemapPass(),
+    lighting: () => [
+      mockPass('occluder-seed', [], ['occluder-seed']),
+      mockPass('light-accum', ['occluder-seed'], ['light-buffer']),
+    ],
   };
   const { validation, runs } = deferredValidation();
   const setup = vi.fn(opts.setup ?? (() => {}));
@@ -153,6 +157,10 @@ describe('RenderGraphHost', () => {
       setup.mockClear();
       expect(() => host.addExternal(new LineBatchPass('bloom', 8))).toThrow(/bloom mode/);
       expect(() => host.addExternal(mockPass('stamp', [], ['selection-seed']))).toThrow(/outlines mode/);
+      // Lighting is orthogonal to the composite: a clash with the light chain
+      // must be caught whatever composite is live.
+      expect(() => host.addExternal(new LineBatchPass('light-accum', 8))).toThrow(/lighting/);
+      expect(() => host.addExternal(mockPass('stamp', [], ['light-buffer']))).toThrow(/lighting/);
       expect(setup).not.toHaveBeenCalled();
       expect(host.graph.compile()).toEqual(['forward', 'fxaa-tonemap']);
     });

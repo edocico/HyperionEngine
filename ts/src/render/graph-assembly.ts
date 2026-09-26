@@ -1,10 +1,16 @@
 import { RenderGraph } from './render-graph';
 import type { RenderPass } from './render-pass';
 
-/** Which optional post-process chain the renderer has switched on. */
+/** Which optional chains the renderer has switched on. */
 export interface GraphMode {
+  /** Final composite: outlines, else bloom, else fxaa-tonemap. */
   outlines: boolean;
   bloom: boolean;
+  /**
+   * Lighting backend 'lit' (Phase 17). Orthogonal to the composite: it adds the
+   * light chain before ForwardPass, and makes ForwardPass read its output.
+   */
+  lighting: boolean;
 }
 
 /**
@@ -14,12 +20,18 @@ export interface GraphMode {
  * be composed just to validate it, and lets composition be tested headless.
  */
 export interface GraphPassFactories {
-  /** Scene passes, always present, in registration order: scatter, cull, radix-sort, forward. */
-  scene(): RenderPass[];
+  /**
+   * Scene passes, always present, in registration order: scatter, cull,
+   * radix-sort, forward. Given the mode, because ForwardPass reads the light
+   * buffer only in a lit graph.
+   */
+  scene(mode: GraphMode): RenderPass[];
   /** selection-seed → jfa-0..N → outline-composite. */
   outline(): RenderPass[];
   bloom(): RenderPass;
   fxaaTonemap(): RenderPass;
+  /** occluder-seed → sdf-0..N → light-accum, which writes `light-buffer`. */
+  lighting(): RenderPass[];
 }
 
 export interface ComposedGraph {
@@ -49,7 +61,10 @@ export function composeRenderGraph(
   factories: GraphPassFactories,
   external: Iterable<RenderPass>,
 ): ComposedGraph {
-  const owned: RenderPass[] = [...factories.scene()];
+  const owned: RenderPass[] = [...factories.scene(mode)];
+  // Registration order does not matter here: ForwardPass reads light-buffer,
+  // and the topological sort puts the chain before it.
+  if (mode.lighting) owned.push(...factories.lighting());
   if (mode.outlines) {
     owned.push(...factories.outline());
   } else if (mode.bloom) {

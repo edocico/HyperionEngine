@@ -25,12 +25,23 @@ import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntr
  * Type 6 (Light2D) has buckets here but no pipeline: `SHADER_SOURCES` registers
  * nothing for it, so the per-type loop below never finds it. Its buckets are
  * read directly by the light accumulation pass.
+ *
+ * Group 2 is the light buffer (Phase 17): texture, sampler, lighting uniform.
+ * Every pipeline shares the three-group layout, but only the shaders that apply
+ * lighting (basic.wgsl, gradient.wgsl) declare group 2; a layout may hold groups
+ * a shader never uses. It is bound for every pipeline all the same, or the draw
+ * fails validation. Constructed `lit`, the pass reads `light-buffer` (written by
+ * LightAccumPass) and the uniform says enabled; otherwise group 2 binds a 1×1
+ * white placeholder, and a stale `light-buffer` left in the pool by a retired
+ * lit graph (its texture destroyed) is never touched.
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
   readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params'];
   readonly writes = ['scene-hdr'];
   readonly optional = false;
+  /** Whether this graph has a light buffer to read (lighting backend `lit`). */
+  readonly lit: boolean;
 
   private opaquePipelines = new Map<number, GPURenderPipeline>();
   private transparentPipelines = new Map<number, GPURenderPipeline>();
@@ -45,6 +56,19 @@ export class ForwardPass implements RenderPass {
   private device: GPUDevice | null = null;
   private depthWidth = 0;
   private depthHeight = 0;
+  private bindGroupLayout2: GPUBindGroupLayout | null = null;
+  private bindGroup2: GPUBindGroup | null = null;
+  /** The light-buffer view `bindGroup2` was made with: rebuilt when it changes. */
+  private boundLightView: GPUTextureView | null = null;
+  private lightSampler: GPUSampler | null = null;
+  private lightingBuffer: GPUBuffer | null = null;
+  private placeholderTexture: GPUTexture | null = null;
+  private placeholderView: GPUTextureView | null = null;
+
+  constructor(options: { lit?: boolean } = {}) {
+    this.lit = options.lit ?? false;
+    if (this.lit) this.reads = [...this.reads, 'light-buffer'];
+  }
 
   /**
    * Per-primitive-type WGSL shader sources.
@@ -123,13 +147,45 @@ export class ForwardPass implements RenderPass {
     const bindGroupLayout1 = device.createBindGroupLayout({ entries: textureTierLayoutEntries() });
     this.tierBinding = new TextureTierBinding(bindGroupLayout1);
 
+    // --- Group 2: the light buffer ---
+    this.bindGroupLayout2 = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    // Half-resolution buffer, full-resolution draw: bilinear upsampling.
+    this.lightSampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+    // LightingUniform: enabled (u32) + 3 × pad = 16 bytes. Fixed for the
+    // lifetime of the pass: a graph is either lit or not.
+    this.lightingBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, 0, 0, 0]));
+    this.placeholderTexture = device.createTexture({
+      size: { width: 1, height: 1 },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: this.placeholderTexture },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 },
+    );
+    this.placeholderView = this.placeholderTexture.createView();
+
     // ForwardPass writes `scene-hdr`, never the swapchain. Before this was
     // pinned to SCENE_HDR_FORMAT it queried getPreferredCanvasFormat(), which
     // silently clamped the whole scene to [0,1] and left bloom + tonemapping
     // with nothing to work on. See render/formats.ts.
     const format = SCENE_HDR_FORMAT;
     const pipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1],
+      bindGroupLayouts: [bindGroupLayout0, bindGroupLayout1, this.bindGroupLayout2],
     });
     const vertexBufferLayout: GPUVertexBufferLayout = {
       arrayStride: 12,
@@ -202,7 +258,8 @@ export class ForwardPass implements RenderPass {
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
     if (this.device && this.tierBinding) this.bindGroup1 = this.tierBinding.current(this.device, resources);
-    if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !this.indirectBuffer) return;
+    const bindGroup2 = this.lightBindGroup(resources);
+    if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !bindGroup2 || !this.indirectBuffer) return;
 
     // Get render target view (scene-hdr intermediate for post-processing)
     const targetView = resources.getTextureView('scene-hdr');
@@ -235,6 +292,7 @@ export class ForwardPass implements RenderPass {
       renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
       renderPass.setBindGroup(0, this.bindGroup0);
       renderPass.setBindGroup(1, this.bindGroup1);
+      renderPass.setBindGroup(2, bindGroup2);
       for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
         const argSlot = primType * BUCKETS_PER_TYPE + bucket;
         renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
@@ -249,6 +307,7 @@ export class ForwardPass implements RenderPass {
       renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
       renderPass.setBindGroup(0, this.bindGroup0);
       renderPass.setBindGroup(1, this.bindGroup1);
+      renderPass.setBindGroup(2, bindGroup2);
       for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
         const argSlot = OPAQUE_DRAW_BUCKETS + primType * BUCKETS_PER_TYPE + bucket;
         renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
@@ -265,6 +324,28 @@ export class ForwardPass implements RenderPass {
       this.depthWidth = 0;
       this.depthHeight = 0;
     }
+  }
+
+  /**
+   * Group 2 for this frame. Lit, it binds the pool's `light-buffer`, which
+   * LightAccumPass recreates on resize, so the group follows the view. Before
+   * that pass has produced one, the white placeholder stands in: lit sprites
+   * then draw as if unlit for that frame, rather than not at all.
+   */
+  private lightBindGroup(resources: ResourcePool): GPUBindGroup | null {
+    if (!this.device || !this.bindGroupLayout2 || !this.lightSampler || !this.lightingBuffer || !this.placeholderView) return null;
+    const view = (this.lit ? resources.getTextureView('light-buffer') : undefined) ?? this.placeholderView;
+    if (this.bindGroup2 && view === this.boundLightView) return this.bindGroup2;
+    this.bindGroup2 = this.device.createBindGroup({
+      layout: this.bindGroupLayout2,
+      entries: [
+        { binding: 0, resource: view },
+        { binding: 1, resource: this.lightSampler },
+        { binding: 2, resource: { buffer: this.lightingBuffer } },
+      ],
+    });
+    this.boundLightView = view;
+    return this.bindGroup2;
   }
 
   private ensureDepthTexture(width: number, height: number): void {
@@ -285,6 +366,15 @@ export class ForwardPass implements RenderPass {
     this.indexBuffer?.destroy();
     this.cameraBuffer?.destroy();
     this.depthTexture?.destroy();
+    this.lightingBuffer?.destroy();
+    this.placeholderTexture?.destroy();
+    this.lightingBuffer = null;
+    this.placeholderTexture = null;
+    this.placeholderView = null;
+    this.lightSampler = null;
+    this.bindGroupLayout2 = null;
+    this.bindGroup2 = null;
+    this.boundLightView = null;
     this.vertexBuffer = null;
     this.indexBuffer = null;
     this.cameraBuffer = null;

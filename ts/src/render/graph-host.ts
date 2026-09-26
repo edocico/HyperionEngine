@@ -77,11 +77,17 @@ interface Built {
   mode: GraphMode;
 }
 
-const MODES: ReadonlyArray<readonly [label: string, mode: GraphMode]> = [
+const COMPOSITES: ReadonlyArray<readonly [label: string, mode: Omit<GraphMode, 'lighting'>]> = [
   ['fxaa-tonemap', { outlines: false, bloom: false }],
   ['outlines', { outlines: true, bloom: false }],
   ['bloom', { outlines: false, bloom: true }],
 ];
+
+/** Every graph the renderer can build: each composite, with and without lighting. */
+const MODES: ReadonlyArray<readonly [label: string, mode: GraphMode]> = COMPOSITES.flatMap(([label, mode]) => [
+  [label, { ...mode, lighting: false }] as const,
+  [`${label} + lighting`, { ...mode, lighting: true }] as const,
+]);
 
 /**
  * Owns the renderer's RenderGraph across mode switches and shader hot-reloads.
@@ -164,8 +170,8 @@ export class RenderGraphHost {
   /**
    * Add a caller-owned pass. Validated against EVERY mode's graph, not only
    * the live one: a pass that fits today's graph but clashes with another
-   * mode ('bloom', 'jfa-N', a blind write of 'selection-seed') would make
-   * switching to that mode fail. Throws, adding nothing, if it does not fit
+   * mode ('bloom', 'jfa-N', a blind write of 'selection-seed', 'light-accum')
+   * would make switching to that mode fail. Throws, adding nothing, if it does not fit
    * or its `setup()` throws.
    *
    * The pass joins the graphs only once the GPU has validated its set-up — an

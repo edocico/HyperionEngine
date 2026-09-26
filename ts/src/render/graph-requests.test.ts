@@ -3,9 +3,10 @@ import { GraphRequests, type ShaderSlot } from './graph-requests';
 import type { GraphMode } from './graph-assembly';
 import type { GpuValidation, RequestResult } from './graph-host';
 
-const BASE: GraphMode = { outlines: false, bloom: false };
-const BLOOM: GraphMode = { outlines: false, bloom: true };
-const OUTLINES: GraphMode = { outlines: true, bloom: false };
+const BASE: GraphMode = { outlines: false, bloom: false, lighting: false };
+const BLOOM: GraphMode = { outlines: false, bloom: true, lighting: false };
+const OUTLINES: GraphMode = { outlines: true, bloom: false, lighting: false };
+const LIT: GraphMode = { ...BASE, lighting: true };
 
 /** A host whose requests the test settles by hand; a swap updates its live mode. */
 function fakeHost() {
@@ -322,5 +323,85 @@ describe('GraphRequests — modes', () => {
     await tick();
     expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/Disabled bloom/));
     expect(graph.requested.mode).toEqual(OUTLINES);
+  });
+});
+
+// Lighting (backend 'lit') is orthogonal to the composite. Switching it keeps
+// the composite and its options; switching the composite keeps lighting.
+describe('GraphRequests — lighting', () => {
+  async function lit() {
+    const env = setup();
+    env.graph.setLighting(true);
+    env.requests[0].settle('swapped');
+    await tick();
+    return env;
+  }
+
+  it('setLighting(true) requests a lit graph and reports it at once', () => {
+    const { graph, host } = setup();
+    graph.setLighting(true);
+    expect(host.request).toHaveBeenLastCalledWith(LIT);
+    expect(graph.requested.mode).toEqual(LIT);
+  });
+
+  it('asking for the state already requested is a no-op', async () => {
+    const { graph, host } = await lit();
+    graph.setLighting(true);
+    expect(host.request).toHaveBeenCalledTimes(1);
+    const fresh = setup();
+    fresh.graph.setLighting(false);
+    expect(fresh.host.request).not.toHaveBeenCalled();
+  });
+
+  it('switching the composite keeps lighting on', async () => {
+    const { graph, host, requests } = await lit();
+    graph.enableBloom('soft');
+    expect(host.request).toHaveBeenLastCalledWith({ ...BLOOM, lighting: true });
+    requests[1].settle('swapped');
+    await tick();
+    graph.enableOutlines('red');
+    expect(host.request).toHaveBeenLastCalledWith({ ...OUTLINES, lighting: true });
+    requests[2].settle('swapped');
+    await tick();
+    graph.disableOutlines();
+    expect(host.request).toHaveBeenLastCalledWith(LIT);
+  });
+
+  it('switching lighting keeps the composite and its options', async () => {
+    const { graph, host, requests } = setup();
+    graph.enableOutlines('red');
+    requests[0].settle('swapped');
+    await tick();
+
+    graph.setLighting(true);
+    expect(host.request).toHaveBeenLastCalledWith({ ...OUTLINES, lighting: true });
+    expect(graph.requested.outlineOptions).toBe('red');
+    requests[1].settle('swapped');
+    await tick();
+
+    graph.setLighting(false);
+    expect(host.request).toHaveBeenLastCalledWith(OUTLINES);
+    expect(graph.requested.outlineOptions).toBe('red');
+  });
+
+  it('a lit graph the GPU rejects falls back to the live one, and says why', async () => {
+    const { graph, requests, log } = setup();
+    graph.setLighting(true);
+    requests[0].settle('rejected', ['light-accum: invalid pipeline']);
+    await tick();
+    expect(graph.requested.mode).toEqual(BASE);
+    expect(log.error).toHaveBeenCalledWith(expect.stringMatching(/Lighting.*invalid pipeline/s));
+  });
+
+  it('lighting switched off while another request is pending stays off if that request is rejected', async () => {
+    const { graph, host, requests } = await lit();
+    graph.setLighting(false); // pending: unlit
+    graph.enableBloom(); // supersedes it, still unlit
+    graph.setLighting(false); // no-op on `requested`
+    expect(graph.requested.mode).toEqual(BLOOM);
+    requests[2].settle('rejected', ['broken bloom shader']);
+    await tick();
+    expect(host.request).toHaveBeenLastCalledWith(BASE);
+    expect(graph.requested.mode).toEqual(BASE);
   });
 });
