@@ -99,6 +99,8 @@ O(15) per despawn (iterate over ~15 CommandType values), not O(map.size).
 
 The `Map` in JS iterates in insertion order of the first write per key. For different command types on the same entity in the same frame, drain order matches call order. Documented as invariant — if it becomes a problem in the future, a mini topological sort per command type in drain would fix it, but not needed now.
 
+> **Refined 2026-09-26.** The first-write position is also what keeps the queue fair under backpressure: moving an overwritten key to the end was tried and reverted, because it starved the tail of any update loop larger than the ring buffer. "Drain order matches call order" does not hold for interleaved calls (`A(x); B; A(y)` drains `[A(y), B]`); where that matters — two command types writing the same state — `SUPERSEDES` in `backpressure.ts` makes the newer command replace the pending older one (`SetRotation` ↔ `SetRotation2D`; `TeleportBody` over a pending `SetPosition`/rotation).
+
 ### Profiling
 
 `flush()` returns stats with three counters:

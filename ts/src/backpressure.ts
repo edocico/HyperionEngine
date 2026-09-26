@@ -119,6 +119,21 @@ function asBytes(p: Float32Array | Uint8Array): Uint8Array {
   return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
 }
 
+/**
+ * Commands that write the same state as other command types, and so REPLACE
+ * the pending ones of the same entity when enqueued. This is how the last call
+ * wins where order matters, while the overwrite Map keeps each key's first
+ * position (the fairness under backpressure). A rotation in one form replaces
+ * a rotation in the other; a teleport (critical, so drained before every
+ * overwrite) replaces a pending position and rotation, so position(p) then
+ * teleport(t) ends at t instead of reaching WASM as [teleport, position].
+ */
+const SUPERSEDES: Partial<Record<number, readonly number[]>> = {
+  [CommandType.SetRotation]: [CommandType.SetRotation2D],
+  [CommandType.SetRotation2D]: [CommandType.SetRotation],
+  [CommandType.TeleportBody]: [CommandType.SetPosition, CommandType.SetRotation, CommandType.SetRotation2D],
+};
+
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
   private overwrites = new Map<number, QueuedCommand>(); // key = entityId * 256 + cmd
@@ -129,6 +144,9 @@ export class PrioritizedCommandQueue {
   get overwriteCount(): number { return this.overwrites.size; }
 
   enqueue(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): void {
+    for (const older of SUPERSEDES[cmd] ?? []) {
+      if (this.overwrites.delete(entityId * 256 + older)) this._coalescedCount++;
+    }
     if (isNonCoalescable(cmd)) {
       if (cmd === CommandType.DespawnEntity) {
         this.purgeEntity(entityId);
@@ -142,11 +160,6 @@ export class PrioritizedCommandQueue {
         if (isPartialUpdate(cmd) && prev.payload && payload) {
           payload = mergePartialPayload(cmd, asBytes(prev.payload), asBytes(payload));
         }
-        // Map.set on an existing key keeps its FIRST position: move it to the
-        // end, so the drain follows the order of the last calls. Two command
-        // types can write the same state (SetRotation and SetRotation2D both
-        // set a 3D entity's Rotation), and the last call must win.
-        this.overwrites.delete(key);
       }
       this.overwrites.set(key, { cmd, entityId, payload });
     }
@@ -170,9 +183,11 @@ export class PrioritizedCommandQueue {
   /**
    * Drain queued commands into the ring buffer.
    * Critical (lifecycle) commands are written first, then overwrites.
-   * Map iteration order matches insertion order, and a coalesced command moves
-   * to the end on every overwrite, so the drain follows the order of the LAST
-   * call of each command type.
+   * Map iteration order is the order of each key's FIRST write, kept on
+   * overwrite: under backpressure the keys left over from one flush drain
+   * ahead of the others at the next, so no entity starves. Where the order of
+   * two command types matters (they write the same state), SUPERSEDES makes
+   * the newer one replace the older instead.
    *
    * @param rb - Ring buffer producer to write into.
    * @param tap - Optional recording tap, called for each written command.
