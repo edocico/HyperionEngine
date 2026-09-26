@@ -2,6 +2,12 @@ import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
 
+/** extract, 2 downsamples, 2 upsamples, composite. */
+const SUB_PASSES = 6;
+/** BloomParams is 32 bytes; each sub-pass gets its own slice, aligned for binding offsets. */
+const PARAMS_SIZE = 32;
+const PARAMS_STRIDE = 256; // minUniformBufferOffsetAlignment
+
 export interface BloomConfig {
   threshold?: number;
   intensity?: number;
@@ -38,6 +44,8 @@ export class BloomPass implements RenderPass {
   private upsamplePipeline: GPURenderPipeline | null = null;
   private compositePipeline: GPURenderPipeline | null = null;
   private paramBuffer: GPUBuffer | null = null;
+  private placeholder: GPUTexture | null = null;
+  private placeholderView: GPUTextureView | null = null;
   private sampler: GPUSampler | null = null;
   private device: GPUDevice | null = null;
 
@@ -121,10 +129,26 @@ export class BloomPass implements RenderPass {
       primitive: { topology: 'triangle-list' },
     });
 
+    // One slice per sub-pass. `queue.writeBuffer` is a queue operation, so
+    // every write in a frame lands before the command buffer runs. A single
+    // shared slice left all six sub-passes reading the composite's params:
+    // full-resolution texel sizes, so the blur was 2-8x narrower than designed.
     this.paramBuffer = device.createBuffer({
-      size: 32, // BloomParams struct: 2 f32 + 2 f32 + 1 u32 + 3 u32 pad = 32 bytes
+      size: SUB_PASSES * PARAMS_STRIDE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // Binding 2 is in the shared layout, so the sub-passes that do not read it
+    // still need something bound there. The placeholder is never a render
+    // target. It used to be bloom-eighth, which the third sub-pass renders
+    // into: sampling and rendering the same texture in one pass invalidates
+    // the whole command buffer, so every frame with bloom on was dropped.
+    this.placeholder = device.createTexture({
+      size: [1, 1],
+      format: SCENE_HDR_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.placeholderView = this.placeholder.createView();
 
     this.sampler = device.createSampler({
       magFilter: 'linear',
@@ -133,11 +157,11 @@ export class BloomPass implements RenderPass {
   }
 
   prepare(_device: GPUDevice, _frame: FrameState): void {
-    // Param buffer is written per-subpass in execute(), not once in prepare()
+    // Params are written once per frame in execute(), one slice per sub-pass.
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
-    if (!this.device || !this.extractPipeline || !this.paramBuffer || !this.sampler) return;
+    if (!this.device || !this.extractPipeline || !this.paramBuffer || !this.sampler || !this.placeholderView) return;
 
     const sceneView = resources.getTextureView('scene-hdr');
     const swapchainView = resources.getTextureView('swapchain');
@@ -148,7 +172,10 @@ export class BloomPass implements RenderPass {
     if (!sceneView || !swapchainView || !bloomHalfView || !bloomQuarterView || !bloomEighthView) return;
 
     const device = this.device;
-    const dummyView = bloomEighthView; // placeholder for unused bloomTex binding
+    const paramBuffer = this.paramBuffer;
+    const placeholder = this.placeholderView;
+    const params = new ArrayBuffer(SUB_PASSES * PARAMS_STRIDE);
+    let subPass = 0;
 
     const w = frame.canvasWidth;
     const h = frame.canvasHeight;
@@ -161,23 +188,19 @@ export class BloomPass implements RenderPass {
       texelW: number,
       texelH: number,
     ): void => {
-      const paramData = new ArrayBuffer(32);
-      const f32 = new Float32Array(paramData);
-      const u32 = new Uint32Array(paramData);
+      const offset = subPass++ * PARAMS_STRIDE;
+      const f32 = new Float32Array(params, offset, 4);
+      const u32 = new Uint32Array(params, offset + 16, 4);
       f32[0] = texelW;
       f32[1] = texelH;
       f32[2] = this.threshold;
       f32[3] = this.intensity;
-      u32[4] = this.tonemapMode;
-      u32[5] = 0;
-      u32[6] = 0;
-      u32[7] = 0;
-      device.queue.writeBuffer(this.paramBuffer!, 0, paramData);
+      u32[0] = this.tonemapMode;
 
       const bindGroup = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: this.paramBuffer! } },
+          { binding: 0, resource: { buffer: paramBuffer, offset, size: PARAMS_SIZE } },
           { binding: 1, resource: inputView },
           { binding: 2, resource: bloomView },
           { binding: 3, resource: this.sampler! },
@@ -199,28 +222,30 @@ export class BloomPass implements RenderPass {
     };
 
     // 1. Extract: scene-hdr -> bloom-half
-    runPass(this.extractPipeline!, sceneView, dummyView, bloomHalfView,
+    runPass(this.extractPipeline!, sceneView, placeholder, bloomHalfView,
             1.0 / (w / 2), 1.0 / (h / 2));
 
     // 2. Downsample: bloom-half -> bloom-quarter
-    runPass(this.downsamplePipeline!, bloomHalfView, dummyView, bloomQuarterView,
+    runPass(this.downsamplePipeline!, bloomHalfView, placeholder, bloomQuarterView,
             1.0 / (w / 4), 1.0 / (h / 4));
 
     // 3. Downsample: bloom-quarter -> bloom-eighth
-    runPass(this.downsamplePipeline!, bloomQuarterView, dummyView, bloomEighthView,
+    runPass(this.downsamplePipeline!, bloomQuarterView, placeholder, bloomEighthView,
             1.0 / (w / 8), 1.0 / (h / 8));
 
     // 4. Upsample: bloom-eighth -> bloom-quarter
-    runPass(this.upsamplePipeline!, bloomEighthView, dummyView, bloomQuarterView,
+    runPass(this.upsamplePipeline!, bloomEighthView, placeholder, bloomQuarterView,
             1.0 / (w / 4), 1.0 / (h / 4));
 
     // 5. Upsample: bloom-quarter -> bloom-half
-    runPass(this.upsamplePipeline!, bloomQuarterView, dummyView, bloomHalfView,
+    runPass(this.upsamplePipeline!, bloomQuarterView, placeholder, bloomHalfView,
             1.0 / (w / 2), 1.0 / (h / 2));
 
     // 6. Composite: scene-hdr + bloom-half -> swapchain
     runPass(this.compositePipeline!, sceneView, bloomHalfView, swapchainView,
             1.0 / w, 1.0 / h);
+
+    device.queue.writeBuffer(paramBuffer, 0, params);
   }
 
   resize(_w: number, _h: number): void {
@@ -229,6 +254,9 @@ export class BloomPass implements RenderPass {
 
   destroy(): void {
     this.paramBuffer?.destroy();
+    this.placeholder?.destroy();
+    this.placeholder = null;
+    this.placeholderView = null;
     this.extractPipeline = null;
     this.downsamplePipeline = null;
     this.upsamplePipeline = null;

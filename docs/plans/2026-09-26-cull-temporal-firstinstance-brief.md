@@ -259,4 +259,7 @@ Verifica visiva (iGPU AMD RDNA 3, perché l'adapter NVIDIA non riesce a presenta
 - A/B su `indirect-first-instance`: senza la feature restano solo i quad;
 - col path atomico si vedono tutte le linee e le bezier.
 
-**Aperto:** il bloom invalida ogni frame. Al passo 3 `bloom-eighth` è insieme binding e render target (`bloom-pass.ts:151`). Inoltre i 6 pass condividono un solo `paramBuffer` riscritto con `writeBuffer` prima di un unico submit.
+**Bloom** (trovato durante la verifica visiva, corretto dopo la review):
+- al passo 3 `bloom-eighth` era insieme segnaposto del binding 2 e render target, e questo invalidava ogni frame. Ora il segnaposto è una texture 1×1 dedicata;
+- i 6 pass condividevano un `paramBuffer` riscritto prima di un unico submit. Ora ogni pass ha la sua slice da 256 B.
+Sull'iGPU AMD si passa da 250 errori a 0.
