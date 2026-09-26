@@ -584,6 +584,76 @@ fn p18h_a_rotation_alone_sticks_on_a_kinematic_body() {
     assert!((angle_of(&e, 0) - 1.0).abs() < 1e-3, "got {}", angle_of(&e, 0));
 }
 
+// Review 2026-09-26: TeleportBody was applied in a second pass, after every
+// SetPosition/rotation of the batch, so `teleport(t).position(p)` ended at t.
+// It now joins the same ordered, merged reposition: the last call wins, a
+// teleport's zeroed velocity survives a later nudge.
+fn teleport(id: u32, x: f32, y: f32, rot: f32) -> Command {
+    let mut p = [0u8; 16];
+    p[0..4].copy_from_slice(&x.to_le_bytes());
+    p[4..8].copy_from_slice(&y.to_le_bytes());
+    p[8..12].copy_from_slice(&rot.to_le_bytes());
+    p[12] = 0x01; // zero velocity
+    cmd(CommandType::TeleportBody, id, p)
+}
+fn body_state(e: &Engine, id: u32) -> (f32, f32, f32, f32) {
+    let h = e.world.get::<&PhysicsBodyHandle>(e.entity_map.get(id).unwrap()).unwrap().0;
+    let b = &e.physics.rigid_body_set[h];
+    (b.translation().x, b.translation().y, b.rotation().angle(), b.linvel().length())
+}
+
+#[test]
+fn p19_a_position_after_a_teleport_wins_and_keeps_the_zeroed_velocity() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn2d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    for _ in 0..10 { e.update(1.0 / 60.0); }
+    assert!(body_state(&e, 0).3 > 1.0, "the body should be falling");
+    e.process_commands(&[teleport(0, 0.0, 0.0, 0.0), setpos(0, 100.0, 50.0)]);
+    e.update(1.0 / 60.0);
+    let (x, y, _, v) = body_state(&e, 0);
+    assert!((x - 100.0).abs() < 0.5 && (y - 50.0).abs() < 0.5, "got ({x}, {y})");
+    assert!(v < 20.0, "the teleport's zeroed velocity must survive the nudge, got {v}");
+    let (tx, ty) = pos_of(&e, 0);
+    assert!((tx - 100.0).abs() < 0.5 && (ty - 50.0).abs() < 0.5);
+}
+
+#[test]
+fn p19b_a_rotation_after_a_teleport_wins_and_keeps_its_position() {
+    let mut e = Engine::new();
+    e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[teleport(0, 5.0, 5.0, 0.0), f1(CommandType::SetRotation2D, 0, 1.2)]);
+    e.update(1.0 / 60.0);
+    let (x, y, a, _) = body_state(&e, 0);
+    assert!((x - 5.0).abs() < 1e-3 && (y - 5.0).abs() < 1e-3, "got ({x}, {y})");
+    assert!((a - 1.2).abs() < 1e-3, "got {a}");
+}
+
+#[test]
+fn p19c_the_same_holds_in_the_creation_batch() {
+    let mut e = Engine::new();
+    e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+    e.process_commands(&[spawn2d(0), body(0, 0), collider(0, 0, 10.0, 0.0),
+        teleport(0, 0.0, 0.0, 0.0), setpos(0, 100.0, 50.0)]);
+    e.update(1.0 / 60.0);
+    let (x, y, _, _) = body_state(&e, 0);
+    assert!((x - 100.0).abs() < 0.5 && (y - 50.0).abs() < 0.5, "got ({x}, {y})");
+}
+
+#[test]
+fn p19d_a_teleport_after_a_position_wins() {
+    let mut e = Engine::new();
+    e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+    e.process_commands(&[spawn2d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[setpos(0, 100.0, 50.0), teleport(0, 0.0, 0.0, 0.3)]);
+    e.update(1.0 / 60.0);
+    let (x, y, a, _) = body_state(&e, 0);
+    assert!(x.abs() < 0.5 && y.abs() < 0.5, "got ({x}, {y})");
+    assert!((a - 0.3).abs() < 1e-3, "got {a}");
+}
+
 // P1-10 — reusing a joint id dropped the only handle to the previous joint.
 #[test]
 fn p12_joint_id_reuse_is_rejected() {

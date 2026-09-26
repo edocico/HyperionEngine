@@ -14,7 +14,7 @@ use crate::ring_buffer::{Command, CommandType};
 #[cfg(feature = "physics-2d")]
 use crate::physics::types::{
     JOINT_KIND_FIXED, JOINT_KIND_PRISMATIC, JOINT_KIND_REVOLUTE, JOINT_KIND_ROPE,
-    JOINT_KIND_SPRING, PendingCollider, PendingRigidBody, PendingTeleport,
+    JOINT_KIND_SPRING, PendingCollider, PendingRigidBody,
 };
 #[cfg(feature = "physics-2d")]
 use crate::physics::PhysicsColliderHandle;
@@ -268,20 +268,9 @@ pub fn process_physics_commands(
                 continue;
             }
             CommandType::TeleportBody => {
-                let x = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-                let y = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
-                let rot = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
-                let zero_velocity = cmd.payload[12] & 0x01 != 0;
-                if !x.is_finite() || !y.is_finite() || !rot.is_finite() {
-                    continue;
-                }
-                physics.pending_teleports.push(PendingTeleport {
-                    ext_id: cmd.entity_id,
-                    x,
-                    y,
-                    rot: Some(rot),
-                    zero_velocity,
-                });
+                // Queued in the first pass, in call order with SetPosition and
+                // the rotations, and merged with them per body
+                // (`process_single_command_physics`).
                 continue;
             }
             _ => {}
