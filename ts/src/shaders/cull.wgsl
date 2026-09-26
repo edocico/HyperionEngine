@@ -150,7 +150,7 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
         workgroupBarrier();
 
         // --- Phase 2: Cross-subgroup exclusive prefix sum + global reserve ---
-        // First 24 threads each handle one bucket: scan across subgroup totals,
+        // First TOTAL_BUCKETS (28) threads each handle one bucket: scan across subgroup totals,
         // write per-subgroup prefix sums, then one atomicAdd for the whole
         // workgroup's contribution to that bucket.
         if (lid < TOTAL_BUCKETS) {
@@ -190,8 +190,8 @@ fn cull_main(@builtin(global_invocation_id) gid: vec3u) {
     } else {
         // Original atomic path — one global atomic per visible entity
         if (visible) {
-            // Opaque slots: primType * 2 + bucket (indices 0-11)
-            // Transparent slots: 12 + primType * 2 + bucket (indices 12-23)
+            // Opaque slots: primType * 2 + bucket (indices 0-13)
+            // Transparent slots: OPAQUE_BUCKETS (14) + primType * 2 + bucket (indices 14-27)
             let blendOffset = select(0u, OPAQUE_BUCKETS, isTransparent);
             let argSlot = blendOffset + primType * BUCKETS_PER_TYPE + bucket;
             let slot = atomicAdd(&drawArgs[argSlot].instanceCount, 1u);

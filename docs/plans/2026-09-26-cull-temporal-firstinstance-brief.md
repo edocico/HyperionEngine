@@ -28,7 +28,7 @@ HEAD `109e36e` (branch `feat/phase17-lighting-2d`), 2026-09-26. Prodotto dal wor
 | Probe su RTX 4060 / Chrome 154 / Vulkan, riprodotto da due verificatori | GPU-2, skeptic-correctness, skeptic-evidence | [V] |
 | Il repo non chiede mai la feature | `renderer.ts:137-146` | [V] |
 | `firstInstance = i * 100_000` | `cull-pass.ts:380` | [V] |
-| Draw coinvolti: 24 in ForwardPass e 2 in SelectionSeed; 25 su 26 hanno `firstInstance ≠ 0`. GPU-5 parlava di "28 bucket": sbagliato, il tipo 6 non ha pipeline | `forward-pass.ts:277-300`, `selection-seed-pass.ts:156-157` | [V] |
+| Draw coinvolti: 24 in ForwardPass e 2 in SelectionSeed; 24 su 26 hanno `firstInstance ≠ 0` (23 in ForwardPass, 1 in SelectionSeed, che disegna solo con gli outline attivi). Il titolo del commit `a65cb59` dice "25 su 26": è sbagliato di uno. GPU-5 parlava di "28 bucket": sbagliato, il tipo 6 non ha pipeline | `forward-pass.ts:277-300`, `selection-seed-pass.ts:156-157` | [V] |
 | Firefox (wgpu) produce anch'esso un no-op | `validate_draw.wgsl:67-83` | [V, da sorgente] |
 | Safari lascia passare `baseInstance`: un test su Safari nasconderebbe il bug | `Device.mm:813`, condizionato da `:806-807` | **[W]** |
 | Il rendering multi-tipo non è **mai** stato corretto in Chrome, in nessuna delle 3 finestre storiche (`092f86e` → `51faf0a` → `4ea6cb5` → oggi) | FI-13 | [V] per le prime due, [I] per la terza |
@@ -231,3 +231,32 @@ Il materiale grezzo (modelli, sorgenti dei bench, il trial del piano FULL) era n
 - **Q2:** pulizia FULL della catena dei dirty bit esportati. Rust e TS vanno nello stesso commit.
 - **Problema 3:** opzione 1. Si chiede `'indirect-first-instance'` quando l'adapter la espone, poi si controlla `device.features` e si emette un warning se manca.
 - **Sequenza:** T → P3 → R + FULL → test di budget e documentazione → TMP-10 → sessione GPU di verifica visiva.
+
+## Esito (2026-09-26)
+
+La serie, un commit per difetto, ciascuno col suo test rosso prima del fix:
+
+| Commit | Cosa |
+|---|---|
+| `6331b5c` | T: via `transforms` e il cull torna a 8 storage buffer. Validato su RTX 4060 col limite di default |
+| `a65cb59` | P3 opzione 1: `indirect-first-instance` richiesta, mantenuta nel retry, warning se il device non la ha |
+| `bb2d2fa` | R + FULL: via il temporal culling e la catena dei dirty bit. Visibilità GPU = CPU bucket per bucket; camera su zona vuota = 0 visibili |
+| `003f64c` | Test di budget storage su tutti gli shader, più documentazione |
+| `303cad4` | TMP-10: ordine dei pass (fisica prima dei discendenti) |
+| `a25164b` | Trovato durante TMP-10: righe GPU e sfera di culling dei figli in coordinate mondo |
+
+La review avversariale della serie (5 revisori, un verificatore per ogni finding) ha confermato 5 difetti, corretti nei commit seguenti:
+
+| Commit | Cosa |
+|---|---|
+| `369e385` | Path subgroup del cull solo con subgroup di esattamente 32 lane. Sull'iGPU AMD (32-64) gli indici venivano corrotti con i conteggi giusti: 1 linea su 10 e nessuna bezier a schermo |
+| `ab64066` | Gli orfani (genitore despawnato o id riusato) vengono rimessi in staging subito |
+| `0330ca2` | Un corpo fisico con genitore viene disegnato sul suo collider (`pose_is_world`) |
+| (questo) | Range dei bucket fermi a 24 in `cull.wgsl` e nel CLAUDE.md; conteggio delle draw colpite (24 su 26) |
+
+Verifica visiva (iGPU AMD RDNA 3, perché l'adapter NVIDIA non riesce a presentare su un canvas; vedi la memoria del progetto):
+- l'engine disegna, senza errori in console;
+- A/B su `indirect-first-instance`: senza la feature restano solo i quad;
+- col path atomico si vedono tutte le linee e le bezier.
+
+**Aperto:** il bloom invalida ogni frame. Al passo 3 `bloom-eighth` è insieme binding e render target (`bloom-pass.ts:151`). Inoltre i 6 pass condividono un solo `paramBuffer` riscritto con `writeBuffer` prima di un unico submit.

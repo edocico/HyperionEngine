@@ -220,8 +220,9 @@ describe("describeAdapter", () => {
   });
 });
 
-// cull-pass.ts writes a non-zero firstInstance into 25 of the 26 indirect draws
-// (the offset of each bucket's region in visible-indices). Without the
+// cull-pass.ts gives every bucket but 0 a non-zero firstInstance (the offset of
+// its region in visible-indices). That is 23 of ForwardPass's 24 indirect
+// draws, plus 1 of SelectionSeedPass's 2 when outlines are on. Without the
 // 'indirect-first-instance' feature the spec turns each of those draws into a
 // no-op, with no validation error. Measured on an RTX 4060: 0 pixels without
 // the feature, drawn with it. Only bucket 0 (opaque tier-0 quads) survives,
