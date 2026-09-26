@@ -226,8 +226,17 @@ All five checks are closed. Track B can start.
   > - [x] **Stage 1 — quads and sprites** (`basic.wgsl`: texture alpha ≥ 0.5).
   >   GPU readback on NVIDIA and AMD: a caster fills its quad with correct UVs, a
   >   non-caster writes nothing, a checker-alpha sprite writes exactly 50%.
-  > - [ ] Stage 2 — line, gradient, box-shadow, bezier, MSDF: each gets `shade()`
-  >   + `fs_occluder` + the override.
+  > - [x] **Stage 2 — line, gradient, box-shadow, bezier, MSDF** (one agent per
+  >   shader, same pattern). GPU check: all 12 ForwardPass and 6 occluder pipelines
+  >   are valid. Measured seed coverage: quad/MSDF/gradient 1.0, a bezier its
+  >   arch (0.117 of the quad, arch visible in readback), box-shadow as drawn, a
+  >   non-caster 0. Lines cast from width ≈ 2 world units up. The shadow follows
+  >   `shade()`, which is the same code that draws the line.
+  >   Caveats, from the conversion:
+  >   - box-shadow alpha is opacity, so a shadow with a < 0.5 does not occlude;
+  >   - transparent-bucket entities never occlude (opaque buckets only);
+  >   - untextured lines and beziers sampled black on BC7. Fixed in the next
+  >     commit.
   > - [ ] Wire into the graph with the lighting backend (needs a reader: Task 8).
   - New pass, **not** a reworked `SelectionSeedPass`: that one filters on
     `selection-mask` and draws 2 of the 24 buckets; this one filters on

@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1062 tests + 5 skipped, 85 files)
+cd ts && npm test                            # All vitest tests (1069 tests + 5 skipped, 85 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -247,7 +247,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `render/passes/forward-pass.ts` | Multi-pipeline forward pass, `SHADER_SOURCES` per RenderPrimitiveType, renders to `scene-hdr` |
 | `render/passes/fxaa-tonemap-pass.ts` | Full-screen FXAA + tonemap (none/PBR-neutral/ACES), reads `scene-hdr` → `swapchain` |
 | `render/passes/selection-seed-pass.ts` | Renders selected entities as JFA seeds |
-| `render/passes/occluder-seed-pass.ts` | Phase 17 Track B: rasterises shadow casters (renderMeta bit 9) into `occluder-seed`, half resolution, `JFA_FORMAT`, `(u, v, valid, inside)`. It runs each primitive's OWN shader a second time, through its `fs_occluder` entry with `OCCLUDER_PASS = true`, so a caster shadows its real coverage (a sprite casts its silhouette, not its quad). Opaque buckets only. Primitives without `fs_occluder` cast nothing: today only `basic.wgsl` has it |
+| `render/passes/occluder-seed-pass.ts` | Phase 17 Track B: rasterises shadow casters (renderMeta bit 9) into `occluder-seed`, half resolution, `JFA_FORMAT`, `(u, v, valid, inside)`. It runs each primitive's OWN shader a second time, through its `fs_occluder` entry with `OCCLUDER_PASS = true`, so a caster shadows its real coverage (a sprite casts its silhouette, not its quad). Opaque buckets only. All six primitive shaders have `fs_occluder`. Light2D has no shader and never occludes |
 | `render/primitive-bindings.ts` | The bind group layouts every primitive shader shares (group 0 columns, group 1 texture tiers), and `TextureTierBinding`, the group-1 bind group that rebinds when a tier's view changes. Used by `ForwardPass` and `OccluderSeedPass` |
 | `render/passes/jfa-pass.ts` | Single JFA iteration, ping-pong textures, `iterationsForDimension()` helper |
 | `render/passes/outline-composite-pass.ts` | SDF distance outline from JFA + scene, built-in FXAA |

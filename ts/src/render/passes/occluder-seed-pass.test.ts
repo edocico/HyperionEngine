@@ -148,3 +148,30 @@ describe('basic.wgsl occluder entry', () => {
     expect(basicShaderSource).toMatch(/fn fs_occluder\s*\(/);
   });
 });
+
+// Every primitive ForwardPass draws must cast its own shape (design §6.2).
+// Light2D (type 6) has no shader and is not an occluder.
+const primitiveShaders = import.meta.glob(
+  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/gradient.wgsl',
+   '../../shaders/box-shadow.wgsl', '../../shaders/bezier.wgsl', '../../shaders/msdf-text.wgsl'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+
+describe('every primitive shader can cast its shape', () => {
+  it('finds the six primitive shaders', () => {
+    expect(Object.keys(primitiveShaders)).toHaveLength(6);
+  });
+
+  it.each(Object.entries(primitiveShaders))('%s has the occluder entry, the override, and the castsShadow bit', (_file, src) => {
+    expect(src).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
+    expect(src).toMatch(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << 9u;/);
+    expect(src).toMatch(/@fragment\s*\n\s*fn fs_occluder\s*\(/);
+    // fs_main and fs_occluder share one coverage function, so the shadow is
+    // exactly what is drawn.
+    const shared = /fn (\w+)\(in: VertexOutput\) -> vec4f \{/.exec(src)?.[1];
+    expect(shared, 'a shared coverage function').toBeDefined();
+    const body = (entry: string) => src.slice(src.indexOf(`fn ${entry}`), src.indexOf('}', src.indexOf(`fn ${entry}`)));
+    expect(body('fs_main')).toContain(`${shared}(in)`);
+    expect(src.slice(src.indexOf('fn fs_occluder'))).toContain(`${shared}(in)`);
+  });
+});

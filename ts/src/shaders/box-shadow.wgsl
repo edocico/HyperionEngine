@@ -26,6 +26,15 @@ struct CameraUniform {
 @group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
 @group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
+// Set to true only by the OccluderSeedPass pipelines, which run this module
+// with the fs_occluder entry point. The ForwardPass pipelines keep the default,
+// and the check below folds away.
+override OCCLUDER_PASS: bool = false;
+// renderMeta[slot*2+1] bit 9 (castsShadow). It must match
+// RENDER_META_CASTS_SHADOW_BIT in components.rs; occluder-seed-pass.test.ts
+// compares the two.
+const CASTS_SHADOW_BIT: u32 = 1u << 9u;
+
 struct VertexOutput {
     @builtin(position) clipPosition: vec4f,
     @location(0) uv: vec2f,
@@ -33,6 +42,9 @@ struct VertexOutput {
     @location(2) @interpolate(flat) texTier: u32,
     @location(3) @interpolate(flat) texLayer: u32,
     @location(4) @interpolate(flat) isOverflow: u32,
+    // This fragment's position on screen in [0,1], y down: the seed that
+    // fs_occluder writes. Unused by fs_main.
+    @location(5) screenUV: vec2f,
 };
 
 @vertex
@@ -41,6 +53,15 @@ fn vs_main(
     @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
     let entityIdx = visibleIndices[instanceIdx];
+    var out: VertexOutput;
+
+    // In the occluder pass an entity that casts no shadow emits a degenerate
+    // triangle, so nothing of it is rasterised.
+    if (OCCLUDER_PASS && (renderMeta[entityIdx * 2u + 1u] & CASTS_SHADOW_BIT) == 0u) {
+        out.clipPosition = vec4f(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
+
     let model = transforms[entityIdx];
 
     // Decode texture tier and layer from packed u32
@@ -49,8 +70,9 @@ fn vs_main(
     let tier = (packed >> 16u) & 0x7u;
     let layer = packed & 0xFFFFu;
 
-    var out: VertexOutput;
     out.clipPosition = camera.viewProjection * model * vec4f(position, 1.0);
+    let ndc = out.clipPosition.xy / out.clipPosition.w;
+    out.screenUV = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     out.uv = position.xy + 0.5;
     out.entityIdx = entityIdx;
     out.texTier = tier;
@@ -94,8 +116,9 @@ fn boxShadow2D(uv: vec2f, rectSize: vec2f, cornerRadius: f32, blur: f32) -> f32 
     return ax * ay * 0.25;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+// The box shadow's colour and coverage. Shared by both entry points: a box
+// shadow casts the shadow of exactly the pixels it draws.
+fn shade(in: VertexOutput) -> vec4f {
     let base = in.entityIdx * 8u;
     let rectW = primParams[base + 0u];
     let rectH = primParams[base + 1u];
@@ -109,4 +132,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let localPos = (in.uv - 0.5) * vec2f(rectW + blur * 4.0, rectH + blur * 4.0);
     let alpha = boxShadow2D(localPos, vec2f(rectW, rectH), cornerRadius, blur);
     return vec4f(colorR, colorG, colorB, colorA * alpha);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    return shade(in);
+}
+
+// OccluderSeedPass entry: a seed wherever the box shadow is at least half
+// covered. (u, v, valid, inside) — the layout the SDF chain floods (design §9.4).
+@fragment
+fn fs_occluder(in: VertexOutput) -> @location(0) vec4f {
+    if (shade(in).a < 0.5) {
+        discard;
+    }
+    return vec4f(in.screenUV, 1.0, 1.0);
 }
