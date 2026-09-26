@@ -405,3 +405,32 @@ describe('GraphRequests — lighting', () => {
     expect(graph.requested.mode).toEqual(BASE);
   });
 });
+
+// A graph whose passes depend on the canvas size (the SDF chain length) must
+// be rebuilt when a resize crosses its bracket, with nothing else changed.
+describe('GraphRequests — rebuild', () => {
+  it('requests the wanted mode again, options included', async () => {
+    const { graph, host, requests } = setup();
+    graph.enableOutlines('red');
+    graph.setLighting(true);
+    requests[1].settle('swapped');
+    await tick();
+
+    graph.rebuild('Resizing the SDF chain');
+    expect(host.request).toHaveBeenLastCalledWith({ ...OUTLINES, lighting: true });
+    expect(graph.requested.outlineOptions).toBe('red');
+  });
+
+  it('a rejected rebuild keeps the live graph, and says why', async () => {
+    const { graph, requests, log } = setup();
+    graph.setLighting(true);
+    requests[0].settle('swapped');
+    await tick();
+
+    graph.rebuild('Resizing the SDF chain');
+    requests[1].settle('rejected', ['out of memory']);
+    await tick();
+    expect(graph.requested.mode).toEqual(LIT);
+    expect(log.error).toHaveBeenCalledWith(expect.stringMatching(/Resizing the SDF chain.*out of memory/s));
+  });
+});

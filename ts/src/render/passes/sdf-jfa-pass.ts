@@ -36,13 +36,24 @@ export class SdfJfaPass extends JfaIterationPass {
 
   /**
    * The whole chain for a half-resolution target whose larger side is
-   * `maxDim` texels: a step-1 load pass, then the standard steps maxDim/2 … 1.
+   * `maxDim` texels: a step-1 load pass, then power-of-two steps 2^(m-1) … 1.
+   *
+   * Powers of two, not maxDim/2, maxDim/4, …: their reach is 2^m - 1, so one
+   * chain covers EVERY target size up to 2^m. The chain is composed once and
+   * the canvas can be resized afterwards; with steps derived from the size at
+   * composition, a canvas grown by a few texels left far texels unreached,
+   * invalid, and their shadows vanished. Now only a resize that changes
+   * `chainLength` needs a new chain (the renderer requests it).
    */
   static chain(maxDim: number): SdfJfaPass[] {
     const standard = JFAPass.iterationsForDimension(maxDim);
-    const steps = [1, ...Array.from({ length: standard }, (_, i) =>
-      Math.max(1, Math.floor(maxDim / Math.pow(2, i + 1))))];
+    const steps = [1, ...Array.from({ length: standard }, (_, i) => 2 ** (standard - 1 - i))];
     return steps.map((step, i) => new SdfJfaPass(i, step));
+  }
+
+  /** How many passes `chain(maxDim)` has. Equal for every maxDim in (2^(m-1), 2^m]. */
+  static chainLength(maxDim: number): number {
+    return 1 + JFAPass.iterationsForDimension(maxDim);
   }
 
   /** The resource the last pass of a chain of `chainLength` writes: the signed SDF. */

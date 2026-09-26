@@ -441,6 +441,21 @@ export async function createRenderer(
     return SdfJfaPass.chain(Math.max(...halfResolution(canvas.width, canvas.height)));
   }
 
+  /**
+   * A lit graph whose SDF chain no longer fits the canvas (a resize crossed a
+   * power of two) floods only part of it: rebuild. Called on resize and when
+   * a graph goes live, since it may have been composed at another size.
+   */
+  function ensureSdfChainFits(mode: GraphMode): void {
+    if (!mode.lighting || !graphRequests) return;
+    if (SdfJfaPass.chainLength(Math.max(...halfResolution(canvas.width, canvas.height))) === sdfPasses.length) return;
+    try {
+      graphRequests.rebuild('Resizing the SDF chain');
+    } catch (err) {
+      console.error('[Hyperion] The SDF chain could not be resized:', err);
+    }
+  }
+
   function ensureSdfTextures(): void {
     const [width, height] = halfResolution(canvas.width, canvas.height);
     if (sdfTextureA && sdfTexWidth === width && sdfTexHeight === height) return;
@@ -552,6 +567,7 @@ export async function createRenderer(
       // The canvas may have been resized while this graph was pending, and
       // the resize branch in render() only handles the live graph's mode.
       prepareMode(mode, jfaPasses.length, sdfPasses.length);
+      ensureSdfChainFits(mode);
       // The graph object is new; re-attach the profiler and drop the history,
       // which measured a different set of passes.
       if (gpuProfilingEnabled && gpuProfiler) {
@@ -880,6 +896,7 @@ export async function createRenderer(
         // Recreate the live graph's JFA / bloom / SDF textures on resize. A
         // pending graph catches up when it goes live (onSwap).
         prepareMode(host.mode, jfaPasses.length, sdfPasses.length);
+        ensureSdfChainFits(host.mode);
 
         // Pass cost is roughly proportional to pixel count, so samples taken at
         // the old resolution must not be averaged with the new ones.

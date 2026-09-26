@@ -37,11 +37,28 @@ function recordSetup(pass: SdfJfaPass) {
 describe('SdfJfaPass chain (1+JFA)', () => {
   beforeAll(() => { SdfJfaPass.SHADER_SOURCE = sdfShaderSource; });
 
-  it('runs one step-1 pass, then the standard JFA steps', () => {
+  it('runs one step-1 pass, then power-of-two steps down to 1', () => {
     const chain = SdfJfaPass.chain(400);
     const standard = JFAPass.iterationsForDimension(400);
     expect(chain).toHaveLength(standard + 1);
-    expect(chain.map((p) => p.stepSize)).toEqual([1, 200, 100, 50, 25, 12, 6, 3, 1, 1]);
+    expect(chain.map((p) => p.stepSize)).toEqual([1, 256, 128, 64, 32, 16, 8, 4, 2, 1]);
+    expect(SdfJfaPass.chainLength(400)).toBe(chain.length);
+  });
+
+  // The chain is composed once, and the canvas can be resized afterwards.
+  // With steps derived from the size at composition (floor(maxDim / 2^i)),
+  // a canvas grown by even a few texels left far texels unreached: invalid,
+  // so the light march read them as "no occluder" and their shadows vanished
+  // (review 2026-09-26). Power-of-two steps reach 2^m - 1 texels, so ONE chain
+  // covers every size up to 2^m, and only a change of bracket needs a new one.
+  it('reaches every texel of any target up to the next power of two', () => {
+    for (const maxDim of [1, 2, 3, 100, 400, 511, 512, 513, 960, 1300, 4096]) {
+      const reach = SdfJfaPass.chain(maxDim).slice(1).reduce((sum, p) => sum + p.stepSize, 0);
+      const bracket = 2 ** JFAPass.iterationsForDimension(maxDim);
+      expect(reach, `maxDim ${maxDim}`).toBeGreaterThanOrEqual(bracket - 1);
+      // ...so a resize inside the bracket keeps the same chain.
+      expect(SdfJfaPass.chainLength(bracket)).toBe(SdfJfaPass.chainLength(maxDim));
+    }
   });
 
   it('reads occluder-seed first and then each previous iteration, over two physical textures', () => {
