@@ -287,7 +287,7 @@ All five checks are closed. Track B can start.
 
 ## Track C — Light accumulation (needs GPU eyes)
 
-- [ ] **Task 9: `LightAccumPass` + `shaders/light-accum.wgsl`**
+- [x] **Task 9: `LightAccumPass` + `shaders/light-accum.wgsl`** (`e72a332`)
   - Target `light-buffer`, `SCENE_HDR_FORMAT`, half resolution, additive blend
     (`one`/`one`, core WebGPU). **Clear colour is the ambient light** — free, the
     way Unity does it.
@@ -303,8 +303,11 @@ All five checks are closed. Track B can start.
     reader to reach for.
   - Tests: pass lifecycle, resource declarations, blend state, clear colour
     tracks ambient, no-lights no-op. (~10 tests)
+  > **Done 2026-09-26.** GPU readback on NVIDIA: attenuation 0.601 where 0.600
+  > is expected, 0.1 in the umbra, radial profile within 0.001. Not yet: the
+  > `sprite` type, the `mix` blend, shadows from global/directional lights.
 
-- [ ] **Task 10: `@group(2)` in `ForwardPass`**
+- [x] **Task 10: `@group(2)` in `ForwardPass`**
   - Three bindings: `light-buffer` texture, sampler, `lighting-uniform`.
   - A 3-group `pipelineLayout` where a shader declares only groups 0-1 is legal —
     validation requires that bindings *used* exist in the layout, not the
@@ -320,6 +323,24 @@ All five checks are closed. Track B can start.
     (~8 tests)
   - Gate: **wgsl-validator**; visual check — a lit sprite and an unlit sprite in
     the same scene.
+  > **Done 2026-09-26, with the graph wiring the plan left implicit.**
+  > - The lookup lives in `fs_main`, not in the shared `shade()`: OccluderSeedPass
+  >   runs the same modules through `fs_occluder` on a two-group layout.
+  > - `GraphMode.lighting`, orthogonal to the composite; `GraphRequests.setLighting`;
+  >   the host validates overlays against all six graphs; the renderer requests the
+  >   lit graph when `GPURenderState.lightingBackend` CHANGES (`followLightingBackend`:
+  >   following the value would retry a GPU-rejected graph every frame).
+  > - Found on the GPU: global/directional lights were culled like point lights.
+  >   They now get `BoundingRadius = f32::MAX`. And picking hit lights, whose sphere
+  >   is their range; `hitTestRay` now skips Light2D.
+  > - Visual check (AMD adapter, harness Mode B): lit vs unlit gradient in the same
+  >   light, soft shadow from a wall, an off-screen global light tinting the scene,
+  >   bloom/outlines/off/on toggles and a resize — 0 WebGPU messages.
+  >
+  > ⚠️ **The light mask cannot be applied as designed.** §7.3 says "applied on read,
+  > in the ForwardPass", but a single screen-space buffer has already summed every
+  > light. Layers need one buffer per layer group. So Task 11's "light-layer toggle"
+  > has nothing to show until that is designed.
 
 - [ ] **Task 11: demo tab, measurement, docs**
   - `demo/lighting.ts`: new tab with point/spot/global lights, an occluder wall,
