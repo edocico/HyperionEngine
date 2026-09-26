@@ -196,7 +196,14 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Set entity rotation. 1 arg = 2D angle (radians). 4 args = quaternion (x,y,z,w). */
+  /**
+   * Set entity rotation. Returns `this` for chaining.
+   * - 1 arg: an angle in radians about Z (the screen normal). It REPLACES the
+   *   whole rotation, on any entity. On a physics body it repositions the body
+   *   (momentum kept), like `position()`.
+   * - 4 args: a quaternion (x, y, z, w). On a physics body the next physics
+   *   step overwrites it with the body's own pose: use the 1-arg form there.
+   */
   rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
     if (qy === undefined) {

@@ -449,6 +449,48 @@ fn p11b_teleport_body_clears_velocity() {
     assert!(v.abs() < falling, "velocity must have been cleared, got {v}");
 }
 
+// 2026-09-26 — `EntityHandle.rotation(angle)` (SetRotation2D) did nothing on
+// a body from `engine.spawn()`: that entity is 3D, the base handler ignored the
+// angle, and the reposition read no rotation off a 3D pose, so Rapier kept its
+// own. The angle now comes from the command.
+fn spawn3d(id: u32) -> Command {
+    cmd(CommandType::SpawnEntity, id, [0u8; 16])
+}
+
+#[test]
+fn p18_rotation_angle_rotates_a_3d_body_and_keeps_its_momentum() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    for _ in 0..10 { e.update(1.0 / 60.0); }
+    let h = e.world.get::<&PhysicsBodyHandle>(e.entity_map.get(0).unwrap()).unwrap().0;
+    let falling = e.physics.rigid_body_set[h].linvel().y;
+    assert!(falling > 1.0, "the body should be falling before the rotation");
+
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 1.0)]);
+    e.update(1.0 / 60.0);
+    let body = &e.physics.rigid_body_set[h];
+    println!("P18 after rotation(1.0): angle={} linvel.y={} (was {falling})", body.rotation().angle(), body.linvel().y);
+    assert!((body.rotation().angle() - 1.0).abs() < 1e-3, "Rapier must take the angle");
+    assert!(body.linvel().y >= falling, "a rotation is a reposition, not a respawn: momentum stays");
+    let rot = e.world.get::<&Rotation>(e.entity_map.get(0).unwrap()).unwrap().0;
+    assert!(rot.abs_diff_eq(glam::Quat::from_rotation_z(body.rotation().angle()), 1e-5));
+}
+
+#[test]
+fn p18b_setposition_on_a_3d_body_still_keeps_its_rotation() {
+    // The angle comes from SetRotation2D only: a SetPosition teleport must not
+    // start carrying a rotation read back from the ECS quaternion.
+    let mut e = Engine::new();
+    e.process_commands(&[spawn3d(0), body(0, 0), collider(0, 0, 10.0, 0.0)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[setpos(0, 50.0, 60.0)]);
+    let t = e.physics.pending_teleports.iter().find(|t| t.ext_id == 0).expect("a queued reposition");
+    assert_eq!(t.rot, None);
+    e.process_commands(&[f1(CommandType::SetRotation2D, 0, 0.25)]);
+    let t = e.physics.pending_teleports.iter().find(|t| t.ext_id == 0).unwrap();
+    assert_eq!(t.rot, Some(0.25));
+}
+
 // P1-10 — reusing a joint id dropped the only handle to the previous joint.
 #[test]
 fn p12_joint_id_reuse_is_rejected() {
