@@ -509,7 +509,9 @@ export class EntityHandle implements Disposable {
 
   /**
    * Whether this entity samples the light buffer. Off by default: an unlit
-   * sprite skips the lookup entirely, which is the cheap path.
+   * sprite skips the lookup entirely, which is the cheap path. Only quads and
+   * gradients read the light buffer; on any other primitive the flag has no
+   * effect.
    */
   receivesLight(enabled = true): this {
     this.check();

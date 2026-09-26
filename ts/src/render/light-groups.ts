@@ -6,7 +6,8 @@ import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
  *
  * The one mask field in renderMeta word 1, bits 16-31, has a role per entity:
  * - light (primType 6): the layers it lights; 0 lights nothing;
- * - receiver (bit 10): ONE layer, its lowest bit; 0 is layer 0;
+ * - receiver (bit 10, on a primitive in LIT_PRIMITIVE_TYPES): ONE layer, its
+ *   lowest bit; 0 is layer 0;
  * - occluder (bit 9): the layers it shadows; 0 is every layer.
  *
  * Two occupied layers share a group when the same lights reach them and, if a
@@ -67,6 +68,16 @@ const SPOT = 1;
 const MARGIN_SCALE = 1.01;
 const MARGIN_ADD = 1e-3;
 
+/**
+ * The primitive types whose shader samples the light buffer (declares
+ * `@group(2)`): Quad and Gradient. A receiver of any other type is drawn unlit
+ * whatever its flag, so its layer needs no group. `light-groups.test.ts`
+ * checks this list against the shaders `renderer.ts` registers.
+ */
+export const LIT_PRIMITIVE_TYPES: readonly number[] = [0, 4];
+const LIT = new Uint8Array(256);
+for (const type of LIT_PRIMITIVE_TYPES) LIT[type] = 1;
+
 /** A receiver's layer: the lowest set bit of its mask, 0 for mask 0. */
 export function receiverLayer(mask: number): number {
   return mask === 0 ? 0 : 31 - Math.clz32(mask & -mask);
@@ -100,7 +111,7 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     // The SDF is screen-space: an occluder out of view contributes nothing,
     // and counting it could only split groups and add SDF floods.
     if ((word & CASTS_SHADOW) !== 0 && inView(i)) occluderMasks.add(mask === 0 ? 0xffff : mask);
-    if ((word & RECEIVES_LIGHT) !== 0) {
+    if ((word & RECEIVES_LIGHT) !== 0 && LIT[word & 0xff] === 1) {
       // A layer nobody on screen samples would still get a group, and its own
       // SDF set if the casters in view split it off. Same conservative test
       // as lights, so every receiver the GPU draws keeps its layer mapped.

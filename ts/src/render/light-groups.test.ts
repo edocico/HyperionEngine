@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { deriveLightGroups, receiverLayer, type LightGroupsInput } from './light-groups';
+import { readFileSync } from 'node:fs';
+import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, type LightGroupsInput } from './light-groups';
 
 // Light layers (design 2026-09-26): layers with the same lights and, where a
 // shadowed light reaches them, the same casters share a light buffer. Unity
@@ -140,6 +141,38 @@ describe('deriveLightGroups', () => {
 
   it('a multi-bit receiver is flagged even out of view', () => {
     expect(deriveLightGroups(scene([light(0xffff), drawable(RECV, 0b110, { x: 100 })])).multiBitReceiver).toBe(true);
+  });
+
+  it('a transparent caster or light counts like an opaque one: the stages draw both blend modes', () => {
+    const TRANSPARENT = 1 << 8;
+    const g = deriveLightGroups(scene([
+      light(0xffff, 1), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(CAST | TRANSPARENT, 0b01),
+    ]));
+    expect(g.groups).toEqual([{ layers: 0b01, sdfSet: 0 }, { layers: 0b10, sdfSet: -1 }]);
+  });
+
+  it('a receiver whose primitive never samples the light buffer occupies no layer', () => {
+    // Review 2026-09-26: a line on layer 1 with receivesLight split a group off
+    // for pixels that never read the light buffer (only quad and gradient do).
+    const LINE = 1, GRADIENT = 4;
+    const g = deriveLightGroups(scene([light(0xffff), light(0b10), drawable(RECV, 0b01), drawable(RECV | LINE, 0b110)]));
+    expect(g.groups).toEqual([{ layers: 0b01, sdfSet: -1 }]);
+    expect(g.multiBitReceiver).toBe(false);
+    const lit = deriveLightGroups(scene([light(0xffff), light(0b10), drawable(RECV, 0b01), drawable(RECV | GRADIENT, 0b10)]));
+    expect(lit.groups).toHaveLength(2);
+  });
+
+  it('LIT_PRIMITIVE_TYPES are exactly the types whose registered shader declares @group(2)', () => {
+    const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+    const files = new Map<string, string>();
+    for (const m of renderer.matchAll(/import (\w+) from '\.\/shaders\/([\w-]+\.wgsl)\?raw'/g)) files.set(m[1], m[2]);
+    const block = /ForwardPass\.SHADER_SOURCES = \{([^}]*)\}/.exec(renderer)?.[1] ?? '';
+    const registered = [...block.matchAll(/(\d+):\s*(\w+)/g)].map((m) => [Number(m[1]), files.get(m[2])!] as const);
+    expect(registered).toHaveLength(6);
+    const declaresGroup2 = registered
+      .filter(([, file]) => /@group\(2\)/.test(readFileSync(new URL(`../shaders/${file}`, import.meta.url), 'utf8')))
+      .map(([type]) => type);
+    expect([...LIT_PRIMITIVE_TYPES].sort()).toEqual(declaresGroup2.sort());
   });
 
   it('a light on an unoccupied layer changes nothing', () => {
