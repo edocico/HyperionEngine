@@ -37,7 +37,8 @@ const EVERYTHING: LightGroups = {
  * constant whatever the number of sets (there is no cap on them). The chain
  * length follows the target size every frame, and the group and set counts can
  * change every frame: neither needs a new graph. The light buffer grows with
- * the group count and never shrinks.
+ * the group count; it shrinks only when a resize recreates it, at that frame's
+ * count.
  *
  * The three stages are OccluderSeedStage, SdfChainStage and LightAccumStage.
  * For the GPU profiler the node names them per frame (`profileStages`) and
@@ -128,7 +129,7 @@ export class LightGroupsPass implements RenderPass {
     }
   }
 
-  /** Seed and ping-pong at `halfResolution`, the light buffer with at least `groups` layers (grow-only). */
+  /** Seed and ping-pong at `halfResolution`, the light buffer with at least `groups` layers (grows between resizes). */
   private ensureTargets(frame: FrameState, resources: ResourcePool, groups: number): void {
     if (!this.device) return;
     const [width, height] = halfResolution(frame.canvasWidth, frame.canvasHeight);

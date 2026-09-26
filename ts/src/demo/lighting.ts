@@ -62,7 +62,9 @@ const section: DemoSection = {
       entities.push(engine.spawn().position(0, 0, -0.5).scale(40, 18, 1).receivesLight(true));
 
       // Occluders: two walls and a pillar. Unlit, so they read as solid shapes.
-      // The pillar shadows layer 0 only: the layer-1 sprite below is lit through it.
+      // The pillar shadows layer 0 only, so layer 1 gets an SDF set of its own
+      // (the "Light layers" check). No layer-1 light has it in the way of the
+      // layer-1 sprite: the per-layer shadow itself is not on screen here.
       entities.push(engine.spawn().position(-3, 2.5, 0).scale(0.8, 5, 1).castsShadow(true));
       entities.push(engine.spawn().position(4, -3, 0).scale(6, 0.8, 1).castsShadow(true));
       entities.push(engine.spawn().position(9, 3, 0).scale(1.5, 1.5, 1).castsShadow(true).lightLayers(0b01));

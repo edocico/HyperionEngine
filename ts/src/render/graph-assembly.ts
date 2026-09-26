@@ -30,7 +30,7 @@ export interface GraphPassFactories {
   outline(): RenderPass[];
   bloom(): RenderPass;
   fxaaTonemap(): RenderPass;
-  /** occluder-seed → sdf-0..N → light-accum, which writes `light-buffer`. */
+  /** One `LightGroupsPass`: seed → SDF → accumulation per set, inside the node; writes `light-buffer`. */
   lighting(): RenderPass[];
 }
 

@@ -23,8 +23,8 @@
 @group(0) @binding(0) var inputTex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: JFAParams;
 
-// Four scalars, 16 bytes, at the offsets JfaIterationPass.prepare() writes
-// (0, 4, 8, 12). A vec2f member would be 8-aligned, pushing it to offset 8 and
+// Four scalars, 16 bytes, at the offsets SdfChainStage.prepare() writes
+// (0, 4, 8, 12), one 256-byte slice per step. A vec2f member would be 8-aligned, pushing it to offset 8 and
 // the struct to 24 bytes: larger than the 16-byte buffer, which fails
 // validation at draw time.
 struct JFAParams {
@@ -34,7 +34,8 @@ struct JFAParams {
     _pad: f32,
 };
 
-// True only for the first pass of the chain, which reads `occluder-seed`.
+// True only for the first pass of the chain, which reads the raw occluder seed
+// (LightGroupsPass's private `light-seed` texture).
 override LOAD_PASS: bool = false;
 
 struct VertexOutput {

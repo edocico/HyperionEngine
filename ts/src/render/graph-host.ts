@@ -170,7 +170,7 @@ export class RenderGraphHost {
   /**
    * Add a caller-owned pass. Validated against EVERY mode's graph, not only
    * the live one: a pass that fits today's graph but clashes with another
-   * mode ('bloom', 'jfa-N', a blind write of 'selection-seed', 'light-accum')
+   * mode ('bloom', 'jfa-N', a blind write of 'selection-seed', 'light-groups')
    * would make switching to that mode fail. Throws, adding nothing, if it does not fit
    * or its `setup()` throws.
    *

@@ -60,7 +60,8 @@ pub struct MeshHandle(pub u32);
 ///
 /// `6 = Light2D` is the one type the ForwardPass never draws: no shader is
 /// registered for it in `SHADER_SOURCES`, so the per-type pipeline loop simply
-/// never finds it. `LightAccumPass` reads its draw bucket directly.
+/// never finds it. `LightAccumStage` (inside `LightGroupsPass`) reads its draw
+/// bucket directly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct RenderPrimitive(pub u8);
@@ -290,7 +291,8 @@ pub const LIGHT_FLAGS_MASK: u32 = 0xFFFF_FE00;
 
 /// `RenderPrimitive` discriminant for a 2D light. Lights are ECS entities like
 /// any other drawable, but no shader is registered for this type in the
-/// ForwardPass — `LightAccumPass` reads their draw bucket directly.
+/// ForwardPass — `LightAccumStage` (inside `LightGroupsPass`) reads their draw
+/// bucket directly.
 pub const PRIM_TYPE_LIGHT2D: u8 = 6;
 
 /// Light shape, stored in `renderMeta` bits 11-13.
