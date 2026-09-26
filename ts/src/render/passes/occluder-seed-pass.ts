@@ -6,14 +6,9 @@ import {
 } from '../primitive-bindings';
 import { BUCKETS_PER_TYPE } from './cull-pass';
 
-/**
- * Size of the lighting targets (occluder seed, signed-SDF chain): half the
- * canvas, rounded down, at least 1×1. One function, because the SDF chain
- * steps in texels of the seed texture and the two must agree to the texel.
- */
-export function halfResolution(canvasWidth: number, canvasHeight: number): [number, number] {
-  return [Math.max(1, Math.floor(canvasWidth / 2)), Math.max(1, Math.floor(canvasHeight / 2))];
-}
+import { halfResolution } from './occluder-seed-stage';
+
+export { halfResolution };
 
 /** The fragment entry point a primitive shader exposes to cast shadows. */
 const OCCLUDER_ENTRY = 'fs_occluder';
