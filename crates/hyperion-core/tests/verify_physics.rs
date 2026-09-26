@@ -593,3 +593,43 @@ fn p15_stopped_event_survives_a_despawn() {
         "the surviving entity must still be told the overlap ended");
     assert!(stopped.iter().any(|&(a, b)| a == 0 || b == 0));
 }
+
+// ─────────────────────────────────────────────────────────────────
+// P16 (found 2026-09-26): a child of a physics body must follow it on the GPU.
+//
+// `mark_post_system_dirty` propagated "parent is dirty" to descendants in its
+// pass 2, but marked the physics bodies themselves only in pass 3, afterwards.
+// A body moved by Rapier (and not by a Velocity) therefore never had its
+// children staged. `propagate_transforms` kept their ModelMatrix right in the
+// ECS, while their GPU row kept whatever it held the last time something else
+// dirtied it. The child here is 3D on purpose: a 2D child also hits a
+// separate defect in the SoA writers, which would mask this one.
+// ─────────────────────────────────────────────────────────────────
+#[test]
+fn p16_child_of_a_physics_body_follows_it_on_the_gpu() {
+    let mut e = Engine::new();
+    let mut parent = [0u8; 16];
+    parent[0..4].copy_from_slice(&0u32.to_le_bytes());
+    e.process_commands(&[
+        spawn2d(0), body(0, 0), collider(0, 0, 10.0, 0.0),
+        cmd(CommandType::SpawnEntity, 1, [0u8; 16]), // 3D
+        cmd(CommandType::SetParent, 1, parent),
+    ]);
+    for _ in 0..10 {
+        e.update(1.0 / 60.0);
+    }
+
+    let (_, body_y) = pos_of(&e, 0);
+    assert!(body_y.abs() > 1.0, "gravity must have moved the body (y = {body_y})");
+
+    let child = e.entity_map.get(1).unwrap();
+    let ecs = e.world.get::<&ModelMatrix>(child).unwrap().0;
+    let slot = e.render_state.get_slot(child).unwrap() as usize;
+    let gpu = &e.render_state.gpu_transforms()[slot * 16..slot * 16 + 16];
+    println!("P16 body y={body_y} child ECS ty={} GPU ty={}", ecs[13], gpu[13]);
+    assert!((ecs[13] - body_y).abs() < 1e-3, "the ECS world matrix follows the body");
+    for i in 0..16 {
+        assert!((gpu[i] - ecs[i]).abs() < 1e-4,
+            "GPU word {i} = {} but the ECS world matrix says {}", gpu[i], ecs[i]);
+    }
+}

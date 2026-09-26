@@ -250,7 +250,10 @@ impl Engine {
     ///
     /// - Entities with non-zero velocity: velocity_system moved their Position,
     ///   transform_system recomputed their ModelMatrix.
-    /// - Children of dirty parents: propagate_transforms updated their ModelMatrix.
+    /// - Physics bodies: physics_sync_post wrote Rapier's state back.
+    /// - Descendants of any of the above: propagate_transforms updated their
+    ///   ModelMatrix. This pass must run LAST, because it can only follow
+    ///   parents that are already marked.
     fn mark_post_system_dirty(&mut self) {
         // Pass 1: velocity-driven entities (both 3D and 2D — query is archetype-agnostic)
         for (entity, vel, _active) in
@@ -264,7 +267,28 @@ impl Engine {
             }
         }
 
-        // Pass 2: descendants of dirty parents, at ANY depth.
+        // Pass 2 (physics): mark non-sleeping physics entities as dirty.
+        // physics_sync_post wrote Rapier body state back to ECS — these entities
+        // need their SoA data updated. It must run before the descendant pass:
+        // when it ran after, a body moved by Rapier never had its children staged,
+        // and they stayed frozen on the GPU while their ECS matrix moved.
+        #[cfg(feature = "physics-2d")]
+        {
+            use crate::physics::PhysicsBodyHandle;
+            for (entity, handle, _active) in
+                self.world.query::<(hecs::Entity, &PhysicsBodyHandle, &Active)>().iter()
+            {
+                if let Some(body) = self.physics.rigid_body_set.get(handle.0)
+                    && !body.is_sleeping()
+                    && let Some(slot) = self.render_state.get_slot(entity)
+                {
+                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+                }
+            }
+        }
+
+        // Pass 3: descendants of dirty parents, at ANY depth.
         //
         // `propagate_transforms` composes the whole ancestor chain (audit
         // 2026-07, P1-18), so marking only direct children left grandchildren
@@ -293,25 +317,6 @@ impl Engine {
             rounds += 1;
             if newly_marked == 0 || rounds >= crate::command_processor::MAX_HIERARCHY_DEPTH {
                 break;
-            }
-        }
-
-        // Pass 3 (physics): mark non-sleeping physics entities as dirty.
-        // physics_sync_post wrote Rapier body state back to ECS — these entities
-        // need their SoA data updated.
-        #[cfg(feature = "physics-2d")]
-        {
-            use crate::physics::PhysicsBodyHandle;
-            for (entity, handle, _active) in
-                self.world.query::<(hecs::Entity, &PhysicsBodyHandle, &Active)>().iter()
-            {
-                if let Some(body) = self.physics.rigid_body_set.get(handle.0)
-                    && !body.is_sleeping()
-                    && let Some(slot) = self.render_state.get_slot(entity)
-                {
-                    self.render_state.dirty_tracker.mark_transform_dirty(slot as usize);
-                    self.render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
-                }
             }
         }
     }
