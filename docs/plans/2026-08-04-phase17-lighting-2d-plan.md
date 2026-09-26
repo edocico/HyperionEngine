@@ -201,7 +201,18 @@ adapter on the RTX 4060 (Chrome flags in the project memory), Mode B:
   render target, which dropped every bloom frame.
 - [x] **Subgroup size** — the cull path assumes 32; check `adapter.info.subgroupMinSize/MaxSize`.
   → It corrupts indices at other widths. Gated to exactly 32 in `369e385`.
-- [ ] **HDR baseline** — screenshots of the 8 demo tabs (design §16 rows 1/1b).
+- [x] **HDR baseline** — screenshots of the 8 demo tabs (design §16 rows 1/1b).
+  → `assets/2026-09-26-hdr-baseline/` (AMD RDNA 3 iGPU, Mode B, 1600×900).
+  All 8 tabs render with **0 WebGPU messages**. The only console noise left is
+  LeakDetector warnings from demo handles never destroyed on a tab switch. The
+  baseline turned up two more defects, both fixed before it was taken:
+  - particles dropped every frame (bind groups not built from their own
+    pipeline's auto layout);
+  - untextured quads were black on BC7 devices. Now white: packed index 0 is
+    answered by `basic.wgsl`.
+  The white quads also make the bloom halo visible in the Rendering FX tab.
+
+All five checks are closed. Track B can start.
 
 ## Track B — Occluders and the signed SDF (needs GPU eyes)
 
