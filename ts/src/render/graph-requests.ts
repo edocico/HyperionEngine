@@ -36,6 +36,10 @@ export interface GraphRequestsDeps<O, B> {
 
 export type ReloadOutcome = RequestResult['outcome'] | 'validated' | 'unknown';
 
+function sameMode(a: GraphMode, b: GraphMode): boolean {
+  return a.outlines === b.outlines && a.bloom === b.bloom && a.lighting === b.lighting;
+}
+
 const BASE: GraphMode = { outlines: false, bloom: false, lighting: false };
 type Feature = 'outlines' | 'bloom' | 'lighting';
 const DISABLING: Record<Feature, string> = {
@@ -69,7 +73,11 @@ export class GraphRequests<O, B> {
   private readonly goodSources = new Map<string, string>();
   /** Reload generation per slot: a result is acted on only if no newer reload started. */
   private readonly versions = new Map<string, number>();
-  /** Features switched off while a request that replaces them was pending: honoured if it is rejected. */
+  /**
+   * Features switched off while the live graph still has them. If a request is
+   * rejected before a graph without them goes live, they are requested off
+   * again (unless that exact graph is the one just rejected).
+   */
   private readonly offIntents = new Set<Feature>();
   /** Sequence of requestGraph calls: a verdict booked after a newer call must not undo its state. */
   private requestSeq = 0;
@@ -207,12 +215,11 @@ export class GraphRequests<O, B> {
   }
 
   private disable(feature: Feature, what: string): void {
-    if (this.wanted.mode[feature]) {
-      void this.requestGraph(this.without(feature), what);
-    } else if (this.deps.host.mode[feature]) {
-      // A pending request already drops it — unless the GPU rejects that request.
-      this.offIntents.add(feature);
-    }
+    // Remembered until a graph without it goes live: the request below, or a
+    // later one carrying it, may be rejected, and `requested` then falls back
+    // to the live graph, which still has the feature on.
+    if (this.deps.host.mode[feature]) this.offIntents.add(feature);
+    if (this.wanted.mode[feature]) void this.requestGraph(this.without(feature), what);
   }
 
   /**
@@ -256,7 +263,7 @@ export class GraphRequests<O, B> {
         );
         if (latest) {
           this.wanted = this.live;
-          if (!this.honourOffIntents() && this.liveStale) {
+          if (!this.honourOffIntents(next.mode) && this.liveStale) {
             this.liveStale = false;
             void this.requestGraph(this.live, 'Rebuilding the live graph with reloaded shaders');
           }
@@ -267,26 +274,25 @@ export class GraphRequests<O, B> {
   }
 
   /** Re-issue a disable that a rejected request would have carried out. True if it requested a graph. */
-  private honourOffIntents(): boolean {
-    const intents = [...this.offIntents];
+  private honourOffIntents(rejected: GraphMode): boolean {
+    const intents = [...this.offIntents].filter((feature) => this.wanted.mode[feature]);
     this.offIntents.clear();
-    let requested = false;
-    for (const feature of intents) {
-      if (this.wanted.mode[feature]) {
-        void this.requestGraph(this.without(feature), DISABLING[feature]);
-        requested = true;
-      }
-    }
-    return requested;
+    if (intents.length === 0) return false;
+    let target = this.wanted;
+    for (const feature of intents) target = this.without(feature, target);
+    // The same graph was just rejected: asking again would fail again.
+    if (sameMode(target.mode, rejected)) return false;
+    void this.requestGraph(target, intents.map((feature) => DISABLING[feature]).join(', '));
+    return true;
   }
 
   /**
    * The wanted request with `feature` off. Dropping a composite drops its
    * options too; dropping lighting keeps the composite's.
    */
-  private without(feature: Feature): GraphRequest<O, B> {
-    const mode = { ...this.wanted.mode, [feature]: false };
-    return feature === 'lighting' ? { ...this.wanted, mode } : { mode };
+  private without(feature: Feature, from: GraphRequest<O, B> = this.wanted): GraphRequest<O, B> {
+    const mode = { ...from.mode, [feature]: false };
+    return feature === 'lighting' ? { ...from, mode } : { mode };
   }
 
   private snapshotSources(): Map<string, string> {

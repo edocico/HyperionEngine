@@ -406,6 +406,40 @@ describe('GraphRequests — lighting', () => {
   });
 });
 
+// Review 2026-09-26: lighting was switched off (the engine backend went
+// 'off'), then a composite request carrying that went out and was rejected.
+// `requested` fell back to the live, LIT graph, and nothing asked again, since
+// followLightingBackend acts on changes only. The graph stayed lit.
+describe('GraphRequests — a switch-off survives the rejection of a later request', () => {
+  it('lighting off, then bloom rejected: lighting still goes off', async () => {
+    const { graph, host, requests } = setup();
+    graph.setLighting(true);
+    requests[0].settle('swapped');
+    await tick();
+
+    graph.setLighting(false);   // requests[1]: unlit
+    graph.enableBloom();        // requests[2]: bloom, unlit
+    requests[1].settle('superseded');
+    requests[2].settle('rejected', ['broken bloom shader']);
+    await tick();
+
+    expect(host.request).toHaveBeenLastCalledWith(BASE);
+    expect(graph.requested.mode).toEqual(BASE);
+  });
+
+  it('a switch-off the GPU itself rejects is not retried as is: it would fail again', async () => {
+    const { graph, host, requests } = setup();
+    graph.setLighting(true);
+    requests[0].settle('swapped');
+    await tick();
+
+    graph.setLighting(false);
+    requests[1].settle('rejected', ['device lost']);
+    await tick();
+    expect(host.request).toHaveBeenCalledTimes(2);
+  });
+});
+
 // A graph whose passes depend on the canvas size (the SDF chain length) must
 // be rebuilt when a resize crosses its bracket, with nothing else changed.
 describe('GraphRequests — rebuild', () => {
