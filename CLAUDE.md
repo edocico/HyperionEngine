@@ -22,7 +22,7 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 
 ```bash
 cargo test -p hyperion-core                  # All Rust unit tests (193 tests, 271 with physics-2d, 222 with dev-tools, 315 with all features)
-cargo test -p hyperion-core --all-features   # + 67 integration tests across 6 files (315 lib + 67 = 382 total)
+cargo test -p hyperion-core --all-features   # + 68 integration tests across 6 files (315 lib + 68 = 383 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -79,15 +79,15 @@ cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI 
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality (19 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (271 lib tests, 329 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (271 lib tests, 330 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 315 lib tests (382 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 315 lib tests (383 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (222 lib tests, 261 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (222 lib tests, 262 with integration)
 ```
 
 ### Development Workflow
@@ -677,7 +677,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 67 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 24, verify_ring 8, verify_hier 7, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16 and H6/H7 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
+Regression coverage: 68 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 24, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16 and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|

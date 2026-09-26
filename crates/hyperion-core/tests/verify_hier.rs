@@ -193,3 +193,46 @@ fn h7_every_culling_sphere_is_centred_on_the_world_position() {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// H8 (found 2026-09-26 by review): an orphan is re-staged at once.
+//
+// Despawning a parent, or re-spawning its external id, turns each child into a
+// root: `unlink_hierarchy` sets Parent to u32::MAX. Nothing marked the child
+// dirty, so its GPU row and culling sphere stayed at the dead parent's world
+// position for as long as nothing else touched it. Its ECS ModelMatrix had
+// already moved back to the local offset.
+// ─────────────────────────────────────────────────────────────────
+#[test]
+fn h8_an_orphaned_child_is_restaged_at_its_new_world_position() {
+    for child_2d in [true, false] {
+        for respawn in [false, true] {
+            let mut e = Engine::new();
+            let child = if child_2d { spawn2d(1) } else { spawn(1) };
+            e.process_commands(&[
+                spawn2d(0), setpos(0, 100.0, 50.0),
+                child, setpos(1, 10.0, 0.0), parent(1, 0),
+                spawn(2), // filler, so the child is not in the swap-remove last slot
+                spawn(3), setpos(3, 1.0, 0.0), parent(3, 1), // grandchild
+            ]);
+            e.update(1.0 / 60.0);
+
+            let orphaning = if respawn { spawn(0) } else { despawn(0) };
+            e.process_commands(&[orphaning]);
+            e.update(1.0 / 60.0);
+
+            let (gpu, bounds, world) = gpu_row(&e, 1);
+            let case = format!("child_2d={child_2d} respawn={respawn}");
+            println!("H8 {case}: world t=({}, {}), GPU t=({}, {}), sphere=({}, {})",
+                world[12], world[13], gpu[12], gpu[13], bounds[0], bounds[1]);
+            assert_eq!((world[12], world[13]), (10.0, 0.0), "{case}: the orphan is a root at its local offset");
+            assert_eq!((gpu[12], gpu[13]), (10.0, 0.0), "{case}: GPU transform row");
+            assert_eq!((bounds[0], bounds[1]), (10.0, 0.0), "{case}: culling sphere centre");
+
+            let (gpu, bounds, world) = gpu_row(&e, 3);
+            assert_eq!((world[12], world[13]), (11.0, 0.0), "{case}: grandchild follows the orphan");
+            assert_eq!((gpu[12], gpu[13]), (11.0, 0.0), "{case}: grandchild GPU transform row");
+            assert_eq!((bounds[0], bounds[1]), (11.0, 0.0), "{case}: grandchild culling sphere centre");
+        }
+    }
+}

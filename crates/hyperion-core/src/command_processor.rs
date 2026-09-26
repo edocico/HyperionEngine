@@ -415,7 +415,12 @@ fn would_create_cycle(
 /// Called before the entity leaves the world so its parent stops listing it and
 /// its children become roots instead of pointing at a dead — and later recycled
 /// — external id (audit 2026-07, P2-1b, P2-1c).
-fn unlink_hierarchy(world: &mut World, entity_map: &EntityMap, entity: hecs::Entity) {
+fn unlink_hierarchy(
+    world: &mut World,
+    entity_map: &EntityMap,
+    render_state: &mut RenderState,
+    entity: hecs::Entity,
+) {
     detach_from_parent(world, entity_map, entity);
 
     let mut child_ids: Vec<u32> = world
@@ -430,6 +435,15 @@ fn unlink_hierarchy(world: &mut World, entity_map: &EntityMap, entity: hecs::Ent
             && let Ok(mut parent) = world.get::<&mut Parent>(child_entity)
         {
             parent.0 = u32::MAX;
+            // The orphan is a root now: its world transform is its local one.
+            // Without this, its GPU row and culling sphere stayed at the dead
+            // parent's world position until something else dirtied it. The
+            // descendant pass of `mark_post_system_dirty` carries the mark on to
+            // the grandchildren.
+            if let Some(slot) = render_state.get_slot(child_entity) {
+                render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
+            }
         }
     }
 }
@@ -453,7 +467,7 @@ fn retire_previous_binding(
     match entity_map.get(external_id) {
         Some(previous) => {
             render_state.queue_despawn(previous);
-            unlink_hierarchy(world, entity_map, previous);
+            unlink_hierarchy(world, entity_map, render_state, previous);
             let _ = world.despawn(previous);
             entity_map.remove(external_id);
             true
@@ -671,7 +685,7 @@ fn process_single_command(
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 render_state.queue_despawn(entity);
-                unlink_hierarchy(world, entity_map, entity);
+                unlink_hierarchy(world, entity_map, render_state, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
@@ -1058,7 +1072,7 @@ fn process_single_command_physics(
             if let Some(entity) = entity_map.get(cmd.entity_id) {
                 despawn_physics_cleanup(world, entity, physics);
                 render_state.queue_despawn(entity);
-                unlink_hierarchy(world, entity_map, entity);
+                unlink_hierarchy(world, entity_map, render_state, entity);
                 let _ = world.despawn(entity);
                 entity_map.remove(cmd.entity_id);
             }
