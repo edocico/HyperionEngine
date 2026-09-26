@@ -168,6 +168,35 @@ describe('GpuProfiler', () => {
       expect(t.get('x/b')?.lastMs).toBeCloseTo(2, 5);
     });
 
+    // A staged pass changes its stage list from frame to frame with no graph
+    // change (no reset): LightGroupsPass drops seed/sdf when the SDF sets go to
+    // zero. Review 2026-09-26: the vanished stages kept their frozen average and
+    // still counted in totalAverageMs.
+    it('a stage missing from a frame took 0 ms in it: its mean decays and lastMs is 0', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['lg/seed', 'lg/accum'], [2, 1]);
+      await runFrame(p, ['lg/accum'], [1]);
+      const seed = p.getTimingsByName().get('lg/seed')!;
+      expect(seed.lastMs).toBe(0);
+      expect(seed.sampleCount).toBe(2);
+      expect(seed.averageMs).toBeCloseTo(1, 5);
+      expect(p.totalAverageMs()).toBeCloseTo(2, 5);
+    });
+
+    it('forgets a stage once it has been missing for a whole window', async () => {
+      const p = new GpuProfiler(device);
+      await runFrame(p, ['lg/seed', 'lg/accum'], [2, 1]);
+      for (let i = 0; i < WINDOW; i++) await runFrame(p, ['lg/accum'], [1]);
+      expect(p.getTimingsByName().has('lg/seed')).toBe(false);
+      expect(p.totalAverageMs()).toBeCloseTo(1, 5);
+    });
+
+    it('never forgets a stage that is still measured, even at 0 ms', async () => {
+      const p = new GpuProfiler(device);
+      for (let i = 0; i < WINDOW + 5; i++) await runFrame(p, ['lg/seed'], [0]);
+      expect(p.getTimingsByName().has('lg/seed')).toBe(true);
+    });
+
     it('averages across frames, which is what defeats the 100us quantization', async () => {
       const p = new GpuProfiler(device);
       // Chrome would report a 60us pass as 0 or 100us on alternate frames.

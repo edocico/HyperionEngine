@@ -312,6 +312,21 @@ export class GpuProfiler {
       frameTotals.set(entry.names[i], (frameTotals.get(entry.names[i]) ?? 0) + ms);
     }
 
+    // A staged pass can drop a stage between frames with no graph change, so
+    // no reset(): LightGroupsPass loses seed/sdf when its SDF sets go to zero.
+    // A name missing from this frame took 0 ms in it, which keeps every mean a
+    // mean per frame; once a whole window has gone by without it, it is gone.
+    for (const [name, samples] of this.history) {
+      if (frameTotals.has(name)) continue;
+      this.latest.set(name, 0);
+      samples.push(0);
+      if (samples.length > WINDOW) samples.shift();
+      if (samples.every((s) => s === 0)) {
+        this.history.delete(name);
+        this.latest.delete(name);
+      }
+    }
+
     for (const [name, ms] of frameTotals) {
       this.latest.set(name, ms);
       let samples = this.history.get(name);
@@ -364,7 +379,11 @@ export class GpuProfiler {
     return this.zeroFrames;
   }
 
-  /** Current timings, one entry per pass measured at least once. */
+  /**
+   * Current timings, one entry per pass or stage measured in the last
+   * {@link WINDOW} frames. A frame without it counts as 0 ms, so `averageMs`
+   * is a mean per frame, not per run.
+   */
   timings(): PassTiming[] {
     const out: PassTiming[] = [];
     for (const [name, samples] of this.history) {
