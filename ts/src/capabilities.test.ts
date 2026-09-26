@@ -9,6 +9,7 @@ import {
   selectDeviceFeatures,
   retryDeviceFeatures,
   indirectFirstInstanceWarning,
+  subgroupCullSupported,
   type Capabilities,
 } from "./capabilities";
 
@@ -265,5 +266,31 @@ describe("indirectFirstInstanceWarning", () => {
     const warning = indirectFirstInstanceWarning(new Set());
     expect(warning).toContain("indirect-first-instance");
     expect(warning).toMatch(/only opaque/i);
+  });
+});
+
+// cull.wgsl's subgroup path derives the subgroup index as `lid / SUBGROUP_SIZE`
+// with SUBGROUP_SIZE = 32. On hardware whose subgroups are not exactly 32
+// lanes the per-bucket COUNTS stay right while the visible-indices get
+// corrupted: some entities drawn twice, others missing, no error anywhere.
+// Examples are AMD wave64 (RDNA reports 32-64), Intel (8-32), Qualcomm and
+// Mali. The path first ran after 6331b5c made the cull pipeline valid.
+describe("subgroupCullSupported", () => {
+  const info = (min?: number, max?: number) => ({ subgroupMinSize: min, subgroupMaxSize: max }) as unknown as GPUAdapterInfo;
+
+  it("allows the subgroup cull path when subgroups are exactly 32 lanes (NVIDIA, Apple)", () => {
+    expect(subgroupCullSupported(info(32, 32))).toBe(true);
+  });
+
+  it("refuses it when the size can vary or differs from 32", () => {
+    expect(subgroupCullSupported(info(32, 64))).toBe(false);   // AMD RDNA
+    expect(subgroupCullSupported(info(64, 64))).toBe(false);   // AMD GCN
+    expect(subgroupCullSupported(info(8, 32))).toBe(false);    // Intel
+    expect(subgroupCullSupported(info(16, 16))).toBe(false);   // Mali
+  });
+
+  it("refuses it when the adapter does not say", () => {
+    expect(subgroupCullSupported(undefined)).toBe(false);
+    expect(subgroupCullSupported(info())).toBe(false);
   });
 });

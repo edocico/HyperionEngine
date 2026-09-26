@@ -32,7 +32,7 @@ import { RadixSortPass } from './render/passes/radix-sort-pass';
 import { SelectionManager } from './selection';
 import {
   detectCompressedFormat, detectSubgroupSupport, describeAdapter,
-  selectDeviceFeatures, retryDeviceFeatures, indirectFirstInstanceWarning,
+  selectDeviceFeatures, retryDeviceFeatures, indirectFirstInstanceWarning, subgroupCullSupported,
 } from './capabilities';
 import { ParticleSystem, type ParticlePipelines } from './particle-system';
 import type { FrameState, RenderPass } from './render/render-pass';
@@ -164,6 +164,13 @@ export async function createRenderer(
   const firstInstanceWarning = indirectFirstInstanceWarning(device.features);
   if (firstInstanceWarning) console.warn(firstInstanceWarning);
 
+  // `useSubgroups` drives only the cull shader, whose subgroup path is correct
+  // only at exactly 32 lanes. The device keeps the feature either way.
+  if (useSubgroups && !subgroupCullSupported(adapter.info)) {
+    useSubgroups = false;
+    console.info('[Hyperion] Cull: atomic path (the subgroup path needs subgroups of exactly 32 lanes)');
+  }
+
   device.lost.then((info) => {
     console.error(`[Hyperion] GPU device lost: ${info.message}`);
     onDeviceLost?.(info.message);
@@ -266,7 +273,7 @@ export async function createRenderer(
 
   CullPass.SUBGROUP_CONFIG = {
     useSubgroups,
-    subgroupSize: 32,  // TODO: query actual subgroup size from adapter if API available
+    subgroupSize: 32,  // the only width the subgroup path supports: see subgroupCullSupported
     useSubgroupId: useSubgroups && subgroupSupport.hasSubgroupId,
   };
 

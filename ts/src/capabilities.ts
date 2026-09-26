@@ -233,3 +233,18 @@ export function indirectFirstInstanceWarning(deviceFeatures: ReadonlySet<string>
     + 'firstInstance are no-ops, so only opaque tier-0 quads will render. Every other primitive type '
     + 'and every transparent entity is missing.';
 }
+
+/**
+ * Whether `cull.wgsl`'s subgroup path is correct on this adapter: only when
+ * every subgroup is exactly 32 lanes.
+ *
+ * The shader derives the subgroup index as `lid / SUBGROUP_SIZE` with a fixed
+ * SUBGROUP_SIZE of 32. With any other width, the per-bucket counts stay right
+ * but the visible indices are scattered to the wrong slots: some entities are
+ * drawn twice, others go missing, and nothing reports an error. An adapter
+ * that does not state its range is refused. The atomic path is correct
+ * everywhere, and at 50% visibility it was measured faster anyway.
+ */
+export function subgroupCullSupported(info: GPUAdapterInfo | undefined): boolean {
+  return info?.subgroupMinSize === 32 && info?.subgroupMaxSize === 32;
+}
