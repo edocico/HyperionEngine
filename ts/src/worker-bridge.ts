@@ -1,4 +1,5 @@
 import { ExecutionMode } from "./capabilities";
+import type { LightingQuality } from "./lighting-api";
 import {
   createRingBuffer,
   RingBufferProducer,
@@ -54,6 +55,11 @@ export interface EngineBridge {
   latestRenderState: GPURenderState | null;
   /** Resize the rendering surface. Only needed for Mode A (render worker). */
   resize?(width: number, height: number): void;
+  /**
+   * Lighting quality for a renderer that is not on this thread: Mode A's
+   * render worker. `LightingAPI.setQuality` emits no ring-buffer command.
+   */
+  setLightingQuality?(quality: LightingQuality): void;
   /**
    * Determinism harness (Phase 16): canonical FNV-1a 64 state hash.
    * Resolves null on non-dev-tools WASM builds. Optional: present on all
@@ -321,6 +327,9 @@ export function createFullIsolationBridge(
     },
     resize(width: number, height: number) {
       renderWorker.postMessage({ type: "resize", width, height });
+    },
+    setLightingQuality(quality: LightingQuality) {
+      renderWorker.postMessage({ type: "lighting-quality", quality });
     },
   };
 }

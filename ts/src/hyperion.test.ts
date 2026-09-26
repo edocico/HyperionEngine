@@ -757,6 +757,22 @@ describe('Hyperion lighting quality', () => {
     expect(renderer.setLightingQuality).toHaveBeenCalledTimes(1);
     engine.destroy();
   });
+
+  it('Mode A (no renderer on this thread): hands the quality to the bridge, for the render worker', () => {
+    const bridge = mockBridge();
+    const toWorker = vi.fn();
+    (bridge as EngineBridge).setLightingQuality = toWorker;
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, null);
+
+    engine.lighting.setQuality({ shadowSteps: 12 });
+    engine.start();
+    rafCallbacks.shift()!(16.67);
+    rafCallbacks.shift()!(33.34);
+    expect(toWorker).toHaveBeenCalledTimes(1);
+    expect(toWorker).toHaveBeenCalledWith(expect.objectContaining({ shadowSteps: 12 }));
+    expect(engine.lighting._needsRebuild).toBe(false);
+    engine.destroy();
+  });
 });
 
 describe('Hyperion.create', () => {

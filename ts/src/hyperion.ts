@@ -713,8 +713,11 @@ export class Hyperion implements Disposable {
       this.immediateState.patchBounds(state.bounds, state.entityIds, state.entityCount);
     }
     // Quality is renderer-side only: nothing crosses the ring buffer for it.
-    if (this.renderer && this.lightingApi._needsRebuild) {
-      this.renderer.setLightingQuality(this.lightingApi.quality);
+    // In Mode A the renderer is in the render worker, reached via the bridge.
+    if (this.lightingApi._needsRebuild) {
+      const quality = this.lightingApi.quality;
+      if (this.renderer) this.renderer.setLightingQuality(quality);
+      else this.bridge.setLightingQuality?.(quality);
       this.lightingApi._clearRebuildFlag();
     }
     if (this.renderer && state && state.entityCount > 0) {

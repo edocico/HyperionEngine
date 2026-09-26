@@ -12,6 +12,7 @@
 
 import { Camera } from "./camera";
 import { createRenderer, type Renderer } from "./renderer";
+import type { LightingQuality } from "./lighting-api";
 
 const camera = new Camera();
 let renderer: Renderer | null = null;
@@ -38,6 +39,7 @@ interface RenderState {
 }
 
 let latestRenderState: RenderState | null = null;
+let pendingQuality: LightingQuality | null = null;
 
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data;
@@ -52,6 +54,7 @@ self.onmessage = async (event: MessageEvent) => {
       offscreenCanvas.height = height;
 
       renderer = await createRenderer(offscreenCanvas);
+      if (pendingQuality) renderer.setLightingQuality(pendingQuality);
 
       const aspect = width / height;
       camera.setOrthographic(20 * aspect, 20, -1, 1000);
@@ -67,6 +70,10 @@ self.onmessage = async (event: MessageEvent) => {
     } catch (e) {
       self.postMessage({ type: "error", error: String(e) });
     }
+  } else if (msg.type === "lighting-quality") {
+    // May arrive while createRenderer is still pending: kept and applied then.
+    pendingQuality = msg.quality as LightingQuality;
+    renderer?.setLightingQuality(pendingQuality);
   } else if (msg.type === "resize") {
     const width = msg.width as number;
     const height = msg.height as number;
