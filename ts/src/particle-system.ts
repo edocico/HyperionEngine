@@ -32,6 +32,7 @@ interface EmitterState {
   configBuffer: GPUBuffer;
   cameraBuffer: GPUBuffer;
   simulateBindGroup: GPUBindGroup | null;
+  spawnBindGroup: GPUBindGroup | null;
   renderBindGroup: GPUBindGroup | null;
   spawnAccumulator: number;
 }
@@ -197,6 +198,7 @@ export class ParticleSystem {
       configBuffer,
       cameraBuffer,
       simulateBindGroup: null,
+      spawnBindGroup: null,
       renderBindGroup: null,
       spawnAccumulator: 0,
     };
@@ -275,7 +277,7 @@ export class ParticleSystem {
       if (spawnCount > 0) {
         const spawnPass = encoder.beginComputePass();
         spawnPass.setPipeline(this.spawnPipeline);
-        spawnPass.setBindGroup(0, state.simulateBindGroup!);
+        spawnPass.setBindGroup(0, state.spawnBindGroup!);
         spawnPass.dispatchWorkgroups(Math.ceil(spawnCount / 64));
         spawnPass.end();
       }
@@ -377,25 +379,34 @@ export class ParticleSystem {
 
   /** Create or recreate bind groups for an emitter. */
   private rebuildBindGroups(state: EmitterState): void {
-    if (!this.simulatePipeline || !this.renderPipeline) return;
+    if (!this.simulatePipeline || !this.spawnPipeline || !this.renderPipeline) return;
 
-    // Compute bind group (shared by simulate and spawn)
+    // Every pipeline here uses `layout: 'auto'`. An auto layout accepts only
+    // bind groups built from that same pipeline's getBindGroupLayout(), even
+    // when another pipeline's looks identical. So simulate and spawn each get
+    // their own, with the same buffers. Sharing one dropped every frame that
+    // spawned a particle.
+    const computeEntries = (): GPUBindGroupEntry[] => [
+      { binding: 0, resource: { buffer: state.particleBuffer } },
+      { binding: 1, resource: { buffer: state.configBuffer } },
+      { binding: 2, resource: { buffer: state.counterBuffer } },
+    ];
     state.simulateBindGroup = this.device.createBindGroup({
       layout: this.simulatePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: state.particleBuffer } },
-        { binding: 1, resource: { buffer: state.configBuffer } },
-        { binding: 2, resource: { buffer: state.counterBuffer } },
-      ],
+      entries: computeEntries(),
+    });
+    state.spawnBindGroup = this.device.createBindGroup({
+      layout: this.spawnPipeline.getBindGroupLayout(0),
+      entries: computeEntries(),
     });
 
-    // Render bind group
+    // An auto layout also holds only the bindings the shader uses: binding a
+    // buffer the render shader does not read is a createBindGroup error.
     state.renderBindGroup = this.device.createBindGroup({
       layout: this.renderPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: state.particleBuffer } },
         { binding: 1, resource: { buffer: state.cameraBuffer } },
-        { binding: 2, resource: { buffer: state.counterBuffer } },
       ],
     });
   }
