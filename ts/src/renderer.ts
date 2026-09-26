@@ -108,7 +108,7 @@ export interface Renderer {
   /**
    * Start measuring per-pass GPU time. Returns false when unsupported.
    * Read the numbers with {@link getGpuTimings}; quote `averageMs`, not
-   * `lastMs`, because Chrome quantizes timestamps to 100us by default.
+   * `lastMs`: Chrome may quantize timestamps (see render/gpu-profiler.ts).
    */
   enableGpuProfiling(): boolean;
   disableGpuProfiling(): void;

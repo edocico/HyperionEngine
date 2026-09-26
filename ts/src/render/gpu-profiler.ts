@@ -29,7 +29,9 @@
  *    which is why {@link PassTiming.averageMs} exists and is the number to
  *    quote — over {@link WINDOW} frames the quantization averages out.
  *
- *    Measured behaviour is stricter still. On macOS/Metal with a stock Chrome
+ *    Measured behaviour depends on the platform. On Linux/Vulkan (Chrome 154,
+ *    RTX 4060, checked 2026-09-26) a stock build returns real values in steps
+ *    of about 1.024 us. On macOS/Metal with a stock Chrome
  *    build (checked 2026-08-04) every resolved query is **exactly 0**: the
  *    adapter advertises `timestamp-query`, `requestDevice` accepts it,
  *    `resolveQuerySet` raises no validation error, and the readback is all

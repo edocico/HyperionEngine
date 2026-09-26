@@ -21,8 +21,8 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (196 tests, 274 with physics-2d, 225 with dev-tools, 318 with all features)
-cargo test -p hyperion-core --all-features   # + 64 integration tests across 6 files (318 lib + 64 = 382 total)
+cargo test -p hyperion-core                  # All Rust unit tests (193 tests, 271 with physics-2d, 222 with dev-tools, 315 with all features)
+cargo test -p hyperion-core --all-features   # + 64 integration tests across 6 files (315 lib + 64 = 379 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -30,7 +30,7 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 # Run specific test groups
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (42 tests)
 cargo test -p hyperion-core engine           # Engine tests only (15 tests, 24 with physics-2d, 63 with physics-2d+dev-tools)
-cargo test -p hyperion-core render_state     # Render state tests only (58 tests)
+cargo test -p hyperion-core render_state     # Render state tests only (55 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (39 tests, 40 with physics-2d)
 cargo test -p hyperion-core systems          # Systems tests only (17 tests, 19 with physics-2d)
 cargo test -p hyperion-core components       # Component tests only (27 tests)
@@ -63,31 +63,31 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1015 tests + 5 skipped, 83 files)
+cd ts && npm test                            # All vitest tests (1040 tests + 5 skipped, 84 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
-# 79 test files colocated with source across src/, src/render/passes/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/
+# 84 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (69 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (92 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (75 tests)
-cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (44 tests)
+cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (42 tests)
 cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (19 tests)
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality (19 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (274 lib tests, 329 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (271 lib tests, 326 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 318 lib tests (382 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 315 lib tests (379 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (225 lib tests, 262 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (222 lib tests, 259 with integration)
 ```
 
 ### Development Workflow
@@ -403,7 +403,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Bloom and outlines are mutually exclusive** — each is the graph's single final composite onto `swapchain` and replaces `FXAATonemapPass`, which `composeRenderGraph` then does not register. `enableBloom()` disables outlines and vice versa. Console warning issued.
 - **`scene-hdr` is `rgba16float`, and its format lives in `render/formats.ts`** — it used to be `getPreferredCanvasFormat()`, which clamped the whole scene to [0,1] and left bloom's threshold and the ACES/PBR tonemap with nothing to do. `SCENE_HDR_FORMAT` is consumed by BOTH `ForwardPass`'s 12 pipelines and the `scene-hdr` texture in `renderer.ts`, and by BOTH the bloom mip pipelines and the bloom mip textures. Change it in one place only and you get a pipeline/attachment format mismatch — a hard validation error at draw time that **no test can catch**, since WebGPU cannot run headless. Same pairing for `JFA_FORMAT` across `SelectionSeedPass`, `JFAPass` and the `jfa-a`/`jfa-b` textures. Anything targeting the **swapchain** (bloom composite, `FXAATonemapPass`, `OutlineCompositePass`, `LineBatchPass`, particles) must keep using `getPreferredCanvasFormat()`.
 - **FXAA runs on display-space values, after tonemapping — do not "simplify" it back** — Lottes' contrast test `lumaRange < max(0.0312, lumaMax * 0.125)` has an absolute floor tuned for [0,1]. With `scene-hdr` unbounded, running it on raw HDR is hypersensitive in bright regions and blind in dark ones. Both `fxaa-tonemap.wgsl` and `bloom.wgsl` therefore tonemap **every tap** at the point of sampling (`resolveTexel()` / `resolveComposite()`) and return the result with no second tonemap. Cost: up to 9 tonemaps per pixel; in the bloom composite also 2 samples per tap, because bloom must be added before the edges are detected.
-- **`timestamp-query` resolves to all zeroes on a stock Chrome** — verified 2026-08-04 on macOS/Metal: the adapter advertises the feature, `requestDevice` accepts it, `resolveQuerySet` raises no validation error, and every value reads back as exactly 0 (including with `endOfPassWriteIndex`). So `GpuProfiler` correctly reports nothing at all. Launch Chrome with `--enable-webgpu-developer-features` for real numbers; `GpuProfiler.discardedFrames` distinguishes this from a warm-up and warns once after 120 such frames.
+- **`timestamp-query` on a stock Chrome is platform-dependent** — on Linux/Vulkan (Chrome 154, RTX 4060, 2026-09-26) it returns real values in ~1.024 µs steps with no extra flag. On macOS/Metal it resolves to all zeroes, verified 2026-08-04: the adapter advertises the feature, `requestDevice` accepts it, `resolveQuerySet` raises no validation error, and every value reads back as exactly 0 (including with `endOfPassWriteIndex`). So `GpuProfiler` correctly reports nothing at all. Launch Chrome with `--enable-webgpu-developer-features` for real numbers; `GpuProfiler.discardedFrames` distinguishes this from a warm-up and warns once after 120 such frames.
 - **Optional GPU features must be re-checked on the `device`, never the `adapter`** — `createRenderer` catches a failed `requestDevice` and retries with a reduced feature set, so an adapter that advertises a feature can still yield a device without it. `GpuProfiler.isSupported(device.features)` exists for exactly this; reading `adapter.features` instead builds a profiler on a device that cannot serve one and takes down the whole renderer, not just profiling.
 - **Check the adapter line in the console before trusting a GPU session** — `createRenderer` logs `describeAdapter(adapter.info)` (vendor / architecture, subgroup sizes) and WARNS on a software fallback. On this Linux machine Chrome with only `--enable-unsafe-webgpu` hands out SwiftShader, which renders fine but has the wrong timings and features; hardware WebGPU needs `--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=vulkan`.
 - **WebGPU can't be tested in headless browsers** — `requestAdapter()` returns null. Visual testing requires a real browser (`npm run dev` → Chrome).
@@ -588,7 +588,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **Progressive KTX2 is a TODO** — Priority queue is implemented; HTTP Range-based progressive loading deferred to future work.
 - **Cull shader override constants** — `USE_SUBGROUPS` and `SUBGROUP_SIZE` are pipeline-overridable. `if (USE_SUBGROUPS)` is compile-time branching (dead code eliminated). `subgroupElect()` + `subgroupBroadcastFirst()` ensure atomic-doer and broadcast source match.
 - **Ring buffer benchmark confirms 22% peak utilization** — At 10k entities / 100% movement / 1MB buffer. Transport layer is not the bottleneck.
-- **Cull shader Phase 14a: 3-phase shared-memory prefix-sum replaces per-subgroup atomics** — Phase 1: intra-subgroup `subgroupAdd(vote)`, leader writes to `sg_counts`. Phase 2: first 24 threads compute exclusive prefix across subgroups, one `atomicAdd` per active bucket. Phase 3: deterministic scatter via `wg_base + sg_prefix + intra_offset`. ~8× fewer atomics at 80%+ visibility.
+- **Cull shader Phase 14a: 3-phase shared-memory prefix-sum replaces per-subgroup atomics** — Phase 1: intra-subgroup `subgroupAdd(vote)`, leader writes to `sg_counts`. Phase 2: first 24 threads compute exclusive prefix across subgroups, one `atomicAdd` per active bucket. Phase 3: deterministic scatter via `wg_base + sg_prefix + intra_offset`. ~8× fewer atomics at 80%+ visibility. **Measured 2026-09-26 on an RTX 4060, this speedup does NOT hold at partial visibility:** at 50% visible the plain atomic path was faster (100k: 37-41 vs 42-47 µs; 1M: 314-319 vs 334-338 µs). The subgroup path wins only near 100% visibility. Measure before building on it.
 - **`SizedBindingArraySupport.maxSize` probed empirically** — Tries 256, 512, 1024 via `createBindGroupLayout`. Stops at first failure. Current browsers return `supported=false` (proposal-stage).
 - **Loro CRDT WASM binary: 664KB gzipped (5.7× over budget)** — Monolithic, 127 transitive deps. Not viable in WASM. Alternative: JS-side sync library as optional plugin via hook-based integration.
 

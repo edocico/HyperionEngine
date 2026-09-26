@@ -272,7 +272,7 @@ export class ForwardPass implements RenderPass {
       },
     });
 
-    // --- Sub-pass 1: Opaque entities (buckets 0-11) ---
+    // --- Sub-pass 1: Opaque entities (buckets 0-13) ---
     // Depth write enabled, no alpha blend.
     for (const [primType, pipeline] of this.opaquePipelines) {
       renderPass.setPipeline(pipeline);
@@ -286,7 +286,7 @@ export class ForwardPass implements RenderPass {
       }
     }
 
-    // --- Sub-pass 2: Transparent entities (buckets 12-23) ---
+    // --- Sub-pass 2: Transparent entities (buckets 14-27) ---
     // Depth write disabled, alpha blend enabled. Drawn after opaque.
     for (const [primType, pipeline] of this.transparentPipelines) {
       renderPass.setPipeline(pipeline);
