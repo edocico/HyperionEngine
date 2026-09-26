@@ -148,6 +148,11 @@ describe('LightingAPI — quality', () => {
     expect(t.api.quality).toEqual(DEFAULT_LIGHTING_QUALITY);
     expect(t.api.quality.sdfOversize).toBe(1.0);   // NOT Godot's 1.2 — see the doc comment
     expect(t.api.quality.deterministic).toBe(true);
+    // 48, not the 16-32 of the literature: at 24 a ray grazing a sprite's face
+    // spends its budget 1-2 texels at a time and leaks light behind a wall.
+    // Measured 2026-09-26 on the AMD iGPU: 48 removes every leaking pixel of
+    // the repro for +2% light-accum time (most rays end early anyway).
+    expect(t.api.quality.shadowSteps).toBe(48);
   });
 
   it('merges partial updates instead of replacing the whole object', () => {

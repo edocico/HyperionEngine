@@ -97,8 +97,8 @@ const section: DemoSection = {
 
     // ── 3. Quality ─────────────────────────────────────────────────────
     try {
-      lighting.setQuality({ shadowSteps: 24 });
-      reporter.check('Quality', true, 'shadowSteps 24 handed to the renderer on the next frame');
+      lighting.setQuality({ shadowSteps: 48 });
+      reporter.check('Quality', true, 'shadowSteps 48 handed to the renderer on the next frame');
     } catch (err) {
       reporter.check('Quality', false, `threw: ${err instanceof Error ? err.message : String(err)}`);
     }

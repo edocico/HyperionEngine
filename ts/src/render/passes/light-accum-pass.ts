@@ -3,15 +3,13 @@ import type { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
 import { BUCKETS_PER_TYPE } from './cull-pass';
 import { halfResolution } from './occluder-seed-pass';
+import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
 
 /** RenderPrimitive 6. */
 const LIGHT2D_PRIM_TYPE = 6;
 
 /** The indirect-args slots CullPass fills with visible lights: both material buckets of type 6. */
 export const LIGHT2D_ARG_SLOTS = Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b);
-
-/** Default sphere-march steps, `DEFAULT_LIGHTING_QUALITY.shadowSteps`. */
-const DEFAULT_SHADOW_STEPS = 24;
 
 /**
  * Soft-shadow hardness k in Quilez's `res = min(res, k * h / t)`: how fast a
@@ -127,7 +125,7 @@ export class LightAccumPass implements RenderPass {
     if (!this.uniformBuffer) return;
     const data = new ArrayBuffer(80);
     new Float32Array(data, 0, 16).set(frame.cameraViewProjection);
-    new Uint32Array(data, 64, 1)[0] = frame.shadowSteps ?? DEFAULT_SHADOW_STEPS;
+    new Uint32Array(data, 64, 1)[0] = frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps;
     new Float32Array(data, 68, 1)[0] = SHADOW_HARDNESS;
     new Float32Array(data, 72, 1)[0] = LIGHT_SOURCE_FRACTION;
     device.queue.writeBuffer(this.uniformBuffer, 0, data);

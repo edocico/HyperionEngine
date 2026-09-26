@@ -45,7 +45,13 @@ export interface LightingQuality {
    * artifact before paying for it.
    */
   sdfOversize: number;
-  /** Sphere-march steps per shadow ray. 16-32 is the working range. Default 24. */
+  /**
+   * Sphere-march step budget per shadow ray. Default 48: the literature's
+   * 16-32 leaks light behind walls, from rays that graze a sprite's face and
+   * spend their budget 1-2 texels at a time. Most rays end long before the
+   * budget, so it costs little: 24 -> 48 was +2% of light-accum on the AMD
+   * iGPU (2026-09-26).
+   */
   shadowSteps: number;
   /** Cascade count. Backend `gi` only. Default 6. */
   cascades: number;
@@ -61,7 +67,7 @@ export interface LightingQuality {
 export const DEFAULT_LIGHTING_QUALITY: LightingQuality = {
   bufferScale: 0.5,
   sdfOversize: 1.0,
-  shadowSteps: 24,
+  shadowSteps: 48,
   cascades: 6,
   deterministic: true,
 };
