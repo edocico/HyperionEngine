@@ -341,6 +341,11 @@ All five checks are closed. Track B can start.
   > in the ForwardPass", but a single screen-space buffer has already summed every
   > light. Layers need one buffer per layer group. So Task 11's "light-layer toggle"
   > has nothing to show until that is designed.
+  >
+  > 🆕 **Resolved 2026-09-26** by the light-layer groups (spec and plan
+  > `2026-09-26-phase17-light-layer-groups-*.md`): one light buffer per group
+  > of layers, shadows per layer, one `LightGroupsPass` node. The harness's
+  > "Light layers" check exercises it.
 
 - [x] **Task 11: demo tab, measurement, docs** — demo tab (`96c0b5c`), measurement (design §13.2 "Misurato 2026-09-26": SDF chain 1.77 ms at 1080p on the AMD iGPU, backend `lit` ≈ 2.3 ms), docs.
   > The adversarial review of Track C (workflow, 4 reviewers + 7 verifiers)

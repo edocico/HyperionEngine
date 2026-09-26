@@ -577,6 +577,8 @@ Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (`dra
 3. Blend mode (Add / Sub / Mix) in-shader.
 4. Il `lightMask` si applica in lettura, nel ForwardPass (§7.4).
 
+> 🆕 **Corretto 2026-09-26: così non si può.** Un unico buffer in screen-space ha già sommato tutte le luci, e il ForwardPass non ha più modo di separarle per layer. La maschera è implementata con **un light buffer per gruppo di layer**, come i batch di sorting layer di Unity 2D: `deriveLightGroups` forma i gruppi a ogni frame dai valori di maschera in vista, e `LightGroupsPass` (un solo nodo del grafo, set-major) accumula ogni gruppo nel proprio layer di un `2d-array`. Anche le ombre sono per layer: un occluder manca dalla SDF dei gruppi che non ombreggia. Spec: `2026-09-26-phase17-light-layer-groups-design.md`.
+
 #### 🆕 A2 — Quale versione della soft shadow di Quilez usare
 
 La formula base:
@@ -610,6 +612,8 @@ ph = h;
 Un `pipelineLayout` a 3 gruppi dove un dato shader dichiara solo i primi 2 è legale: la validazione WebGPU richiede che i binding **usati** esistano nel layout, non il contrario. **Solo gli shader che vogliono l'illuminazione dichiarano `@group(2)`.**
 
 > ⚠️ **Ma il bind group va comunque legato.** `ForwardPass.execute()` deve chiamare `setBindGroup(2, ...)` **per tutte** le pipeline, anche quelle che non lo usano. Una sola chiamata prima del loop — ma dimenticarla produce un errore di validazione oscuro.
+
+> 🆕 **Con i light layers (2026-09-26)** `lightBuffer` è un `texture_2d_array<f32>` (un layer per gruppo) e `LightingUniform` porta la tabella layer → gruppo (`groupTableLo/Hi`, 4 bit per layer): il receiver campiona il layer `lightGroupOf(mask)`, cioè il gruppo del suo bit più basso. Gli snippet qui sotto sono la forma originale, a buffer singolo.
 
 ```wgsl
 @group(2) @binding(0) var lightBuffer: texture_2d<f32>;
@@ -745,6 +749,8 @@ Gli altri numeri che circolano, elencati per non doverli ricercare:
 Esattamente 32 bit. **Zero nuove colonne SoA, zero nuovi export WASM, stride dello staging invariato.**
 
 **Semantica di `lightMask`** — un campo, tre significati secondo il ruolo: su una **luce**, quali layer illumina; su un **disegnabile**, a quale layer appartiene; su un **occluder**, per quali layer proietta ombra.
+
+> 🆕 **Precisato 2026-09-26 (light layers).** Il disegnabile appartiene a **un solo** layer, il suo bit più basso (come Unity); maschera 0 vale per ruolo: luce → nessun layer, receiver → layer 0, occluder → tutti i layer.
 
 > **Limite accettato.** Godot usa due coppie ortogonali (`range_item_cull_mask` ∩ `light_mask` per la ricezione, `shadow_item_cull_mask` ∩ `occluder_light_mask` per l'ombra), il che significa che `shadow_item_cull_mask` fa **doppio lavoro**: decide sia chi riceve l'ombra sia chi la proietta. 🆕 È la sorgente documentata di una confusione reale — c'è un articolo che descrive **sei mesi di tentativi** per risolvere l'auto-ombreggiamento delle tile in Godot 4, finito con un workaround a due TileMap. La nostra maschera singola è più semplice e copre il caso normale (un muro riceve luce e ombreggia dagli stessi layer); separarle costerebbe una nuova colonna SoA. **Da documentare come limite noto, non da nascondere.**
 

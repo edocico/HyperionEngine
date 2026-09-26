@@ -66,7 +66,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   export function receiverLayer(mask: number): number;   // lowest bit, 0 → 0
   ```
 
-- [ ] **Step 1: Write the failing tests** (`light-groups.test.ts`). Build `renderMeta`/`primParams`/`bounds` with a helper:
+- [x] **Step 1: Write the failing tests** (`light-groups.test.ts`). Build `renderMeta`/`primParams`/`bounds` with a helper:
   ```ts
   const LIGHT = 6, CAST = 1 << 9, RECV = 1 << 10;
   type E = { kind: 'light' | 'drawable'; mask?: number; flags?: number; type?: number; shadow?: number; x?: number; r?: number };
@@ -99,9 +99,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - "16 layers, 16 groups, 16 sets" — for b in 0..15: receiver `1 << b` with CAST, light `1 << b` with shadow → 16 groups, 16 sets, `layerToGroup = [0x76543210, 0xfedcba98]`.
   - `receiverLayer(0) === 0`, `receiverLayer(0b1000) === 3`.
 
-- [ ] **Step 2: Run to verify they fail.** `npx --prefix ts vitest run --root ts src/render/light-groups.test.ts` → "Cannot find module './light-groups'".
+- [x] **Step 2: Run to verify they fail.** `npx --prefix ts vitest run --root ts src/render/light-groups.test.ts` → "Cannot find module './light-groups'".
 
-- [ ] **Step 3: Implement `light-groups.ts`:**
+- [x] **Step 3: Implement `light-groups.ts`:**
   ```ts
   import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
 
@@ -167,9 +167,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   ```
   Use `>>> 0` everywhere a nibble can reach bit 31.
 
-- [ ] **Step 4: Run the tests** → PASS. Then run the whole suite: `npm --prefix ts test`.
+- [x] **Step 4: Run the tests** → PASS. Then run the whole suite: `npm --prefix ts test`.
 
-- [ ] **Step 5: Commit.** `feat(#17): deriveLightGroups — gruppi di layer automatici come i batch di Unity`
+- [x] **Step 5: Commit.** `feat(#17): deriveLightGroups — gruppi di layer automatici come i batch di Unity`
 
 ---
 
@@ -187,24 +187,24 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - `RenderPass.execute(encoder, frame, resources, mark?: (encoder: GPUCommandEncoder) => void)`;
   - the timings of a staged pass are named `${pass}/${stage}` and summed within a frame.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - `render-graph.test.ts`, "a staged pass marks its own stages": a pass with `profileStages: () => ['a', 'b', 'a']` calls `mark(encoder)` three times.
     - The profiler double records `beginFrame(['p0', 'staged/a', 'staged/b', 'staged/a', 'p2'])`.
     - The graph does not mark before a staged pass.
   - `gpu-profiler.test.ts`, "repeated names in one frame are summed": names `['x/a', 'x/b', 'x/a']` with stamps `[0, 1e6, 3e6, 6e6]` give `x/a` = 1 + 3 = 4 ms and `x/b` = 2 ms.
   - `gpu-profiler.test.ts`, "default capacity is 256 markers": `beginFrame(Array(255).fill('p'))` returns true.
 
-- [ ] **Step 2:** run them → FAIL.
+- [x] **Step 2:** run them → FAIL.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - In `RenderGraph.render`, build `names` by expanding each staged pass's `profileStages(frame)` into `${name}/${stage}`.
   - While executing, call `profiler.mark` before each **unstaged** pass. Hand a staged pass `measuring ? (e) => this.profiler!.mark(e) : undefined` as its fourth argument.
   - In `GpuProfiler.consume`, accumulate each frame's deltas into a `Map<string, number>` and push one sample per name.
   - Change `constructor(device, maxPasses = 256)`.
 
-- [ ] **Step 4:** run the tests → PASS, then the whole suite.
+- [x] **Step 4:** run the tests → PASS, then the whole suite.
 
-- [ ] **Step 5: Commit.** `feat(render): stadi di profiling dentro un pass, capacità 256 marker`
+- [x] **Step 5: Commit.** `feat(render): stadi di profiling dentro un pass, capacità 256 marker`
 
 ---
 
@@ -216,7 +216,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 - Modify: `ts/src/render/passes/forward-pass.ts` (camera buffer 80 B, writes VP + `occluderLayers` 0)
 - Test: `ts/src/render/passes/occluder-seed-pass.test.ts` (the shader text checks move to Task 5), `ts/src/render/passes/forward-pass.test.ts`, `ts/src/shaders/uniform-layout.test.ts` (unchanged, must stay green)
 
-- [ ] **Step 1: Failing tests** (in `forward-pass.test.ts`, block "primitive shaders: occluder layers"). For each of the six shaders:
+- [x] **Step 1: Failing tests** (in `forward-pass.test.ts`, block "primitive shaders: occluder layers"). For each of the six shaders:
   - `CameraUniform` matches `/struct CameraUniform\s*\{\s*viewProjection: mat4x4f,\s*occluderLayers: u32,/`;
   - the vertex stage uses `castsInto(` together with `camera.occluderLayers`;
   - `fn castsInto` normalises mask 0 to 0xFFFF (`select(`…`0xFFFFu`).
@@ -225,9 +225,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - `primitiveGroup0LayoutEntries()[0].buffer.minBindingSize === 80`;
   - ForwardPass creates its camera buffer with `size: 80` (mock `createBuffer` records the size of the UNIFORM buffers).
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement.** In each shader, replace the struct with:
+- [x] **Step 3: Implement.** In each shader, replace the struct with:
   ```wgsl
   struct CameraUniform {
       viewProjection: mat4x4f,
@@ -254,11 +254,11 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - `cameraBuffer` becomes `size: 80`;
   - `prepare` writes `new Float32Array(20)` with the VP in 0..15 and zeros after.
 
-- [ ] **Step 4:** run → PASS, plus `uniform-layout.test` and the whole suite.
+- [x] **Step 4:** run → PASS, plus `uniform-layout.test` and the whole suite.
 
-- [ ] **Step 5: GPU check.** Reload the harness (AMD initScript): 0 WebGPU messages on the Lighting tab and the Primitives tab.
+- [x] **Step 5: GPU check.** Reload the harness (AMD initScript): 0 WebGPU messages on the Lighting tab and the Primitives tab.
 
-- [ ] **Step 6: Commit.** `feat(#17): CameraUniform a 80 B e test dei layer occluder nei sei primitivi`
+- [x] **Step 6: Commit.** `feat(#17): CameraUniform a 80 B e test dei layer occluder nei sei primitivi`
 
 ---
 
@@ -283,7 +283,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   export const LIGHT2D_ARG_SLOTS: number[]; export const LIGHT_SOURCE_FRACTION: number; export const SLICE = 256;
   ```
 
-- [ ] **Step 1: Failing tests** (adapt the existing LightAccumPass tests):
+- [x] **Step 1: Failing tests** (adapt the existing LightAccumPass tests):
   - slices: `prepare` with 3 groups writes one buffer of `3 * 256` bytes, with `groupLayers` (u32 at slice offset 76) equal to each group's layers;
   - `encode(g)` binds a bind group whose binding 0 has `offset: g * 256, size: 80`;
   - it clears `target` to ambient;
@@ -291,9 +291,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - bind groups are cached per (g, sdf view), so the same inputs give the same object;
   - WGSL: `groupLayers: u32` in `LightUniform`, plus a degenerate vertex when `((renderMeta[e * 2u + 1u] >> 16u) & u.groupLayers) == 0u`.
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - The uniform buffer grows to `max(1, G) * 256` (grow-only).
   - `prepare` fills each slice: VP, steps, hardness, `LIGHT_SOURCE_FRACTION`, `groupLayers`.
   - `encode` = the old `execute`, with an explicit `target`/`sdf` and `setBindGroup(0, cached(g, sdf))`.
@@ -305,9 +305,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
     }
     ```
 
-- [ ] **Step 4:** run → PASS, plus `uniform-layout.test`.
+- [x] **Step 4:** run → PASS, plus `uniform-layout.test`.
 
-- [ ] **Step 5: Commit.** `refactor(#17): LightAccumStage — accumulo per gruppo con slice da 256 byte`
+- [x] **Step 5: Commit.** `refactor(#17): LightAccumStage — accumulo per gruppo con slice da 256 byte`
 
 ---
 
@@ -339,7 +339,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   }
   ```
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - Seed: `prepare` with 2 sets writes 2 slices at offsets 0 and 256, each with `occluderLayers` at byte 64; `encode(s)` binds group 0 with the camera at offset `s * 256`, size 80.
   - Chain:
     - `steps(400)` gives `[1, 256, 128, 64, 32, 16, 8, 4, 2, 1]`;
@@ -348,15 +348,15 @@ ForwardPass samples that layer through a 16-entry layer→group table.
     - the param slices hold stepSize and 1/width, 1/height.
   - Keep the existing text tests (`textureLoad`, `LOAD_PASS` override, `fs_occluder` in every shader, `CASTS_SHADOW_BIT` = Rust).
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement** both stages from the existing pass code:
+- [x] **Step 3: Implement** both stages from the existing pass code:
   - seed: the pipelines of `OccluderSeedPass.setup`, and a camera buffer of `max(1, C) * 256` bytes with one group-0 bind group per slice, cached;
   - chain: the pipeline and params of `JfaIterationPass`, with one bind group per (step, input view), cached.
 
-- [ ] **Step 4:** run → PASS.
+- [x] **Step 4:** run → PASS.
 
-- [ ] **Step 5: Commit.** `refactor(#17): OccluderSeedStage e SdfChainStage — stadi con slice per set`
+- [x] **Step 5: Commit.** `refactor(#17): OccluderSeedStage e SdfChainStage — stadi con slice per set`
 
 ---
 
@@ -376,7 +376,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - `profileStages(frame)` gives `['seed', 'sdf', 'accum'] × sets`, plus `['accum']` when any group has `sdfSet -1`.
   - The pool view `light-buffer` is a `2d-array` view.
 
-- [ ] **Step 1: Failing tests** (device mock records textures, views, render passes in order, and the stages' calls):
+- [x] **Step 1: Failing tests** (device mock records textures, views, render passes in order, and the stages' calls):
   - "set-major": 2 sets, groups `[{sdfSet: 0}, {sdfSet: 1}, {sdfSet: 0}, {sdfSet: -1}]` → encode order: seed0, chain0, accum0, accum2, seed1, chain1, accum1, accum3 (with the placeholder SDF).
   - "reuses one seed and one ping-pong pair": the same three texture objects across sets.
   - "light-buffer is a 2d-array with one layer per group":
@@ -389,9 +389,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - "resize recreates every layer view": all three textures and the views are recreated, and the pool's `light-buffer` changes.
   - "marks its stages": with `mark`, it is called 3 × sets (+1) times, before each stage.
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - `prepare` passes `groups`/`sets` to the stages and the size to the chain.
   - `execute(encoder, frame, resources, mark?)`:
     1. ensure the textures (`halfResolution`, grow-only on layers);
@@ -399,9 +399,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
     3. if any group has `sdfSet -1`: `mark?.(encoder)`, then accumulate those groups with the `noOccluder` view (a 1×1 JFA_FORMAT texture cleared to 0 at setup through `writeTexture`).
   - The default `LightGroups` when `frame.lightGroups` is undefined: `{groups: [{layers: 0xffff, sdfSet: 0}], sdfSets: [{occluderLayers: 0xffff}], layerToGroup: [0, 0], …}`.
 
-- [ ] **Step 4:** run → PASS.
+- [x] **Step 4:** run → PASS.
 
-- [ ] **Step 5: Commit.** `feat(#17): LightGroupsPass — un nodo set-major, light buffer 2d-array per gruppo`
+- [x] **Step 5: Commit.** `feat(#17): LightGroupsPass — un nodo set-major, light buffer 2d-array per gruppo`
 
 ---
 
@@ -411,7 +411,7 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 - Modify: `ts/src/render/passes/forward-pass.ts`, `ts/src/shaders/basic.wgsl`, `ts/src/shaders/gradient.wgsl`
 - Test: `ts/src/render/passes/forward-pass.test.ts`
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - The group-2 layout has binding 0 `texture.viewDimension === '2d-array'`.
   - The placeholder is a 1-layer texture with a `2d-array` view.
   - `prepare(frame with lightGroups.layerToGroup = [0x10, 0])` writes `[enabled, 0x10, 0, 0]` into the 16-byte lighting uniform.
@@ -423,9 +423,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
     - the sample is `textureSampleLevel(lightBuffer, lightSampler, in.screenUV, lightGroupOf(`;
     - `lightGroupOf` uses `firstTrailingBit`.
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement.** In the shaders:
+- [x] **Step 3: Implement.** In the shaders:
   ```wgsl
   struct LightingUniform {
       enabled: u32,
@@ -447,9 +447,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 
   ForwardPass: the placeholder becomes `createTexture({size: {width: 1, height: 1, depthOrArrayLayers: 1}, textureBindingViewDimension: '2d-array'})` with a `createView({dimension: '2d-array'})` view. `prepare` writes the uniform every frame.
 
-- [ ] **Step 4:** run → PASS.
+- [x] **Step 4:** run → PASS.
 
-- [ ] **Step 5: Commit.** `feat(#17): ForwardPass legge il layer del proprio gruppo dal light buffer 2d-array`
+- [x] **Step 5: Commit.** `feat(#17): ForwardPass legge il layer del proprio gruppo dal light buffer 2d-array`
 
 ---
 
@@ -458,14 +458,14 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 **Files:**
 - Modify: `ts/src/renderer.ts`, `ts/src/render/graph-requests.ts` (drop `rebuild`), `ts/src/render/graph-assembly.test.ts`, `ts/src/render/graph-host.test.ts`, `ts/src/render/graph-requests.test.ts`
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - `graph-assembly.test.ts` "lighting": the lit chain is `[new LightGroupsPass({})]`, so the order has `light-groups` before `forward`.
   - `graph-host.test.ts`: the mock lighting factory returns a pass named `light-groups` writing `light-buffer`; the clash tests use `light-groups`.
   - `graph-requests.test.ts`: delete the `rebuild` describe block; assert `'rebuild' in GraphRequests.prototype === false`.
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement** in `renderer.ts`:
+- [x] **Step 3: Implement** in `renderer.ts`:
   - **Delete:** the imports of the three old passes; the SDF ping-pong state and functions (`sdfPasses`, `sdfTextureA/B`, `sdfChain`, `ensureSdfChainFits`, `ensureSdfTextures`, `updateSdfTextureViews`); the lighting branch and `sdfChainLength` param of `prepareMode`; the `sdfPasses` line and the `ensureSdfChainFits` calls in `onSwap` and in the resize branch.
   - **Wire the node:** `lighting: () => [new LightGroupsPass(ForwardPass.SHADER_SOURCES)]`.
   - **Shader slots:**
@@ -475,14 +475,14 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   - **In `render()`:** when `host.mode.lighting`, set `frameState.lightGroups = deriveLightGroups(frameState)`. If `multiBitReceiver` and it has not warned yet, `console.warn` once: `[Hyperion] A light receiver has more than one layer bit: it belongs to its lowest one (lightLayers()).`
   - **`graph-requests.ts`:** delete `rebuild()`.
 
-- [ ] **Step 4:** run the whole suite and `npx --prefix ts tsc --noEmit -p ts` → green.
+- [x] **Step 4:** run the whole suite and `npx --prefix ts tsc --noEmit -p ts` → green.
 
-- [ ] **Step 5: GPU check** (AMD):
+- [x] **Step 5: GPU check** (AMD):
   - the Lighting tab renders exactly as before, with 0 WebGPU messages;
   - bloom/outlines toggles, resize, and backend off → on all work;
   - read `getGpuTimings()`: the `light-groups/seed|sdf|accum` entries are present.
 
-- [ ] **Step 6: Commit.** `feat(#17): il grafo illuminato usa LightGroupsPass, esce la catena SDF del renderer`
+- [x] **Step 6: Commit.** `feat(#17): il grafo illuminato usa LightGroupsPass, esce la catena SDF del renderer`
 
 ---
 
@@ -492,11 +492,11 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 - Modify: `ts/src/lighting-api.ts` (`groups` getter, `_init(producer, bridge, viewProjection?)`), `ts/src/hyperion.ts` (pass `() => this.camera.viewProjection`), `ts/src/entity-handle.ts` (`lightLayers()`/`LightOptions.layers` docs), `crates/hyperion-core/src/components.rs` (LightFlags doc only)
 - Test: `ts/src/lighting-api.test.ts`
 
-- [ ] **Step 1: Failing test.** A bridge whose `latestRenderState` holds two receivers (layers 0 and 1) and lights `0b01`/`0b10` gives `api.groups.groups.length === 2`. Before `_init`, `groups` is `null`.
+- [x] **Step 1: Failing test.** A bridge whose `latestRenderState` holds two receivers (layers 0 and 1) and lights `0b01`/`0b10` gives `api.groups.groups.length === 2`. Before `_init`, `groups` is `null`.
 
-- [ ] **Step 2:** run → FAIL.
+- [x] **Step 2:** run → FAIL.
 
-- [ ] **Step 3: Implement:**
+- [x] **Step 3: Implement:**
   ```ts
   get groups(): LightGroups | null {
     const rs = this.bridge?.latestRenderState;
@@ -506,9 +506,9 @@ ForwardPass samples that layer through a 16-entry layer→group table.
   ```
   Rewrite the `lightLayers()` doc: the three roles, mask 0 per role, lowest bit for receivers, and "each distinct caster set among shadowed layers costs a full SDF flood (≈ 1.8 ms at 1080p on an iGPU); read `engine.lighting.groups` to see why".
 
-- [ ] **Step 4:** run → PASS; `cargo test -p hyperion-core` stays green (doc change only).
+- [x] **Step 4:** run → PASS; `cargo test -p hyperion-core` stays green (doc change only).
 
-- [ ] **Step 5: Commit.** `feat(#17): engine.lighting.groups e la semantica della maschera documentata`
+- [x] **Step 5: Commit.** `feat(#17): engine.lighting.groups e la semantica della maschera documentata`
 
 ---
 
@@ -518,22 +518,22 @@ ForwardPass samples that layer through a 16-entry layer→group table.
 - Modify: `ts/src/demo/lighting.ts` (the "Light layers" check becomes real)
 - Modify: `docs/plans/2026-08-04-phase17-lighting-2d-design.md` §13.2 (numbers)
 
-- [ ] **Step 1:** in the demo, add a blue light on layer 1 (`lightLayers(0b10)`), a lit sprite on layer 1 and a wall with `lightLayers(0b01)`. The check reads `engine.lighting.groups` after 3 frames and expects 2 groups and 2 sets.
-- [ ] **Step 2: GPU readbacks** (Chrome, AMD initScript, harness Mode B):
+- [x] **Step 1:** in the demo, add a blue light on layer 1 (`lightLayers(0b10)`), a lit sprite on layer 1 and a wall with `lightLayers(0b01)`. The check reads `engine.lighting.groups` after 3 frames and expects 2 groups and 2 sets.
+- [x] **Step 2: GPU readbacks** (Chrome, AMD initScript, harness Mode B):
   1. A layer-1 light does not light a layer-0 sprite: screenshot luma at the sprite equals the ambient-only value.
   2. A wall with mask 0b01 shadows the layer-0 floor and not the layer-1 sprite.
   3. Default scene: the same screenshot before/after (pixel difference 0 in a static frame; use `e.pause()`).
   4. Toggling `lightLayers` at runtime changes `groups` without a graph rebuild (the `renderer.graph` object identity is unchanged).
   5. Resize.
   6. 0 WebGPU messages.
-- [ ] **Step 3: Measure** at 1920×1081 with `enableGpuProfiling()`: `light-groups/*` with 1 set / 1 group, 2 sets / 2 groups, and 1 set / 2 groups. Write the numbers into design §13.2.
-- [ ] **Step 4: Commit.** `feat(#17): demo "Light layers" reale e misure dei gruppi di luce`
+- [x] **Step 3: Measure** at 1920×1081 with `enableGpuProfiling()`: `light-groups/*` with 1 set / 1 group, 2 sets / 2 groups, and 1 set / 2 groups. Write the numbers into design §13.2.
+- [x] **Step 4: Commit.** `feat(#17): demo "Light layers" reale e misure dei gruppi di luce`
 
 ---
 
 ### Task 11: Docs and adversarial review
 
-- [ ] **Step 1:** update CLAUDE.md:
+- [x] **Step 1:** update CLAUDE.md:
   - the module rows: `light-groups.ts`, `light-groups-pass.ts`, the three `*-stage.ts`, ForwardPass, renderer, gpu-profiler, render-pass;
   - the shader rows;
   - the gotchas:
