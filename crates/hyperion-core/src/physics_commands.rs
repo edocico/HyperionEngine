@@ -250,6 +250,14 @@ pub fn process_physics_commands(
                 if !dx.is_finite() || !dy.is_finite() {
                     continue;
                 }
+                // Only for a live id. This pass runs after the despawns of the
+                // batch have purged `pending_moves`, and a queued move outlives
+                // every frame that runs no tick: `[MoveCharacter X, Despawn X]`
+                // used to move whatever entity took id X next (id reuse,
+                // 2026-09-27, verify_reuse R1).
+                if entity_map.get(cmd.entity_id).is_none() {
+                    continue;
+                }
                 // Accumulate instead of appending an independent entry: the
                 // drain loop recomputes from `body.translation()`, which
                 // `set_next_kinematic_translation` does not change, so separate

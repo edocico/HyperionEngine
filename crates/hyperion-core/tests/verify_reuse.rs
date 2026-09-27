@@ -78,6 +78,101 @@ mod physics {
         p[4..8].copy_from_slice(&b.to_le_bytes());
         cmd(CommandType::CreateFixedJoint, a, p)
     }
+    fn f1(t: CommandType, id: u32, a: f32) -> Command {
+        let mut p = [0u8; 16];
+        p[0..4].copy_from_slice(&a.to_le_bytes());
+        cmd(t, id, p)
+    }
+    fn move_character(id: u32, dx: f32, dy: f32) -> Command {
+        let mut p = [0u8; 16];
+        p[0..4].copy_from_slice(&dx.to_le_bytes());
+        p[4..8].copy_from_slice(&dy.to_le_bytes());
+        cmd(CommandType::MoveCharacter, id, p)
+    }
+    fn pos_of(e: &Engine, id: u32) -> (f32, f32) {
+        let ent = e.entity_map.get(id).unwrap();
+        let t = e.world.get::<&Transform2D>(ent).unwrap();
+        (t.x, t.y)
+    }
+    fn gravity_scale_of(e: &Engine, id: u32) -> f32 {
+        let ent = e.entity_map.get(id).unwrap();
+        let h = e.world.get::<&PhysicsBodyHandle>(ent).unwrap().0;
+        e.physics.rigid_body_set[h].gravity_scale()
+    }
+    fn joints_touching(e: &Engine, id: u32) -> usize {
+        e.physics.joint_map.values().filter(|j| j.entity_a == id || j.entity_b == id).count()
+    }
+    /// A frame that runs no fixed tick: the accumulator stays below `FIXED_DT`.
+    fn zero_tick_frame(e: &mut Engine) {
+        let before = e.tick_count();
+        e.update(0.001);
+        assert_eq!(e.tick_count(), before, "precondition: this frame must run 0 ticks");
+    }
+
+    // R1 — MoveCharacter is routed in the second pass, AFTER the first pass has
+    // run the despawn and its purge of `pending_moves`. So `[MoveCharacter 7,
+    // Despawn 7]` queued a move for a dead id; it survived every frame that ran
+    // no tick, and moved whatever entity took id 7 next.
+    #[test]
+    fn r1_move_for_a_despawned_id_is_not_queued() {
+        let mut e = Engine::new();
+        e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+        e.process_commands(&[spawn2d(7), body(7, 2), ball(7), controller(7)]);
+        e.update(1.0 / 60.0);
+
+        e.process_commands(&[move_character(7, 100.0, 0.0), despawn(7)]);
+        zero_tick_frame(&mut e);
+        println!("R1 pending_moves after [MoveCharacter 7, Despawn 7] = {:?}",
+            e.physics.pending_moves);
+        assert!(!e.physics.pending_moves.iter().any(|m| m.0 == 7),
+            "a move addressed to a dead id must not be queued");
+
+        // The new 7 must not inherit the old displacement.
+        e.process_commands(&[spawn2d(7), body(7, 2), ball(7), controller(7)]);
+        e.update(1.0 / 60.0);
+        e.update(1.0 / 60.0);
+        println!("R1 new ext 7 at {:?} (expected (0, 0))", pos_of(&e, 7));
+        assert_eq!(pos_of(&e, 7), (0.0, 0.0));
+
+        // An id that was never spawned queues nothing either.
+        e.process_commands(&[move_character(9, 1.0, 1.0)]);
+        zero_tick_frame(&mut e);
+        assert!(!e.physics.pending_moves.iter().any(|m| m.0 == 9),
+            "a move for an unmapped id must be dropped");
+    }
+
+    // R2 — a joint named a dead id and waited in `pending_joints` until the
+    // next tick, which resolved both ends by external id. If the id was reused
+    // before that tick, the joint bound the NEW entity. Now a joint whose end is
+    // not mapped when the command arrives is rejected, as SetParent is.
+    #[test]
+    fn r2_joint_to_a_despawned_id_is_rejected() {
+        let mut e = Engine::new();
+        e.physics.gravity = rapier2d::math::Vector::new(0.0, 0.0);
+        e.process_commands(&[spawn2d(1), body(1, 0), ball(1), spawn2d(7), body(7, 0), ball(7)]);
+        e.update(1.0 / 60.0);
+
+        // Entity B dead, then entity A dead.
+        e.process_commands(&[despawn(7), fixed_joint(9, 1, 7), fixed_joint(10, 7, 1)]);
+        zero_tick_frame(&mut e);
+        println!("R2 pending_joints after joints to a dead id = {}", e.physics.pending_joints.len());
+        assert!(e.physics.pending_joints.is_empty(), "no joint may wait for a dead id");
+
+        e.process_commands(&[spawn2d(7), body(7, 0), ball(7)]);
+        e.update(1.0 / 60.0);
+        println!("R2 joints touching the reused ext 7 = {}", joints_touching(&e, 7));
+        assert_eq!(joints_touching(&e, 7), 0, "the reused id must not inherit a joint");
+        assert!(e.physics.joint_map.is_empty());
+        assert_eq!(e.physics.impulse_joint_set.len(), 0);
+
+        // Both ends live: the joint is still created, also when both are
+        // spawned in the same batch as the joint.
+        e.process_commands(&[fixed_joint(11, 1, 7)]);
+        e.process_commands(&[spawn2d(3), body(3, 0), ball(3), fixed_joint(12, 3, 1)]);
+        e.update(1.0 / 60.0);
+        assert!(e.physics.joint_map.contains_key(&11));
+        assert!(e.physics.joint_map.contains_key(&12));
+    }
 
     /// A live 5 with a kinematic body, a collider, a controller and a joint to
     /// a live 6.
@@ -142,5 +237,21 @@ mod physics {
         e.process_commands(&[spawn2d(5), spawn2d(5)]);
         e.update(1.0 / 60.0);
         assert_old_five_fully_retired(&e, "R4b");
+    }
+
+    // R6 — a body option for 7, then its despawn, then 7 re-spawned in a LATER
+    // push. The case the TS quarantine produces: guards that it stays clean.
+    #[test]
+    fn r6_body_option_before_a_despawn_in_an_earlier_push_does_not_leak() {
+        let mut e = Engine::new();
+        e.process_commands(&[spawn2d(7), body(7, 0), ball(7)]);
+        e.update(1.0 / 60.0);
+
+        e.process_commands(&[f1(CommandType::SetGravityScale, 7, 0.0), despawn(7)]);
+        e.update(1.0 / 60.0);
+        e.process_commands(&[spawn2d(7), body(7, 0), ball(7)]);
+        e.update(1.0 / 60.0);
+        println!("R6 new ext 7 gravity_scale = {}", gravity_scale_of(&e, 7));
+        assert_eq!(gravity_scale_of(&e, 7), 1.0);
     }
 }

@@ -1184,15 +1184,10 @@ fn process_single_command_physics(
 
         // CreateRevoluteJoint: stage a revolute PendingJoint
         CommandType::CreateRevoluteJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let anchor_ax = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let anchor_ay = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -1206,15 +1201,10 @@ fn process_single_command_physics(
 
         // CreatePrismaticJoint: stage a prismatic PendingJoint
         CommandType::CreatePrismaticJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let axis_x = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let axis_y = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -1228,15 +1218,10 @@ fn process_single_command_physics(
 
         // CreateFixedJoint: stage a fixed PendingJoint
         CommandType::CreateFixedJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
                 joint_id,
@@ -1248,15 +1233,10 @@ fn process_single_command_physics(
 
         // CreateRopeJoint: stage a rope PendingJoint
         CommandType::CreateRopeJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let max_dist = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -1269,15 +1249,10 @@ fn process_single_command_physics(
 
         // CreateSpringJoint: stage a spring PendingJoint
         CommandType::CreateSpringJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let rest_length = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -1375,6 +1350,30 @@ fn process_single_command_physics(
             process_single_command(cmd, world, entity_map, render_state);
         }
     }
+}
+
+/// Whether a `Create*Joint` command must be dropped instead of staged.
+///
+/// - Its joint id is live or pending. Reusing a live joint id used to overwrite
+///   the map entry and drop the only handle to the previous Rapier joint, which
+///   kept constraining its bodies with no way to remove it (P1-10).
+/// - Entity A (the command's entity id) or entity B (payload bytes 4..8) is not
+///   mapped. A pending joint resolves its ends by external id only at the next
+///   tick, so a joint to a dead id bound whatever entity took that id before
+///   then (id reuse, 2026-09-27, verify_reuse R2). Rejected like a `SetParent`
+///   to a missing parent; an end spawned earlier in the batch is mapped.
+#[cfg(feature = "physics-2d")]
+fn joint_command_rejected(
+    cmd: &Command,
+    entity_map: &EntityMap,
+    physics: &crate::physics::HyperionPhysicsWorld,
+) -> bool {
+    let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+    let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+    physics.joint_map.contains_key(&joint_id)
+        || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+        || entity_map.get(cmd.entity_id).is_none()
+        || entity_map.get(entity_b_ext).is_none()
 }
 
 /// Clean up Rapier state for an entity being despawned or having its body destroyed.
@@ -2611,13 +2610,14 @@ mod tests {
         let mut rs = RenderState::new();
         let mut physics = crate::physics::HyperionPhysicsWorld::new();
 
-        // Spawn entity 0 (entity_a for the joint)
-        let spawn = Command {
+        // Spawn entities 0 and 1 (entity_a and entity_b for the joint): a joint
+        // with an unmapped end is rejected (verify_reuse R2).
+        let spawn = |id| Command {
             cmd_type: CommandType::SpawnEntity,
-            entity_id: 0,
+            entity_id: id,
             payload: [0; 16],
         };
-        process_commands(&[spawn], &mut world, &mut map, &mut rs, &mut physics);
+        process_commands(&[spawn(0), spawn(1)], &mut world, &mut map, &mut rs, &mut physics);
 
         // CreateRevoluteJoint: joint_id=42, entity_b=1, anchor=(5.0, 10.0)
         let mut payload = [0u8; 16];
