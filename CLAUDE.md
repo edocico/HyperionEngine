@@ -21,8 +21,8 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (199 tests, 277 with physics-2d, 228 with dev-tools, 321 with all features)
-cargo test -p hyperion-core --all-features   # + 81 integration tests across 6 files (321 lib + 81 = 402 total)
+cargo test -p hyperion-core                  # All Rust unit tests (198 tests, 276 with physics-2d, 227 with dev-tools, 320 with all features)
+cargo test -p hyperion-core --all-features   # + 91 integration tests across 7 files (320 lib + 91 = 411 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -31,7 +31,7 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (42 tests)
 cargo test -p hyperion-core engine           # Engine tests only (16 tests, 25 with physics-2d, 64 with physics-2d+dev-tools)
 cargo test -p hyperion-core render_state     # Render state tests only (55 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (41 tests, 42 with physics-2d)
+cargo test -p hyperion-core command_proc     # Command processor tests only (40 tests, 41 with physics-2d)
 cargo test -p hyperion-core systems          # Systems tests only (19 tests, 21 with physics-2d)
 cargo test -p hyperion-core components       # Component tests only (28 tests)
 
@@ -79,15 +79,15 @@ cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI 
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality/groups (21 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (277 lib tests, 349 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (276 lib tests, 358 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 321 lib tests (402 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 320 lib tests (411 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (228 lib tests, 268 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (227 lib tests, 268 with integration)
 ```
 
 ### Development Workflow
@@ -166,7 +166,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 |---|---|
 | `lib.rs` | WASM exports: `engine_init`, `engine_push_commands` (the live command path), `engine_memory`, `engine_attach_ring_buffer` (unused — see Gotchas), `engine_update`, `engine_tick_count`, `engine_gpu_transforms_ptr/f32_len`, `engine_gpu_bounds_ptr/f32_len`, `engine_gpu_render_meta_ptr/len`, `engine_gpu_prim_params_ptr/f32_len`, `engine_gpu_entity_count`, `engine_rejected_command_count`, `engine_dropped_command_bytes`, `engine_gpu_tex_indices_ptr/len`, `engine_gpu_entity_ids_ptr/len`, `engine_compact_entity_map`, `engine_compact_render_state`, `engine_entity_map_capacity`, `engine_listener_x/y/z`, `engine_ambient_r/g/b/intensity`, `engine_lighting_backend`, `engine_dirty_count/ratio`, `engine_staging_ptr/u32_len`, `engine_staging_indices_ptr/len`, `engine_gpu_depths_ptr/f32_len`. Physics (physics-2d): `engine_physics_configure`, `engine_physics_body_count`, `engine_collision_events_ptr/count`, `engine_contact_force_events_ptr/count`, `engine_physics_raycast/raycast_result_ptr`, `engine_physics_overlap_aabb/overlap_circle/overlap_results_ptr`, `engine_character_grounded`, `engine_character_sliding`. Dev-tools: `engine_reset`, `engine_snapshot_create`, `engine_snapshot_restore`, `engine_state_hash` (u64→BigInt). Physics-debug: `engine_physics_debug_ptr/f32_len` (8 f32/line: [ax,ay,bx,by,r,g,b,a]) |
 | `engine.rs` | `Engine` struct with fixed-timestep accumulator, ties together ECS + commands + systems. Wires `propagate_transforms` for scene graph hierarchy + 2D system variants (`velocity_system_2d`, `transform_system_2d`). Listener position state with velocity derivation and extrapolation. Lighting engine-level state: `ambient_light: [f32;4]` and `lighting_backend: u8`, set by CommandType 55/56 intercepted before ECS dispatch on the `entity_id = 0` sentinel (same shape as `SetListenerPosition`); NOT in the HSNP trailer — see Gotchas. `#[cfg(feature = "physics-2d")]`: `HyperionPhysicsWorld` field, `physics_sync_pre`/`step`/`physics_sync_post` in tick loop, filtered velocity systems, physics dirty marking, despawn cleanup. Dev-tools: `reset()`, `snapshot_create()`/`snapshot_restore()` (HSNP v3: u32 mask, 2D archetype, is_2d flags, physics section rebuilt-from-state, GPU slot reassignment, integrity trailer, v1/v2 read back-compat), `state_hash()` (FNV-1a 64 over ext-ID-ordered bit patterns). Physics-debug: `debug_render_enabled` flag (CommandType 47), `debug_lines: Vec<f32>` regenerated once per frame |
-| `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity with free-list recycling, `shrink_to_fit()`, `iter_mapped()`, `is_2d` flag per entity) + `process_commands` (including `SetParent`, 2D/3D command routing, batch spawn partitioning) |
+| `command_processor.rs` | `EntityMap` (external ID ↔ hecs Entity; binds the ids TS chooses and allocates none, `shrink_to_fit()`, `iter_mapped()`, `is_2d` flag per entity) + `process_commands` (including `SetParent`, 2D/3D command routing, batch spawn partitioning) |
 | `ring_buffer.rs` | SPSC consumer with atomic read/write heads, `CommandType` enum (57 variants: 17 core (0-16) + 36 physics/debug (17-52) + 4 lighting (53-56), ending at `SetLightingBackend`(56) incl. `CreateRigidBody`, `CreateCollider`, `ApplyForce`, `CreateRevoluteJoint`, `SetSpringParams`, `SetJointAnchorA/B`, `CreateCharacterController`, `SetCharacterConfig`, `MoveCharacter`, `SetLightFlags`, `SetAmbientLight`), `Command` struct |
 | `physics.rs` | `#[cfg(feature = "physics-2d")]` — `PendingRigidBody`, `PendingCollider` (defaults+override staging+`from_payload`), `PhysicsBodyHandle`, `PhysicsColliderHandle`, `PhysicsControlled` marker. `JointEntry` (rapier handle + entity_a/b pair + `kind` byte recorded at creation), `PendingJointType` (5 variants: Revolute/Prismatic/Fixed/Rope/Spring), `PendingJoint` (type + joint_id + entity pair + anchors + params). `CharacterState` (grounded/sliding booleans), `CharacterEntry` (controller + state), `character_map: HashMap<u32, CharacterEntry>`, `pending_moves: Vec<(u32, f32, f32)>`. `HyperionCollisionEvent` (#[repr(C)] 12-byte: entity_a/b, event_type, is_sensor), `HyperionContactForceEvent` (#[repr(C)] 20-byte: entity_a/b, max_force_magnitude, max_force_direction_x/y). `HyperionPhysicsWorld` (wraps all Rapier2D state: body/collider/joint sets, pipeline, events, `joint_map: HashMap<u32, JointEntry>`, `pending_joints: Vec<PendingJoint>` + `raycast()`/`overlap_aabb()`/`overlap_circle()` scene queries). Static buffers: `RAYCAST_RESULT`, `OVERLAP_RESULTS`. `physics_sync_pre` (consumes pending→Rapier bodies/colliders/joints [Pass 4], kinematic sync, character controller move_shape [Pass 5]), `physics_sync_post` (Rapier→ECS writeback), `build_collider_shape` (shape type→ColliderBuilder). `snapshot` module (physics-2d+dev-tools): `serialize_physics`/`restore_physics` — readback-from-Rapier physics section (world config, bodies, colliders, joints incl. full GenericJoint state, character controllers). `debug` module (physics-debug): `HyperionPhysicsWorld::debug_render()` via persistent `DebugRenderPipeline`, HSLA→RGBA conversion |
 | `physics_commands.rs` | `#[cfg(feature = "physics-2d")]` — `process_physics_commands`: second-pass command router for 25 live-body Rapier commands — body forces/params (ApplyForce, ApplyImpulse, ApplyTorque, SetGravityScale, SetLinearDamping, SetAngularDamping, SetCCDEnabled) + collider overrides (SetColliderSensor, SetColliderDensity, SetColliderRestitution, SetColliderFriction, SetCollisionGroups, SetColliderEvents) + TeleportBody + joint commands (RemoveJoint, SetJointMotor, SetJointLimits, SetSpringParams, SetJointAnchorA, SetJointAnchorB) + character controller commands (CreateCharacterController, SetCharacterConfig, MoveCharacter, DestroyCharacterController, SetCharacterUp [44-46, 51-52]) |
@@ -530,6 +530,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`pending_joints` consumed in `physics_sync_pre` Pass 4** — After bodies (Pass 1), colliders (Pass 2), kinematic sync (Pass 3). Joint creation requires both body handles to exist.
 - **`joint_map.retain()` cleanup on despawn** — When a body is despawned, `joint_map.retain(|_, entry| entry.entity_a != ext_id && entry.entity_b != ext_id)` removes orphaned joints. Rapier cascades joint removal when a body is removed.
 - **Double joint removal is safe** — `impulse_joints.remove(handle, true)` returns `None` for already-removed joints. No need to check existence before removing.
+- **A `SpawnEntity` on a live id retires the old entity, physics included, and a command reaches only the NEWEST entity with its id** (id reuse, 2026-09-27, `verify_reuse.rs` R1-R6) — the retire runs `despawn_physics_cleanup` (body, colliders, joints, controller, pending moves/teleports) like a despawn, and a spawn run naming an id twice creates only its last spawn. The physics second pass (`process_physics_commands`) resolves ids against the map at the END of the batch, so it skips every command for X placed before the last `SpawnEntity` of X in that batch (joint property commands excepted: they address a joint id). `MoveCharacter` for an unmapped id is dropped, and a `Create*Joint` needs BOTH ends mapped when it arrives, like `SetParent`: a joint to an entity spawned LATER in the batch is rejected. Rust allocates no ids: the dead `EntityMap::allocate` + free list, which handed out live ids, was removed.
 - **`JointHandle` is opaque branded type** — `number & { __brand: 'JointHandle' }`. The numeric value is the internal joint_id counter, NOT a Rapier handle index.
 - **Joint fluent methods return `JointHandle`, not `this`** — Unlike other `EntityHandle` methods that return `this` for chaining, `.revoluteJoint()` etc. return a `JointHandle`. Chain breaks at joint creation.
 - **`PrismaticJointBuilder` takes `Vector` not `UnitVector`** — `PrismaticJointBuilder::new(axis)` where axis is `vector![x, y].into()`. Rapier normalizes internally.
@@ -719,7 +720,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 81 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 37, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16/P17/P18-P18h/P19-P19d and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
+Regression coverage: 91 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 37, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4, verify_reuse 10) — each asserts the corrected behaviour of a defect. P16/P17/P18-P18h/P19-P19d and H6-H8 (2026-09-26) are later than the audit, and so is `verify_reuse` (2026-09-27, id reuse R1-R6). `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
