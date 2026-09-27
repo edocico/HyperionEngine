@@ -50,6 +50,8 @@ import { GraphRequests, type ShaderSlot } from './render/graph-requests';
 import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
+import { DebugProbe } from './render/debug-probe';
+import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
 
 const MAX_ENTITIES = 100_000;
 // 28 draw entries (14 opaque + 14 transparent) x 5 u32 x 4 bytes = 560 bytes
@@ -137,6 +139,12 @@ export interface Renderer {
    * Empty when profiling is off or still warming up.
    */
   getGpuTimings(): PassTiming[];
+  /**
+   * Dev builds only (null otherwise): reads pixels of scene-hdr, the swapchain
+   * or a light-buffer layer, and the entity-transforms rows, at the next
+   * rendered frame. Behind `engine.debug.probe()` / `readEntityTransforms()`.
+   */
+  readonly debugProbe: DebugProbe | null;
 
   destroy(): void;
 }
@@ -202,6 +210,11 @@ export async function createRenderer(
   const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
+  const dev = typeof __DEV__ !== 'undefined' && __DEV__;
+  // Dev builds: set once a probe asks for the swapchain, which is then
+  // reconfigured with TEXTURE_BINDING. Never before, so GPU times measured in
+  // a dev session run on the production canvas configuration.
+  let swapchainSampled = false;
 
   // --- 2. Create TextureManager + SelectionManager ---
   const textureManager = new TextureManager(device, { compressedFormat });
@@ -212,8 +225,10 @@ export async function createRenderer(
 
   resources.setBuffer('entity-transforms', device.createBuffer({
     size: MAX_ENTITIES * 16 * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    // COPY_SRC in dev builds: engine.debug.readEntityTransforms reads it back.
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
   }));
+  const debugProbe = dev ? new DebugProbe(device, pixelProbeShaderCode) : null;
 
   resources.setBuffer('entity-bounds', device.createBuffer({
     size: MAX_ENTITIES * 4 * 4,
@@ -841,6 +856,14 @@ export async function createRenderer(
         if (gpuProfilingEnabled) gpuProfiler?.reset();
       }
 
+      if (debugProbe?.wantsSwapchain && !swapchainSampled) {
+        context.configure({
+          device, format, alphaMode: "opaque",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        swapchainSampled = true;
+      }
+
       // Set swapchain view for this frame
       resources.setTextureView('swapchain', context.getCurrentTexture().createView());
 
@@ -898,6 +921,15 @@ export async function createRenderer(
         );
         device.queue.submit([particleEncoder.finish()]);
       }
+
+      // Last: the probe must see the final swapchain, before it is presented.
+      debugProbe?.serve(resources, frameState, {
+        buffer: resources.getBuffer('entity-transforms')!,
+        transforms: state.transforms,
+        entityIds: state.entityIds,
+        entityCount: state.entityCount,
+        usedScatter: Boolean(useScatter),
+      }, swapchainSampled);
     },
 
     get gpuProfilingSupported() { return timestampSupported; },
@@ -922,7 +954,10 @@ export async function createRenderer(
       return gpuProfilingEnabled ? gpuProfiler?.timings() ?? [] : [];
     },
 
+    debugProbe,
+
     destroy() {
+      debugProbe?.destroy();
       gpuProfiler?.destroy();
       particleSystem.destroy();
       sceneHdrTexture.destroy();

@@ -79,6 +79,23 @@ failure.
 
 ## 6. Pixels (when the question is "does it LOOK right")
 
+**Prefer the in-engine probe** (dev builds, Mode B/C): it reads the next rendered frame with no
+DOM overlay in the way. From `evaluate_script`:
+`await window.__hyperion.debug.probe({ target: 'scene-hdr' | 'swapchain' | 'light-buffer', world: [[x, y], ...], layer })`
+→ `{ values: [[r,g,b,a], ...], uv, targetSize, canvasSize }`.
+- `scene-hdr` and `light-buffer` are LINEAR HDR. `swapchain` is what is displayed: tonemapped,
+  0-1, 8-bit (1/255 steps). The first swapchain probe reconfigures the canvas with
+  `TEXTURE_BINDING` for the rest of the session: take GPU timings BEFORE probing the swapchain.
+- `light-buffer` only while the lit graph is live; `layer` is a light group of that frame
+  (`window.__hyperion.lighting.groups`), anything else rejects.
+- It rejects while the engine is paused, and waits while the world is empty (nothing renders).
+- Known values: the `scene-hdr` clear is 0.067, an untextured quad 1.0.
+
+`await window.__hyperion.debug.readEntityTransforms()` compares the GPU transform rows with the
+CPU ones (`usedScatter` true only in `?mode=C`). The screenshot path below is for what the probe
+cannot see: DOM overlays, and anything in Mode A.
+
+
 1. `evaluate_script` with `filePath: <scratchpad>/map.json`, returning
    `{ rect: [left, top, width, height] of the canvas getBoundingClientRect(), vp: Array.from(window.__hyperion.cam.viewProjection), dpr: window.devicePixelRatio }`
    — the file is plain JSON.

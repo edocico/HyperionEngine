@@ -34,7 +34,7 @@ Il §7.3 del design dice "Mix in-shader", ma non si può fare: WebGPU non ha fra
 | D4 | Esposizione dello spawn 2D | **Opzione per entità** (`engine.spawn({ mode: '2d' })`); il default resta 3D. S e L restano indipendenti |
 
 Decisioni rimandate, da prendere **prima del passo indicato**:
-- **Passo 2:** dove vive il probe (API dev `engine.debug.probe()` usabile da `/gpu-check`, oppure solo demo) e cosa fanno le soglie dei check (tolleranze assolute oppure rapporti).
+- **Passo 2 — deciso (2026-09-27):** il probe è un'API dev del motore, `engine.debug.probe()` (solo `__DEV__`), usata sia dai check dei tab sia da `/gpu-check`; i check usano rapporti tra punti della stessa lettura per luci e ombre, e valori assoluti in HDR lineare con tolleranza per i colori statici.
 - **Passo 3:** se gli estremi di una linea devono guidare il `BoundingRadius`. Oggi la linea viene cullata sul quadrato unitario, anche quando è ancora visibile.
 - **Passo 5:** se Depth→z (S2) rientra in questo giro, e che cosa significa `.depth()` su un'entità 3D.
 - **Passo 6:** se `sdfOversize` rientra (senza, gli occluder fuori schermo compaiono di colpo al bordo), quale asse locale indica la direzione, quanto è ampia la penombra, e che le luci global non proiettano ombre.
@@ -72,6 +72,7 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   - `collider_to_entity` indicizzato solo per indice: un `Stopped` può essere attribuito all'entità sbagliata;
   - `ecs-inspector.ts:114` chiama `selection.selectedIds()` come metodo, ma è un getter (il mock del test lo nasconde);
   - CLAUDE.md dà 600 000 come default del tape, ma è 1 000 000 (`command-tape.ts:22`).
+- **Passo 2 (probe) — fatto** (review `wf_bf97d75c-ec7` + `webgpu-pass-reviewer`: 10 + 4 finding, tutti corretti e verificati su GPU). Lo scatter gira SOLO in Mode C, perché `engine-worker.ts` non invia mai `dirtyCount`/`stagingData`, quindi in Mode B e A ogni frame fa l'upload completo delle SoA. È una lacuna di prestazioni, non di correttezza. Per il passo 4, il formato 0 va verificato con `?mode=C`. Il probe legge la swapchain con `TEXTURE_BINDING` (configurato solo in dev) invece che con `COPY_SRC`: la capacità è la stessa (D2).
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada
