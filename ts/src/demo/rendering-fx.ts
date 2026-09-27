@@ -62,11 +62,12 @@ const section: DemoSection = {
       engine.enableOutlines({ color: [1, 0.5, 0, 1], width: 3 });
       await frames(8);
       await pixelCheck(reporter, 'Outline', engine, async (probe) => {
-        // 1.5 px outside the selected quad's edge, and the same offset from
+        // 1 px outside the selected quad's edge, well inside the 3 px ring
+        // whatever the edge's sub-pixel position, and the same offset from
         // an unselected neighbour. The mask is indexed by GPU slot: indexed
         // by entity id it outlined whatever sat in that slot, or nothing.
         const [x1] = at(0, 1);
-        const px = 1.5 * worldPerPx();
+        const px = 1.0 * worldPerPx();
         const [ring, neighbour] = await probe('swapchain', [[qx + 0.5 + px, qy], [x1 + 0.5 + px, qy]]);
         const orange = ring[0] > 0.6 && ring[1] > 0.2 && ring[1] < 0.8 && ring[2] < 0.3;
         return {
@@ -94,10 +95,14 @@ const section: DemoSection = {
           await probe('scene-hdr', [[0, 0]]);
           return (await engine.debug!.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] })).targetSize;
         };
-        engine.resize(800, 600);
-        await frames(3);
-        const small = await sizeOf();
-        engine.resize(origW, origH);
+        let small: [number, number];
+        try {
+          engine.resize(800, 600);
+          await frames(3);
+          small = await sizeOf();
+        } finally {
+          engine.resize(origW, origH); // also when a probe is skipped or times out
+        }
         await frames(3);
         const restored = await sizeOf();
         const ok = small[0] === 800 && small[1] === 600 && restored[0] === origW && restored[1] === origH;

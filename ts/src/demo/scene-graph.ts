@@ -3,7 +3,7 @@ import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
 import type { HookFn } from '../game-loop';
-import { pixelCheck, near, fmt, frames } from './probe-checks';
+import { pixelCheck, near, fmt, frames, fitView } from './probe-checks';
 
 /** The clear colour of scene-hdr (ForwardPass). */
 const BACKGROUND = 0.067;
@@ -125,9 +125,8 @@ const section: DemoSection = {
       entities.push(leaf);
     });
 
-    // ── Camera: position to show scene graph content ───────────────────
-    engine.cam.position(2, 0, 0);
-    engine.cam.zoom(1);
+    // ── Camera: the content spans x -8.5..14.5 — fit it at any aspect ──
+    fitView(engine, 3, 0, 12.5);
     await frames(4);
 
     const white = (p: number[]) => p[0] > 0.9;

@@ -764,9 +764,9 @@ export async function createRenderer(
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
       followBackend(state.lightingBackend);
-      // No early return on an empty world: its frame is the clear, and the
-      // cull dispatches zero workgroups. Returning here left the last image
-      // on screen after the last entity was destroyed.
+      // No early return on an empty world: its frame is the clear (CullPass
+      // skips its dispatch, the indirect draws count zero). Returning here left
+      // the last image on screen after the last entity was destroyed.
 
       // Scatter/full upload branching:
       // When dirty ratio is below threshold and scatter pass is available,

@@ -106,8 +106,10 @@ export function boundsVisualizerPlugin(options?: BoundsVisualizerOptions): Hyper
       }
 
       // PostTick hook: generate vertices from SystemViews bounds
+      // An empty world regenerates too (zero circles): returning early left the
+      // last frame's circles drawn over it.
       const hookFn: HookFn = (_dt, views) => {
-        if (!enabled || !views || views.entityCount === 0) return;
+        if (!enabled || !views) return;
         pass.generateFromBounds(views.bounds, views.entityCount);
       };
 

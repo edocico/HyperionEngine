@@ -6,7 +6,7 @@
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
-import { pixelCheck, near, fmt, frames } from './probe-checks';
+import { pixelCheck, near, fmt, frames, fitView } from './probe-checks';
 
 const entities: EntityHandle[] = [];
 
@@ -23,18 +23,22 @@ const section: DemoSection = {
   label: 'Lifecycle & DX (Spawn/Destroy / Batch / Compact / Immediate / Prefabs)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
-    engine.cam.position(0, 0, 0);
-    engine.cam.zoom(1);
+    // Probe points span x -12..12.25: fit them at any aspect.
+    fitView(engine, 0, 0, 13.5);
 
     // ── 1. Spawn + destroy: drawn, then gone ───────────────────────────
     await pixelCheck(reporter, 'Spawn + destroy', engine, async (probe) => {
       const e = engine.spawn().position(-12, -6, 0);
-      await frames(4);
-      const [drawn] = await probe('scene-hdr', [[-12, -6]]);
-      e.destroy();
-      await frames(4);
-      const [gone] = await probe('scene-hdr', [[-12, -6]]);
-      return { ok: white(drawn) && clear(gone), detail: `after spawn ${fmt([drawn[0]])}, after destroy ${fmt([gone[0]])}` };
+      try {
+        await frames(4);
+        const [drawn] = await probe('scene-hdr', [[-12, -6]]);
+        e.destroy();
+        await frames(4);
+        const [gone] = await probe('scene-hdr', [[-12, -6]]);
+        return { ok: white(drawn) && clear(gone), detail: `after spawn ${fmt([drawn[0]])}, after destroy ${fmt([gone[0]])}` };
+      } finally {
+        if (e.alive) e.destroy(); // a skipped or failed probe must not leave it on screen
+      }
     });
 
     // ── 2. Batch operation ─────────────────────────────────────────────
@@ -130,6 +134,8 @@ const section: DemoSection = {
   },
 
   teardown(engine: Hyperion) {
+    engine.cam.position(0, 0, 0);
+    engine.cam.zoom(1);
     for (const e of entities) {
       if (e.alive) e.destroy();
     }

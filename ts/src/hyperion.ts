@@ -299,8 +299,7 @@ export class Hyperion implements Disposable {
        * in linear HDR, the `swapchain` as displayed (0-1). Points in world
        * units (placed with that frame's camera) or UV. Needs the main-thread
        * renderer of a dev build: Mode B/C; rejects in Mode A and headless, and
-       * while paused. A world with no entity renders no frame: the request then
-       * waits for one.
+       * while paused. An empty world renders too (its frame is the clear).
        */
       probe(request: PixelProbeRequest): Promise<PixelProbeResult> {
         const probe = self.renderer?.debugProbe;

@@ -142,10 +142,25 @@ const section: DemoSection = {
     // The light group of a light layer: 4 bits per layer in layerToGroup.
     const groupOf = (layer: number) => groups ? ((groups.layerToGroup[layer >> 3] >>> ((layer & 7) * 4)) & 0xf) : 0;
     await pixelCheck(reporter, 'Lit vs unlit', engine, async (probe) => {
+      // The lit graph goes live a frame or two after setBackend, once the GPU
+      // validated it: until then 'light-buffer' is not a target (and scene-hdr
+      // is still unlit). Wait for it, within the probe's own timeout.
+      for (let tries = 0; ; tries++) {
+        try {
+          await probe('light-buffer', [[-12, 3]], groupOf(0));
+          break;
+        } catch (err) {
+          if (tries >= 30 || !/not in the live render graph/.test(String(err))) throw err;
+          await frames(2);
+        }
+      }
       // The same gradient twice: the lit one must be the unlit one times the
-      // light buffer where it stands (ForwardPass multiplies them).
-      const [lit, unlit] = await probe('scene-hdr', [[-12, 3], [-12, -3]]);
-      const [light] = await probe('light-buffer', [[-12, 3]], groupOf(0));
+      // light buffer where it stands (ForwardPass multiplies them). Both reads
+      // are served by ONE frame: the lights move from the next one on.
+      const [[lit, unlit], [light]] = await Promise.all([
+        probe('scene-hdr', [[-12, 3], [-12, -3]]),
+        probe('light-buffer', [[-12, 3]], groupOf(0)),
+      ]);
       const want = [unlit[0] * light[0], unlit[1] * light[1]];
       const ok = [0, 1].every((c) => Math.abs(lit[c] - want[c]) <= 0.15 * Math.max(want[c], 0.02));
       return { ok, detail: `lit ${fmt(lit.slice(0, 2))}, unlit x light ${fmt(want)} (light ${fmt(light.slice(0, 3))})` };

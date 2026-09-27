@@ -6,7 +6,7 @@
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
-import { pixelCheck, near, fmt, frames, type Rgba } from './probe-checks';
+import { pixelCheck, near, fmt, frames, fitView, type Rgba } from './probe-checks';
 
 const entities: EntityHandle[] = [];
 
@@ -40,7 +40,8 @@ const section: DemoSection = {
       entities.push(engine.spawn().position(GRADIENT_X, 4, 0).scale(3, 3, 1).gradient(0, 0, [0, 0, 0, 1, 1, 1]));
       // Radial: white at the centre to black at the edge.
       entities.push(engine.spawn().position(GRADIENT_X, 0, 0).scale(3, 3, 1).gradient(1, 0, [0, 1, 1, 1, 1, 0]));
-      // Conic: green where the angle wraps (the left) to half red, half green on the right.
+      // Conic: a hard seam on the left radius (green just on one side, red on the
+      // other), half red, half green on the right.
       entities.push(engine.spawn().position(GRADIENT_X, -4, 0).scale(3, 3, 1).gradient(2, 0, [0, 0, 1, 0, 1, 1]));
 
       // ── 3. Box shadows: alpha-blended, or the opaque pipeline draws a solid square
@@ -48,8 +49,10 @@ const section: DemoSection = {
         .boxShadow(0.8, 0.8, 0, 0, 0.2, 0.2, 0.2, 0.9));   // sharp
       entities.push(engine.spawn().position(SHADOW_X, 0, 0).scale(3, 3, 1).transparent()
         .boxShadow(0.7, 0.7, 0, 0.3, 0.1, 0.1, 0.4, 0.8));  // soft
+      // Rounded, and crisp: box-shadow.wgsl rounds the corners only in its
+      // no-blur branch (the blurred one ignores cornerRadius).
       entities.push(engine.spawn().position(SHADOW_X, -4, 0).scale(3, 3, 1).transparent()
-        .boxShadow(0.6, 0.6, 0.2, 0.15, 0.4, 0.1, 0.1, 0.85)); // rounded
+        .boxShadow(0.6, 0.6, 0.2, 0, 0.4, 0.1, 0.1, 0.85)); // rounded
 
       // ── 4. Lines: 6 vertical, 0.15 world units wide (scale with the zoom);
       // 4 horizontal, 3 screen pixels wide at every zoom ────────────────────
@@ -67,11 +70,7 @@ const section: DemoSection = {
       entities.push(engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(0, 0.5, 0.5, 0, 1, 0.5, 0.04)); // wave
     });
 
-    // Frame the whole scene at any canvas aspect (zoom <= 1).
-    engine.cam.position(SCENE_CENTER_X, 0, 0);
-    engine.cam.zoom(1);
-    const halfWidth = 1 / engine.cam.viewProjection[0];
-    engine.cam.zoom(Math.min(1, halfWidth / SCENE_HALF_WIDTH));
+    fitView(engine, SCENE_CENTER_X, 0, SCENE_HALF_WIDTH);
     await frames(4);
 
     await pixelCheck(reporter, 'Quad grid (5x5)', engine, async (probe) => {
@@ -86,38 +85,47 @@ const section: DemoSection = {
 
     await pixelCheck(reporter, 'Gradients (linear/radial/conic)', engine, async (probe) => {
       const at = (y: number, dx: number, dy = 0): [number, number] => [GRADIENT_X + dx * 3, y + dy * 3];
-      const [linL, linR, radC, radE, conL, conR] = await probe('scene-hdr', [
+      const [linL, linR, radC, radE, seamA, seamB, conR] = await probe('scene-hdr', [
         at(4, -0.3), at(4, 0.3),         // linear: 20% and 80% across
         at(0, 0), at(0, 0.45),           // radial: centre and near the edge
-        at(-4, -0.3), at(-4, 0.3),       // conic: the wrap (left) and the opposite side
+        // conic: both sides of the seam, 0.15 world units off it (a probe ON
+        // the seam read red or green depending on the canvas height), and the
+        // opposite side (t = 0.5)
+        at(-4, -0.3, 0.05), at(-4, -0.3, -0.05), at(-4, 0.3),
       ]);
       const linear = linL[2] > linL[0] + 0.3 && linR[0] > linR[2] + 0.3;
       const radial = radC[0] > 0.9 && radE[0] < 0.2;
-      const conic = conL[1] > 0.8 && conL[0] < 0.2 && near(conR[0], 0.5, 0.15);
+      const green = (p: Rgba) => p[1] > 0.8 && p[0] < 0.2;
+      const red = (p: Rgba) => p[0] > 0.8 && p[1] < 0.2;
+      const conic = ((green(seamA) && red(seamB)) || (red(seamA) && green(seamB))) && near(conR[0], 0.5, 0.15);
+      const conL = seamA;
       const show = (p: Rgba) => `(${fmt(p.slice(0, 3))})`;
       return {
         ok: linear && radial && conic,
-        detail: `linear ${show(linL)} -> ${show(linR)}; radial ${show(radC)} -> ${show(radE)}; conic ${show(conL)} / ${show(conR)}`,
+        detail: `linear ${show(linL)} -> ${show(linR)}; radial ${show(radC)} -> ${show(radE)}; conic seam ${show(conL)} | ${show(seamB)}, opposite ${show(conR)}`,
       };
     });
 
     await pixelCheck(reporter, 'Box shadows (sharp/soft/rounded)', engine, async (probe) => {
       const at = (y: number, dx: number, dy = 0): [number, number] => [SHADOW_X + dx * 3, y + dy * 3];
-      const [sharpC, sharpOut, softC, softEdge, roundC, roundCorner] = await probe('scene-hdr', [
+      // Rounded (crisp, rect = the quad): 0.29 of 0.3 out along an edge is
+      // inside; the same inset at the corner is outside the 0.2 radius.
+      const inset = 0.29 / 0.6;
+      const [sharpC, sharpOut, softC, softEdge, roundEdge, roundCorner] = await probe('scene-hdr', [
         // sharp: inside, and just outside the entity quad — with no blur the
         // rect fills the quad (it spans rect + 2 * blur per side)
         at(4, 0), at(4, 0.55, 0.55),
         at(0, 0), at(0, 0.47),           // soft: centre, where the blur has faded
-        at(-4, 0), at(-4, 0.4, 0.4),     // rounded: centre, the rounded-off corner
+        at(-4, inset), at(-4, inset, inset), // rounded: along an edge, in the cut-off corner
       ]);
       // Alpha-blended over the clear: bg * (1 - a) + colour * a.
       const blend = (c: number, a: number) => BACKGROUND * (1 - a) + c * a;
       const sharp = near(sharpC[0], blend(0.2, 0.9), 0.02) && near(sharpOut[0], BACKGROUND, 0.01);
       const soft = near(softC[2], blend(0.4, 0.8), 0.03) && softEdge[2] < softC[2] - 0.1;
-      const rounded = roundC[0] > roundCorner[0] + 0.05;
+      const rounded = near(roundEdge[0], blend(0.4, 0.85), 0.02) && near(roundCorner[0], BACKGROUND, 0.01);
       return {
         ok: sharp && soft && rounded,
-        detail: `sharp ${fmt([sharpC[0], sharpOut[0]])} (want ${fmt([blend(0.2, 0.9), BACKGROUND])}); soft b ${fmt([softC[2], softEdge[2]])}; rounded r ${fmt([roundC[0], roundCorner[0]])}`,
+        detail: `sharp ${fmt([sharpC[0], sharpOut[0]])} (want ${fmt([blend(0.2, 0.9), BACKGROUND])}); soft b ${fmt([softC[2], softEdge[2]])}; rounded r edge ${fmt([roundEdge[0]])} (want ${fmt([blend(0.4, 0.85)])}), corner ${fmt([roundCorner[0]])}`,
       };
     });
 
@@ -136,14 +144,17 @@ const section: DemoSection = {
 
     await pixelCheck(reporter, 'Bezier curves (arch/S/wave)', engine, async (probe) => {
       // Arch and S pass through their quad's centre; both off-curve points
-      // below are off the curve whichever way the quad's v runs.
-      const [archC, archOff1, archOff2, sC, waveMid] = await probe('scene-hdr', [
+      // below are off the curve whichever way the quad's v runs. The wave
+      // passes (0.5, 0.25) in uv: one unit above or below the centre (by the
+      // quad's v direction), never through it.
+      const [archC, archOff1, archOff2, sC, waveMid, waveUp, waveDown] = await probe('scene-hdr', [
         [BEZIER_X, 4], [BEZIER_X, 4 + 0.45 * 4], [BEZIER_X, 4 - 0.45 * 4],
         [BEZIER_X, 0],
-        [BEZIER_X, -4],
+        [BEZIER_X, -4], [BEZIER_X, -3], [BEZIER_X, -5],
       ]);
-      const ok = archC[0] > 0.5 && near(archOff1[0], BACKGROUND, 0.01) && near(archOff2[0], BACKGROUND, 0.01) && sC[0] > 0.5;
-      return { ok, detail: `arch centre ${fmt([archC[0]])}, off-curve ${fmt([archOff1[0], archOff2[0]])}; S centre ${fmt([sC[0]])}; wave centre ${fmt([waveMid[0]])}` };
+      const wave = near(waveMid[0], BACKGROUND, 0.01) && ((waveUp[0] > 0.5) !== (waveDown[0] > 0.5));
+      const ok = archC[0] > 0.5 && near(archOff1[0], BACKGROUND, 0.01) && near(archOff2[0], BACKGROUND, 0.01) && sC[0] > 0.5 && wave;
+      return { ok, detail: `arch centre ${fmt([archC[0]])}, off-curve ${fmt([archOff1[0], archOff2[0]])}; S centre ${fmt([sC[0]])}; wave centre ${fmt([waveMid[0]])}, one unit off ${fmt([waveUp[0], waveDown[0]])}` };
     });
 
     // ── 6. MSDF text — skip (no font atlas in demo assets) ────────────

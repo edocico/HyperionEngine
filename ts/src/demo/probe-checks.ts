@@ -78,6 +78,18 @@ export function fmt(values: number[]): string {
   return values.map((v) => v.toFixed(3)).join(', ');
 }
 
+/**
+ * Centres the camera on (cx, cy) and zooms out — never in — until `halfWidth`
+ * world units fit on each side: the scene, and so every probe point, stays in
+ * view at any canvas aspect (a narrow window used to push probes off the target).
+ */
+export function fitView(engine: Hyperion, cx: number, cy: number, halfWidth: number): void {
+  engine.cam.position(cx, cy, 0);
+  engine.cam.zoom(1);
+  const visibleHalfWidth = 1 / engine.cam.viewProjection[0];
+  engine.cam.zoom(Math.min(1, visibleHalfWidth / halfWidth));
+}
+
 /** Waits `n` animation frames: what was just spawned reaches the GPU (Mode B lags one or two). */
 export function frames(n: number): Promise<void> {
   return new Promise((resolve) => {
