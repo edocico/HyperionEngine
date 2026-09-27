@@ -68,9 +68,11 @@ export interface EngineBridge {
    */
   getStateHash?(): Promise<bigint | null>;
   /**
-   * The number the next tick will carry: a command written now (every flush
-   * happens inside `tick()`, before the tick is sent) is consumed by that tick
-   * or a later one. With `processed`, it drives the entity id quarantine.
+   * The number the next tick will carry. Contract: once `processed.seq >= s`,
+   * every command written before tick `s` was sent has been consumed — so a
+   * command written now (every flush happens inside `tick()`, before the tick
+   * is sent) is consumed by that tick at the latest. A custom bridge must keep
+   * it, or the entity id quarantine releases ids too early.
    * Optional: a bridge without it never releases a freed id.
    */
   readonly nextTickSeq?: number;

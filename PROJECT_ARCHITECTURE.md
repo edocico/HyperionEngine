@@ -634,7 +634,7 @@ Il problema: TypeScript assegna ID sequenziali alle entita (0, 1, 2, ...). `hecs
   remove(2)     → map[2] = None
 ```
 
-**Perche non una HashMap?** Per 100k entita, una `HashMap<u32, Entity>` ha overhead di hashing e chaining. Un `Vec` indicizzato direttamente ha lookup O(1) con cache-friendliness perfetta. Il costo e spazio — se gli ID sono sparsi, il Vec ha buchi. Il Vec cresce fino all'ID piu alto mai legato (al massimo `MAX_EXTERNAL_ID + 1` voci), e `shrink_to_fit()` tronca le voci `None` in coda.
+**Perche non una HashMap?** Per 100k entita, una `HashMap<u32, Entity>` ha overhead di hashing e chaining. Un `Vec` indicizzato direttamente ha lookup O(1) con cache-friendliness perfetta. Il costo e spazio — se gli ID sono sparsi, il Vec ha buchi. Il Vec cresce in modo geometrico (raddoppia) finche copre l'ID piu alto mai legato, quindi fino a quasi 2x quell'id, con un tetto di `MAX_EXTERNAL_ID + 1` voci; `shrink_to_fit()` tronca le voci `None` in coda.
 
 ### 5.3 Timestep Fisso con Accumulatore
 
@@ -1707,7 +1707,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Nessun rendering fallback senza WebGPU | Solo WebGPU supportato | Senza WebGPU il renderer e `null`, solo la simulazione ECS gira | Futuro: WebGL 2 fallback |
 | `webgpuInWorker` detection via UA string | Non esiste API per testare WebGPU in Worker dal Main Thread | Falsi negativi su browser non-Chromium con supporto futuro | Aggiornare euristica quando Firefox supporta |
 | `RingBufferConsumer::drain()` alloca `Vec` per frame | Nessun object pool | Pressione GC minima (il Vec e in Rust, non JS) ma non zero-alloc | Ottimizzazione futura con pre-allocated buffer |
-| Entity IDs non compattati dopo molti spawn/despawn | Free-list LIFO puo lasciare buchi nel Vec | Spreco di memoria per mappe molto sparse | **Mitigato**: `EntityMap.shrink_to_fit()` + `Hyperion.compact()` in Phase 5 |
+| Entity IDs non compattati dopo molti spawn/despawn | Gli id salgono fino a `MAX_EXTERNAL_ID` prima di essere riusati (FIFO, in quarantena, lato TS: `EntityIdAllocator`), quindi il Vec resta dimensionato sull'id piu alto mai legato | Spreco di memoria per mappe molto sparse | **Mitigato**: `EntityMap.shrink_to_fit()` + `Hyperion.compact()` in Phase 5 |
 | Nessuna validazione del quaternione in `SetRotation` | Il payload e accettato cosi com'e | Quaternioni non normalizzati producono scale anomale nella model matrix | Aggiungere normalizzazione in `process_commands` |
 | Full SoA buffer re-upload ogni frame | Il coordinator in `renderer.ts` uploada tutti e 4 i buffer SoA (transforms, bounds, renderMeta, texIndices) ogni frame via `writeBuffer` | Nessuna ottimizzazione partial upload | Futuro: usare `DirtyTracker` (gia in Rust) per partial upload quando `transform_dirty_ratio < 0.3` |
 | Texture indices buffer parallelo al entity buffer | I due buffer devono essere indicizzati nello stesso ordine | Entrambi popolati nello stesso loop `collect_gpu()` — allineamento garantito | **Risolto by design** |
@@ -2015,7 +2015,7 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **Interpolation alpha** | Rapporto `accumulator / FIXED_DT` (0.0–1.0) usato per interpolare visivamente tra due tick fissi |
 | **Column-major** | Layout di matrice dove le colonne sono contigue in memoria — formato nativo di WebGPU/WGSL e OpenGL |
 | **EntityMap** | Mapping bidirezionale tra ID entita esterni (TypeScript, u32 sequenziali) e Entity interni (hecs, opachi) |
-| **Free-list** | Stack LIFO di ID riciclabili dopo despawn, per evitare frammentazione degli ID |
+| **Quarantena degli id** | Un id liberato torna disponibile (FIFO, dopo quelli mai usati) solo quando il suo despawn e stato scritto ed elaborato e un tick fisso successivo e girato: `EntityIdAllocator` + `TickSequencer`, lato TS. Rust non alloca id |
 | **EngineBridge** | Interfaccia TypeScript che astrae il transport (Worker `postMessage` vs chiamata diretta) |
 | **Marker component** | Componente senza dati (`Active`) usato come filtro per le query ECS |
 | **wasm-bindgen** | Macro e toolchain Rust che generano il JS glue code per le funzioni `#[wasm_bindgen]` |

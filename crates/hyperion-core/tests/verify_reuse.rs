@@ -1,11 +1,15 @@
 //! Regression tests for the reuse of an external entity id (step 1b, design
 //! `docs/plans/2026-09-27-id-reuse-design.md` §3-§4, R1-R6).
 //!
-//! The TypeScript allocator hands an id back only after a quarantine, so none of
-//! these sequences should reach WASM from a correct host. They are defence in
-//! depth: before 2026-09-27 each one let state keyed by the id — a pending
-//! move, a pending joint, a Rapier body, a character controller, a body option —
-//! pass from the old entity to the new one, or orphan an entity outright.
+//! Two of these are traffic a correct host DOES send: R1 (a move and a destroy
+//! of the same entity in one frame, which may run no fixed tick) and R6 (a
+//! reused id, spawned in a later push than its despawn — the ordinary
+//! quarantine path). R2-R5 are sequences the TypeScript side never sends — joint
+//! methods refuse a dead target, and the allocator never hands out a live or
+//! quarantined id — so for them the guards are defence in depth. Before
+//! 2026-09-27 each one let state keyed by the id (a pending move, a pending
+//! joint, a Rapier body, a character controller, a body option) pass from the
+//! old entity to the new one, or orphan an entity outright.
 
 use hyperion_core::components::*;
 use hyperion_core::engine::Engine;

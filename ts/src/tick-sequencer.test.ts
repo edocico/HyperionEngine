@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { TickSequencer } from './tick-sequencer';
 
 describe('TickSequencer', () => {
-  it('numbers ticks from 1: a command written now is consumed by nextSeq or later', () => {
+  it('numbers ticks from 1: a command written now is consumed by tick nextSeq at the latest', () => {
     const t = new TickSequencer();
     expect(t.nextSeq).toBe(1);
     expect(t.send()).toBe(1);

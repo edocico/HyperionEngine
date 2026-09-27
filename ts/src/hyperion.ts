@@ -16,7 +16,7 @@ import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
 import { validateConfig } from './types';
-import { EntityIdAllocator } from './entity-id-allocator';
+import { EntityIdAllocator, type IdOwner } from './entity-id-allocator';
 import { EntityHandle } from './entity-handle';
 import { GameLoop } from './game-loop';
 import { Camera } from './camera';
@@ -72,6 +72,7 @@ export class Hyperion implements Disposable {
 
   /** External entity ids, reused under quarantine (not readonly: tests shrink it). */
   private ids = new EntityIdAllocator();
+  private warnedRawDespawn = false;
   private entityCount = 0;
   private destroyed = false;
   private profiler: ProfilerOverlay | null = null;
@@ -90,12 +91,12 @@ export class Hyperion implements Disposable {
     this.cameraApi = new CameraAPI(this.camera);
     this.leakDetector = new LeakDetector();
     this.rawApi = new RawAPI(bridge.commandBuffer, {
-      allocate: () => this.ids.allocate('raw'),
+      allocate: () => this.allocateId('raw'),
       release: (id) => this.releaseRawId(id),
       isLive: (id) => this.ids.isLive(id),
     });
     // The quarantine of a freed id starts when its DespawnEntity is WRITTEN:
-    // it is consumed by the next tick the bridge sends, or a later one.
+    // it is consumed by the next tick the bridge sends at the latest.
     bridge.commandBuffer.setDespawnWrittenListener((id) =>
       this.ids.written(id, bridge.nextTickSeq ?? Number.POSITIVE_INFINITY));
     bridge.commandBuffer.setReferenceGuard((id) => !this.ids.isQuarantined(id));
@@ -398,7 +399,7 @@ export class Hyperion implements Disposable {
         `Destroy existing entities before spawning more.`,
       );
     }
-    const id = this.ids.allocate('handle');
+    const id = this.allocateId('handle');
     this.bridge.commandBuffer.spawnEntity(id);
     this.entityCount++;
 
@@ -419,6 +420,22 @@ export class Hyperion implements Disposable {
     this.forgetId(handle.id);
   };
 
+  /**
+   * Allocates an external id. A reused one is scrubbed again first: state can
+   * be set on an id after it was freed (a selection from a pick on the
+   * previous frame's state, an emitter), and none of it may reach the new
+   * entity.
+   */
+  private allocateId(owner: IdOwner): number {
+    const reused = !this.ids.hasFreshIds;
+    const id = this.ids.allocate(owner);
+    if (reused) {
+      this.forgetId(id);
+      this.physicsApi._forgetEntity(id);
+    }
+    return id;
+  }
+
   /** `raw.despawn(id)`: returns whether the despawn should be sent. */
   private releaseRawId(id: number): boolean {
     const owner = this.ids.ownerOf(id);
@@ -426,8 +443,9 @@ export class Hyperion implements Disposable {
       throw new Error(`Entity ${id} belongs to an EntityHandle: destroy it with handle.destroy(), not raw.despawn().`);
     }
     if (owner === null) {
-      if (typeof __DEV__ !== 'undefined' && __DEV__) {
-        console.warn(`[Hyperion] raw.despawn(${id}): not a live entity (already despawned, or never spawned). Ignored.`);
+      if (!this.warnedRawDespawn && typeof __DEV__ !== 'undefined' && __DEV__) {
+        this.warnedRawDespawn = true;
+        console.warn(`[Hyperion] raw.despawn(${id}): not a live entity (already despawned, or never spawned). Ignored; further ones are silent.`);
       }
       return false;
     }

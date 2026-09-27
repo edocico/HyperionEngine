@@ -1003,6 +1003,33 @@ describe('Hyperion entity id reuse (step 1b)', () => {
     expect(engine.selection!.isSelected(a.id)).toBe(false);
   });
 
+  it('state set on an id while it is in quarantine does not reach the entity that reuses it', () => {
+    const { engine, renderer, tick } = engineWithIds(0);
+    const a = engine.spawn();
+    a.destroy();
+    engine.selection!.select(a.id); // e.g. a hitTest on the previous frame's state
+    engine.createParticleEmitter({}, a.id);
+    tick();
+    tick();
+    const b = engine.spawn();
+    expect(b.id).toBe(a.id);
+    expect(engine.selection!.isSelected(b.id)).toBe(false);
+    expect(renderer.particleSystem.forgetEntity).toHaveBeenLastCalledWith(b.id);
+    expect(renderer.particleSystem.forgetEntity).toHaveBeenCalledTimes(2);
+  });
+
+  it('state set on an id while it waits in the pool does not reach the entity that reuses it', () => {
+    const { engine, tick } = engineWithIds(0);
+    const a = engine.spawn();
+    a.destroy();
+    tick();
+    tick(); // released: in the pool now
+    engine.selection!.select(a.id);
+    const b = engine.raw.spawn();
+    expect(b).toBe(a.id);
+    expect(engine.selection!.isSelected(b)).toBe(false);
+  });
+
   it('raw.despawn: an id owned by a live handle throws, a double despawn is a no-op', () => {
     const { engine, bridge } = engineWithIds(9);
     const despawn = vi.spyOn(bridge.commandBuffer, 'despawnEntity');

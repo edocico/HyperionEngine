@@ -40,6 +40,13 @@ describe('EntityIdAllocator', () => {
     expect([ids.allocate('handle'), ids.allocate('handle')]).toEqual([2, 0]);
   });
 
+  it('reports whether the next id is a fresh one', () => {
+    const ids = new EntityIdAllocator(0);
+    expect(ids.hasFreshIds).toBe(true);
+    ids.allocate('handle');
+    expect(ids.hasFreshIds).toBe(false);
+  });
+
   it('throws once every id is live or in quarantine', () => {
     const ids = new EntityIdAllocator(1);
     ids.allocate('handle');

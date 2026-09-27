@@ -45,7 +45,7 @@ cd ts && npm test
 
 **Record the real numbers.** Two traps:
 
-- **`cargo test` prints one summary per test binary.** The crate has a lib binary plus five integration binaries (`tests/verify_*.rs`). The headline number is the **sum**, not the lib line. Sum them mechanically:
+- **`cargo test` prints one summary per test binary.** The crate has a lib binary plus seven integration binaries (`tests/verify_*.rs`). The headline number is the **sum**, not the lib line. Sum them mechanically:
   ```bash
   cargo test -p hyperion-core [--features X] 2>/dev/null \
     | grep -oE '^test result: ok\. [0-9]+ passed' | grep -oE '[0-9]+' | paste -sd+ - | bc

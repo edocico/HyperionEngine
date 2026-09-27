@@ -69,6 +69,11 @@ export class EntityIdAllocator {
     return id;
   }
 
+  /** Whether the next `allocate` hands out a never-used id (false: a reused one). */
+  get hasFreshIds(): boolean {
+    return this.next <= this.maxId;
+  }
+
   isLive(id: number): boolean {
     const s = this.stateOf(id);
     return s === LIVE_HANDLE || s === LIVE_RAW;
@@ -91,7 +96,7 @@ export class EntityIdAllocator {
     return true;
   }
 
-  /** The DespawnEntity of `id` was written, to be consumed by tick `seq` or a later one. */
+  /** The DespawnEntity of `id` was written: consumed once tick `seq` is processed (TickSequencer). */
   written(id: number, seq: number): void {
     if (!this.awaitingWrite.delete(id)) return;
     this.quarantine.push({ id, seq, mark: -1 });
