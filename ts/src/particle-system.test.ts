@@ -183,3 +183,25 @@ describe('particle bind groups match their pipelines', () => {
     expect(render.bindGroup.bindings.sort()).toEqual(used.sort());
   });
 });
+
+describe('ParticleSystem entity tracking', () => {
+  function frame(ps: ParticleSystem, positions: Map<number, [number, number]>): void {
+    const pass = { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, setIndexBuffer() {}, drawIndexed() {}, end() {} };
+    const encoder = { beginComputePass: () => pass, beginRenderPass: () => pass } as unknown as GPUCommandEncoder;
+    ps.update(encoder, {} as GPUTextureView, new Float32Array(16), 1 / 60, positions);
+  }
+
+  it('forgetEntity stops an emitter from following that id (the id may be reused)', () => {
+    const ps = new ParticleSystem(mockDevice());
+    ps.setupPipelines('simulate code', 'render code', 'bgra8unorm' as GPUTextureFormat);
+    ps.createEmitter(DEFAULT_PARTICLE_CONFIG, 7);
+    const upload = vi.spyOn(ps as unknown as { uploadConfig: (...a: unknown[]) => void }, 'uploadConfig');
+    const positions = new Map<number, [number, number]>([[7, [3, 4]]]);
+
+    frame(ps, positions);
+    expect(upload.mock.calls[0].slice(1, 3)).toEqual([3, 4]);
+    ps.forgetEntity(7);
+    frame(ps, positions);
+    expect(upload.mock.calls[1].slice(1, 3)).toEqual([0, 0]);
+  });
+});

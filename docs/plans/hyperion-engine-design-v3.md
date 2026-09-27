@@ -281,7 +281,7 @@ Backstop:  GC collects sprite ->  FinalizationRegistry     ->  Ring Buffer DROP_
 Pooling:   sprite.dispose()  ->  Rust marks recyclable     ->  Reused on next spawn
 ```
 
-**Entity Pooling:** Rust maintains a free-list of recycled entity IDs. `spawn()` checks the free-list before allocating new slots. This reduces allocation pressure and GC churn.
+**Entity Pooling:** *(Superseded 2026-09-27: Rust allocates no ids; TypeScript's `EntityIdAllocator` hands out fresh ids first and reuses freed ones FIFO after a quarantine — `docs/plans/2026-09-27-id-reuse-design.md`.)* Rust maintains a free-list of recycled entity IDs. `spawn()` checks the free-list before allocating new slots. This reduces allocation pressure and GC churn.
 
 **TypeScript API surfaces disposal via:**
 - `using` keyword (TC39 Explicit Resource Management, Stage 4): `using sprite = engine.spawn(...)`

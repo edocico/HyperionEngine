@@ -210,6 +210,17 @@ export class ParticleSystem {
     return handle;
   }
 
+  /**
+   * Stops every emitter that follows `entityId`: the entity is gone and its id
+   * may be reused, so the emitter must not start following the next owner.
+   * The emitter stays, at the origin, like one created without an entity.
+   */
+  forgetEntity(entityId: number): void {
+    for (const state of this.emitters.values()) {
+      if (state.entityId === entityId) state.entityId = undefined;
+    }
+  }
+
   /** Destroy a specific emitter and its GPU resources. */
   destroyEmitter(handle: ParticleHandle): void {
     const state = this.emitters.get(handle);

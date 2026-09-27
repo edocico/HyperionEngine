@@ -71,6 +71,8 @@ interface StateHashMessage {
 interface TickMessage {
   type: "tick";
   dt: number;
+  /** The bridge's number for this tick, echoed in `tick-done` (TickSequencer). */
+  seq?: number;
 }
 
 type WorkerMessage = InitMessage | TickMessage | StateHashMessage;
@@ -209,13 +211,14 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         const transfer = [renderState.transforms, renderState.bounds, renderState.renderMeta, renderState.texIndices, renderState.primParams, renderState.entityIds];
         if (renderState.physicsDebugLines) transfer.push(renderState.physicsDebugLines);
         self.postMessage(
-          { type: "tick-done", dt: msg.dt, tickCount, renderState },
+          { type: "tick-done", dt: msg.dt, seq: msg.seq, tickCount, renderState },
           transfer
         );
       } else {
         self.postMessage({
           type: "tick-done",
           dt: msg.dt,
+          seq: msg.seq,
           tickCount,
           renderState: {
             entityCount: 0,

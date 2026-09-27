@@ -7,6 +7,7 @@ import {
 } from "./ring-buffer";
 import { BackpressuredProducer } from "./backpressure";
 import { WorkerSupervisor } from "./supervisor";
+import { TickSequencer } from "./tick-sequencer";
 
 const RING_BUFFER_CAPACITY = 64 * 1024; // 64KB command buffer
 
@@ -66,6 +67,17 @@ export interface EngineBridge {
    * built-in bridges.
    */
   getStateHash?(): Promise<bigint | null>;
+  /**
+   * The number the next tick will carry. Contract: once `processed.seq >= s`,
+   * every command written before tick `s` was sent has been consumed — so a
+   * command written now (every flush happens inside `tick()`, before the tick
+   * is sent) is consumed by that tick at the latest. A custom bridge must keep
+   * it, or the entity id quarantine releases ids too early.
+   * Optional: a bridge without it never releases a freed id.
+   */
+  readonly nextTickSeq?: number;
+  /** The latest tick the engine has fully processed, and its fixed-tick count after it. */
+  readonly processed?: { readonly seq: number; readonly tickCount: number };
 }
 
 /**
@@ -101,8 +113,11 @@ export function createWorkerBridge(
 
   let latestRenderState: GPURenderState | null = null;
 
+  const ticks = new TickSequencer();
+
   worker.onmessage = (event) => {
     const msg = event.data;
+    if (msg.type === "tick-done") ticks.ack(msg.seq, msg.tickCount);
     if (msg.type === "ready") {
       readyResolve();
     } else if (msg.type === "error") {
@@ -148,7 +163,13 @@ export function createWorkerBridge(
     commandBuffer,
     tick(dt: number) {
       commandBuffer.flush();
-      worker.postMessage({ type: "tick", dt });
+      worker.postMessage({ type: "tick", dt, seq: ticks.send() });
+    },
+    get nextTickSeq() {
+      return ticks.nextSeq;
+    },
+    get processed() {
+      return ticks.processed;
     },
     async ready() {
       await readyPromise;
@@ -220,9 +241,12 @@ export function createFullIsolationBridge(
   }
 
   let latestRenderState: GPURenderState | null = null;
+  const ticksA = new TickSequencer();
 
   ecsWorker.onmessage = (event) => {
     const msg = event.data;
+    // Before the entityCount filter below: an empty world still processed the tick.
+    if (msg.type === "tick-done") ticksA.ack(msg.seq, msg.tickCount);
     if (msg.type === "ready") {
       ecsReady = true;
       checkBothReady();
@@ -305,7 +329,13 @@ export function createFullIsolationBridge(
     commandBuffer,
     tick(dt: number) {
       commandBuffer.flush();
-      ecsWorker.postMessage({ type: "tick", dt });
+      ecsWorker.postMessage({ type: "tick", dt, seq: ticksA.send() });
+    },
+    get nextTickSeq() {
+      return ticksA.nextSeq;
+    },
+    get processed() {
+      return ticksA.processed;
     },
     getStateHash() {
       return new Promise<bigint | null>((resolve) => {
@@ -404,6 +434,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
   engine.engine_init();
 
   let latestRenderState: GPURenderState | null = null;
+  const ticksC = new TickSequencer();
 
   return {
     mode: ExecutionMode.SingleThread,
@@ -413,6 +444,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     },
     tick(dt: number) {
       commandBuffer.flush();
+      const seq = ticksC.send();
       const { bytes } = extractUnread(buffer as SharedArrayBuffer);
       if (bytes.length > 0) {
         engine.engine_push_commands(bytes);
@@ -420,6 +452,7 @@ export async function createDirectBridge(): Promise<EngineBridge> {
       engine.engine_update(dt);
 
       const tickCount = Number(engine.engine_tick_count());
+      ticksC.ack(seq, tickCount); // push and update are synchronous here
       const count = engine.engine_gpu_entity_count();
 
       // Read dirty staging data from WASM
@@ -520,6 +553,12 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     },
     get latestRenderState() {
       return latestRenderState;
+    },
+    get nextTickSeq() {
+      return ticksC.nextSeq;
+    },
+    get processed() {
+      return ticksC.processed;
     },
   };
 }

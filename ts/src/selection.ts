@@ -23,8 +23,9 @@ export class SelectionManager {
 
   /** Remove an entity from the selection set. */
   deselect(entityId: number): void {
-    this.selected.delete(entityId);
-    this.dirty = true;
+    // Only a real change re-uploads the mask: the facade deselects every id it
+    // frees, and with outlines on each upload is a full-size mask.
+    if (this.selected.delete(entityId)) this.dirty = true;
   }
 
   /** Toggle an entity's selection state. Returns the new state. */

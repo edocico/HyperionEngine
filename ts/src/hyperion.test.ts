@@ -9,6 +9,10 @@ import { AudioManager } from './audio-manager';
 import { LeakDetector } from './leak-detector';
 import { MAX_EXTERNAL_ID } from './types';
 import { readFileSync } from 'node:fs';
+import { EntityIdAllocator } from './entity-id-allocator';
+import { BackpressuredProducer } from './backpressure';
+import { RingBufferProducer, extractUnread } from './ring-buffer';
+import { TickSequencer } from './tick-sequencer';
 
 function mockBridge(): EngineBridge {
   let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
@@ -32,6 +36,8 @@ function mockBridge(): EngineBridge {
       writeCommand: vi.fn(() => true),
       flush: vi.fn(),
       setRecordingTap: vi.fn((tap: any) => { recordingTap = tap; }),
+      setDespawnWrittenListener: vi.fn(),
+      setReferenceGuard: vi.fn(),
       pendingCount: 0,
       freeSpace: 1000,
     } as any,
@@ -55,6 +61,7 @@ function mockRenderer(): Renderer {
     particleSystem: {
       createEmitter: vi.fn(() => 1),
       destroyEmitter: vi.fn(),
+      forgetEntity: vi.fn(),
       emitterCount: 0,
       destroy: vi.fn(),
     } as any,
@@ -187,24 +194,22 @@ describe('Hyperion', () => {
     unregister.mockRestore();
   });
 
-  it('spawn() refuses, loudly, an id past MAX_EXTERNAL_ID (WASM would drop it silently)', () => {
+  it('spawn() refuses, loudly, when every id is live or in quarantine (WASM would drop it silently)', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
-    (engine as unknown as { nextEntityId: number }).nextEntityId = MAX_EXTERNAL_ID;
-    const last = engine.spawn();
-    expect(last.id).toBe(MAX_EXTERNAL_ID);
-    last.destroy();
+    (engine as unknown as { ids: EntityIdAllocator }).ids = new EntityIdAllocator(0);
+    engine.spawn();
     expect(() => engine.spawn()).toThrow(/id space exhausted/);
-    expect(bridge.commandBuffer.spawnEntity).not.toHaveBeenCalledWith(MAX_EXTERNAL_ID + 1);
-    expect(engine.stats.entityCount).toBe(0);
+    expect(bridge.commandBuffer.spawnEntity).toHaveBeenCalledTimes(1);
+    expect(engine.stats.entityCount).toBe(1);
   });
 
-  it('raw.spawn() refuses the same ids', () => {
+  it('raw.spawn() draws from the same ids', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
-    (engine as unknown as { nextEntityId: number }).nextEntityId = MAX_EXTERNAL_ID + 1;
+    (engine as unknown as { ids: EntityIdAllocator }).ids = new EntityIdAllocator(0);
+    engine.spawn();
     expect(() => engine.raw.spawn()).toThrow(/id space exhausted/);
-    expect(bridge.commandBuffer.spawnEntity).not.toHaveBeenCalled();
   });
 
   it('MAX_EXTERNAL_ID matches the Rust EntityMap cap', () => {
@@ -905,5 +910,156 @@ describe('debug API', () => {
       expect(b.gpuProfilingSupported).toBe(true);
       b.destroy();
     });
+  });
+});
+
+describe('Hyperion entity id reuse (step 1b)', () => {
+  /**
+   * A bridge with a real producer and ring buffer whose "engine" consumes
+   * every written byte on each tick and acknowledges it, like Mode C.
+   */
+  function fakeEngineBridge() {
+    const sab = new SharedArrayBuffer(32 + 64 * 1024);
+    const commandBuffer = new BackpressuredProducer(new RingBufferProducer(sab));
+    const ticks = new TickSequencer();
+    const control = { fixedTicksPerFrame: 1 };
+    let fixedTicks = 0;
+    const bridge: EngineBridge = {
+      mode: ExecutionMode.SingleThread,
+      commandBuffer,
+      tick: () => {
+        commandBuffer.flush();
+        const seq = ticks.send();
+        extractUnread(sab);
+        fixedTicks += control.fixedTicksPerFrame;
+        ticks.ack(seq, fixedTicks);
+      },
+      ready: async () => {},
+      destroy: () => {},
+      latestRenderState: null,
+      get nextTickSeq() { return ticks.nextSeq; },
+      get processed() { return ticks.processed; },
+    };
+    return { bridge, control };
+  }
+
+  function engineWithIds(maxId: number) {
+    const { bridge, control } = fakeEngineBridge();
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, renderer);
+    (engine as unknown as { ids: EntityIdAllocator }).ids = new EntityIdAllocator(maxId);
+    const tick = () => (engine as unknown as { tick(dt: number): void }).tick(1 / 60);
+    return { engine, bridge, renderer, control, tick };
+  }
+
+  it('hands a destroyed id out again only after its despawn was processed and a later fixed tick ran', () => {
+    const { engine, tick } = engineWithIds(1);
+    const a = engine.spawn();
+    engine.spawn();
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    a.destroy();
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    tick(); // despawn written and processed
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    tick(); // a later fixed tick
+    expect(engine.spawn().id).toBe(a.id);
+  });
+
+  it('frames without a fixed tick keep the id in quarantine', () => {
+    const { engine, control, tick } = engineWithIds(0);
+    engine.spawn().destroy();
+    tick();
+    control.fixedTicksPerFrame = 0;
+    tick();
+    tick();
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    control.fixedTicksPerFrame = 1;
+    tick();
+    expect(engine.spawn().id).toBe(0);
+  });
+
+  it('the entity that reuses an id inherits no selection, immediate position, emitter or sensor callback', () => {
+    const { engine, renderer, tick } = engineWithIds(0);
+    const released = vi.fn();
+    (engine as unknown as { eventBus: { on(e: string, f: (d: unknown) => void): void } }).eventBus.on('entity:released', released);
+    const forgetSensors = vi.spyOn(engine.physics, '_forgetEntity');
+    const a = engine.spawn();
+    engine.selection!.select(a.id);
+    a.positionImmediate(1, 2, 3);
+    engine.createParticleEmitter({}, a.id);
+    engine.physics.onSensorEnter(a.id, vi.fn());
+
+    a.destroy();
+    expect(engine.selection!.isSelected(a.id)).toBe(false);
+    expect((engine as unknown as { immediateState: { has(id: number): boolean } }).immediateState.has(a.id)).toBe(false);
+    expect(renderer.particleSystem.forgetEntity).toHaveBeenCalledWith(a.id);
+    expect(forgetSensors).not.toHaveBeenCalled(); // the last sensor exit is still to come
+
+    tick();
+    tick();
+    expect(forgetSensors).toHaveBeenCalledWith(a.id);
+    expect(released).toHaveBeenCalledWith(a.id);
+    expect(engine.spawn().id).toBe(a.id);
+    expect(engine.selection!.isSelected(a.id)).toBe(false);
+  });
+
+  it('state set on an id while it is in quarantine does not reach the entity that reuses it', () => {
+    const { engine, renderer, tick } = engineWithIds(0);
+    const a = engine.spawn();
+    a.destroy();
+    engine.selection!.select(a.id); // e.g. a hitTest on the previous frame's state
+    engine.createParticleEmitter({}, a.id);
+    tick();
+    tick();
+    const b = engine.spawn();
+    expect(b.id).toBe(a.id);
+    expect(engine.selection!.isSelected(b.id)).toBe(false);
+    expect(renderer.particleSystem.forgetEntity).toHaveBeenLastCalledWith(b.id);
+    expect(renderer.particleSystem.forgetEntity).toHaveBeenCalledTimes(2);
+  });
+
+  it('state set on an id while it waits in the pool does not reach the entity that reuses it', () => {
+    const { engine, tick } = engineWithIds(0);
+    const a = engine.spawn();
+    a.destroy();
+    tick();
+    tick(); // released: in the pool now
+    engine.selection!.select(a.id);
+    const b = engine.raw.spawn();
+    expect(b).toBe(a.id);
+    expect(engine.selection!.isSelected(b)).toBe(false);
+  });
+
+  it('raw.despawn: an id owned by a live handle throws, a double despawn is a no-op', () => {
+    const { engine, bridge } = engineWithIds(9);
+    const despawn = vi.spyOn(bridge.commandBuffer, 'despawnEntity');
+    const h = engine.spawn();
+    expect(() => engine.raw.despawn(h.id)).toThrow(/EntityHandle/);
+    const r = engine.raw.spawn();
+    engine.raw.despawn(r);
+    engine.raw.despawn(r);
+    engine.raw.despawn(7); // never allocated
+    expect(despawn).toHaveBeenCalledTimes(1);
+    expect(despawn).toHaveBeenCalledWith(r);
+  });
+
+  it('a raw id goes through the same quarantine', () => {
+    const { engine, tick } = engineWithIds(0);
+    const r = engine.raw.spawn();
+    engine.raw.despawn(r);
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    tick();
+    tick();
+    expect(engine.spawn().id).toBe(r);
+  });
+
+  it('refuses a SetParent to an id in quarantine', () => {
+    const { engine, bridge } = engineWithIds(9);
+    const setParent = vi.spyOn(bridge.commandBuffer, 'setParent');
+    const parent = engine.spawn();
+    const child = engine.spawn();
+    parent.destroy();
+    child.parent(parent.id);
+    expect(setParent).toHaveLastReturnedWith(false);
   });
 });

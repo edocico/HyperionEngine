@@ -52,3 +52,41 @@ describe('RawAPI', () => {
     expect(p.setVelocity).toHaveBeenCalledWith(0, 4, 5, 6);
   });
 });
+
+describe('RawAPI with id hooks (id reuse)', () => {
+  function hooks(live: Set<number>) {
+    let next = 0;
+    return {
+      allocate: vi.fn(() => { const id = next++; live.add(id); return id; }),
+      release: vi.fn((id: number) => live.delete(id)),
+      isLive: (id: number) => live.has(id),
+    };
+  }
+
+  it('despawn sends the command only when the id was released', () => {
+    const p = mockProducer();
+    const live = new Set<number>();
+    const raw = new RawAPI(p, hooks(live));
+    const id = raw.spawn();
+    raw.despawn(id);
+    raw.despawn(id);
+    raw.despawn(99);
+    expect(p.despawnEntity).toHaveBeenCalledTimes(1);
+    expect(p.despawnEntity).toHaveBeenCalledWith(id);
+  });
+
+  it('drops setters addressed to an id that is not live', () => {
+    const p = mockProducer();
+    const live = new Set<number>();
+    const raw = new RawAPI(p, hooks(live));
+    const id = raw.spawn();
+    raw.setPosition(id, 1, 2, 3);
+    raw.despawn(id);
+    raw.setPosition(id, 4, 5, 6);
+    raw.setVelocity(id, 1, 1, 1);
+    raw.setParent(id, 0);
+    expect(p.setPosition).toHaveBeenCalledTimes(1);
+    expect(p.setVelocity).not.toHaveBeenCalled();
+    expect(p.setParent).not.toHaveBeenCalled();
+  });
+});

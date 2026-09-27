@@ -308,6 +308,16 @@ export class PhysicsAPI {
     return Array.from(new Uint32Array(this._wasm.memory.buffer, ptr, count));
   }
 
+  /**
+   * @internal Called by Hyperion when a despawned entity's id is RELEASED for
+   * reuse — not at destroy(), so the last sensor exit, produced by the next
+   * physics step, still reaches the callbacks registered for the old entity.
+   */
+  _forgetEntity(entityId: number): void {
+    this._sensorEnter.delete(entityId);
+    this._sensorExit.delete(entityId);
+  }
+
   destroy(): void {
     this._wasm = null;
     this._producer = null;

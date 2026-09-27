@@ -47,6 +47,21 @@ fn joint_primary_axis(kind: u8) -> Option<rapier2d::prelude::JointAxis> {
     }
 }
 
+/// Joint property commands address a joint by the id in their payload, not the
+/// entity in `entity_id`.
+#[cfg(feature = "physics-2d")]
+fn addresses_a_joint(cmd_type: CommandType) -> bool {
+    matches!(
+        cmd_type,
+        CommandType::RemoveJoint
+            | CommandType::SetJointMotor
+            | CommandType::SetJointLimits
+            | CommandType::SetSpringParams
+            | CommandType::SetJointAnchorA
+            | CommandType::SetJointAnchorB
+    )
+}
+
 #[cfg(feature = "physics-2d")]
 pub fn process_physics_commands(
     commands: &[Command],
@@ -54,7 +69,29 @@ pub fn process_physics_commands(
     entity_map: &EntityMap,
     physics: &mut HyperionPhysicsWorld,
 ) {
-    for cmd in commands {
+    // This pass resolves ids against the map as it stands at the END of the
+    // batch. A command for X placed before the LAST SpawnEntity of X was meant
+    // for an older X, which the first pass has already despawned or retired:
+    // `[SetGravityScale X, Despawn X, Spawn X, CreateRigidBody X]` staged the
+    // old X's gravity scale onto the new body, and a controller created for
+    // the old X was registered for the new one (id reuse, 2026-09-27,
+    // verify_reuse R5). Such commands are skipped. Later entries of the
+    // `collect` overwrite earlier ones, so each id keeps its last spawn.
+    let last_spawn: std::collections::HashMap<u32, usize> = commands
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.cmd_type == CommandType::SpawnEntity)
+        .map(|(i, c)| (c.entity_id, i))
+        .collect();
+
+    for (i, cmd) in commands.iter().enumerate() {
+        if !last_spawn.is_empty()
+            && !addresses_a_joint(cmd.cmd_type)
+            && last_spawn.get(&cmd.entity_id).is_some_and(|&s| i < s)
+        {
+            continue;
+        }
+
         // Joint commands: use joint_map, not body handle
         match cmd.cmd_type {
             CommandType::RemoveJoint => {
@@ -248,6 +285,14 @@ pub fn process_physics_commands(
                 let dx = f32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
                 let dy = f32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
                 if !dx.is_finite() || !dy.is_finite() {
+                    continue;
+                }
+                // Only for a live id. This pass runs after the despawns of the
+                // batch have purged `pending_moves`, and a queued move outlives
+                // every frame that runs no tick: `[MoveCharacter X, Despawn X]`
+                // used to move whatever entity took id X next (id reuse,
+                // 2026-09-27, verify_reuse R1).
+                if entity_map.get(cmd.entity_id).is_none() {
                     continue;
                 }
                 // Accumulate instead of appending an independent entry: the

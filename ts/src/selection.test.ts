@@ -12,6 +12,16 @@ describe('SelectionManager', () => {
     expect(sm.count).toBe(2);
   });
 
+  it('deselecting an id that is not selected leaves the mask clean (no 400 KB re-upload)', () => {
+    const sm = new SelectionManager(100);
+    sm.select(5);
+    sm.uploadMask({ queue: { writeBuffer() {} } } as unknown as GPUDevice, {} as GPUBuffer);
+    sm.deselect(7);
+    expect(sm.isDirty).toBe(false);
+    sm.deselect(5);
+    expect(sm.isDirty).toBe(true);
+  });
+
   it('should deselect entities', () => {
     const sm = new SelectionManager(100);
     sm.select(5);

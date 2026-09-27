@@ -53,14 +53,15 @@ pub const MAX_HIERARCHY_DEPTH: usize = 64;
 pub const MAX_EXTERNAL_ID: u32 = 1_048_575; // 2^20 - 1
 
 /// Maps external entity IDs (from TypeScript) to internal hecs entities.
+///
+/// It binds the ids the TypeScript side chooses and allocates none: the only
+/// allocator is TypeScript's. The Rust one it used to carry (`allocate()` over a
+/// free list) had no caller, and handed out LIVE ids — `insert` never told it
+/// which ids were taken (removed 2026-09-27).
 pub struct EntityMap {
     /// Sparse map: external ID -> hecs Entity.
     /// Uses a Vec for O(1) lookup. External IDs are sequential u32s.
     map: Vec<Option<hecs::Entity>>,
-    /// Free list for entity recycling.
-    free_list: Vec<u32>,
-    /// Next external ID to assign.
-    next_id: u32,
     /// Tracks whether each external ID is a 2D entity (Transform2D) vs 3D (Position+Rotation+Scale).
     /// Indexed by external ID. Default `false` = 3D.
     is_2d: Vec<bool>,
@@ -78,21 +79,8 @@ impl EntityMap {
     pub fn new() -> Self {
         Self {
             map: Vec::new(),
-            free_list: Vec::new(),
-            next_id: 0,
             is_2d: Vec::new(),
             rejected_ids: 0,
-        }
-    }
-
-    /// Allocate a new external ID (or recycle one).
-    pub fn allocate(&mut self) -> u32 {
-        if let Some(id) = self.free_list.pop() {
-            id
-        } else {
-            let id = self.next_id;
-            self.next_id += 1;
-            id
         }
     }
 
@@ -173,7 +161,7 @@ impl EntityMap {
             .filter_map(|(idx, opt)| opt.map(|entity| (idx as u32, entity)))
     }
 
-    /// Remove a mapping and add the ID to the free list.
+    /// Remove a mapping.
     pub fn remove(&mut self, external_id: u32) {
         let idx = external_id as usize;
         if idx < self.map.len() {
@@ -182,21 +170,6 @@ impl EntityMap {
         if idx < self.is_2d.len() {
             self.is_2d[idx] = false;
         }
-        if external_id < self.next_id {
-            self.free_list.push(external_id);
-        }
-    }
-
-    /// Advance `next_id` past every currently bound external id.
-    ///
-    /// `insert()` binds ids chosen by the TypeScript side and deliberately does
-    /// not touch `next_id`, so after a snapshot restore `allocate()` would hand
-    /// back id 0 — already bound to a live entity (audit 2026-07, P3-11).
-    pub fn reserve_ids_up_to_highest(&mut self) {
-        if let Some(idx) = self.map.iter().rposition(|opt| opt.is_some()) {
-            self.next_id = self.next_id.max(idx as u32 + 1);
-        }
-        self.free_list.retain(|&id| self.map.get(id as usize).is_none_or(|s| s.is_none()));
     }
 
     /// Current allocated capacity (length of the sparse map).
@@ -205,8 +178,7 @@ impl EntityMap {
     }
 
     /// Shrink the sparse map by truncating trailing `None` slots,
-    /// then releasing unused heap memory. Also prunes the free list
-    /// to remove IDs that are no longer within bounds.
+    /// then releasing unused heap memory.
     pub fn shrink_to_fit(&mut self) {
         let last_used = self.map.iter().rposition(|opt| opt.is_some());
         match last_used {
@@ -216,7 +188,6 @@ impl EntityMap {
         self.map.shrink_to_fit();
         self.is_2d.truncate(self.map.len());
         self.is_2d.shrink_to_fit();
-        self.free_list.retain(|&id| (id as usize) < self.map.len());
     }
 }
 
@@ -261,7 +232,7 @@ pub fn process_commands(
 
             if batch.len() >= 2 {
                 // Batch spawn: hecs resizes archetype table once for all N entities
-                flush_spawn_batch(batch, world, entity_map, render_state);
+                flush_spawn_batch(batch, world, entity_map, render_state, physics);
             } else {
                 // Single spawn: use normal path
                 process_single_command_physics(&batch[0], world, entity_map, render_state, physics);
@@ -477,6 +448,27 @@ fn retire_previous_binding(
     }
 }
 
+/// Physics half of `retire_previous_binding`, for physics builds.
+///
+/// A spawn for an id that is still bound retires the old entity, and its
+/// Rapier state must go with it exactly as on a despawn. Without this the old
+/// body and colliders stayed in the simulation, colliding, with no entity
+/// pointing at them, and every registration keyed by the external id (character
+/// controller, joints, pending moves and teleports) passed to the new entity
+/// (id reuse, 2026-09-27, verify_reuse R3). Call it BEFORE
+/// `retire_previous_binding`, which unmaps the id.
+#[cfg(feature = "physics-2d")]
+fn retire_previous_physics(
+    external_id: u32,
+    world: &World,
+    entity_map: &EntityMap,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
+) {
+    if let Some(previous) = entity_map.get(external_id) {
+        despawn_physics_cleanup(world, previous, physics);
+    }
+}
+
 /// Flush a batch of consecutive SpawnEntity commands using `spawn_batch()`.
 ///
 /// 3D and 2D entities have different archetypes, so the batch is split
@@ -487,13 +479,26 @@ fn flush_spawn_batch(
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
+    #[cfg(feature = "physics-2d")] physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     // Retire any live binding for the ids about to be (re)spawned, so a
     // duplicate spawn cannot orphan an entity (audit 2026-07, P2-4).
     for cmd in batch {
         if entity_map.accepts_id(cmd.entity_id) {
+            #[cfg(feature = "physics-2d")]
+            retire_previous_physics(cmd.entity_id, world, entity_map, physics);
             retire_previous_binding(cmd.entity_id, world, entity_map, render_state);
         }
+    }
+
+    // A run can name one id twice. Only the LAST of its spawns creates an
+    // entity, as when they arrive one at a time and each retires the one
+    // before. Spawning both left the first alive, rendering and unmapped, so no
+    // DespawnEntity could reach it (id reuse, 2026-09-27, verify_reuse R4).
+    let mut seen = std::collections::HashSet::with_capacity(batch.len());
+    let mut superseded = vec![false; batch.len()];
+    for (i, cmd) in batch.iter().enumerate().rev() {
+        superseded[i] = !seen.insert(cmd.entity_id);
     }
 
     // Partition into 3D and 2D sub-batches, preserving original indices.
@@ -503,6 +508,9 @@ fn flush_spawn_batch(
     for (i, cmd) in batch.iter().enumerate() {
         if !entity_map.accepts_id(cmd.entity_id) {
             entity_map.note_rejected_id();
+            continue;
+        }
+        if superseded[i] {
             continue;
         }
         if cmd.payload[0] == 1 {
@@ -1079,6 +1087,13 @@ fn process_single_command_physics(
     physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     match cmd.cmd_type {
+        // SpawnEntity: a spawn on a live id retires the old entity, physics
+        // included (verify_reuse R3); the base handler does the rest.
+        CommandType::SpawnEntity => {
+            retire_previous_physics(cmd.entity_id, world, entity_map, physics);
+            process_single_command(cmd, world, entity_map, render_state);
+        }
+
         // DespawnEntity: clean up Rapier state before despawning the ECS entity.
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
@@ -1140,15 +1155,10 @@ fn process_single_command_physics(
 
         // CreateRevoluteJoint: stage a revolute PendingJoint
         CommandType::CreateRevoluteJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let anchor_ax = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let anchor_ay = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -1162,15 +1172,10 @@ fn process_single_command_physics(
 
         // CreatePrismaticJoint: stage a prismatic PendingJoint
         CommandType::CreatePrismaticJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let axis_x = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             let axis_y = f32::from_le_bytes(cmd.payload[12..16].try_into().unwrap());
@@ -1184,15 +1189,10 @@ fn process_single_command_physics(
 
         // CreateFixedJoint: stage a fixed PendingJoint
         CommandType::CreateFixedJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
                 joint_id,
@@ -1204,15 +1204,10 @@ fn process_single_command_physics(
 
         // CreateRopeJoint: stage a rope PendingJoint
         CommandType::CreateRopeJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let max_dist = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -1225,15 +1220,10 @@ fn process_single_command_physics(
 
         // CreateSpringJoint: stage a spring PendingJoint
         CommandType::CreateSpringJoint => {
-            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
-            // Reusing a live joint id used to overwrite the map entry and drop
-            // the only handle to the previous Rapier joint, which kept
-            // constraining its bodies with no way to remove it (P1-10).
-            if physics.joint_map.contains_key(&joint_id)
-                || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
-            {
+            if joint_command_rejected(cmd, entity_map, physics) {
                 return;
             }
+            let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
             let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
             let rest_length = f32::from_le_bytes(cmd.payload[8..12].try_into().unwrap());
             physics.pending_joints.push(crate::physics::PendingJoint {
@@ -1333,10 +1323,37 @@ fn process_single_command_physics(
     }
 }
 
-/// Clean up Rapier state for an entity being despawned or having its body destroyed.
+/// Whether a `Create*Joint` command must be dropped instead of staged.
 ///
-/// Clears reverse-map entries for all colliders attached to the body,
-/// then removes the body (which cascades collider + joint removal in Rapier).
+/// - Its joint id is live or pending. Reusing a live joint id used to overwrite
+///   the map entry and drop the only handle to the previous Rapier joint, which
+///   kept constraining its bodies with no way to remove it (P1-10).
+/// - Entity A (the command's entity id) or entity B (payload bytes 4..8) is not
+///   mapped. A pending joint resolves its ends by external id only at the next
+///   tick, so a joint to a dead id bound whatever entity took that id before
+///   then (id reuse, 2026-09-27, verify_reuse R2). Rejected like a `SetParent`
+///   to a missing parent; an end spawned earlier in the batch is mapped.
+#[cfg(feature = "physics-2d")]
+fn joint_command_rejected(
+    cmd: &Command,
+    entity_map: &EntityMap,
+    physics: &crate::physics::HyperionPhysicsWorld,
+) -> bool {
+    let joint_id = u32::from_le_bytes(cmd.payload[0..4].try_into().unwrap());
+    let entity_b_ext = u32::from_le_bytes(cmd.payload[4..8].try_into().unwrap());
+    physics.joint_map.contains_key(&joint_id)
+        || physics.pending_joints.iter().any(|p| p.joint_id == joint_id)
+        || entity_map.get(cmd.entity_id).is_none()
+        || entity_map.get(entity_b_ext).is_none()
+}
+
+/// Clean up Rapier state for an entity leaving the world: a despawn, or a spawn
+/// that retires it (`retire_previous_physics`).
+///
+/// Drops every registration keyed by its external id (joints, pending joints,
+/// character controller, pending moves and teleports), then removes the body,
+/// which cascades collider and joint removal in Rapier. The collider reverse
+/// map is left as it is: see `remove_body_and_colliders`.
 #[cfg(feature = "physics-2d")]
 pub fn despawn_physics_cleanup(
     world: &hecs::World,
@@ -1423,8 +1440,8 @@ fn remove_live_collider(
     }
 }
 
-/// Shared body teardown: clears the collider reverse map, then removes the body
-/// (which cascades collider and joint removal inside Rapier).
+/// Shared body teardown: removes the body, which cascades collider and joint
+/// removal inside Rapier. The collider reverse map is left as it is (see below).
 #[cfg(feature = "physics-2d")]
 fn remove_body_and_colliders(
     world: &hecs::World,
@@ -1444,9 +1461,16 @@ fn remove_body_and_colliders(
     // which left client-side "who am I overlapping" state leaking forever
     // (audit 2026-07, P1-14c).
     //
-    // Stale entries are harmless: a removed collider can never be referenced by
-    // a later event, and if Rapier recycles its arena index the insert path in
-    // `physics_sync_pre` overwrites the slot unconditionally before any step.
+    // The stale entry is NOT always harmless. Rapier frees the arena index at
+    // once and reuses it (LIFO), and `collider_handle_to_entity` looks up by
+    // index alone, ignoring the generation. A collider created before that next
+    // step (Pass 2 of `physics_sync_pre`: in this frame, or in a later one if
+    // this one runs no tick) overwrites the entry, and the removed collider's
+    // Stopped event is then reported against the NEW collider's entity:
+    // despawn(1) + a collider for 3 in the same frame gave Stopped(3, 2).
+    // Known, not fixed (id-reuse design §3): the map needs the generation.
+    // Once that step has run, the entry is read again only for a collider
+    // that recycles the index, and Pass 2 overwrites it when that one is made.
     physics.rigid_body_set.remove(
         body_handle,
         &mut physics.island_manager,
@@ -1557,19 +1581,6 @@ mod tests {
 
         assert!(map.get(0).is_none());
         assert!(world.get::<&Position>(entity).is_err());
-    }
-
-    #[test]
-    fn entity_id_recycling() {
-        let mut map = EntityMap::new();
-        let id1 = map.allocate();
-        let id2 = map.allocate();
-        assert_eq!(id1, 0);
-        assert_eq!(id2, 1);
-
-        map.remove(id1);
-        let id3 = map.allocate();
-        assert_eq!(id3, 0); // recycled
     }
 
     #[test]
@@ -2567,13 +2578,14 @@ mod tests {
         let mut rs = RenderState::new();
         let mut physics = crate::physics::HyperionPhysicsWorld::new();
 
-        // Spawn entity 0 (entity_a for the joint)
-        let spawn = Command {
+        // Spawn entities 0 and 1 (entity_a and entity_b for the joint): a joint
+        // with an unmapped end is rejected (verify_reuse R2).
+        let spawn = |id| Command {
             cmd_type: CommandType::SpawnEntity,
-            entity_id: 0,
+            entity_id: id,
             payload: [0; 16],
         };
-        process_commands(&[spawn], &mut world, &mut map, &mut rs, &mut physics);
+        process_commands(&[spawn(0), spawn(1)], &mut world, &mut map, &mut rs, &mut physics);
 
         // CreateRevoluteJoint: joint_id=42, entity_b=1, anchor=(5.0, 10.0)
         let mut payload = [0u8; 16];

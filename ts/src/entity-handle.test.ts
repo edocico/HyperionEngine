@@ -713,6 +713,18 @@ describe('EntityHandle — lighting (Phase 17)', () => {
     expect(intensity).toBe(0.8);
   });
 
+  it('every joint method throws when the target entity is destroyed', () => {
+    const p = mockProducer();
+    const a = new EntityHandle(1, p);
+    const dead = new EntityHandle(2, p);
+    dead.destroy();
+    expect(() => a.revoluteJoint(dead)).toThrow(/destroyed/);
+    expect(() => a.prismaticJoint(dead)).toThrow(/destroyed/);
+    expect(() => a.fixedJoint(dead)).toThrow(/destroyed/);
+    expect(() => a.ropeJoint(dead, 5)).toThrow(/destroyed/);
+    expect(() => a.springJoint(dead, 5)).toThrow(/destroyed/);
+  });
+
   it('every lighting method throws after destroy()', () => {
     const p = mockProducer();
     const h = new EntityHandle(1, p);

@@ -134,9 +134,29 @@ const SUPERSEDES: Partial<Record<number, readonly number[]>> = {
   [CommandType.TeleportBody]: [CommandType.SetPosition, CommandType.SetRotation, CommandType.SetRotation2D],
 };
 
+// Hot-path command ids as module constants: under a per-file transform (vitest,
+// isolatedModules) a `const enum` member imported from another module is not
+// inlined, and each use is a property load; these run once per queued command.
+const SET_PARENT: number = CommandType.SetParent;
+const DESPAWN: number = CommandType.DespawnEntity;
+
+/** `SetParent`'s payload value that means "remove the parent". */
+const UNPARENT = 0xFFFFFFFF;
+
+/** The parent id a SetParent payload carries (written as a u32 in a Float32Array). */
+function parentOf(payload: Float32Array | Uint8Array | undefined): number {
+  return payload ? new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true) : UNPARENT;
+}
+
 export class PrioritizedCommandQueue {
   private critical: QueuedCommand[] = [];
   private overwrites = new Map<number, QueuedCommand>(); // key = entityId * 256 + cmd
+  /**
+   * Pending SetParent overwrites by the parent they point at, so despawning a
+   * parent can drop them: otherwise one that waits out the id's quarantine
+   * under backpressure lands on whichever entity reuses the id.
+   */
+  private readonly childrenOf = new Map<number, Set<number>>();
   private _coalescedCount = 0;
   private _purgedByDespawn = 0;
 
@@ -145,11 +165,12 @@ export class PrioritizedCommandQueue {
 
   enqueue(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): void {
     for (const older of SUPERSEDES[cmd] ?? []) {
-      if (this.overwrites.delete(entityId * 256 + older)) this._coalescedCount++;
+      if (this.deleteOverwrite(entityId * 256 + older)) this._coalescedCount++;
     }
     if (isNonCoalescable(cmd)) {
       if (cmd === CommandType.DespawnEntity) {
         this.purgeEntity(entityId);
+        this.purgeChildrenOf(entityId);
       }
       this.critical.push({ cmd, entityId, payload });
     } else {
@@ -160,9 +181,46 @@ export class PrioritizedCommandQueue {
         if (isPartialUpdate(cmd) && prev.payload && payload) {
           payload = mergePartialPayload(cmd, asBytes(prev.payload), asBytes(payload));
         }
+        if (cmd === SET_PARENT) this.unindexParent(key, prev.payload);
       }
+      // `set` on a live key keeps its FIRST position (the fairness under
+      // backpressure): never delete it first, which would move it last.
       this.overwrites.set(key, { cmd, entityId, payload });
+      if (cmd === SET_PARENT) this.indexParent(key, payload);
     }
+  }
+
+  /** Deletes an overwrite, keeping the parent index in step. */
+  private deleteOverwrite(key: number): boolean {
+    const entry = this.overwrites.get(key);
+    if (!entry) return false;
+    if (entry.cmd === SET_PARENT) this.unindexParent(key, entry.payload);
+    return this.overwrites.delete(key);
+  }
+
+  private unindexParent(key: number, payload: Float32Array | Uint8Array | undefined): void {
+    const parent = parentOf(payload);
+    const keys = this.childrenOf.get(parent);
+    keys?.delete(key);
+    if (keys?.size === 0) this.childrenOf.delete(parent);
+  }
+
+  private indexParent(key: number, payload: Float32Array | Uint8Array | undefined): void {
+    const parent = parentOf(payload);
+    if (parent === UNPARENT) return;
+    let keys = this.childrenOf.get(parent);
+    if (!keys) this.childrenOf.set(parent, (keys = new Set()));
+    keys.add(key);
+  }
+
+  /** Drops every pending SetParent that points at `parentId`. */
+  private purgeChildrenOf(parentId: number): void {
+    const keys = this.childrenOf.get(parentId);
+    if (!keys) return;
+    for (const key of [...keys]) {
+      if (this.deleteOverwrite(key)) this._purgedByDespawn++;
+    }
+    this.childrenOf.delete(parentId);
   }
 
   /**
@@ -174,7 +232,7 @@ export class PrioritizedCommandQueue {
       // Engine-level commands share the `entity_id = 0` sentinel with real
       // entity 0; despawning it must not take them down as collateral.
       if (entityId === 0 && ENGINE_LEVEL_COMMANDS.has(cmdType)) continue;
-      if (this.overwrites.delete(entityId * 256 + cmdType)) {
+      if (this.deleteOverwrite(entityId * 256 + cmdType)) {
         this._purgedByDespawn++;
       }
     }
@@ -191,11 +249,14 @@ export class PrioritizedCommandQueue {
    *
    * @param rb - Ring buffer producer to write into.
    * @param tap - Optional recording tap, called for each written command.
+   * @param onDespawnWritten - Optional, called with the entity id of each
+   *   DespawnEntity once it is WRITTEN (not when it was enqueued).
    * @returns FlushStats with coalescing metrics.
    */
   drainTo(
     rb: RingBufferProducer,
     tap?: ((type: number, entityId: number, payload: Uint8Array) => void) | null,
+    onDespawnWritten?: ((entityId: number) => void) | null,
   ): FlushStats {
     const stats: FlushStats = {
       writtenCount: 0,
@@ -217,6 +278,7 @@ export class PrioritizedCommandQueue {
           : new Uint8Array(0);
         tap(c.cmd, c.entityId, bytes);
       }
+      if (c.cmd === DESPAWN) onDespawnWritten?.(c.entityId);
     }
     this.critical.splice(0, i);
 
@@ -229,6 +291,9 @@ export class PrioritizedCommandQueue {
       if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
       stats.writtenCount++;
       toDelete.push(key);
+      // The entry is in hand: unindex here rather than look it up again below
+      // (deleteOverwrite), which costs a Map lookup per written command.
+      if (c.cmd === SET_PARENT) this.unindexParent(key, c.payload);
       if (tap) {
         const bytes = c.payload
           ? new Uint8Array(c.payload.buffer, c.payload.byteOffset, c.payload.byteLength)
@@ -246,6 +311,7 @@ export class PrioritizedCommandQueue {
   clear(): void {
     this.critical.length = 0;
     this.overwrites.clear();
+    this.childrenOf.clear();
     this._coalescedCount = 0;
     this._purgedByDespawn = 0;
   }
@@ -264,6 +330,8 @@ export class BackpressuredProducer {
   private readonly inner: RingBufferProducer;
   private readonly queue = new PrioritizedCommandQueue();
   private recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
+  private despawnWritten: ((entityId: number) => void) | null = null;
+  private referenceGuard: ((entityId: number) => boolean) | null = null;
 
   constructor(inner: RingBufferProducer) {
     this.inner = inner;
@@ -271,6 +339,25 @@ export class BackpressuredProducer {
 
   setRecordingTap(tap: ((type: number, entityId: number, payload: Uint8Array) => void) | null): void {
     this.recordingTap = tap;
+  }
+
+  /**
+   * Called with the entity id of each DespawnEntity when a flush WRITES it to
+   * the ring buffer — under backpressure that can be several frames after
+   * `despawnEntity()`. The id allocator's quarantine starts here. Separate from
+   * the recording tap, which the user can replace.
+   */
+  setDespawnWrittenListener(listener: ((entityId: number) => void) | null): void {
+    this.despawnWritten = listener;
+  }
+
+  /**
+   * Refuses a payload reference to an entity (SetParent's parent) for which
+   * `guard` returns false: an id in quarantine, whose SetParent could otherwise
+   * wait in the queue until the id belongs to another entity.
+   */
+  setReferenceGuard(guard: ((entityId: number) => boolean) | null): void {
+    this.referenceGuard = guard;
   }
 
   get pendingCount(): number {
@@ -282,7 +369,7 @@ export class BackpressuredProducer {
   }
 
   flush(): FlushStats {
-    return this.queue.drainTo(this.inner, this.recordingTap);
+    return this.queue.drainTo(this.inner, this.recordingTap, this.despawnWritten);
   }
 
   writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
@@ -333,6 +420,7 @@ export class BackpressuredProducer {
   }
 
   setParent(entityId: number, parentId: number): boolean {
+    if (parentId !== UNPARENT && this.referenceGuard && !this.referenceGuard(parentId)) return false;
     const p = new Float32Array(1);
     new Uint32Array(p.buffer)[0] = parentId;
     return this.writeCommand(CommandType.SetParent, entityId, p);
