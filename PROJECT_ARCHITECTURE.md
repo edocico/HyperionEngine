@@ -1381,15 +1381,17 @@ La camera usa una **proiezione ortografica** appropriata per un engine 2D/2.5D. 
 | --- | --- | --- |
 | `width` | Canvas width | Larghezza del frustum in unita mondo |
 | `height` | Canvas height | Altezza del frustum |
-| `near` | 0.0 | Piano near (WebGPU depth range 0..1) |
-| `far` | 100.0 | Piano far |
+| `near` | -1.0 | Piano near (WebGPU depth range 0..1): negativo, così le entità a z = 0 stanno dentro il volume |
+| `far` | 1000.0 | Piano far |
 | `position` | `[0, 0, 0]` | Posizione della camera nello spazio mondo |
 
-**Depth range 0..1**: WebGPU usa un depth range normalizzato `[0.0, 1.0]` (a differenza di OpenGL che usa `[-1.0, 1.0]`). La matrice ortografica mappa `[near, far]` a `[0.0, 1.0]` usando la formula:
+**Depth range 0..1**: WebGPU usa un depth range normalizzato `[0.0, 1.0]` (a differenza di OpenGL che usa `[-1.0, 1.0]`). La camera guarda lungo -Z, e la matrice ortografica (`orthographic()` in `camera.ts`) mappa z = -near in 0 e z = -far in 1:
 
 ```
-depth_ndc = (z - near) / (far - near)
+depth_ndc = (-z - near) / (far - near)
 ```
+
+Con i default (near -1, far 1000) è visibile z ∈ [-1000, 1]; il depth test è `less`, quindi vince la z maggiore. Un'entità 2D ha z = -depth, cioè depth_ndc = (depth + 1) / 1001: una depth maggiore sta dietro.
 
 **Estrazione piani del frustum**: `extractFrustumPlanes()` estrae i 6 piani (left, right, bottom, top, near, far) dalla matrice view-projection usando il metodo di Gribb-Hartmann. Ogni piano e normalizzato (normal.length = 1) per permettere il test di distanza sfera-piano nel compute shader. `CullPass` importa `extractFrustumPlanes` direttamente da `camera.ts` — non ci sono piu duplicazioni.
 
@@ -1878,7 +1880,7 @@ const entity = engine.spawn()
 
 Ogni metodo ritorna `this` per il chaining. La z è facoltativa (`position`/`velocity` default 0, `scale` sz 1).
 
-**Entità 2D** (dal 2026-09-27): `engine.spawn({ mode: '2d' })` usa l'archetipo compatto `Transform2D` (x, y, angolo, sx, sy: 20 byte di componente ECS contro 40), disegnato a z = -depth (0 per default). Il caricamento sulla GPU non si riduce: ogni riga resta una matrice di 16 float; in Mode C una radice 2D viaggia nello scatter come "formato 0" (la GPU la ricostruisce da 6 di quelle parole — x, y, z, angolo, sx, sy — ma sempre dentro le 16), in Mode A/B l'upload è completo. La handle è la stessa classe (`handle.is2D`); ciò che esiste solo in 3D (una z, `sz`, `vz`, un quaternione inclinato fuori dall'asse Z) viene ignorato da Rust, con un avviso dev una volta per `EntityHandle` (l'API raw non controlla). Un template di prefab con `mode: '2d'` crea radice e figli 2D. La z che l'archetipo non ha è `.depth(d)`: una distanza dentro lo schermo (la riga porta z = -d, quindi una depth maggiore sta dietro; con la camera di default è visibile da -1 a 1000), relativa nei figli come la posizione, ignorata con un avviso sulle entità 3D, che prendono la z da `position()`. A parità di depth, l'ordine di due sprite sovrapposti non è definito. Il tab "2D Twins" dell'harness verifica che ogni entità 2D disegni gli stessi texel del suo gemello 3D, e in Mode C che le righe arrivate in formato 0 coincidano con quelle della CPU.
+**Entità 2D** (dal 2026-09-27): `engine.spawn({ mode: '2d' })` usa l'archetipo compatto `Transform2D` (x, y, angolo, sx, sy: 20 byte di componente ECS contro 40), disegnato a z = -depth (0 per default). Il caricamento sulla GPU non si riduce: ogni riga resta una matrice di 16 float; in Mode C una radice 2D viaggia nello scatter come "formato 0" (la GPU la ricostruisce da 6 di quelle parole — x, y, z, angolo, sx, sy — ma sempre dentro le 16), in Mode A/B l'upload è completo. La handle è la stessa classe (`handle.is2D`); ciò che esiste solo in 3D (una z, `sz`, `vz`, un quaternione inclinato fuori dall'asse Z) viene ignorato da Rust, con un avviso dev una volta per `EntityHandle` (l'API raw non controlla). Un template di prefab con `mode: '2d'` crea radice e figli 2D. La z che l'archetipo non ha è `.depth(d)`: una distanza dentro lo schermo (la riga porta z = -d, quindi una depth maggiore sta dietro; con la camera di default è visibile da -1 a 1000), relativa nei figli come la posizione, ignorata con un avviso sulle entità 3D, che prendono la z da `position()`. A parità di depth, l'ordine di due sprite sovrapposti non è definito. La depth ordina uno sprite solo rispetto agli opachi: la pipeline trasparente non scrive la depth e niente la ordina, quindi due sprite `.transparent()` sovrapposti si compongono nell'ordine di disegno (tipo di primitiva, poi ordine del cull) finché non arriva l'ordinamento back-to-front (passo 5b del giro). Un corpo fisico ha la posa in coordinate mondo, quindi anche la sua depth. Il tab "2D Twins" dell'harness verifica che ogni entità 2D disegni gli stessi texel del suo gemello 3D, e in Mode C che le righe arrivate in formato 0 coincidano con quelle della CPU.
 
 `EntityHandle` implementa `Disposable` — `destroy()` (o `using`, cioè `[Symbol.dispose]()`) invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
 

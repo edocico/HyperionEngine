@@ -7,7 +7,8 @@
  * the SoA transforms buffer, providing zero-latency visual feedback.
  */
 export class ImmediateState {
-  private readonly overrides = new Map<number, [number, number, number]>();
+  /** z `null`: patch x and y only, keep the z the engine computed (2D entities). */
+  private readonly overrides = new Map<number, [number, number, number | null]>();
 
   /** Number of active position overrides. */
   get count(): number { return this.overrides.size; }
@@ -16,12 +17,16 @@ export class ImmediateState {
   has(entityId: number): boolean { return this.overrides.has(entityId); }
 
   /** Get the shadow position for an entity, or undefined if none. */
-  get(entityId: number): [number, number, number] | undefined {
+  get(entityId: number): [number, number, number | null] | undefined {
     return this.overrides.get(entityId);
   }
 
-  /** Set a shadow position override for an entity. */
-  set(entityId: number, x: number, y: number, z: number): void {
+  /**
+   * Set a shadow position override for an entity. `z = null` leaves the z of
+   * the row as the engine computed it: a 2D entity's is -depth, its parent's
+   * depth composed in, which the handle does not know.
+   */
+  set(entityId: number, x: number, y: number, z: number | null): void {
     this.overrides.set(entityId, [x, y, z]);
   }
 
@@ -50,7 +55,7 @@ export class ImmediateState {
         const base = i * 16;
         transforms[base + 12] = pos[0];
         transforms[base + 13] = pos[1];
-        transforms[base + 14] = pos[2];
+        if (pos[2] !== null) transforms[base + 14] = pos[2];
       }
     }
   }
@@ -74,7 +79,7 @@ export class ImmediateState {
         const base = i * 4; // bounds layout: [x, y, z, radius]
         bounds[base]     = pos[0]; // x
         bounds[base + 1] = pos[1]; // y
-        bounds[base + 2] = pos[2]; // z
+        if (pos[2] !== null) bounds[base + 2] = pos[2]; // z
         // bounds[base + 3] = radius — intentionally NOT patched
       }
     }

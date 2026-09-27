@@ -127,8 +127,6 @@ export class EntityHandle implements Disposable {
   private _lightCone: [number, number, number] = [...DEFAULT_LIGHT_CONE];
   private readonly _is2D: boolean;
   private _warnedIgnored = false;
-  /** The last depth() of a 2D handle: the z immediate mode must shadow. */
-  private _depth = 0;
 
   /**
    * @param onRelease - Called once, by the first `destroy()`. The engine
@@ -213,8 +211,9 @@ export class EntityHandle implements Disposable {
     this.check();
     if (z !== 0) this.ignoredOn2D('positionImmediate z');
     this._producer!.setPosition(this._id, x, y, z);
-    // The shadow must match what the engine will draw: a 2D entity at -depth.
-    this._immediateState?.set(this._id, x, y, this._is2D ? 0 - this._depth : z);
+    // A 2D entity's z is -depth with its parent's composed in: the shadow
+    // leaves it to the engine's row (a later depth() then shows at once).
+    this._immediateState?.set(this._id, x, y, this._is2D ? null : z);
     return this;
   }
 
@@ -272,20 +271,26 @@ export class EntityHandle implements Disposable {
    * The z of a 2D entity (`spawn({ mode: '2d' })`), which has none of its own:
    * a distance into the screen, drawn at z = -depth, so a larger depth is
    * behind. With the default camera (near -1, far 1000) it is visible from -1
-   * to 1000. A child's depth is relative to its parent's, like its position.
-   * Two overlapping sprites at the SAME depth are drawn in no defined order:
-   * give them different depths. On a 3D entity, which takes its z from
-   * `position()`, it is ignored (a warning in dev builds). Returns `this`.
+   * to 1000. A child's depth is relative to its parent's, like its position
+   * (a physics body's pose is world: its depth too). Two overlapping sprites at
+   * the SAME depth are drawn in no defined order: give them different depths.
+   * It orders a sprite against OPAQUE ones only: between two `.transparent()`
+   * sprites the draw order decides (primitive type, then cull order) until
+   * transparent entities are sorted by depth. On a 3D entity, which takes its
+   * z from `position()`, it is ignored (a warning in dev builds). Returns `this`.
    */
   depth(d: number): this {
     this.check();
-    if (this._is2D) this._depth = d;
-    else this.ignored('depth()');
+    if (!this._is2D) this.ignored('depth()');
     this._producer!.setDepth(this._id, d);
     return this;
   }
 
-  /** Mark entity as transparent (enables back-to-front sorting). Returns `this` for chaining. */
+  /**
+   * Mark entity as transparent: alpha-blended, drawn after the opaque ones,
+   * with no depth write. Transparent entities are not sorted yet, so two that
+   * overlap compose in draw order, whatever their depth. Returns `this`.
+   */
   transparent(): this {
     this.check();
     this._producer!.setTransparent(this._id, 1);

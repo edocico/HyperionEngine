@@ -252,7 +252,10 @@ impl Default for Transform2D {
 /// The z of a 2D (`Transform2D`) entity, which has none of its own. 4 bytes.
 /// A distance into the screen: the GPU row carries `z()` = -depth, so a
 /// larger depth draws behind (the camera looks down -Z, the depth test is
-/// `less`). A child's depth is relative to its parent's, like its position.
+/// `less`) — against OPAQUE entities: the transparent pipeline writes no
+/// depth and nothing sorts it yet, so two transparent sprites overlap in draw
+/// order (open: step 5b). A child's depth is relative to its parent's, like
+/// its position; a physics body's pose is world, so its depth is too.
 /// 3D entities take their z from `Position`: `SetDepth` does not attach it
 /// to them (2026-09-27).
 #[repr(C)]
@@ -268,7 +271,10 @@ impl Depth {
 }
 
 /// Marker component for transparent entities. 1 byte.
-/// Transparent entities are sorted back-to-front via GPU radix sort.
+/// Drawn after the opaque ones, alpha-blended, with no depth write. They are
+/// NOT sorted: `RadixSortPass` exists but nothing in the graph reads its
+/// output, so overlapping transparent entities compose in draw order
+/// (primitive type, then cull order). Sorting them by depth is step 5b.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Transparent(pub u8);
