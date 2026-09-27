@@ -88,6 +88,11 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   - `PrefabInstance.moveTo` dimenticava la z di `overrides.z` (corretto);
   - un reload di Vite dopo una modifica TS perde l'initScript: la pagina prende NVIDIA e perde il device (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) — documentato nella skill gpu-check;
   - la doc prometteva un upload ridotto per il 2D: non esiste, ogni riga resta 16 parole (il risparmio è solo nel componente ECS).
+- **Passo 5 (Depth → z) — fatto** (review `wf_60bf12aa-fa0`: 10 finding confermati, corretti o documentati). La riga di un'entità 2D porta z = -depth (distanza dentro lo schermo), relativa nei figli, nel formato 0 alla parola 2; `SetDepth` ignorato sulle 3D. Verificato sull'iGPU AMD: sprite sovrapposti nell'ordine giusto per 10 frame e dopo il cambio a runtime (anche il figlio che segue il genitore); in Mode C la z arriva via scatter uguale alla CPU. Trovati lungo la strada:
+  - la depth non ordina due sprite trasparenti (niente depth write, nessun ordinamento) → documentato, **passo 5b**;
+  - `positionImmediate` congelava la z di un'entità 2D → l'ombra immediata 2D ora patcha solo x e y;
+  - un corpo fisico ha la depth in coordinate mondo, come la posizione (documentato);
+  - il benchmark del ring buffer stava a 1 s dal timeout di vitest e sotto carico falliva (preesistente): timeout esplicito.
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada
