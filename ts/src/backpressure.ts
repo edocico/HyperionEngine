@@ -134,6 +134,12 @@ const SUPERSEDES: Partial<Record<number, readonly number[]>> = {
   [CommandType.TeleportBody]: [CommandType.SetPosition, CommandType.SetRotation, CommandType.SetRotation2D],
 };
 
+// Hot-path command ids as module constants: under a per-file transform (vitest,
+// isolatedModules) a `const enum` member imported from another module is not
+// inlined, and each use is a property load; these run once per queued command.
+const SET_PARENT: number = CommandType.SetParent;
+const DESPAWN: number = CommandType.DespawnEntity;
+
 /** `SetParent`'s payload value that means "remove the parent". */
 const UNPARENT = 0xFFFFFFFF;
 
@@ -175,12 +181,12 @@ export class PrioritizedCommandQueue {
         if (isPartialUpdate(cmd) && prev.payload && payload) {
           payload = mergePartialPayload(cmd, asBytes(prev.payload), asBytes(payload));
         }
-        if (cmd === CommandType.SetParent) this.unindexParent(key, prev.payload);
+        if (cmd === SET_PARENT) this.unindexParent(key, prev.payload);
       }
       // `set` on a live key keeps its FIRST position (the fairness under
       // backpressure): never delete it first, which would move it last.
       this.overwrites.set(key, { cmd, entityId, payload });
-      if (cmd === CommandType.SetParent) this.indexParent(key, payload);
+      if (cmd === SET_PARENT) this.indexParent(key, payload);
     }
   }
 
@@ -188,7 +194,7 @@ export class PrioritizedCommandQueue {
   private deleteOverwrite(key: number): boolean {
     const entry = this.overwrites.get(key);
     if (!entry) return false;
-    if (entry.cmd === CommandType.SetParent) this.unindexParent(key, entry.payload);
+    if (entry.cmd === SET_PARENT) this.unindexParent(key, entry.payload);
     return this.overwrites.delete(key);
   }
 
@@ -272,7 +278,7 @@ export class PrioritizedCommandQueue {
           : new Uint8Array(0);
         tap(c.cmd, c.entityId, bytes);
       }
-      if (c.cmd === CommandType.DespawnEntity) onDespawnWritten?.(c.entityId);
+      if (c.cmd === DESPAWN) onDespawnWritten?.(c.entityId);
     }
     this.critical.splice(0, i);
 
@@ -287,7 +293,7 @@ export class PrioritizedCommandQueue {
       toDelete.push(key);
       // The entry is in hand: unindex here rather than look it up again below
       // (deleteOverwrite), which costs a Map lookup per written command.
-      if (c.cmd === CommandType.SetParent) this.unindexParent(key, c.payload);
+      if (c.cmd === SET_PARENT) this.unindexParent(key, c.payload);
       if (tap) {
         const bytes = c.payload
           ? new Uint8Array(c.payload.buffer, c.payload.byteOffset, c.payload.byteLength)
