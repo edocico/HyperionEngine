@@ -10,6 +10,8 @@ function mockBridge(): EngineBridge {
   return {
     mode: ExecutionMode.SingleThread,
     commandBuffer: {
+      setDespawnWrittenListener: vi.fn(),
+      setReferenceGuard: vi.fn(),
       spawnEntity: vi.fn(() => true),
       despawnEntity: vi.fn(() => true),
       setPosition: vi.fn(() => true),
@@ -48,6 +50,7 @@ function mockRenderer(): Renderer {
     particleSystem: {
       createEmitter: vi.fn(() => 1),
       destroyEmitter: vi.fn(),
+      forgetEntity: vi.fn(),
       emitterCount: 0,
       destroy: vi.fn(),
     } as any,

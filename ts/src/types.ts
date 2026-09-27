@@ -61,8 +61,9 @@ export interface MemoryStats {
 /**
  * The largest external entity id the engine accepts: the WASM `EntityMap`
  * (`MAX_EXTERNAL_ID` in command_processor.rs, 2^20 - 1) rejects a spawn past
- * it without any error on the TS side. Ids are never reused, so this bounds
- * the CUMULATIVE number of spawns (`spawn()` and `raw.spawn()` together).
+ * it without any error on the TS side. Freed ids are reused under quarantine
+ * (EntityIdAllocator), so this bounds the entities that are live or whose
+ * despawn is not yet processed, not the spawns of a session.
  */
 export const MAX_EXTERNAL_ID = 1_048_575;
 

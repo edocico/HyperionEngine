@@ -316,3 +316,33 @@ describe('PhysicsAPI', () => {
     expect(dispatchedEntityA).toBe(42);
   });
 });
+
+describe('PhysicsAPI entity forgetting', () => {
+  it('_forgetEntity drops the sensor callbacks registered for that id', () => {
+    const api = new PhysicsAPI();
+    const enter = vi.fn();
+    const exit = vi.fn();
+    api.onSensorEnter(7, enter);
+    api.onSensorExit(7, exit);
+    api._forgetEntity(7);
+
+    const buf = new ArrayBuffer(24);
+    const dv = new DataView(buf);
+    for (const [at, type] of [[0, 0], [12, 1]] as const) {
+      dv.setUint32(at, 7, true);
+      dv.setUint32(at + 4, 9, true);
+      dv.setUint8(at + 8, type);
+      dv.setUint8(at + 9, 1); // sensor
+    }
+    (api as any)._wasm = {
+      memory: { buffer: buf },
+      engine_collision_events_count: () => 2,
+      engine_collision_events_ptr: () => 0,
+      engine_contact_force_events_count: () => 0,
+      engine_contact_force_events_ptr: () => 0,
+    };
+    api._dispatch();
+    expect(enter).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+});

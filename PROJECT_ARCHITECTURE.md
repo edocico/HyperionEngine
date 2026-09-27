@@ -1843,7 +1843,7 @@ Phase 5 aggiunge un **Public API Layer** completo sopra i componenti interni del
 
 | Metodo | Scopo |
 |---|---|
-| `spawn()` | Crea un `EntityHandle` nuovo (gli id non vengono riusati: al massimo `MAX_EXTERNAL_ID + 1` spawn per sessione) |
+| `spawn()` | Crea un `EntityHandle` nuovo. Gli id liberati vengono riusati dopo una quarantena, e solo quando quelli nuovi (fino a `MAX_EXTERNAL_ID`) sono finiti: vedi `docs/plans/2026-09-27-id-reuse-design.md` |
 | `batch(fn)` | Esegue operazioni in batch, flush alla fine |
 | `start()` | Avvia il game loop (RAF) |
 | `pause()` | Sospende il game loop |

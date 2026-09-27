@@ -153,6 +153,14 @@ export class EntityHandle implements Disposable {
     if (!this._alive) throw new Error('EntityHandle has been destroyed');
   }
 
+  /**
+   * Throws if another entity this call refers to has been destroyed: its id
+   * may already belong to a newer entity once reused.
+   */
+  private checkTarget(target: EntityHandle): void {
+    if (!target.alive) throw new Error(`Target EntityHandle ${target.id} has been destroyed`);
+  }
+
   /** Set entity position. Returns `this` for chaining. */
   position(x: number, y: number, z: number): this {
     this.check();
@@ -591,6 +599,7 @@ export class EntityHandle implements Disposable {
   /** Create a revolute (pin) joint. this=entityA, target=entityB. Returns JointHandle for motor/limits. */
   revoluteJoint(target: EntityHandle, opts?: { anchorAx?: number; anchorAy?: number }): JointHandle {
     this.check();
+    this.checkTarget(target);
     return this._producer!.createRevoluteJoint(
       this._id, target.id, opts?.anchorAx ?? 0, opts?.anchorAy ?? 0,
     );
@@ -599,6 +608,7 @@ export class EntityHandle implements Disposable {
   /** Create a prismatic (slider) joint. this=entityA, target=entityB. Returns JointHandle. */
   prismaticJoint(target: EntityHandle, opts?: { axisX?: number; axisY?: number }): JointHandle {
     this.check();
+    this.checkTarget(target);
     return this._producer!.createPrismaticJoint(
       this._id, target.id, opts?.axisX ?? 1, opts?.axisY ?? 0,
     );
@@ -607,18 +617,21 @@ export class EntityHandle implements Disposable {
   /** Create a fixed (weld) joint. this=entityA, target=entityB. Returns JointHandle. */
   fixedJoint(target: EntityHandle): JointHandle {
     this.check();
+    this.checkTarget(target);
     return this._producer!.createFixedJoint(this._id, target.id);
   }
 
   /** Create a rope joint (max distance constraint). Returns JointHandle. */
   ropeJoint(target: EntityHandle, maxDist: number): JointHandle {
     this.check();
+    this.checkTarget(target);
     return this._producer!.createRopeJoint(this._id, target.id, maxDist);
   }
 
   /** Create a spring joint (rest length constraint). Returns JointHandle. */
   springJoint(target: EntityHandle, restLength: number): JointHandle {
     this.check();
+    this.checkTarget(target);
     return this._producer!.createSpringJoint(this._id, target.id, restLength);
   }
 

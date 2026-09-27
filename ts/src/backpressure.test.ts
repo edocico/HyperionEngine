@@ -1220,3 +1220,81 @@ describe('phase 17 lighting commands (53-56)', () => {
     expect(s.mask).toBe(7);
   });
 });
+
+describe('entity id reuse support (step 1b)', () => {
+  const HEADER_SIZE = 32;
+  const UNPARENT = 0xFFFFFFFF;
+
+  function producer(capacity = 1024): { bp: BackpressuredProducer; sab: SharedArrayBuffer } {
+    const sab = new SharedArrayBuffer(HEADER_SIZE + capacity);
+    return { bp: new BackpressuredProducer(new RingBufferProducer(sab)), sab };
+  }
+
+  /** Every command a flush wrote, as [type, entityId, first payload u32]. */
+  function written(bp: BackpressuredProducer): [number, number, number | undefined][] {
+    const out: [number, number, number | undefined][] = [];
+    bp.setRecordingTap((type, entityId, payload) => {
+      out.push([type, entityId, payload.byteLength >= 4
+        ? new DataView(payload.buffer, payload.byteOffset).getUint32(0, true)
+        : undefined]);
+    });
+    return out;
+  }
+
+  it('reports a DespawnEntity when it is written, not when it is enqueued', () => {
+    const { bp } = producer();
+    const onWritten = vi.fn();
+    bp.setDespawnWrittenListener(onWritten);
+    bp.despawnEntity(7);
+    expect(onWritten).not.toHaveBeenCalled();
+    bp.flush();
+    expect(onWritten).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+  it('a despawn held back by a full ring buffer is reported only when it is written', () => {
+    const { bp, sab } = producer(64);
+    const onWritten = vi.fn();
+    bp.setDespawnWrittenListener(onWritten);
+    for (let i = 0; i < 20; i++) bp.spawnEntity(100 + i);
+    bp.despawnEntity(7);
+
+    let flushes = 0;
+    while (onWritten.mock.calls.length === 0 && flushes < 10) {
+      bp.flush();
+      flushes++;
+      if (onWritten.mock.calls.length === 0) extractUnread(sab); // the consumer frees space
+    }
+    expect(flushes).toBeGreaterThan(1);
+    expect(onWritten).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+  it('despawning X drops a pending SetParent that points at X', () => {
+    const { bp } = producer();
+    const out = written(bp);
+    bp.setParent(5, 7);
+    bp.despawnEntity(7);
+    bp.flush();
+    expect(out.filter(([type]) => type === CommandType.SetParent)).toEqual([]);
+  });
+
+  it('a SetParent re-pointed at another parent survives the despawn of the first', () => {
+    const { bp } = producer();
+    const out = written(bp);
+    bp.setParent(5, 7);
+    bp.setParent(5, 8);
+    bp.despawnEntity(7);
+    bp.flush();
+    expect(out.filter(([type]) => type === CommandType.SetParent)).toEqual([[CommandType.SetParent, 5, 8]]);
+  });
+
+  it('a SetParent to a blocked id is dropped at enqueue; unparent and live parents pass', () => {
+    const { bp } = producer();
+    const out = written(bp);
+    bp.setReferenceGuard((id) => id !== 7);
+    expect(bp.setParent(5, 7)).toBe(false);
+    expect(bp.setParent(6, UNPARENT)).toBe(true);
+    expect(bp.setParent(9, 8)).toBe(true);
+    bp.flush();
+    expect(out.map(([, entityId, parent]) => [entityId, parent])).toEqual([[6, UNPARENT], [9, 8]]);
+  });
+});
