@@ -5,7 +5,10 @@ import { BackpressuredProducer } from './backpressure';
 
 const HEADER_SIZE = 32;
 
-describe('Ring buffer saturation benchmark', () => {
+// ~4 s on its own, 1 s under vitest's 5 s default: under load (a GPU session,
+// the dev server) the 10k/100% run crossed it and failed preflight while its
+// metrics were fine (2026-09-27). It measures utilization, not time.
+describe('Ring buffer saturation benchmark', { timeout: 30_000 }, () => {
   it('10k entities, 100% moving, 600 frames — metrics are reasonable', () => {
     const report = createBenchmark({
       entityCount: 10_000,
