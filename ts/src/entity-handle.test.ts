@@ -806,14 +806,50 @@ describe('EntityHandle — 2D entities (spawn({ mode: "2d" }))', () => {
     }
   });
 
-  it('positionImmediate on a 2D handle shadows z = 0, where the engine draws it', () => {
+  it('positionImmediate on a 2D handle shadows x and y only: the z stays the engine\'s', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const imm = new ImmediateState();
       new EntityHandle(10, mockProducer(), imm, undefined, true).positionImmediate(1, 2, 4);
-      expect(imm.get(10)).toEqual([1, 2, 0]);
+      expect(imm.get(10)).toEqual([1, 2, null]);
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('EntityHandle — depth (2D only, z = -depth)', () => {
+  it('depth() on a 2D handle sends SetDepth without a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = mockProducer();
+      new EntityHandle(4, p, undefined, undefined, true).depth(3);
+      expect(p.setDepth).toHaveBeenCalledWith(4, 3);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('depth() on a 3D handle warns once in dev: a 3D entity takes its z from position()', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = new EntityHandle(5, mockProducer());
+      h.depth(3).depth(4);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/3D entity 5.*depth\(\).*position\(\)/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a depth() after positionImmediate() is not frozen by the shadow (it carries no z)', () => {
+    const imm = new ImmediateState();
+    const h = new EntityHandle(6, mockProducer(), imm, undefined, true);
+    h.positionImmediate(1, 2).depth(2.5);
+    const transforms = new Float32Array(16);
+    transforms[14] = -2.5; // what the engine draws after the depth
+    imm.patchTransforms(transforms, new Uint32Array([6]), 1);
+    expect(transforms[14]).toBe(-2.5);
   });
 });

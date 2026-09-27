@@ -126,7 +126,7 @@ export class EntityHandle implements Disposable {
    */
   private _lightCone: [number, number, number] = [...DEFAULT_LIGHT_CONE];
   private readonly _is2D: boolean;
-  private _warned3DOnly = false;
+  private _warnedIgnored = false;
 
   /**
    * @param onRelease - Called once, by the first `destroy()`. The engine
@@ -170,23 +170,29 @@ export class EntityHandle implements Disposable {
   }
 
   /**
-   * On a 2D entity, a 3D-only argument is ignored by the engine: says so once
-   * per handle, in dev builds. Kept a warning, not an error: generic code
-   * that passes z = 0 or a Z-only quaternion never reaches it.
+   * An argument the entity's archetype has no room for is ignored by the
+   * engine: says so once per handle, in dev builds. Kept a warning, not an
+   * error: generic code that passes z = 0 or a Z-only quaternion never
+   * reaches it.
    */
+  private ignored(what: string): void {
+    if (this._warnedIgnored || typeof __DEV__ === 'undefined' || !__DEV__) return;
+    this._warnedIgnored = true;
+    const why = this._is2D
+      ? 'a Transform2D entity has no z (its depth() is one), no sz or vz, and rotates about Z only'
+      : 'a 3D entity takes its z from position()';
+    console.warn(`[Hyperion] ${this._is2D ? '2D' : '3D'} entity ${this._id}: ${what} is ignored (${why}). Further ones on this entity are silent.`);
+  }
+
+  /** On a 2D entity, a 3D-only argument is ignored. */
   private ignoredOn2D(what: string): void {
-    if (this._warned3DOnly || typeof __DEV__ === 'undefined' || !__DEV__) return;
-    this._warned3DOnly = true;
-    console.warn(
-      `[Hyperion] 2D entity ${this._id}: ${what} is ignored (a Transform2D entity has no z, ` +
-      `no sz or vz, and rotates about Z only). Further ones on this entity are silent.`,
-    );
+    if (this._is2D) this.ignored(what);
   }
 
   /** Set entity position (z defaults to 0; a 2D entity ignores it). Returns `this` for chaining. */
   position(x: number, y: number, z = 0): this {
     this.check();
-    if (this._is2D && z !== 0) this.ignoredOn2D('position z');
+    if (z !== 0) this.ignoredOn2D('position z');
     this._producer!.setPosition(this._id, x, y, z);
     return this;
   }
@@ -203,10 +209,11 @@ export class EntityHandle implements Disposable {
    */
   positionImmediate(x: number, y: number, z = 0): this {
     this.check();
-    if (this._is2D && z !== 0) this.ignoredOn2D('positionImmediate z');
+    if (z !== 0) this.ignoredOn2D('positionImmediate z');
     this._producer!.setPosition(this._id, x, y, z);
-    // The shadow must match what the engine will draw: a 2D entity at z = 0.
-    this._immediateState?.set(this._id, x, y, this._is2D ? 0 : z);
+    // A 2D entity's z is -depth with its parent's composed in: the shadow
+    // leaves it to the engine's row (a later depth() then shows at once).
+    this._immediateState?.set(this._id, x, y, this._is2D ? null : z);
     return this;
   }
 
@@ -224,7 +231,7 @@ export class EntityHandle implements Disposable {
   /** Set entity velocity (vz defaults to 0; a 2D entity ignores it). Returns `this` for chaining. */
   velocity(vx: number, vy: number, vz = 0): this {
     this.check();
-    if (this._is2D && vz !== 0) this.ignoredOn2D('velocity vz');
+    if (vz !== 0) this.ignoredOn2D('velocity vz');
     this._producer!.setVelocity(this._id, vx, vy, vz);
     return this;
   }
@@ -246,7 +253,7 @@ export class EntityHandle implements Disposable {
     if (qy === undefined) {
       this._producer!.setRotation2D(this._id, angleOrQx);
     } else {
-      if (this._is2D && (Math.abs(angleOrQx) > 1e-6 || Math.abs(qy) > 1e-6)) this.ignoredOn2D('a tilted quaternion');
+      if (Math.abs(angleOrQx) > 1e-6 || Math.abs(qy) > 1e-6) this.ignoredOn2D('a tilted quaternion');
       this._producer!.setRotation(this._id, angleOrQx, qy, qz!, qw!);
     }
     return this;
@@ -255,19 +262,35 @@ export class EntityHandle implements Disposable {
   /** Set entity scale (sz defaults to 1; a 2D entity ignores it). Returns `this` for chaining. */
   scale(sx: number, sy: number, sz = 1): this {
     this.check();
-    if (this._is2D && sz !== 1) this.ignoredOn2D('scale sz');
+    if (sz !== 1) this.ignoredOn2D('scale sz');
     this._producer!.setScale(this._id, sx, sy, sz);
     return this;
   }
 
-  /** Set entity depth for 2.5D layering. Returns `this` for chaining. */
-  depth(z: number): this {
+  /**
+   * The z of a 2D entity (`spawn({ mode: '2d' })`), which has none of its own:
+   * a distance into the screen, drawn at z = -depth, so a larger depth is
+   * behind. With the default camera (near -1, far 1000) it is visible from -1
+   * to 1000. A child's depth is relative to its parent's, like its position
+   * (a physics body's pose is world: its depth too). Two overlapping sprites at
+   * the SAME depth are drawn in no defined order: give them different depths.
+   * It orders a sprite against OPAQUE ones only: between two `.transparent()`
+   * sprites the draw order decides (primitive type, then cull order) until
+   * transparent entities are sorted by depth. On a 3D entity, which takes its
+   * z from `position()`, it is ignored (a warning in dev builds). Returns `this`.
+   */
+  depth(d: number): this {
     this.check();
-    this._producer!.setDepth(this._id, z);
+    if (!this._is2D) this.ignored('depth()');
+    this._producer!.setDepth(this._id, d);
     return this;
   }
 
-  /** Mark entity as transparent (enables back-to-front sorting). Returns `this` for chaining. */
+  /**
+   * Mark entity as transparent: alpha-blended, drawn after the opaque ones,
+   * with no depth write. Transparent entities are not sorted yet, so two that
+   * overlap compose in draw order, whatever their depth. Returns `this`.
+   */
   transparent(): this {
     this.check();
     this._producer!.setTransparent(this._id, 1);

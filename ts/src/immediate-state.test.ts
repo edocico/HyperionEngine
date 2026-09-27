@@ -198,3 +198,17 @@ describe('integration: immediate mode + picking', () => {
     expect(result2).toBe(42); // hit! bounds are now at (10, 10, -5)
   });
 });
+
+describe('ImmediateState — a shadow without z (2D entities)', () => {
+  it('patches x and y and keeps the z the engine computed, in the row and the bounds', () => {
+    const imm = new ImmediateState();
+    imm.set(3, 5, 6, null);
+    const transforms = new Float32Array(16);
+    transforms[14] = -4; // the row's z: -depth, relative depths composed
+    const bounds = new Float32Array([0, 0, -4, 1]);
+    imm.patchTransforms(transforms, new Uint32Array([3]), 1);
+    imm.patchBounds(bounds, new Uint32Array([3]), 1);
+    expect([transforms[12], transforms[13], transforms[14]]).toEqual([5, 6, -4]);
+    expect(Array.from(bounds)).toEqual([5, 6, -4, 1]);
+  });
+});

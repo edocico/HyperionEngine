@@ -6,7 +6,7 @@ use glam::Mat4;
 use hecs::World;
 
 use crate::components::{
-    Active, BoundingRadius, BoundsOverride, LightFlags, LightType, ModelMatrix, Parent, Position,
+    Active, BoundingRadius, BoundsOverride, Depth, LightFlags, LightType, ModelMatrix, Parent, Position,
     PrimitiveParams, RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D, PRIM_TYPE_LINE,
 };
 
@@ -44,9 +44,10 @@ pub fn velocity_system_2d(world: &mut World, dt: f32) {
 }
 
 /// Build ModelMatrix from Transform2D (hot path).
-/// Column-major 4×4: scale * rotation_2d * translation.
+/// Column-major 4×4: scale * rotation_2d * translation, at z = -depth. For a
+/// child this is its LOCAL matrix, so its depth composes with its parent's.
 pub fn transform_system_2d(world: &mut World) {
-    for (transform, matrix) in world.query_mut::<(&Transform2D, &mut ModelMatrix)>() {
+    for (transform, depth, matrix) in world.query_mut::<(&Transform2D, Option<&Depth>, &mut ModelMatrix)>() {
         let (sin, cos) = transform.rot.sin_cos();
         let m = &mut matrix.0;
         m[0] = transform.sx * cos;
@@ -63,7 +64,7 @@ pub fn transform_system_2d(world: &mut World) {
         m[11] = 0.0;
         m[12] = transform.x;
         m[13] = transform.y;
-        m[14] = 0.0;
+        m[14] = depth.map_or(0.0, |d| d.z());
         m[15] = 1.0;
     }
 }

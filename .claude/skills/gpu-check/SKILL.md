@@ -81,7 +81,7 @@ Expected today (2026-09-27, the checks read pixels through the probe): every tab
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
 check. In Mode A the pixel checks skip ("pixel probe unavailable"). Lighting, Rendering FX and
-Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (2/2) is the one check of scatter
+Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (3/3) is the one check of scatter
 format 0: run it once with `?mode=C`, where its row check must report scatter frames (Mode B
 uploads every row, so there it reports 0). `window.__hyperion` is the live facade for anything the
 tabs do not check.

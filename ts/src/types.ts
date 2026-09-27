@@ -72,9 +72,10 @@ export interface SpawnOptions {
   /**
    * `'3d'` (the default): Position + Rotation + Scale. `'2d'`: the compact
    * Transform2D archetype (x, y, angle, sx, sy — 20 bytes of ECS component,
-   * against 40), drawn at z = 0. The GPU upload does not shrink: every row is
-   * still a 16-float matrix (a root 2D row travels as scatter "format 0" in
-   * Mode C, rebuilt on the GPU from 6 of those words, but in the same 16).
+   * against 40), drawn at z = -depth (`handle.depth()`, 0 by default). The
+   * GPU upload does not shrink: every row is still a 16-float matrix (a root
+   * 2D row travels as scatter "format 0" in Mode C, rebuilt on the GPU from 6
+   * of those words — x, y, z, angle, sx, sy — but in the same 16).
    * What only 3D has — a z, `sz`, `vz`, a quaternion tilted off the Z axis —
    * is ignored on it; an `EntityHandle` says so once, in dev builds (the raw
    * API does not check).

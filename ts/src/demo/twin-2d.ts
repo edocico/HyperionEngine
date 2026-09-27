@@ -5,7 +5,8 @@
 // compact ECS component (20 bytes against 40), not another look. The 2D parent
 // and its child move, so in Mode C most frames upload through the scatter
 // pass: the parent as a root 2D row (format 0, rebuilt on the GPU from 6
-// words), the child as a full matrix (format 1).
+// words), the child as a full matrix (format 1). A third check, off to the
+// right, orders overlapping 2D sprites by depth (z = -depth).
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
@@ -54,6 +55,66 @@ const CELLS: Cell[] = [
 ];
 
 const cellCentre = (i: number): [number, number] => [BLOCK_X + ((i % 3) - 1) * CELL, (Math.floor(i / 3) - 1) * CELL];
+
+/** Centre of the depth scene, off to the right of the twins. */
+const DEPTH_X = 40;
+
+/**
+ * Green and blue gradients (green / blue at their left end, fading to black):
+ * the colour at a point says which sprite is in front. Depth is a distance
+ * into the screen (z = -depth), so the SMALLER depth wins.
+ */
+async function checkDepth(engine: Hyperion, reporter: TestReporter): Promise<void> {
+  const green = (h: EntityHandle) => h.gradient(0, 0, [0, 0, 1, 0, 1, 0]);
+  const blue = (h: EntityHandle) => h.gradient(0, 0, [0, 0, 0, 1, 1, 0]);
+  let a!: EntityHandle;
+  let parent!: EntityHandle;
+  engine.batch(() => {
+    // A pair: green at depth 1 over blue at depth 2, the same 2x2 square.
+    a = engine.spawn({ mode: '2d' }).position(DEPTH_X - 3, 0).scale(2, 2).depth(1);
+    green(a);
+    const b = engine.spawn({ mode: '2d' }).position(DEPTH_X - 3, 0).scale(2, 2).depth(2);
+    blue(b);
+    // A family: a white parent (depth 5), its green child at RELATIVE depth -1
+    // (world 4) and a blue sibling root at 4.5 between them.
+    parent = engine.spawn({ mode: '2d' }).position(DEPTH_X + 3, 0).scale(3, 3).depth(5);
+    const child = engine.spawn({ mode: '2d' }).parent(parent.id).scale(0.3, 0.3).depth(-1);
+    green(child);
+    const sibling = engine.spawn({ mode: '2d' }).position(DEPTH_X + 3, 0).scale(1.8, 1.8).depth(4.5);
+    blue(sibling);
+    entities.push(a, b, parent, child, sibling);
+  });
+  fitView(engine, DEPTH_X, 0, 6);
+  await frames(4);
+
+  const colour = ([r, g, b]: Rgba) =>
+    r > 0.9 && g > 0.9 && b > 0.9 ? 'white' : g > 0.5 && b < 0.2 ? 'green' : b > 0.5 && g < 0.2 ? 'blue' : `(${fmt([r, g, b])})`;
+  // Near each gradient's left end (t ~ 0.1), where its colour is ~0.9.
+  const pairPoint: [number, number] = [DEPTH_X - 3 - 0.8, 0];
+  const childPoint: [number, number] = [DEPTH_X + 3 - 0.36, 0];   // inside the child (0.9 wide)
+  const siblingPoint: [number, number] = [DEPTH_X + 3 - 0.72, 0]; // in the sibling, outside the child
+  const parentPoint: [number, number] = [DEPTH_X + 3 - 1.2, 0];   // in the parent only
+
+  await pixelCheck(reporter, 'Depth orders 2D sprites', engine, async (probe) => {
+    const read = async () => (await probe('scene-hdr', [pairPoint, childPoint, siblingPoint, parentPoint])).map(colour);
+    // Stable: the same winners on 10 consecutive frames.
+    const first = await read();
+    let stable = true;
+    for (let f = 0; f < 9; f++) if ((await read()).join() !== first.join()) stable = false;
+    // Swapped at runtime: blue in front of the pair; the parent moves to 3.5,
+    // so its child follows to 2.5 and the sibling (4.5) goes behind the parent.
+    a.depth(3);
+    parent.depth(3.5);
+    await frames(4);
+    const after = await read();
+    const want = ['green', 'green', 'blue', 'white'];
+    const wantAfter = ['blue', 'green', 'white', 'white'];
+    return {
+      ok: stable && first.join() === want.join() && after.join() === wantAfter.join(),
+      detail: `pair/child/sibling/parent: ${first.join(', ')}${stable ? ' (10 frames)' : ' (UNSTABLE)'}; after swapping depths: ${after.join(', ')}`,
+    };
+  });
+}
 
 const section: DemoSection = {
   name: 'twin-2d',
@@ -192,6 +253,10 @@ const section: DemoSection = {
         detail: `${frameCount} frames, ${scatterFrames} via scatter (Mode ${engine.mode}); worst GPU/CPU difference ${worst.toExponential(1)}`,
       };
     });
+
+    // ── 3. Depth: overlapping 2D sprites in depth order ────────────────
+    await checkDepth(engine, reporter);
+    fitView(engine, BLOCK_X + GAP / 2, 0, GAP / 2 + CELL * 1.5 + 1.5);
   },
 
   teardown(engine: Hyperion) {
