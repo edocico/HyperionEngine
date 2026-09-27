@@ -1347,10 +1347,13 @@ fn joint_command_rejected(
         || entity_map.get(entity_b_ext).is_none()
 }
 
-/// Clean up Rapier state for an entity being despawned or having its body destroyed.
+/// Clean up Rapier state for an entity leaving the world: a despawn, or a spawn
+/// that retires it (`retire_previous_physics`).
 ///
-/// Clears reverse-map entries for all colliders attached to the body,
-/// then removes the body (which cascades collider + joint removal in Rapier).
+/// Drops every registration keyed by its external id (joints, pending joints,
+/// character controller, pending moves and teleports), then removes the body,
+/// which cascades collider and joint removal in Rapier. The collider reverse
+/// map is left as it is: see `remove_body_and_colliders`.
 #[cfg(feature = "physics-2d")]
 pub fn despawn_physics_cleanup(
     world: &hecs::World,
@@ -1437,8 +1440,8 @@ fn remove_live_collider(
     }
 }
 
-/// Shared body teardown: clears the collider reverse map, then removes the body
-/// (which cascades collider and joint removal inside Rapier).
+/// Shared body teardown: removes the body, which cascades collider and joint
+/// removal inside Rapier. The collider reverse map is left as it is (see below).
 #[cfg(feature = "physics-2d")]
 fn remove_body_and_colliders(
     world: &hecs::World,
@@ -1458,9 +1461,16 @@ fn remove_body_and_colliders(
     // which left client-side "who am I overlapping" state leaking forever
     // (audit 2026-07, P1-14c).
     //
-    // Stale entries are harmless: a removed collider can never be referenced by
-    // a later event, and if Rapier recycles its arena index the insert path in
-    // `physics_sync_pre` overwrites the slot unconditionally before any step.
+    // The stale entry is NOT always harmless. Rapier frees the arena index at
+    // once and reuses it (LIFO), and `collider_handle_to_entity` looks up by
+    // index alone, ignoring the generation. A collider created before that next
+    // step (Pass 2 of `physics_sync_pre`: in this frame, or in a later one if
+    // this one runs no tick) overwrites the entry, and the removed collider's
+    // Stopped event is then reported against the NEW collider's entity:
+    // despawn(1) + a collider for 3 in the same frame gave Stopped(3, 2).
+    // Known, not fixed (id-reuse design §3): the map needs the generation.
+    // Once that step has run, the entry is read again only for a collider
+    // that recycles the index, and Pass 2 overwrites it when that one is made.
     physics.rigid_body_set.remove(
         body_handle,
         &mut physics.island_manager,
