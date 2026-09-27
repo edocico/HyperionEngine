@@ -261,7 +261,7 @@ pub fn process_commands(
 
             if batch.len() >= 2 {
                 // Batch spawn: hecs resizes archetype table once for all N entities
-                flush_spawn_batch(batch, world, entity_map, render_state);
+                flush_spawn_batch(batch, world, entity_map, render_state, physics);
             } else {
                 // Single spawn: use normal path
                 process_single_command_physics(&batch[0], world, entity_map, render_state, physics);
@@ -477,6 +477,27 @@ fn retire_previous_binding(
     }
 }
 
+/// Physics half of `retire_previous_binding`, for physics builds.
+///
+/// A spawn for an id that is still bound retires the old entity, and its
+/// Rapier state must go with it exactly as on a despawn. Without this the old
+/// body and colliders stayed in the simulation, colliding, with no entity
+/// pointing at them, and every registration keyed by the external id (character
+/// controller, joints, pending moves and teleports) passed to the new entity
+/// (id reuse, 2026-09-27, verify_reuse R3). Call it BEFORE
+/// `retire_previous_binding`, which unmaps the id.
+#[cfg(feature = "physics-2d")]
+fn retire_previous_physics(
+    external_id: u32,
+    world: &World,
+    entity_map: &EntityMap,
+    physics: &mut crate::physics::HyperionPhysicsWorld,
+) {
+    if let Some(previous) = entity_map.get(external_id) {
+        despawn_physics_cleanup(world, previous, physics);
+    }
+}
+
 /// Flush a batch of consecutive SpawnEntity commands using `spawn_batch()`.
 ///
 /// 3D and 2D entities have different archetypes, so the batch is split
@@ -487,13 +508,26 @@ fn flush_spawn_batch(
     world: &mut World,
     entity_map: &mut EntityMap,
     render_state: &mut RenderState,
+    #[cfg(feature = "physics-2d")] physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     // Retire any live binding for the ids about to be (re)spawned, so a
     // duplicate spawn cannot orphan an entity (audit 2026-07, P2-4).
     for cmd in batch {
         if entity_map.accepts_id(cmd.entity_id) {
+            #[cfg(feature = "physics-2d")]
+            retire_previous_physics(cmd.entity_id, world, entity_map, physics);
             retire_previous_binding(cmd.entity_id, world, entity_map, render_state);
         }
+    }
+
+    // A run can name one id twice. Only the LAST of its spawns creates an
+    // entity, as when they arrive one at a time and each retires the one
+    // before. Spawning both left the first alive, rendering and unmapped, so no
+    // DespawnEntity could reach it (id reuse, 2026-09-27, verify_reuse R4).
+    let mut seen = std::collections::HashSet::with_capacity(batch.len());
+    let mut superseded = vec![false; batch.len()];
+    for (i, cmd) in batch.iter().enumerate().rev() {
+        superseded[i] = !seen.insert(cmd.entity_id);
     }
 
     // Partition into 3D and 2D sub-batches, preserving original indices.
@@ -503,6 +537,9 @@ fn flush_spawn_batch(
     for (i, cmd) in batch.iter().enumerate() {
         if !entity_map.accepts_id(cmd.entity_id) {
             entity_map.note_rejected_id();
+            continue;
+        }
+        if superseded[i] {
             continue;
         }
         if cmd.payload[0] == 1 {
@@ -1079,6 +1116,13 @@ fn process_single_command_physics(
     physics: &mut crate::physics::HyperionPhysicsWorld,
 ) {
     match cmd.cmd_type {
+        // SpawnEntity: a spawn on a live id retires the old entity, physics
+        // included (verify_reuse R3); the base handler does the rest.
+        CommandType::SpawnEntity => {
+            retire_previous_physics(cmd.entity_id, world, entity_map, physics);
+            process_single_command(cmd, world, entity_map, render_state);
+        }
+
         // DespawnEntity: clean up Rapier state before despawning the ECS entity.
         CommandType::DespawnEntity => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
