@@ -15,12 +15,31 @@ const DEFAULT_DT = 1 / 60;
  */
 export const MAX_CONSECUTIVE_HOOK_FAILURES = 60;
 
+/** One registration of a hook; registering the same function twice makes two. */
+interface HookEntry {
+  readonly fn: HookFn;
+  /** Throws in a row; a successful call resets it. */
+  failures: number;
+}
+
 export class GameLoop {
   private readonly tickFn: TickFn;
-  private readonly hooks: Record<HookPhase, HookFn[]> = {
+  /**
+   * `null` is a registration removed while its phase was running: the list is
+   * compacted when the phase ends, so no index shifts under the iteration.
+   */
+  private readonly hooks: Record<HookPhase, (HookEntry | null)[]> = {
     preTick: [],
     postTick: [],
     frameEnd: [],
+  };
+  /** The phase whose hooks are running, if any. */
+  private runningPhase: HookPhase | null = null;
+  /** Phases holding removed registrations to compact. */
+  private readonly needsCompaction: Record<HookPhase, boolean> = {
+    preTick: false,
+    postTick: false,
+    frameEnd: false,
   };
 
   private _running = false;
@@ -36,12 +55,6 @@ export class GameLoop {
   private dtSum = 0;
   private dtMax = 0;
   private _systemViews: SystemViews | null = null;
-  /** Consecutive failures of each hook that threw on its last call. */
-  private readonly hookFailures: Record<HookPhase, Map<HookFn, number>> = {
-    preTick: new Map(),
-    postTick: new Map(),
-    frameEnd: new Map(),
-  };
 
   constructor(tickFn: TickFn) {
     this.tickFn = tickFn;
@@ -105,15 +118,22 @@ export class GameLoop {
     this._systemViews = views;
   }
 
+  /** A hook added while its phase is running first runs on the next frame. */
   addHook(phase: HookPhase, fn: HookFn): void {
-    this.hooks[phase].push(fn);
+    this.hooks[phase].push({ fn, failures: 0 });
   }
 
+  /** Removes the first registration of `fn`; safe from inside any hook. */
   removeHook(phase: HookPhase, fn: HookFn): void {
     const arr = this.hooks[phase];
-    const idx = arr.indexOf(fn);
-    if (idx !== -1) arr.splice(idx, 1);
-    this.hookFailures[phase].delete(fn);
+    const idx = arr.findIndex((entry) => entry?.fn === fn);
+    if (idx === -1) return;
+    if (this.runningPhase === phase) {
+      arr[idx] = null;
+      this.needsCompaction[phase] = true;
+    } else {
+      arr.splice(idx, 1);
+    }
   }
 
   private frame(now: number): void {
@@ -160,61 +180,45 @@ export class GameLoop {
    * Runs one phase's hooks, each in isolation. A hook that throws must not
    * skip the tick, the hooks after it, or the next requestAnimationFrame:
    * before this, one hook left on a destroyed EntityHandle stopped the engine
-   * for good, with `running` still true.
+   * for good, with `running` still true. A throwing hook is reported when it
+   * starts failing and removed after MAX_CONSECUTIVE_HOOK_FAILURES in a row.
    */
   private runHooks(phase: HookPhase, dt: number, views: SystemViews | undefined): void {
     const arr = this.hooks[phase];
-    const failures = this.hookFailures[phase];
-    for (let i = 0; i < arr.length; i++) {
-      const fn = arr[i];
-      let threw = false;
-      let error: unknown;
-      try {
-        fn(dt, views);
-      } catch (err) {
-        threw = true;
-        error = err;
+    const count = arr.length; // hooks added from here on wait for the next frame
+    this.runningPhase = phase;
+    try {
+      for (let i = 0; i < count; i++) {
+        const entry = arr[i];
+        if (entry === null) continue;
+        try {
+          entry.fn(dt, views);
+          entry.failures = 0;
+        } catch (err) {
+          entry.failures++;
+          const name = entry.fn.name ? `"${entry.fn.name}"` : '(anonymous)';
+          if (entry.failures === 1) {
+            console.error(`[Hyperion] ${phase} hook ${name} threw:`, err);
+          }
+          // `arr[i] !== entry`: it removed itself during the call.
+          if (entry.failures >= MAX_CONSECUTIVE_HOOK_FAILURES && arr[i] === entry) {
+            arr[i] = null;
+            this.needsCompaction[phase] = true;
+            console.error(
+              `[Hyperion] ${phase} hook ${name} removed after ${entry.failures} consecutive failures. Last error:`,
+              err,
+            );
+          }
+        }
       }
-      // The call may have removed hooks (itself included), shifting the ones
-      // after it: move `i` back onto `fn`, or before the slot it left.
-      if (arr[i] !== fn) {
-        const at = arr.indexOf(fn);
-        i = at === -1 ? i - 1 : at;
-      }
-      if (!threw) {
-        if (failures.size > 0) failures.delete(fn);
-        continue;
-      }
-      const keep = this.keepFailedHook(phase, fn, error);
-      if (arr[i] !== fn) {
-        failures.delete(fn); // it unregistered itself: nothing left to count
-      } else if (!keep) {
-        arr.splice(i, 1);
-        i--;
+    } finally {
+      this.runningPhase = null;
+      if (this.needsCompaction[phase]) {
+        this.needsCompaction[phase] = false;
+        let kept = 0;
+        for (const entry of arr) if (entry !== null) arr[kept++] = entry;
+        arr.length = kept;
       }
     }
-  }
-
-  /**
-   * Decides the fate of a hook that just threw: report it, then return `true`
-   * to keep calling it on later frames, or `false` to remove it.
-   */
-  private keepFailedHook(phase: HookPhase, fn: HookFn, err: unknown): boolean {
-    const failures = this.hookFailures[phase];
-    const count = (failures.get(fn) ?? 0) + 1;
-    const name = fn.name ? `"${fn.name}"` : '(anonymous)';
-    if (count === 1) {
-      console.error(`[Hyperion] ${phase} hook ${name} threw:`, err);
-    }
-    if (count < MAX_CONSECUTIVE_HOOK_FAILURES) {
-      failures.set(fn, count);
-      return true;
-    }
-    failures.delete(fn);
-    console.error(
-      `[Hyperion] ${phase} hook ${name} removed after ${count} consecutive failures. Last error:`,
-      err,
-    );
-    return false;
   }
 }

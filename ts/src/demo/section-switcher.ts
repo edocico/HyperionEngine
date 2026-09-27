@@ -5,11 +5,12 @@
  *
  * A section's `setup()` is async (it awaits frames, timers, asset loads). If a
  * tab switch tears the section down while that setup is still in flight, the
- * setup carries on afterwards and installs hooks on handles the teardown has
- * already destroyed. The first such hook to fire throws, and the engine stops.
- * Serializing the switches makes every teardown follow the end of its setup;
- * skipping superseded requests keeps a burst of clicks from replaying every
- * intermediate tab.
+ * setup carries on afterwards: it spawns entities and installs hooks and panels
+ * for a section that is gone, and a hook on a handle the teardown already
+ * destroyed throws on every frame until the GameLoop removes it (it used to
+ * stop the engine). Serializing the switches makes every teardown follow the
+ * end of its setup; skipping superseded requests keeps a burst of clicks from
+ * replaying every intermediate tab.
  */
 export class SectionSwitcher {
   private chain: Promise<void> = Promise.resolve();

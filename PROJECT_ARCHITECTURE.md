@@ -1666,8 +1666,8 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **Multi-tier Texture2DArray** | Singola texture atlas, array di texture individuali | Atlas ha problemi di bleeding ai bordi e spreca spazio. Texture individuali richiedono bind group switch per-texture. Texture2DArray permette un singolo bind group con fino a 256 texture per tier |
 | **4 tier fissi (64/128/256/512)** | Tier dinamici, singola risoluzione | 4 tier coprono la maggior parte dei casi d'uso 2D. Il costo e lo switch nel fragment shader, ma WGSL non supporta dynamic indexing sulle texture bindings |
 | **Packed texture index (tier<<16\|layer)** | Due u32 separati, struct | Un singolo u32 per entita riduce la bandwidth GPU e semplifica il buffer layout. 16 bit per tier (max 65k tier, ne usiamo 4) e 16 bit per layer (max 65k layer, ne usiamo 256) |
-| **Facade pattern per API pubblica** | Export diretto dei moduli interni, factory functions | La Facade `Hyperion` nasconde la complessita interna (bridge, renderer, camera, loop, pool, plugins) dietro un'interfaccia singola. L'utente non deve sapere di `BackpressuredProducer` o `EngineBridge` |
-| **EntityHandle pool con cap 1024** | Nessun pool (GC), pool illimitato, WeakRef pool | 1024 e sufficiente per scene tipiche. Cap evita memory leak da pool mai svuotato. GC-only causerebbe pressione GC inaccettabile con spawn/despawn frequenti |
+| **Facade pattern per API pubblica** | Export diretto dei moduli interni, factory functions | La Facade `Hyperion` nasconde la complessita interna (bridge, renderer, camera, loop, plugins) dietro un'interfaccia singola. L'utente non deve sapere di `BackpressuredProducer` o `EngineBridge` |
+| **Nessun pool di EntityHandle (dal 2026-09-27)** | Pool con cap 1024 (la scelta originale), pool con generation guard | Il pool non ha mai riciclato nulla, e riciclare permette l'aliasing: una handle stantia torna `.alive` e muove un'altra entita. Una handle nuova per ogni `spawn()`; per churn estremo c'e `RawAPI` |
 | **`Children` inline [u32; 32] (no heap)** | `Vec<u32>`, `SmallVec`, heap-allocated list | Array inline e `#[repr(C)]` Pod (GPU-uploadable), zero allocazioni, cache-friendly. 32 slot coprono la maggior parte dei casi. Trade-off: limite rigido di 32 figli |
 | **`fromParts()` factory per test** | Mock objects, dependency injection framework | Factory esplicita che accetta componenti pre-costruiti. Semplice, nessuna dipendenza aggiuntiva. I test possono fornire stub minimali senza WASM/WebGPU |
 | **Plugin cleanup in ordine LIFO** | FIFO, ordine arbitrario, nessun ordine garantito | LIFO e il pattern standard per middleware/plugin stack: le dipendenze installate prima vengono pulite per ultime, evitando use-after-free di risorse condivise |
@@ -1731,7 +1731,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **4** | Asset Pipeline & Textures | **Completata** | `TextureManager` (multi-tier Texture2DArray 64/128/256/512), `createImageBitmap` loading pipeline, `TextureLayerIndex` component, `SetTextureLayer` command, packed texture index encoding (tier<<16\|layer), multi-tier WGSL sampling, concurrency limiter, URL caching |
 | **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
 | **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
-| **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder + pool, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
+| **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
 | **5.5** | Rendering Primitives | **Completata** | `PrimitiveParams([f32;8])` component + `SetPrimParams0/1` commands, multi-type CullPass (6 types × DrawIndirectArgs), multi-pipeline ForwardPass (`SHADER_SOURCES`), line rendering (screen-space expansion + SDF dash), MSDF text (FontAtlas + text layout + median SDF), gradient (linear/radial/conic), box shadow (Evan Wallace erf), FXAA + tonemapping (PBR Neutral/ACES), JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass), `SelectionManager`, `enableOutlines()/disableOutlines()` API |
 | **6** | Input System | **Completata** | `ExternalId(u32)` ECS component, `entityIds` SoA buffer, `InputManager` (keyboard/pointer/scroll + callbacks), `Camera.screenToRay()` + `mat4Inverse`, `hitTestRay()` CPU ray-sphere picking, `ImmediateState` shadow position map + transform patching, `SelectionManager` CPU-side + GPU mask, `EntityHandle.positionImmediate()/clearImmediate()`, public API `engine.input`/`engine.picking.hitTest()` |
 | **7** | Audio System | **Completata** | `SoundRegistry` (URL-deduplicated buffer management, DI), `PlaybackEngine` (Web Audio node graph, 2D spatial pan + distance attenuation), `AudioManager` facade (lazy AudioContext, browser autoplay policy), branded types (`SoundHandle`/`PlaybackId`), audio listener auto-update from camera, `pause()`/`resume()`/`destroy()` lifecycle wiring, public API `engine.audio` |
@@ -1843,7 +1843,7 @@ Phase 5 aggiunge un **Public API Layer** completo sopra i componenti interni del
 
 | Metodo | Scopo |
 |---|---|
-| `spawn()` | Crea un `EntityHandle` (da pool se disponibile) |
+| `spawn()` | Crea un `EntityHandle` nuovo (gli id non vengono riusati: al massimo `MAX_EXTERNAL_ID + 1` spawn per sessione) |
 | `batch(fn)` | Esegue operazioni in batch, flush alla fine |
 | `start()` | Avvia il game loop (RAF) |
 | `pause()` | Sospende il game loop |
@@ -1880,7 +1880,7 @@ const entity = engine.spawn()
     .parent(otherEntity);
 ```
 
-Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `.dispose()` invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
+Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `destroy()` (o `using`, cioè `[Symbol.dispose]()`) invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
 
 **Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). Vive quanto la handle.
 
@@ -1980,7 +1980,7 @@ Il recovery completo (ricreazione di device, re-upload di tutti i buffer, ricrea
 
 **File**: `ts/src/raw-api.ts`
 
-Per scenari ad alte prestazioni dove l'overhead di `EntityHandle` e il GC pressure del pool non sono accettabili (es. sistemi particellari con 100k+ entita), `RawAPI` espone un'interfaccia numerica diretta:
+Per scenari ad alte prestazioni dove l'overhead di `EntityHandle` (un oggetto per entita) non e accettabile (es. sistemi particellari con 100k+ entita), `RawAPI` espone un'interfaccia numerica diretta:
 
 ```typescript
 const raw = engine.raw;
@@ -1998,7 +1998,7 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 
 `LeakDetector` usa `FinalizationRegistry` come backstop per rilevare `EntityHandle` non disposed correttamente. Quando un handle viene garbage-collected senza essere stato disposed, il detector logga un warning con l'entity ID.
 
-**Nota**: `FinalizationRegistry` non e un meccanismo di cleanup affidabile per spec — il GC non garantisce che il callback venga mai invocato. Per questo il detector e un **backstop diagnostico**, non il meccanismo primario di cleanup. Il cleanup primario e `.dispose()` esplicito.
+**Nota**: `FinalizationRegistry` non e un meccanismo di cleanup affidabile per spec — il GC non garantisce che il callback venga mai invocato. Per questo il detector e un **backstop diagnostico**, non il meccanismo primario di cleanup. Il cleanup primario e `destroy()` esplicito (o `using`).
 
 ---
 

@@ -15,7 +15,7 @@ import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
-import { validateConfig } from './types';
+import { validateConfig, MAX_EXTERNAL_ID } from './types';
 import { EntityHandle } from './entity-handle';
 import { GameLoop } from './game-loop';
 import { Camera } from './camera';
@@ -43,7 +43,7 @@ import { LightingAPI } from './lighting-api';
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
- * entity handle pool, and leak detector. Provides the public API surface
+ * entity id allocation, and leak detector. Provides the public API surface
  * for spawning entities, controlling the loop, and tearing down resources.
  *
  * Construct via `Hyperion.create(config)` for production use, or
@@ -87,7 +87,7 @@ export class Hyperion implements Disposable {
     this.camera = new Camera();
     this.cameraApi = new CameraAPI(this.camera);
     this.leakDetector = new LeakDetector();
-    this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
+    this.rawApi = new RawAPI(bridge.commandBuffer, () => this.allocateId());
     this.pluginRegistry = new PluginRegistry();
     this.inputManager = new InputManager();
     this.immediateState = new ImmediateState();
@@ -387,13 +387,28 @@ export class Hyperion implements Disposable {
         `Destroy existing entities before spawning more.`,
       );
     }
-    const id = this.nextEntityId++;
+    const id = this.allocateId();
     this.bridge.commandBuffer.spawnEntity(id);
     this.entityCount++;
 
     const handle = new EntityHandle(id, this.bridge.commandBuffer, this.immediateState, this.releaseHandle);
     this.leakDetector.register(handle, id);
     return handle;
+  }
+
+  /**
+   * Hands out the next external id, shared by `spawn()` and `raw.spawn()`.
+   * Ids are never reused: past MAX_EXTERNAL_ID the WASM side would drop the
+   * spawn and every later command for it without a word, so refuse here.
+   */
+  private allocateId(): number {
+    if (this.nextEntityId > MAX_EXTERNAL_ID) {
+      throw new Error(
+        `Entity id space exhausted: ${MAX_EXTERNAL_ID + 1} entities spawned in this session, ` +
+        `and ids are not reused.`,
+      );
+    }
+    return this.nextEntityId++;
   }
 
   /**

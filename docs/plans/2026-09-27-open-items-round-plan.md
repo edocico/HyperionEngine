@@ -55,6 +55,7 @@ Decisioni rimandate, da prendere **prima del passo indicato**:
 | 7 | **L-b**: `mix` come seconda pipeline, dopo add e sub | Test del blend state; il layer del `light-buffer` vale il colore del mix sotto un mix a intensità piena; nessun flicker, oppure ordine documentato come non definito |
 | 8 | **L-a**: luce sprite. Nell'ordine: raggio in Rust, poi texture tier in `LightAccumStage` (`TextureTierBinding`), poi shader, poi API TS, poi demo con un cookie procedurale | Test Rust sul raggio; indice 0 = bianco coperto dal guard di `forward-pass.test.ts`; sulla GPU AMD: cookie campionato su texel noti, crescita dei tier con 0 errori, nessun pop al bordo del frustum |
 | 9 | Chiusura: documenti obsoleti, CLAUDE.md, `claude-md-auditor`, `adversarial-review` sull'intero range | `preflight.sh --full` verde; `/gpu-check` con tutti i tab e i conteggi |
+| 10 | **Mode A verificabile** (scelta dell'utente, 2026-09-27): `HyperionConfig.powerPreference` passato a `requestAdapter()` sia sul main thread sia nel render worker (messaggio di init). Utile anche per i laptop a doppia GPU | Test su `renderer.ts`/`render-worker.ts` per l'opzione; sulla macchina Fedora, con `?mode=A` e `powerPreference: 'low-power'`, il render worker ottiene l'adapter AMD e l'harness disegna (oggi prende NVIDIA e perde il device, perché l'`initScript` di DevTools non raggiunge i worker) |
 
 Perché H viene prima: c'è un bug del motore da correggere, e il probe è la base di verifica per S e per L. Il formato 0 e il `mix` si possono controllare solo su valori lineari; uno screenshot a 8 bit non basta.
 
@@ -62,7 +63,12 @@ Perché S viene prima di L: con il 2D opt-in i due filoni sono indipendenti, ma 
 
 Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione più piccolo, e `shadow()` va generalizzata prima che la luce sprite la riusi.
 
-## 4. Documenti obsoleti da correggere lungo la strada
+## 4. Trovato lungo la strada
+
+- **Passo 1, review `wf_fc1e6644-ae6`:** gli id esterni non vengono mai riusati, quindi `MAX_EXTERNAL_ID` (1 048 575) limita gli spawn CUMULATIVI di una sessione. Ora `spawn()` e `raw.spawn()` lanciano un errore invece di lasciare che la WASM scarti lo spawn in silenzio. **Da decidere:** riusare gli id liberati, con una quarantena di qualche frame perché eventi e comandi in volo non finiscano sull'entità nuova.
+- **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
+
+## 5. Documenti obsoleti da correggere lungo la strada
 
 Ognuno va corretto nel commit del passo che lo tocca:
 - **H:**

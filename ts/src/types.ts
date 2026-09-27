@@ -58,6 +58,14 @@ export interface MemoryStats {
   tierUtilization: number[];
 }
 
+/**
+ * The largest external entity id the engine accepts: the WASM `EntityMap`
+ * (`MAX_EXTERNAL_ID` in command_processor.rs, 2^20 - 1) rejects a spawn past
+ * it without any error on the TS side. Ids are never reused, so this bounds
+ * the CUMULATIVE number of spawns (`spawn()` and `raw.spawn()` together).
+ */
+export const MAX_EXTERNAL_ID = 1_048_575;
+
 /** Compaction options for engine.compact(). */
 export interface CompactOptions {
   entityMap?: boolean;

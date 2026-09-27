@@ -211,6 +211,51 @@ describe('GameLoop', () => {
     expect([first, second, third].map((h) => h.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
+  it('a hook that removes an earlier hook and itself does not skip the hook after it', () => {
+    const loop = new GameLoop(vi.fn());
+    const a = vi.fn();
+    const b = vi.fn();
+    const f = () => { loop.removeHook('preTick', a); loop.removeHook('preTick', f); };
+    loop.addHook('preTick', a);
+    loop.addHook('preTick', f);
+    loop.addHook('preTick', b);
+    loop.start();
+
+    rafCallbacks[0](16.67);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+
+  it('a hook that removes and re-adds itself skips no hook and runs once per frame', () => {
+    const loop = new GameLoop(vi.fn());
+    const b = vi.fn();
+    const c = vi.fn();
+    const a = vi.fn(() => { loop.removeHook('preTick', a); loop.addHook('preTick', a); });
+    loop.addHook('preTick', a);
+    loop.addHook('preTick', b);
+    loop.addHook('preTick', c);
+    loop.start();
+
+    rafCallbacks[0](16.67);
+    expect([a, b, c].map((h) => h.mock.calls.length)).toEqual([1, 1, 1]);
+    rafCallbacks[1](33.33);
+    expect([a, b, c].map((h) => h.mock.calls.length)).toEqual([2, 2, 2]);
+  });
+
+  it('a hook added during a frame first runs on the next frame', () => {
+    const loop = new GameLoop(vi.fn());
+    const late = vi.fn();
+    let added = false;
+    loop.addHook('postTick', () => {
+      if (!added) { added = true; loop.addHook('postTick', late); }
+    });
+    loop.start();
+
+    rafCallbacks[0](16.67);
+    expect(late).not.toHaveBeenCalled();
+    rafCallbacks[1](33.33);
+    expect(late).toHaveBeenCalledTimes(1);
+  });
+
   describe('a hook that throws', () => {
     let errorSpy: ReturnType<typeof vi.spyOn>;
     let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -334,6 +379,19 @@ describe('GameLoop', () => {
       runFrames(1);
       expect(next).toHaveBeenCalledTimes(1);
       expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('each registration of the same function counts its own failures', () => {
+      const loop = new GameLoop(vi.fn());
+      const broken = vi.fn(() => { throw new Error('stale handle'); });
+      loop.addHook('preTick', broken);
+      loop.addHook('preTick', broken);
+      loop.start();
+
+      runFrames(MAX_CONSECUTIVE_HOOK_FAILURES - 1);
+      expect(broken).toHaveBeenCalledTimes(2 * (MAX_CONSECUTIVE_HOOK_FAILURES - 1));
+      runFrames(2);
+      expect(broken).toHaveBeenCalledTimes(2 * MAX_CONSECUTIVE_HOOK_FAILURES);
     });
 
     it('a hook removed and added again starts counting from zero', () => {

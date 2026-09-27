@@ -7,6 +7,8 @@ import { ExecutionMode } from './capabilities';
 import { SelectionManager } from './selection';
 import { AudioManager } from './audio-manager';
 import { LeakDetector } from './leak-detector';
+import { MAX_EXTERNAL_ID } from './types';
+import { readFileSync } from 'node:fs';
 
 function mockBridge(): EngineBridge {
   let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
@@ -183,6 +185,34 @@ describe('Hyperion', () => {
     e.destroy();
     expect(unregister).toHaveBeenCalledWith(e);
     unregister.mockRestore();
+  });
+
+  it('spawn() refuses, loudly, an id past MAX_EXTERNAL_ID (WASM would drop it silently)', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    (engine as unknown as { nextEntityId: number }).nextEntityId = MAX_EXTERNAL_ID;
+    const last = engine.spawn();
+    expect(last.id).toBe(MAX_EXTERNAL_ID);
+    last.destroy();
+    expect(() => engine.spawn()).toThrow(/id space exhausted/);
+    expect(bridge.commandBuffer.spawnEntity).not.toHaveBeenCalledWith(MAX_EXTERNAL_ID + 1);
+    expect(engine.stats.entityCount).toBe(0);
+  });
+
+  it('raw.spawn() refuses the same ids', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    (engine as unknown as { nextEntityId: number }).nextEntityId = MAX_EXTERNAL_ID + 1;
+    expect(() => engine.raw.spawn()).toThrow(/id space exhausted/);
+    expect(bridge.commandBuffer.spawnEntity).not.toHaveBeenCalled();
+  });
+
+  it('MAX_EXTERNAL_ID matches the Rust EntityMap cap', () => {
+    const rust = readFileSync(
+      new URL('../../crates/hyperion-core/src/command_processor.rs', import.meta.url), 'utf8');
+    const m = /pub const MAX_EXTERNAL_ID: u32 = ([0-9_]+);/.exec(rust);
+    expect(m).not.toBeNull();
+    expect(Number(m![1].replaceAll('_', ''))).toBe(MAX_EXTERNAL_ID);
   });
 
   it('a destroyed handle is never handed out again (no aliasing)', () => {
