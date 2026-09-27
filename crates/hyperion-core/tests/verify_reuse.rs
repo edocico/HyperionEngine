@@ -50,7 +50,7 @@ fn r4_duplicate_id_inside_one_spawn_run_leaves_one_entity() {
 #[cfg(feature = "physics-2d")]
 mod physics {
     use super::*;
-    use hyperion_core::physics::PhysicsBodyHandle;
+    use hyperion_core::physics::{PhysicsBodyHandle, PhysicsColliderHandle};
     use hyperion_core::rapier2d;
 
     fn despawn(id: u32) -> Command {
@@ -98,6 +98,16 @@ mod physics {
         let ent = e.entity_map.get(id).unwrap();
         let h = e.world.get::<&PhysicsBodyHandle>(ent).unwrap().0;
         e.physics.rigid_body_set[h].gravity_scale()
+    }
+    fn sensor(id: u32) -> Command {
+        let mut p = [0u8; 16];
+        p[0] = 1;
+        cmd(CommandType::SetColliderSensor, id, p)
+    }
+    fn is_sensor(e: &Engine, id: u32) -> bool {
+        let ent = e.entity_map.get(id).unwrap();
+        let h = e.world.get::<&PhysicsColliderHandle>(ent).unwrap().0;
+        e.physics.collider_set[h].is_sensor()
     }
     fn joints_touching(e: &Engine, id: u32) -> usize {
         e.physics.joint_map.values().filter(|j| j.entity_a == id || j.entity_b == id).count()
@@ -237,6 +247,76 @@ mod physics {
         e.process_commands(&[spawn2d(5), spawn2d(5)]);
         e.update(1.0 / 60.0);
         assert_old_five_fully_retired(&e, "R4b");
+    }
+
+    // R5 — the second (physics) pass resolved every command against the map as
+    // it stood at the END of the batch. In `[SetGravityScale 7, Despawn 7,
+    // Spawn 7, ...]` the gravity scale meant for the old 7 was staged onto the
+    // new 7's pending body.
+    #[test]
+    fn r5_same_batch_body_option_for_the_old_id_does_not_reach_the_new_one() {
+        let mut e = Engine::new();
+        e.process_commands(&[spawn2d(7), body(7, 0), ball(7)]);
+        e.update(1.0 / 60.0);
+
+        e.process_commands(&[
+            f1(CommandType::SetGravityScale, 7, 0.0), // for the OLD 7
+            despawn(7),
+            spawn2d(7), body(7, 0), ball(7),
+        ]);
+        e.update(1.0 / 60.0);
+        println!("R5 new ext 7 gravity_scale = {} (1.0 = nothing leaked)", gravity_scale_of(&e, 7));
+        assert_eq!(gravity_scale_of(&e, 7), 1.0);
+    }
+
+    // R5b — the same for a collider override and a character controller.
+    #[test]
+    fn r5b_same_batch_collider_override_and_controller_do_not_leak() {
+        let mut e = Engine::new();
+        e.process_commands(&[spawn2d(7), body(7, 2), ball(7)]);
+        e.update(1.0 / 60.0);
+
+        e.process_commands(&[
+            sensor(7),     // for the OLD 7
+            controller(7), // for the OLD 7
+            despawn(7),
+            spawn2d(7), body(7, 2), ball(7),
+        ]);
+        e.update(1.0 / 60.0);
+        println!("R5b new ext 7 sensor={} controller={}",
+            is_sensor(&e, 7), e.physics.character_map.contains_key(&7));
+        assert!(!is_sensor(&e, 7));
+        assert!(!e.physics.character_map.contains_key(&7));
+    }
+
+    // R5c — commands AFTER the re-spawn address the new entity and still apply,
+    // also after a spawn that retired a live id.
+    #[test]
+    fn r5c_commands_after_the_respawn_still_apply() {
+        let mut e = Engine::new();
+        e.process_commands(&[spawn2d(7), body(7, 2), ball(7)]);
+        e.update(1.0 / 60.0);
+
+        e.process_commands(&[
+            despawn(7),
+            spawn2d(7), body(7, 2), ball(7),
+            f1(CommandType::SetGravityScale, 7, 0.0),
+            sensor(7),
+            controller(7),
+        ]);
+        e.update(1.0 / 60.0);
+        assert_eq!(gravity_scale_of(&e, 7), 0.0);
+        assert!(is_sensor(&e, 7));
+        assert!(e.physics.character_map.contains_key(&7));
+
+        // A spawn on the live 7, then options: they belong to the newest 7.
+        e.process_commands(&[
+            f1(CommandType::SetGravityScale, 7, 3.0), // for the retired 7
+            spawn2d(7), body(7, 2), ball(7),
+            f1(CommandType::SetGravityScale, 7, 2.0),
+        ]);
+        e.update(1.0 / 60.0);
+        assert_eq!(gravity_scale_of(&e, 7), 2.0);
     }
 
     // R6 — a body option for 7, then its despawn, then 7 re-spawned in a LATER
