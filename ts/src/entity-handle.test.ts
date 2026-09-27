@@ -817,3 +817,35 @@ describe('EntityHandle — 2D entities (spawn({ mode: "2d" }))', () => {
     }
   });
 });
+
+describe('EntityHandle — depth (2D only, z = -depth)', () => {
+  it('depth() on a 2D handle sends SetDepth without a warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = mockProducer();
+      new EntityHandle(4, p, undefined, undefined, true).depth(3);
+      expect(p.setDepth).toHaveBeenCalledWith(4, 3);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('depth() on a 3D handle warns once in dev: a 3D entity takes its z from position()', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const h = new EntityHandle(5, mockProducer());
+      h.depth(3).depth(4);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/3D entity 5.*depth\(\).*position\(\)/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('positionImmediate on a 2D handle shadows z = -depth, where the engine draws it', () => {
+    const imm = new ImmediateState();
+    new EntityHandle(6, mockProducer(), imm, undefined, true).depth(2.5).positionImmediate(1, 2);
+    expect(imm.get(6)).toEqual([1, 2, -2.5]);
+  });
+});

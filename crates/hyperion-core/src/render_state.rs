@@ -694,6 +694,7 @@ impl RenderState {
             }
         } else if let Ok(transform) = world.get::<&Transform2D>(entity) {
             let (sin, cos) = transform.rot.sin_cos();
+            let z = world.get::<&Depth>(entity).map_or(0.0, |d| d.z());
             let t = s * 16;
             // Column-major 4x4 (same format as transform_system_2d in systems.rs)
             self.gpu_transforms[t]     = transform.sx * cos;
@@ -710,14 +711,14 @@ impl RenderState {
             self.gpu_transforms[t + 11] = 0.0;
             self.gpu_transforms[t + 12] = transform.x;
             self.gpu_transforms[t + 13] = transform.y;
-            self.gpu_transforms[t + 14] = 0.0;
+            self.gpu_transforms[t + 14] = z;
             self.gpu_transforms[t + 15] = 1.0;
 
             // Bounds from Transform2D position
             let b = s * 4;
             self.gpu_bounds[b] = transform.x;
             self.gpu_bounds[b + 1] = transform.y;
-            self.gpu_bounds[b + 2] = 0.0;
+            self.gpu_bounds[b + 2] = z;
         }
 
         // Remaining SoA fields are identical to write_slot()
@@ -955,9 +956,10 @@ impl RenderState {
                         .get::<&Transform2D>(entity)
                         .map(|t| *t)
                         .unwrap_or_default();
+                    let z = world.get::<&Depth>(entity).map_or(0.0, |d| d.z());
                     staging.push(t2d.x.to_bits());
                     staging.push(t2d.y.to_bits());
-                    staging.push(0u32); // z = 0 for 2D
+                    staging.push(z.to_bits()); // -depth (scatter.wgsl: pz)
                     staging.push(t2d.rot.to_bits());
                     staging.push(t2d.sx.to_bits());
                     staging.push(t2d.sy.to_bits());

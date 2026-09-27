@@ -926,11 +926,20 @@ fn process_single_command(
 
         CommandType::SetDepth => {
             if let Some(entity) = entity_map.get(cmd.entity_id) {
+                // Depth is the z a 2D entity lacks; a 3D entity takes its z
+                // from its Position, so it is ignored there (2026-09-27).
+                if !entity_map.is_entity_2d(cmd.entity_id) {
+                    return;
+                }
                 // A NaN depth is a poisoned GPU radix-sort key: it corrupts the
                 // whole back-to-front transparency order, not just this entity.
                 let Some(z) = read_f32(&cmd.payload) else { return };
                 let _ = world.insert_one(entity, Depth(z));
+                // It moves the row (z = -depth): re-stage the transform and the
+                // bounds; the descendant pass then re-stages the children.
                 if let Some(slot) = render_state.get_slot(entity) {
+                    render_state.dirty_tracker.mark_transform_dirty(slot as usize);
+                    render_state.dirty_tracker.mark_bounds_dirty(slot as usize);
                     render_state.dirty_tracker.mark_meta_dirty(slot as usize);
                 }
             }
@@ -2223,8 +2232,10 @@ mod tests {
         assert!((d.0 - 5.0).abs() < 1e-7);
     }
 
+    /// Depth is the z a 2D entity lacks; a 3D entity takes its z from its
+    /// Position, so SetDepth is ignored there (decision 2026-09-27).
     #[test]
-    fn set_depth_works_on_3d_entity_too() {
+    fn set_depth_is_ignored_on_a_3d_entity() {
         let mut world = World::new();
         let mut map = EntityMap::new();
         let mut rs = RenderState::new();
@@ -2244,8 +2255,7 @@ mod tests {
             &mut rs,
         );
         let ent = map.get(1).unwrap();
-        let d = world.get::<&Depth>(ent).unwrap();
-        assert!((d.0 - 7.0).abs() < 1e-7);
+        assert!(world.get::<&Depth>(ent).is_err());
     }
 
     #[test]

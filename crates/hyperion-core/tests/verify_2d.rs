@@ -116,3 +116,82 @@ fn d3_a_light_on_transform2d_culls_against_its_range_in_format_0() {
     assert_eq!(f32::from_bits(row[19]), 12.0, "the staged radius is the range");
     assert_eq!(row[21] & 0xFF, 6, "renderMeta carries the Light2D type");
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Depth → z (2026-09-27): `Depth` is the z a 2D entity lacks. It is a
+// distance into the screen: the GPU row carries z = -depth, so a larger depth
+// draws behind (the depth test is `less`, the camera looks down -Z).
+// ─────────────────────────────────────────────────────────────────
+
+fn depth(id: u32, d: f32) -> Command {
+    floats(CommandType::SetDepth, id, &[d])
+}
+fn parent(child: u32, parent: u32) -> Command {
+    let mut p = [0u8; 16];
+    p[0..4].copy_from_slice(&parent.to_le_bytes());
+    cmd(CommandType::SetParent, child, p)
+}
+
+#[test]
+fn d4_depth_is_the_z_of_a_2d_root_in_its_row_its_bounds_and_format_0() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, true)]);
+    e.update(1.0 / 60.0);
+    e.process_commands(&[depth(0, 3.0)]);
+    e.update(1.0 / 60.0);
+
+    let (t, b) = gpu_row(&e, 0);
+    assert_eq!(t[14], -3.0, "the row's z is -depth");
+    assert_eq!(b[2], -3.0, "the culling sphere sits at that z too");
+    let row = staged(&e, 0).expect("SetDepth re-stages the row");
+    assert_eq!(row[31], 0, "still a format-0 root");
+    assert_eq!(f32::from_bits(row[2]), -3.0, "format 0 carries the z in word 2");
+}
+
+#[test]
+fn d5_a_2d_childs_depth_is_relative_and_follows_its_parent() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, true), spawn(1, true)]);
+    e.process_commands(&[parent(1, 0), depth(0, 5.0), depth(1, -1.0)]);
+    e.update(1.0 / 60.0);
+    assert_eq!(gpu_row(&e, 1).0[14], -4.0, "child world depth = 5 + (-1)");
+
+    // Only the parent changes: the child must be re-staged with its new z.
+    e.process_commands(&[depth(0, 2.0)]);
+    e.update(1.0 / 60.0);
+    assert_eq!(gpu_row(&e, 1).0[14], -1.0, "child world depth = 2 + (-1)");
+    let row = staged(&e, 1).expect("the child is re-staged when its parent's depth changes");
+    assert_eq!(row[31], 1, "a 2D child travels as a full matrix");
+    assert_eq!(f32::from_bits(row[14]), -1.0);
+}
+
+#[test]
+fn d6_depth_on_a_3d_entity_is_ignored() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, false)]);
+    e.process_commands(&[floats(CommandType::SetPosition, 0, &[1.0, 2.0, -0.5]), depth(0, 7.0)]);
+    e.update(1.0 / 60.0);
+    let (t, b) = gpu_row(&e, 0);
+    assert_eq!(t[14], -0.5, "a 3D entity takes its z from its position only");
+    assert_eq!(b[2], -0.5);
+    let ent = e.entity_map.get(0).unwrap();
+    assert!(e.world.get::<&hyperion_core::components::Depth>(ent).is_err(), "no Depth component on a 3D entity");
+}
+
+#[test]
+fn d7_a_2d_twin_at_depth_d_shares_its_row_with_a_3d_twin_at_z_minus_d() {
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, true), spawn(1, false)]);
+    e.process_commands(&[
+        floats(CommandType::SetPosition, 0, &[4.0, 1.0, 0.0]),
+        depth(0, 2.5),
+        floats(CommandType::SetRotation2D, 0, &[0.3]),
+        floats(CommandType::SetPosition, 1, &[4.0, 1.0, -2.5]),
+        floats(CommandType::SetRotation2D, 1, &[0.3]),
+    ]);
+    e.update(1.0 / 60.0);
+    let (t2, b2) = gpu_row(&e, 0);
+    let (t3, b3) = gpu_row(&e, 1);
+    assert_close(&t2, &t3, "transform");
+    assert_close(&b2, &b3, "bounds");
+}
