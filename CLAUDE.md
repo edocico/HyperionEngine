@@ -21,8 +21,8 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (202 tests, 280 with physics-2d, 231 with dev-tools, 324 with all features)
-cargo test -p hyperion-core --all-features   # + 91 integration tests across 7 files (324 lib + 91 = 415 total)
+cargo test -p hyperion-core                  # All Rust unit tests (203 tests, 281 with physics-2d, 232 with dev-tools, 325 with all features)
+cargo test -p hyperion-core --all-features   # + 91 integration tests across 7 files (325 lib + 91 = 416 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -32,7 +32,7 @@ cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (42 tests)
 cargo test -p hyperion-core engine           # Engine tests only (16 tests, 25 with physics-2d, 64 with physics-2d+dev-tools)
 cargo test -p hyperion-core render_state     # Render state tests only (55 tests)
 cargo test -p hyperion-core command_proc     # Command processor tests only (40 tests, 41 with physics-2d)
-cargo test -p hyperion-core systems          # Systems tests only (23 tests, 25 with physics-2d)
+cargo test -p hyperion-core systems          # Systems tests only (24 tests, 26 with physics-2d)
 cargo test -p hyperion-core components       # Component tests only (28 tests)
 
 # Run a single test by full path
@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1298 tests + 5 skipped, 94 files)
+cd ts && npm test                            # All vitest tests (1301 tests + 5 skipped, 94 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -73,21 +73,21 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 # 94 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (89 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (100 tests)
-cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (74 tests)
+cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (75 tests)
 cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (42 tests)
 cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (20 tests)
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality/groups (21 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (280 lib tests, 362 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (281 lib tests, 363 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 324 lib tests (415 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 325 lib tests (416 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (231 lib tests, 272 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (232 lib tests, 273 with integration)
 ```
 
 ### Development Workflow
@@ -365,7 +365,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | Shader | Role |
 |---|---|
 | `basic.wgsl` | Quad render: SoA transforms, visibility indirection, multi-tier Texture2DArray. `shade()` is the colour/coverage shared by `fs_main` and `fs_occluder`. `override OCCLUDER_PASS` drops non-casters in the vertex stage (occluder pipelines only). Packed texture index 0 answers white. Group 2 (light buffer, a 2d-array) read in `fs_main` only, gated on `RECEIVES_LIGHT_BIT` (bit 10), at the layer `lightGroupOf(mask)` gives. `CameraUniform` is 80 B in all six primitive shaders (`occluderLayers` for the seed stage; `castsInto()`) |
-| `line.wgsl` | A quad expanded across the segment. Width in local units (scaled by the entity and the zoom) or, with `primParams[7] = 1` (`.line(..., { unit: 'px' })`), in screen pixels: the endpoints are projected and offset across the ON-SCREEN direction with the camera's viewport size. Edge AA with `fwidth` (computed before any branch) in both units; SDF dash pattern |
+| `line.wgsl` | A quad expanded across the segment. Width in local units (scaled by the entity and the zoom) or, with `primParams[7] = 1` (`.line(..., { unit: 'px' })`), in screen pixels: the endpoints are projected and offset across the ON-SCREEN direction with the camera's viewport size. The quad is the stroke plus a 1-px AA margin (`edgeScale` maps its uv back to the stroke); the edge ramp is `2·fwidth(uv.y)` (the LINEAR interpolant: `fwidth` of the `abs()` collapsed at the centre inside a 2×2 quad) centred on the edge. Opaque entities keep exactly the stroke through the half-open `insideStroke` test (a W-px line covers W rows at any sub-pixel alignment; `transparent` is a flat varying from renderMeta bit 8), the transparent pipeline blends the ramp; `fs_occluder` seeds exactly the opaque stroke, at least 2 px (one half-res seed texel) wide. SDF dash pattern. All measured on GPU with `engine.debug.probe` |
 | `gradient.wgsl` | 2-stop gradient (linear/radial/conic). Lit like `basic.wgsl`: group 2 (2d-array + `lightGroupOf`) in `fs_main` only |
 | `box-shadow.wgsl` | SDF box shadow (Evan Wallace erf) |
 | `bezier.wgsl` | Quadratic Bezier SDF (Inigo Quilez), `fwidth()` anti-aliased stroke |

@@ -20,7 +20,7 @@ export function halfResolution(canvasWidth: number, canvasHeight: number): [numb
 /** The fragment entry point a primitive shader exposes to cast shadows. */
 const OCCLUDER_ENTRY = 'fs_occluder';
 
-/** CameraUniform in every primitive shader: viewProjection + occluderLayers + pads. */
+/** CameraUniform in every primitive shader: viewProjection + occluderLayers + viewport size + pad. */
 const CAMERA_UNIFORM_SIZE = 80;
 
 /**

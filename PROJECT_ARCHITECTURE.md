@@ -2075,7 +2075,7 @@ Phase 5.5 estende il rendering engine da quad-only a **multi-primitiva**. Ogni t
 
 | Tipo | Params 0-3 | Params 4-7 |
 | --- | --- | --- |
-| **Line** (1) | startX, startY, endX, endY | width, dashLen, gapLen, \_pad |
+| **Line** (1) | startX, startY, endX, endY | width, dashLen, gapLen, widthUnit (0 unita locali, 1 pixel) |
 | **SDFGlyph** (2) | atlasU0, atlasV0, atlasU1, atlasV1 | distRange, fontSize, \_pad, \_pad |
 | **Gradient** (4) | type, angle, stop0_pos, stop0_r | stop0_g, stop0_b, stop1_pos, stop1_r |
 | **BoxShadow** (5) | rectW, rectH, cornerRadius, blur | colorR, colorG, colorB, colorA |

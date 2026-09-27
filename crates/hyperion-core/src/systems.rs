@@ -287,14 +287,16 @@ pub fn update_bounding_radii(world: &mut World) {
 
 /// Culling radius of a line (`PRIM_TYPE_LINE`): the farther endpoint through
 /// `m`'s linear part, plus half the width when it is in local units
-/// (`params[7] < 0.5`), scaled by the largest axis. Non-finite input gives 0.
+/// (`params[7] < 0.5`), scaled by the Frobenius norm of the 2D linear part — an
+/// upper bound on how far the matrix stretches any direction, where the
+/// largest column norm is not (under shear). Non-finite input gives 0.
 fn line_radius(params: &[f32; 8], m: &[f32; 16]) -> f32 {
     let c0 = glam::Vec3::new(m[0], m[1], m[2]);
     let c1 = glam::Vec3::new(m[4], m[5], m[6]);
     let reach = |x: f32, y: f32| (c0 * x + c1 * y).length();
     let mut r = reach(params[0], params[1]).max(reach(params[2], params[3]));
     if params[7] < 0.5 {
-        let axis = c0.length().max(c1.length());
+        let axis = (c0.length_squared() + c1.length_squared()).sqrt();
         r += params[4].abs() * 0.5 * axis;
     }
     if r.is_finite() { r } else { 0.0 }
@@ -630,7 +632,8 @@ mod tests {
         let mut world = World::new();
         let e = spawn_line(&mut world, (-10.0, 0.0), (10.0, 0.0), 0.5, 0.0, 1.0);
         update_bounding_radii(&mut world);
-        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - 10.25).abs() < 1e-5);
+        let want = 10.0 + 0.25 * std::f32::consts::SQRT_2; // Frobenius of the identity's 2D part
+        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - want).abs() < 1e-5);
     }
 
     #[test]
@@ -638,8 +641,10 @@ mod tests {
         let mut world = World::new();
         let e = spawn_line(&mut world, (0.0, 0.0), (3.0, 4.0), 1.0, 0.0, 2.0);
         update_bounding_radii(&mut world);
-        // |(3,4)| * 2 = 10, plus half the width in local units, scaled: 0.5 * 2.
-        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - 11.0).abs() < 1e-5);
+        // |(3,4)| * 2 = 10, plus half the width scaled by the Frobenius norm of
+        // diag(2, 2): 0.5 * 2*sqrt(2).
+        let want = 10.0 + 0.5 * 2.0 * std::f32::consts::SQRT_2;
+        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - want).abs() < 1e-5);
     }
 
     #[test]
@@ -649,6 +654,39 @@ mod tests {
         let e = spawn_line(&mut world, (-10.0, 0.0), (10.0, 0.0), 6.0, 1.0, 1.0);
         update_bounding_radii(&mut world);
         assert!((world.get::<&BoundingRadius>(e).unwrap().0 - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn line_radius_holds_under_shear() {
+        // World linear part S(2,1) * R(45deg): both column norms are 1.58 but
+        // the matrix stretches some directions by 2. A short stroke far from
+        // the origin, perpendicular to its offset, 4 local units wide: its far
+        // corner must still lie inside the sphere.
+        let (s, c) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let m = Mat4::from_cols_array(&[
+            2.0 * c, s, 0.0, 0.0,
+            -2.0 * s, c, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]);
+        let (p0, p1) = ((2.086f32, -2.157f32), (2.157f32, -2.086f32));
+        let mut world = World::new();
+        let e = spawn_line(&mut world, p0, p1, 4.0, 0.0, 1.0);
+        world.get::<&mut ModelMatrix>(e).unwrap().0 = m.to_cols_array();
+        update_bounding_radii(&mut world);
+        let r = world.get::<&BoundingRadius>(e).unwrap().0;
+        // The farthest point of the stroke: an endpoint plus half the width
+        // along the stroke's normal, through the matrix.
+        let dir = glam::Vec2::new(p1.0 - p0.0, p1.1 - p0.1).normalize();
+        let normal = glam::Vec2::new(-dir.y, dir.x);
+        let mut farthest = 0.0f32;
+        for p in [p0, p1] {
+            for side in [-1.0f32, 1.0] {
+                let q = glam::Vec2::new(p.0, p.1) + normal * side * 2.0;
+                farthest = farthest.max(m.transform_vector3(glam::Vec3::new(q.x, q.y, 0.0)).length());
+            }
+        }
+        assert!(r >= farthest - 1e-4, "radius {r} < farthest point {farthest}");
     }
 
     #[test]

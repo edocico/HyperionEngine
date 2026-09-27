@@ -39,6 +39,7 @@ export const PRIM_PARAMS_SCHEMA: Partial<Record<RenderPrimitiveType, Record<stri
   [RenderPrimitiveType.Line]: {
     startX: 0, startY: 1, endX: 2, endY: 3,
     width: 4, dashLen: 5, gapLen: 6,
+    widthUnit: 7, // 0 local units, 1 screen pixels
   },
   [RenderPrimitiveType.SDFGlyph]: {
     atlasU0: 0, atlasV0: 1, atlasU1: 2, atlasV1: 3,
