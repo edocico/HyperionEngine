@@ -224,8 +224,8 @@ Project structure, COOP/COEP dev server, capability detection, adaptive mode sel
 ### Deliverable
 
 - API pubblica facade ergonomica e type-safe con zero-knowledge del ring buffer
-- Entity handle pooling: 100k spawn+destroy senza GC pause
-- `dispose()` + `using` (TC39 Explicit Resource Management)
+- Entity handle pooling: 100k spawn+destroy senza GC pause — *rimosso il 2026-09-27: il pool non ha mai riciclato nulla, e riciclare permette l'aliasing di una handle stantia*
+- `destroy()` + `using` (TC39 Explicit Resource Management)
 - Scene graph opt-in con propagazione e dirty flag
 - Dirty-flag partial upload
 - `compact()` API per sessioni long-running
@@ -241,7 +241,7 @@ Project structure, COOP/COEP dev server, capability detection, adaptive mode sel
 ### Validazione Phase 5
 
 - [x] API pubblica ergonomica e type-safe
-- [x] Entity handle pool: 100k spawn+destroy senza GC pause (< 1ms)
+- [x] Entity handle pool: 100k spawn+destroy senza GC pause (< 1ms) — *rimosso il 2026-09-27, vedi sopra*
 - [x] Scene graph: entità gerarchiche con propagazione e dirty flag
 - [x] Compact() API funzionale per sessioni long-running
 - [x] device.lost recovery trasparente

@@ -508,7 +508,7 @@ describe('Hyperion immediate mode', () => {
     engine.destroy();
   });
 
-  it('spawned entity has immediate state wired through pool', () => {
+  it('spawned entity has immediate state wired through spawn', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
     const e = engine.spawn();

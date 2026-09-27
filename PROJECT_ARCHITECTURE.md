@@ -981,7 +981,7 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                   start/pause/resume/destroy, plugins, hooks, ║
 ║                   selection, input, picking, audio, outlines, ║
 ║                   profiler, recompileShader)                  ║
-║  entity-handle → EntityHandle fluent builder + EntityPool     ║
+║  entity-handle → EntityHandle fluent builder                  ║
 ║  game-loop.ts  → GameLoop (RAF + hooks + frame time tracking)║
 ║  camera-api.ts → CameraAPI (zoom, viewProjection, x/y pos)  ║
 ║  raw-api.ts    → RawAPI (low-level numeric entity mgmt)      ║
