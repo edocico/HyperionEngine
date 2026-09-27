@@ -67,11 +67,13 @@ export class PrefabRegistry {
     const root = this.engine.spawn(spawnOptions);
     const children = new Map<string, EntityHandle>();
     try {
-      const rootZ = this.applyNode(root, template.root);
+      let rootZ = this.applyNode(root, template.root);
 
       if (overrides) {
         const pos = template.root.position ?? [0, 0, 0];
-        root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], overrides.z ?? pos[2] ?? 0);
+        // moveTo() keeps this z: the override's, when it gave one.
+        rootZ = overrides.z ?? rootZ;
+        root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], rootZ);
       }
 
       if (template.children) {

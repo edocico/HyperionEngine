@@ -71,10 +71,13 @@ export const MAX_EXTERNAL_ID = 1_048_575;
 export interface SpawnOptions {
   /**
    * `'3d'` (the default): Position + Rotation + Scale. `'2d'`: the compact
-   * Transform2D archetype (x, y, angle, sx, sy — 20 bytes, against 40), drawn
-   * at z = 0 and uploaded as 6 floats (scatter format 0) while it is a root.
+   * Transform2D archetype (x, y, angle, sx, sy — 20 bytes of ECS component,
+   * against 40), drawn at z = 0. The GPU upload does not shrink: every row is
+   * still a 16-float matrix (a root 2D row travels as scatter "format 0" in
+   * Mode C, rebuilt on the GPU from 6 of those words, but in the same 16).
    * What only 3D has — a z, `sz`, `vz`, a quaternion tilted off the Z axis —
-   * is ignored on it, with a one-time warning per handle in dev builds.
+   * is ignored on it; an `EntityHandle` says so once, in dev builds (the raw
+   * API does not check).
    */
   mode?: '2d' | '3d';
 }

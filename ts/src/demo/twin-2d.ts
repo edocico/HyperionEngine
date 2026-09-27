@@ -2,9 +2,10 @@
 //
 // Every 2D entity has a 3D twin with the same transform, a whole number of
 // pixels to the right. Both must draw the same pixels: the 2D archetype is a
-// compact encoding (20 bytes, 6 floats on the scatter path), not another look.
-// Two of the ten entities per block move, so in Mode C most frames upload
-// through the scatter pass — where root 2D rows travel compressed (format 0).
+// compact ECS component (20 bytes against 40), not another look. The 2D parent
+// and its child move, so in Mode C most frames upload through the scatter
+// pass: the parent as a root 2D row (format 0, rebuilt on the GPU from 6
+// words), the child as a full matrix (format 1).
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
@@ -23,19 +24,32 @@ interface Cell {
   build(h: EntityHandle): void;
   /** A child built under the cell's entity, if any. */
   child?(h: EntityHandle): void;
+  /** Where the child's centre lands, relative to the cell centre: scanned too. */
+  childAt?: [number, number];
 }
+
+/** The parent of cell 4: turned 0.5 rad, scale 1.2; its child sits at local (0.9, 0). */
+const PARENT_ROT = 0.5;
+const PARENT_SCALE = 1.2;
+const CHILD_LOCAL_X = 0.9;
 
 const CELLS: Cell[] = [
   { build: (h) => h.rotation(0.3).scale(2, 1) },
   { build: (h) => h.rotation(Math.PI / 4).scale(1.5, 1.5) },
   { build: (h) => h.rotation(1.2).scale(0.6, 2.2) },
   { build: (h) => h.rotation(0.4).scale(2, 2).gradient(0, 0, [0, 0, 0, 1, 1, 1]) },
-  // A 2D parent with a 2D child: the child travels as a full mat4 (format 1).
-  { build: (h) => h.rotation(0.5).scale(1.2, 1.2), child: (c) => c.position(0.9, 0).scale(0.4, 0.4) },
+  // The movers: a 2D parent (a root, format 0 in a scatter upload) and its 2D
+  // child (format 1: its Transform2D is local, so it travels as a full
+  // matrix), dirty every frame. The only movers: 4 of the 20 entities, under
+  // the 30% scatter threshold.
+  {
+    build: (h) => h.rotation(PARENT_ROT).scale(PARENT_SCALE, PARENT_SCALE).velocity(0.1, 0),
+    child: (c) => c.position(CHILD_LOCAL_X, 0).scale(0.4, 0.4),
+    childAt: [PARENT_SCALE * CHILD_LOCAL_X * Math.cos(PARENT_ROT), PARENT_SCALE * CHILD_LOCAL_X * Math.sin(PARENT_ROT)],
+  },
   { build: (h) => h.rotation(0.2).line(-1, -1, 1, 1, 0.15) },
-  // The movers: dirty every frame, so they ride every scatter upload.
-  { build: (h) => h.scale(0.8, 0.8).velocity(0.1, 0) },
-  { build: (h) => h.rotation(0.6).scale(0.8, 0.8).velocity(0, -0.1) },
+  { build: (h) => h.scale(0.8, 0.8) },
+  { build: (h) => h.rotation(0.6).scale(0.8, 0.8) },
   { build: (h) => h.rotation(0.3).scale(2, 2).transparent().boxShadow(0.8, 0.8, 0.1, 0.05, 0.9, 0.5, 0.2, 0.9) },
 ];
 
@@ -86,51 +100,68 @@ const section: DemoSection = {
         const cv = (Math.floor(v * height) + 0.5) / height;
         return [((cu - 0.5) * 2 - vp[12]) / vp[0], ((0.5 - cv) * 2 - vp[13]) / vp[5]];
       };
-      // Per cell: a 9x9 lattice 0.3 apart, plus one row and one column of
-      // CONSECUTIVE texels through the centre — those cross every edge, where
-      // a sub-pixel difference between the twins would show.
-      const LATTICE = 81;
+      // Per cell: a 9x9 lattice 0.3 apart, plus scans of CONSECUTIVE texels —
+      // one row and one column through the centre, and through the child where
+      // there is one. Scans cross the edges, where a sub-pixel difference
+      // between the twins would show: quads have hard edges, so a fraction of
+      // a pixel moves an edge by a whole texel.
       const half = 1.6;
       const steps = Math.ceil((2 * half) / worldPerPx);
-      const cells: [number, number][][] = CELLS.map((_, i) => {
-        const [cx, cy] = cellCentre(i);
-        const pts: [number, number][] = [];
-        for (let a = -4; a <= 4; a++) for (let b = -4; b <= 4; b++) pts.push(snap(cx + a * 0.3, cy + b * 0.3));
-        // Row and column interleaved from index LATTICE on: row k, column k.
-        const [rx, ry] = snap(cx - half, cy);
-        const [qx, qy] = snap(cx, cy - half);
-        for (let k = 0; k <= steps; k++) pts.push([rx + k * worldPerPx, ry], [qx, qy + k * worldPerPx]);
-        return pts;
+      const scanRow = (x: number, y: number): [number, number][] => {
+        const [sx, sy] = snap(x - half, y);
+        return Array.from({ length: steps + 1 }, (_, k): [number, number] => [sx + k * worldPerPx, sy]);
+      };
+      const scanColumn = (x: number, y: number): [number, number][] => {
+        const [sx, sy] = snap(x, y - half);
+        return Array.from({ length: steps + 1 }, (_, k): [number, number] => [sx, sy + k * worldPerPx]);
+      };
+      interface Group { cell: number; points: [number, number][]; scan: boolean; child: boolean }
+      const groups: Group[] = [];
+      CELLS.forEach((c, cell) => {
+        const [cx, cy] = cellCentre(cell);
+        const lattice: [number, number][] = [];
+        for (let a = -4; a <= 4; a++) for (let b = -4; b <= 4; b++) lattice.push(snap(cx + a * 0.3, cy + b * 0.3));
+        groups.push({ cell, points: lattice, scan: false, child: false });
+        groups.push({ cell, points: scanRow(cx, cy), scan: true, child: false });
+        groups.push({ cell, points: scanColumn(cx, cy), scan: true, child: false });
+        if (c.childAt) {
+          const [dx, dy] = c.childAt;
+          groups.push({ cell, points: scanRow(cx + dx, cy + dy), scan: true, child: true });
+          groups.push({ cell, points: scanColumn(cx + dx, cy + dy), scan: true, child: true });
+        }
       });
-      const left = cells.flat();
+      const left = groups.flatMap((g) => g.points);
       const right = left.map(([x, y]): [number, number] => [x + offset, y]);
       const [l, r] = await Promise.all([probe('scene-hdr', left), probe('scene-hdr', right)]);
       const peak = (p: Rgba) => Math.max(p[0], p[1], p[2]);
       let mismatches = 0;
       let worst = 0;
       let edges = 0;
-      const emptyCells: number[] = [];
+      const childEdges: number[] = [];
+      const drawnPerCell = new Array<number>(CELLS.length).fill(0);
       let base = 0;
-      cells.forEach((pts, cell) => {
-        let drawn = 0;
-        for (let n = 0; n < pts.length; n++) {
+      for (const g of groups) {
+        let groupEdges = 0;
+        for (let n = 0; n < g.points.length; n++) {
           const k = base + n;
           const d = Math.max(...[0, 1, 2].map((c) => Math.abs(l[k][c] - r[k][c])));
           worst = Math.max(worst, d);
           if (d > 0.02) mismatches++;
-          if (peak(l[k]) > 0.1) drawn++;
-          // An edge the scans cross: two consecutive texels of the row (or the
-          // column) on either side of it. Quads have hard edges, so a shift of
-          // the twin by a fraction of a pixel would move it by a whole texel.
-          if (n >= LATTICE + 2 && Math.abs(peak(l[k]) - peak(l[k - 2])) > 0.3) edges++;
+          if (peak(l[k]) > 0.1) drawnPerCell[g.cell]++;
+          if (g.scan && n > 0 && Math.abs(peak(l[k]) - peak(l[k - 1])) > 0.3) groupEdges++;
         }
-        if (drawn === 0) emptyCells.push(cell);
-        base += pts.length;
-      });
+        edges += groupEdges;
+        if (g.child) childEdges.push(groupEdges);
+        base += g.points.length;
+      }
+      const emptyCells = drawnPerCell.flatMap((n, cell) => (n === 0 ? [cell] : []));
+      // The child is small (0.48 wide): each scan through it must cross both of its edges.
+      const childCrossed = childEdges.length > 0 && childEdges.every((e) => e >= 2);
       return {
-        ok: mismatches === 0 && emptyCells.length === 0 && edges >= CELLS.length,
-        detail: `${l.length - mismatches}/${l.length} texels match (worst ${fmt([worst])}), the scans crossing ${edges} edges; `
-          + `twin offset ${offsetPx} px${emptyCells.length ? `; nothing drawn in cells ${emptyCells.join(', ')}` : ''}`,
+        ok: mismatches === 0 && emptyCells.length === 0 && edges >= CELLS.length && childCrossed,
+        detail: `${l.length - mismatches}/${l.length} texels match (worst ${fmt([worst])}), the scans crossing ${edges} edges `
+          + `(through the 2D child: ${childEdges.join(', ')}); twin offset ${offsetPx} px`
+          + (emptyCells.length ? `; nothing drawn in cells ${emptyCells.join(', ')}` : ''),
       };
     });
 

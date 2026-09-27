@@ -44,10 +44,13 @@ Then read the adapter line (`list_console_messages`, types `log`/`info`/`warn`):
 not nvidia and not a software fallback (SwiftShader). Mode A cannot be checked here: the initScript
 does not reach workers, which then pick NVIDIA and lose the device.
 
-The initScript applies to ONE navigation. Editing a source file while the harness is open makes Vite
-reload the page without it: the reload gets NVIDIA and loses the device at its first large
-allocation (`VK_ERROR_OUT_OF_DEVICE_MEMORY`, every check "Device is lost"). That is not a leak:
-after every edit, `navigate_page` again with the initScript and re-read the adapter line.
+The initScript applies to ONE navigation. An edit Vite cannot hot-swap — any TS module, a demo
+section included — reloads the page without it: the reload gets NVIDIA and loses the device at its
+first large allocation (`VK_ERROR_OUT_OF_DEVICE_MEMORY`, every check "Device is lost"). That is not
+a leak: `navigate_page` again with the initScript and re-read the adapter line. The tell is a new
+`[vite] connecting...` and a second adapter line in the console. An edit to one of the 18
+hot-reloadable WGSL files (`import.meta.hot.accept` in `renderer.ts`) is swapped in place and the
+page stays: keep it when the shader hot-reload is what you are checking.
 
 ## 4. Run the tabs
 

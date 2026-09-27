@@ -149,6 +149,16 @@ describe('Prefab facade integration', () => {
     }
   });
 
+  it('moveTo keeps the z a spawn override set, not the template z', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    engine.prefabs.register('layered', { root: { position: [0, 0, 0] } });
+    const instance = engine.prefabs.spawn('layered', { x: 1, y: 1, z: 0.5 });
+    instance.moveTo(2, 2);
+    expect(bridge.commandBuffer.setPosition).toHaveBeenLastCalledWith(instance.root.id, 2, 2, 0.5);
+    engine.destroy();
+  });
+
   it('destroyAll despawns all entities', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
