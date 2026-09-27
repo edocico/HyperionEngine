@@ -79,6 +79,16 @@ failure.
 
 ## 6. Pixels (when the question is "does it LOOK right")
 
+**Prefer the in-engine probe** (dev builds, Mode B/C): it reads LINEAR values of the next frame,
+with no DOM overlay and no 8-bit rounding. From `evaluate_script`:
+`await window.__hyperion.debug.probe({ target: 'scene-hdr' | 'swapchain' | 'light-buffer', world: [[x, y], ...], layer })`
+→ `{ values: [[r,g,b,a], ...], uv, targetSize, canvasSize }`. `layer` is the light group
+(`window.__hyperion.lighting.groups`). Known values: the `scene-hdr` clear is 0.067, an untextured
+quad 1.0. `await window.__hyperion.debug.readEntityTransforms()` compares the GPU transform rows
+with the CPU ones (`usedScatter` true only in `?mode=C`). The screenshot path below is for what
+the probe cannot see: DOM overlays, and anything in Mode A.
+
+
 1. `evaluate_script` with `filePath: <scratchpad>/map.json`, returning
    `{ rect: [left, top, width, height] of the canvas getBoundingClientRect(), vp: Array.from(window.__hyperion.cam.viewProjection), dpr: window.devicePixelRatio }`
    — the file is plain JSON.

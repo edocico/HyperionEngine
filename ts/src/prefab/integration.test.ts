@@ -71,6 +71,7 @@ function mockRenderer(): Renderer {
     getGpuTimings: vi.fn(() => []),
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
+    debugProbe: null,
     destroy: vi.fn(),
   };
 }

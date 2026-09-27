@@ -82,6 +82,7 @@ function mockRenderer(): Renderer {
     getGpuTimings: vi.fn(() => []),
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
+    debugProbe: null,
     destroy: vi.fn(),
   };
 }
@@ -845,6 +846,27 @@ describe('Hyperion.create', () => {
 });
 
 describe('debug API', () => {
+  it('probe and readEntityTransforms reject without a main-thread renderer (Mode A, headless)', async () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    await expect(engine.debug!.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] })).rejects.toThrow(/renderer/);
+    await expect(engine.debug!.readEntityTransforms()).rejects.toThrow(/renderer/);
+  });
+
+  it('probe and readEntityTransforms delegate to the renderer debug probe', async () => {
+    const renderer = mockRenderer();
+    const pixels = { values: [[1, 2, 3, 4]] };
+    const rows = { entityCount: 0 };
+    (renderer as { debugProbe: unknown }).debugProbe = {
+      pixels: vi.fn(async () => pixels),
+      transforms: vi.fn(async () => rows),
+    };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    const request = { target: 'swapchain' as const, world: [[1, 2]] as [number, number][] };
+    expect(await engine.debug!.probe(request)).toBe(pixels);
+    expect(renderer.debugProbe!.pixels).toHaveBeenCalledWith(request);
+    expect(await engine.debug!.readEntityTransforms()).toBe(rows);
+  });
+
   it('startRecording / stopRecording returns a CommandTape', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
     engine.debug!.startRecording();

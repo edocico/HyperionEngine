@@ -11,6 +11,7 @@ import {
 } from './worker-bridge';
 import type { Renderer, OutlineOptions } from './renderer';
 import type { PassTiming } from './render/gpu-profiler';
+import type { PixelProbeRequest, PixelProbeResult, TransformsProbeResult } from './render/debug-probe';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
@@ -52,6 +53,8 @@ import { LightingAPI } from './lighting-api';
  *
  * Implements `Disposable` for use with `using` declarations.
  */
+const NO_DEBUG_PROBE = 'The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)';
+
 export class Hyperion implements Disposable {
   private readonly config: ResolvedConfig;
   private readonly bridge: EngineBridge;
@@ -289,6 +292,25 @@ export class Hyperion implements Disposable {
         self.recorder = null;
         self.bridge.commandBuffer.setRecordingTap(null);
         return tape;
+      },
+      /**
+       * Reads pixels of the NEXT rendered frame: `scene-hdr` and `light-buffer`
+       * in linear HDR, the `swapchain` as displayed (0-1). Points in world
+       * units (placed with that frame's camera) or UV. Needs the main-thread
+       * renderer of a dev build: Mode B/C; rejects in Mode A and headless.
+       */
+      probe(request: PixelProbeRequest): Promise<PixelProbeResult> {
+        const probe = self.renderer?.debugProbe;
+        return probe ? probe.pixels(request) : Promise.reject(new Error(NO_DEBUG_PROBE));
+      },
+      /**
+       * Reads the `entity-transforms` rows back at the next rendered frame,
+       * next to the CPU rows of that frame and whether it used the scatter
+       * upload. Same availability as `probe`.
+       */
+      readEntityTransforms(): Promise<TransformsProbeResult> {
+        const probe = self.renderer?.debugProbe;
+        return probe ? probe.transforms() : Promise.reject(new Error(NO_DEBUG_PROBE));
       },
       /**
        * Toggle physics debug rendering (Phase 16). Sends CommandType 47;
