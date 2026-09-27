@@ -2,6 +2,7 @@ import { Hyperion } from './hyperion';
 import { harnessMode } from './demo/preferred-mode';
 import { ReportBuilder } from './demo/report';
 import { createTestReporter } from './demo/types';
+import { SectionSwitcher } from './demo/section-switcher';
 import type { DemoSection, TestReporter, SectionStatus } from './demo/types';
 
 // ---------------------------------------------------------------------------
@@ -104,7 +105,7 @@ async function main() {
     el.appendChild(label);
 
     el.addEventListener('click', () => {
-      switchSection(tab.key);
+      switcher.request(tab.key);
     });
 
     tabBar.appendChild(el);
@@ -129,6 +130,10 @@ async function main() {
   tabBar.appendChild(exportBtn);
 
   // --- Section switching ---
+  // One switch at a time, latest request wins: a teardown must never overtake
+  // the setup it undoes (see SectionSwitcher).
+  const switcher = new SectionSwitcher(switchSection);
+
   async function switchSection(key: string) {
     // Teardown current section
     if (currentKey !== null) {
@@ -259,7 +264,7 @@ async function main() {
 
   // --- Start engine and auto-select first tab ---
   engine.start();
-  switchSection('primitives');
+  switcher.request('primitives');
 }
 
 main();

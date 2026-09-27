@@ -226,10 +226,8 @@ HyperionEngine/
         │                               #   .mesh/.primitive/.parent/.unparent/.data/.line/
         │                               #   .gradient/.boxShadow/.positionImmediate/.clearImmediate.
         │                               #   Disposable. RenderPrimitiveType enum
-        ├── entity-handle.test.ts       # 28 test: fluent API, dispose, data, pool recycling,
+        ├── entity-handle.test.ts       # 28 test: fluent API, dispose, data, release callback,
         │                               #   line/gradient/boxShadow, immediate-mode
-        ├── entity-pool.ts              # EntityHandlePool: object pool (cap 1024) for recycling
-        ├── entity-pool.test.ts         # 5 test: acquire/release, capacity, init reset
         ├── game-loop.ts                # GameLoop: RAF lifecycle with preTick/postTick/frameEnd
         │                               #   hook phases, FPS tracking, lastTime=-1 sentinel
         ├── game-loop.test.ts           # 11 test: RAF lifecycle, hooks, FPS tracking, frame timing
@@ -983,7 +981,7 @@ Questo evita il problema di passare un puntatore SAB direttamente nella memoria 
 ║                   start/pause/resume/destroy, plugins, hooks, ║
 ║                   selection, input, picking, audio, outlines, ║
 ║                   profiler, recompileShader)                  ║
-║  entity-handle → EntityHandle fluent builder + EntityPool     ║
+║  entity-handle → EntityHandle fluent builder                  ║
 ║  game-loop.ts  → GameLoop (RAF + hooks + frame time tracking)║
 ║  camera-api.ts → CameraAPI (zoom, viewProjection, x/y pos)  ║
 ║  raw-api.ts    → RawAPI (low-level numeric entity mgmt)      ║
@@ -1513,9 +1511,8 @@ ts/src/
                                            plugins, destroy, stats, compact, resize, input, picking,
                                            audio, selection, outlines, immediate mode, profiler,
                                            shader hot-reload, PluginContext
-  entity-handle.test.ts             28 test: fluent API, dispose, data map, pool recycling,
+  entity-handle.test.ts             28 test: fluent API, dispose, data map, release callback,
                                            positionImmediate, clearImmediate, line, gradient, boxShadow
-  entity-pool.test.ts                5 test: acquire/release, capacity limit, init reset
   game-loop.test.ts                 11 test: RAF lifecycle, hook phases, FPS tracking, frame timing
   raw-api.test.ts                    4 test: spawn/despawn/setPosition/setVelocity
   camera-api.test.ts                 3 test: zoom clamping, viewProjection delegation
@@ -1669,8 +1666,8 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **Multi-tier Texture2DArray** | Singola texture atlas, array di texture individuali | Atlas ha problemi di bleeding ai bordi e spreca spazio. Texture individuali richiedono bind group switch per-texture. Texture2DArray permette un singolo bind group con fino a 256 texture per tier |
 | **4 tier fissi (64/128/256/512)** | Tier dinamici, singola risoluzione | 4 tier coprono la maggior parte dei casi d'uso 2D. Il costo e lo switch nel fragment shader, ma WGSL non supporta dynamic indexing sulle texture bindings |
 | **Packed texture index (tier<<16\|layer)** | Due u32 separati, struct | Un singolo u32 per entita riduce la bandwidth GPU e semplifica il buffer layout. 16 bit per tier (max 65k tier, ne usiamo 4) e 16 bit per layer (max 65k layer, ne usiamo 256) |
-| **Facade pattern per API pubblica** | Export diretto dei moduli interni, factory functions | La Facade `Hyperion` nasconde la complessita interna (bridge, renderer, camera, loop, pool, plugins) dietro un'interfaccia singola. L'utente non deve sapere di `BackpressuredProducer` o `EngineBridge` |
-| **EntityHandle pool con cap 1024** | Nessun pool (GC), pool illimitato, WeakRef pool | 1024 e sufficiente per scene tipiche. Cap evita memory leak da pool mai svuotato. GC-only causerebbe pressione GC inaccettabile con spawn/despawn frequenti |
+| **Facade pattern per API pubblica** | Export diretto dei moduli interni, factory functions | La Facade `Hyperion` nasconde la complessita interna (bridge, renderer, camera, loop, plugins) dietro un'interfaccia singola. L'utente non deve sapere di `BackpressuredProducer` o `EngineBridge` |
+| **Nessun pool di EntityHandle (dal 2026-09-27)** | Pool con cap 1024 (la scelta originale), pool con generation guard | Il pool non ha mai riciclato nulla, e riciclare permette l'aliasing: una handle stantia torna `.alive` e muove un'altra entita. Una handle nuova per ogni `spawn()`; per churn estremo c'e `RawAPI` |
 | **`Children` inline [u32; 32] (no heap)** | `Vec<u32>`, `SmallVec`, heap-allocated list | Array inline e `#[repr(C)]` Pod (GPU-uploadable), zero allocazioni, cache-friendly. 32 slot coprono la maggior parte dei casi. Trade-off: limite rigido di 32 figli |
 | **`fromParts()` factory per test** | Mock objects, dependency injection framework | Factory esplicita che accetta componenti pre-costruiti. Semplice, nessuna dipendenza aggiuntiva. I test possono fornire stub minimali senza WASM/WebGPU |
 | **Plugin cleanup in ordine LIFO** | FIFO, ordine arbitrario, nessun ordine garantito | LIFO e il pattern standard per middleware/plugin stack: le dipendenze installate prima vengono pulite per ultime, evitando use-after-free di risorse condivise |
@@ -1698,7 +1695,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `createImageBitmap` non disponibile ovunque nei Worker | Firefox e Chrome supportano, Safari ha supporto parziale | `TextureManager` va istanziato solo dove `createImageBitmap` e disponibile |
 | WGSL non supporta dynamic indexing su texture bindings | Limitazione del linguaggio | `switch(tier)` nel fragment shader — aggiungere nuovi tier richiede aggiornare lo shader |
 | `Texture2DArray maxTextureArrayLayers` varia per device | WebGPU spec garantisce minimo 256 | `TextureManager` alloca 256 layer per tier. Su device con meno layer, il caricamento fallira |
-| `EntityHandle.data()` cleared on pool reuse | `EntityHandlePool.init()` resets the data map | Plugins that store data via `.data(key, value)` must handle disappearing data after pool recycling |
+| A destroyed `EntityHandle` stays dead | `destroy()` releases the slot via the callback from `Hyperion.spawn`; handles are never recycled (pool removed 2026-09-27) | A stale reference can never alias a newer entity; `.data()` lives as long as the handle |
 | `Hyperion.fromParts()` vs `Hyperion.create()` | Two factory methods serve different purposes | `fromParts()` is the test factory (pre-built components, no WASM/WebGPU). `create()` is production (capability detection, bridge, renderer) |
 | Plugin teardown order matters | Plugins may reference engine resources during cleanup | `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()` |
 | `GameLoop` first-frame dt spike | `performance.now()` would be the entire page lifetime | Uses `lastTime = -1` sentinel to detect first RAF callback and set dt=0 |
@@ -1734,7 +1731,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **4** | Asset Pipeline & Textures | **Completata** | `TextureManager` (multi-tier Texture2DArray 64/128/256/512), `createImageBitmap` loading pipeline, `TextureLayerIndex` component, `SetTextureLayer` command, packed texture index encoding (tier<<16\|layer), multi-tier WGSL sampling, concurrency limiter, URL caching |
 | **4.5** | Stabilization & Arch Foundations | **Completata** | SoA GPU buffer layout, `MeshHandle`/`RenderPrimitive` components, extended ring buffer (32B header), `RenderPass`/`ResourcePool` abstractions, `RenderGraph` DAG (Kahn's sort + dead-pass culling), `CullPass`/`ForwardPass` extraction, Blelloch prefix sum shader, `TextureManager` lazy allocation (exponential growth), `BitSet`/`DirtyTracker`, `PrioritizedCommandQueue`, `WorkerSupervisor` |
 | **Post-Plan** | Integration & Wiring | **Completata** | Wired Phase 4.5 abstractions into live renderer: `renderer.ts` rewritten as RenderGraph coordinator (357→145 lines), `basic.wgsl` SoA transforms, `CullPass`/`ForwardPass` full prepare/execute, `BackpressuredProducer` in all bridges, `WorkerSupervisor` heartbeat in Mode A/B, depth texture resize fix via lazy recreation |
-| **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder + pool, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
+| **5** | TypeScript API & Lifecycle | **Completata** | `Hyperion` facade, `EntityHandle` fluent builder, `GameLoop` RAF lifecycle with hooks, `CameraAPI` zoom, `RawAPI` low-level numeric API, `PluginRegistry`, `LeakDetector`, barrel export, scene graph (`Parent`/`Children`/`LocalMatrix`/`propagate_transforms`/`SetParent`), memory compaction (`shrink_to_fit` + WASM exports), device-lost recovery plumbing |
 | **5.5** | Rendering Primitives | **Completata** | `PrimitiveParams([f32;8])` component + `SetPrimParams0/1` commands, multi-type CullPass (6 types × DrawIndirectArgs), multi-pipeline ForwardPass (`SHADER_SOURCES`), line rendering (screen-space expansion + SDF dash), MSDF text (FontAtlas + text layout + median SDF), gradient (linear/radial/conic), box shadow (Evan Wallace erf), FXAA + tonemapping (PBR Neutral/ACES), JFA selection outlines (SelectionSeedPass → JFAPass×N → OutlineCompositePass), `SelectionManager`, `enableOutlines()/disableOutlines()` API |
 | **6** | Input System | **Completata** | `ExternalId(u32)` ECS component, `entityIds` SoA buffer, `InputManager` (keyboard/pointer/scroll + callbacks), `Camera.screenToRay()` + `mat4Inverse`, `hitTestRay()` CPU ray-sphere picking, `ImmediateState` shadow position map + transform patching, `SelectionManager` CPU-side + GPU mask, `EntityHandle.positionImmediate()/clearImmediate()`, public API `engine.input`/`engine.picking.hitTest()` |
 | **7** | Audio System | **Completata** | `SoundRegistry` (URL-deduplicated buffer management, DI), `PlaybackEngine` (Web Audio node graph, 2D spatial pan + distance attenuation), `AudioManager` facade (lazy AudioContext, browser autoplay policy), branded types (`SoundHandle`/`PlaybackId`), audio listener auto-update from camera, `pause()`/`resume()`/`destroy()` lifecycle wiring, public API `engine.audio` |
@@ -1749,8 +1746,8 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Test Rust | 99 (tutti passanti) |
 | Test TypeScript | 409 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 45+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `plugin-context`, `event-bus`, `profiler`, `plugins/fps-counter`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` x 11, `vite-env.d.ts`) |
-| File test TypeScript | 41 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`, `event-bus`, `plugin-context`, `profiler`, `plugins/fps-counter`) |
+| Moduli TypeScript | 45+ (`hyperion`, `entity-handle`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `plugin-context`, `event-bus`, `profiler`, `plugins/fps-counter`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` x 11, `vite-env.d.ts`) |
+| File test TypeScript | 41 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`, `event-bus`, `plugin-context`, `profiler`, `plugins/fps-counter`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
@@ -1846,7 +1843,7 @@ Phase 5 aggiunge un **Public API Layer** completo sopra i componenti interni del
 
 | Metodo | Scopo |
 |---|---|
-| `spawn()` | Crea un `EntityHandle` (da pool se disponibile) |
+| `spawn()` | Crea un `EntityHandle` nuovo (gli id non vengono riusati: al massimo `MAX_EXTERNAL_ID + 1` spawn per sessione) |
 | `batch(fn)` | Esegue operazioni in batch, flush alla fine |
 | `start()` | Avvia il game loop (RAF) |
 | `pause()` | Sospende il game loop |
@@ -1883,20 +1880,13 @@ const entity = engine.spawn()
     .parent(otherEntity);
 ```
 
-Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `.dispose()` invia `DespawnEntity` e rilascia l'handle al pool.
+Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `destroy()` (o `using`, cioè `[Symbol.dispose]()`) invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
 
-**Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). La data map viene resettata quando l'handle viene riciclato dal pool via `init()`.
+**Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). Vive quanto la handle.
 
-### 18.3 EntityHandlePool: Object Pooling
+### 18.3 EntityHandlePool (rimosso il 2026-09-27)
 
-**File**: `ts/src/entity-pool.ts`
-
-Per evitare pressione GC in scene con frequenti spawn/despawn, `EntityHandlePool` implementa un object pool LIFO con capacita massima di 1024 handle.
-
-- `acquire()` → pop dal pool (se disponibile) oppure crea nuovo
-- `release(handle)` → push nel pool (se sotto capacita) oppure scarta
-
-`init(id, producer)` resetta un handle riciclato: nuovo entity ID, stesso producer, data map pulita.
+Il pool non ha mai riciclato nulla: `destroy()` non restituiva la handle, e `returnHandle()` lo chiamavano solo i test. Riciclare avrebbe poi reso possibile l'aliasing (una handle stantia che torna `.alive` e muove un'altra entità). Il pool e `EntityHandle.init()` sono stati rimossi: ogni `spawn()` crea una handle nuova, e `destroy()` libera lo slot tramite il callback di rilascio.
 
 ### 18.4 GameLoop: RAF Lifecycle con Hook
 
@@ -1990,7 +1980,7 @@ Il recovery completo (ricreazione di device, re-upload di tutti i buffer, ricrea
 
 **File**: `ts/src/raw-api.ts`
 
-Per scenari ad alte prestazioni dove l'overhead di `EntityHandle` e il GC pressure del pool non sono accettabili (es. sistemi particellari con 100k+ entita), `RawAPI` espone un'interfaccia numerica diretta:
+Per scenari ad alte prestazioni dove l'overhead di `EntityHandle` (un oggetto per entita) non e accettabile (es. sistemi particellari con 100k+ entita), `RawAPI` espone un'interfaccia numerica diretta:
 
 ```typescript
 const raw = engine.raw;
@@ -2008,7 +1998,7 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 
 `LeakDetector` usa `FinalizationRegistry` come backstop per rilevare `EntityHandle` non disposed correttamente. Quando un handle viene garbage-collected senza essere stato disposed, il detector logga un warning con l'entity ID.
 
-**Nota**: `FinalizationRegistry` non e un meccanismo di cleanup affidabile per spec — il GC non garantisce che il callback venga mai invocato. Per questo il detector e un **backstop diagnostico**, non il meccanismo primario di cleanup. Il cleanup primario e `.dispose()` esplicito.
+**Nota**: `FinalizationRegistry` non e un meccanismo di cleanup affidabile per spec — il GC non garantisce che il callback venga mai invocato. Per questo il detector e un **backstop diagnostico**, non il meccanismo primario di cleanup. Il cleanup primario e `destroy()` esplicito (o `using`).
 
 ---
 
@@ -2061,7 +2051,6 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **GPU-driven rendering** | Pattern dove la GPU decide cosa renderizzare (compute culling) e quante istanze (indirect draw), riducendo il coinvolgimento della CPU |
 | **Facade pattern** | Pattern dove una singola classe (`Hyperion`) espone un'interfaccia semplificata sopra un sottosistema complesso (bridge, renderer, camera, loop, plugins) |
 | **EntityHandle** | Wrapper fluent sopra un entity ID numerico. Metodi chainable (`.position().velocity().scale()`). Implementa `Disposable` per cleanup automatico |
-| **EntityHandlePool** | Object pool LIFO (cap 1024) per riciclare `EntityHandle` senza pressione GC. `acquire()` riusa, `release()` rimette nel pool |
 | **GameLoop** | Gestore del ciclo `requestAnimationFrame` con hook system (preTick/postTick/frameEnd) e FPS tracking |
 | **HyperionPlugin** | Interfaccia per plugin dell'engine: `install(engine)` per setup, `cleanup()` opzionale per teardown. Gestiti da `PluginRegistry` |
 | **Scene graph** | Gerarchia parent-child tra entita. `Parent` + `Children` components + `propagate_transforms` system. Le model matrix dei figli sono moltiplicate per la matrix del parent |

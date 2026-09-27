@@ -138,4 +138,22 @@ describe('Prefab facade integration', () => {
 
     engine.destroy();
   });
+
+  it('a spawn that fails part-way destroys what it already spawned', () => {
+    const bridge = mockBridge();
+    const config = defaultConfig();
+    config.maxEntities = 2;
+    const engine = Hyperion.fromParts(config, bridge, mockRenderer());
+    engine.prefabs.register('ship', {
+      root: { position: [0, 0, 0] },
+      children: { a: { position: [1, 0, 0] }, b: { position: [2, 0, 0] } },
+    });
+
+    expect(() => engine.prefabs.spawn('ship')).toThrow(/Entity limit/);
+    expect(engine.stats.entityCount).toBe(0);
+    expect(bridge.commandBuffer.despawnEntity).toHaveBeenCalledTimes(2);
+    expect(() => engine.spawn()).not.toThrow();
+
+    engine.destroy();
+  });
 });

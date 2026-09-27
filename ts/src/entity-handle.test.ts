@@ -185,22 +185,21 @@ describe('EntityHandle', () => {
     expect(p.despawnEntity).toHaveBeenCalledTimes(1);
   });
 
+  it('destroy hands the handle to its release callback exactly once', () => {
+    const release = vi.fn();
+    const h = new EntityHandle(0, mockProducer(), undefined, release);
+    h.destroy();
+    h.destroy();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(h);
+  });
+
   it('supports Symbol.dispose', () => {
     const p = mockProducer();
     const h = new EntityHandle(0, p);
     expect(typeof h[Symbol.dispose]).toBe('function');
     h[Symbol.dispose]();
     expect(h.alive).toBe(false);
-  });
-
-  it('init() resets for pool reuse', () => {
-    const p = mockProducer();
-    const h = new EntityHandle(0, p);
-    h.destroy();
-    expect(h.alive).toBe(false);
-    h.init(99, p);
-    expect(h.id).toBe(99);
-    expect(h.alive).toBe(true);
   });
 
   it('data() stores and retrieves plugin data', () => {
@@ -210,15 +209,6 @@ describe('EntityHandle', () => {
     const result = h.data('physics', { mass: 10 });
     expect(result).toBe(h); // fluent setter
     expect(h.data('physics')).toEqual({ mass: 10 });
-  });
-
-  it('init() clears plugin data', () => {
-    const p = mockProducer();
-    const h = new EntityHandle(0, p);
-    h.data('physics', { mass: 10 });
-    expect(h.data('physics')).toEqual({ mass: 10 });
-    h.init(99, p);
-    expect(h.data('physics')).toBeUndefined();
   });
 
   it('parent() sends SetParent command', () => {
@@ -721,21 +711,6 @@ describe('EntityHandle — lighting (Phase 17)', () => {
     expect(outerCos).toBeCloseTo(0.5, 5);
     expect(falloff).toBe(3);
     expect(intensity).toBe(0.8);
-  });
-
-  it('a pooled handle does not inherit the previous light cone', () => {
-    // `_lightCone` is instance state, so `init()` must reset it or a recycled
-    // handle would replay the spotlight cone of whatever used the slot before.
-    const p = mockProducer();
-    const h = new EntityHandle(1, p);
-    h.light({ type: 'spot', innerAngle: 0, outerAngle: 60, falloff: 5 });
-
-    h.init(2, p);
-    (p.setPrimParams1 as any).mockClear();
-    h.shadows(1);
-    const [id, innerCos, outerCos, falloff] = (p.setPrimParams1 as any).mock.calls[0];
-    expect(id).toBe(2);
-    expect([innerCos, outerCos, falloff]).toEqual([-1, -1, 1]);
   });
 
   it('every lighting method throws after destroy()', () => {

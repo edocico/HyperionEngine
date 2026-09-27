@@ -109,25 +109,37 @@ const DEFAULT_LIGHT_CONE: readonly [number, number, number] = [-1, -1, 1];
  * After `destroy()`, all methods throw. `destroy()` is idempotent.
  * Implements `Disposable` for use with `using` declarations.
  *
- * The `init()` method allows pool reuse (EntityHandlePool, Task 4)
- * without allocating new objects — important for avoiding GC pressure.
+ * A destroyed handle stays dead: it is never recycled, so a stale reference
+ * can never alias a newer entity. `destroy()` hands the handle to its release
+ * callback, which is how the engine frees the entity's slot.
  */
 export class EntityHandle implements Disposable {
-  private _id: number = -1;
-  private _alive: boolean = false;
-  private _producer: BackpressuredProducer | null = null;
-  private _immediateState: ImmediateState | null = null;
+  private readonly _id: number;
+  private _alive = true;
+  private _producer: BackpressuredProducer | null;
+  private _immediateState: ImmediateState | null;
+  private _onRelease: ((handle: EntityHandle) => void) | null;
   private _data: Map<string, unknown> | null = null;
   /**
    * primParams slots 4-6 (innerCos, outerCos, falloff) as `light()` last wrote
-   * them, so `shadows()` can change slot 7 without restating them. Reset by
-   * `init()` like `_data`, because a pooled handle must not inherit the cone
-   * of whatever light used the slot before it.
+   * them, so `shadows()` can change slot 7 without restating them.
    */
   private _lightCone: [number, number, number] = [...DEFAULT_LIGHT_CONE];
 
-  constructor(id: number, producer: BackpressuredProducer, immediateState?: ImmediateState) {
-    this.init(id, producer, immediateState);
+  /**
+   * @param onRelease - Called once, by the first `destroy()`. The engine
+   *   passes the callback that frees the entity's slot.
+   */
+  constructor(
+    id: number,
+    producer: BackpressuredProducer,
+    immediateState?: ImmediateState,
+    onRelease?: (handle: EntityHandle) => void,
+  ) {
+    this._id = id;
+    this._producer = producer;
+    this._immediateState = immediateState ?? null;
+    this._onRelease = onRelease ?? null;
   }
 
   /** The numeric entity ID this handle wraps. */
@@ -135,19 +147,6 @@ export class EntityHandle implements Disposable {
 
   /** Whether the entity is still alive (not destroyed). */
   get alive(): boolean { return this._alive; }
-
-  /**
-   * Re-initialize this handle for pool reuse.
-   * Resets the handle with a new ID and producer, clearing any plugin data.
-   */
-  init(id: number, producer: BackpressuredProducer, immediateState?: ImmediateState): void {
-    this._id = id;
-    this._alive = true;
-    this._producer = producer;
-    this._immediateState = immediateState ?? null;
-    this._data = null;
-    this._lightCone = [...DEFAULT_LIGHT_CONE];
-  }
 
   /** Throws if the handle has been destroyed. */
   private check(): void {
@@ -648,7 +647,7 @@ export class EntityHandle implements Disposable {
 
   /**
    * Get or set plugin data on this entity handle.
-   * Data is stored per-key and cleared on `init()` (pool reuse).
+   * Data is stored per-key for the lifetime of the handle.
    *
    * @param key - Plugin-specific key (e.g., 'physics', 'ai').
    * @param value - If provided, sets the data and returns `this` for chaining.
@@ -677,6 +676,9 @@ export class EntityHandle implements Disposable {
     this._alive = false;
     this._producer = null;
     this._immediateState = null;
+    const release = this._onRelease;
+    this._onRelease = null;
+    release?.(this);
   }
 
   /** Disposable protocol — same as `destroy()`. */

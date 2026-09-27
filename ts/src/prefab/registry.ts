@@ -56,31 +56,40 @@ export class PrefabRegistry {
    * @param name - Registered prefab name.
    * @param overrides - Optional position overrides for the root entity.
    * @returns A PrefabInstance with named access to root and children.
-   * @throws If the prefab name is not registered.
+   * @throws If the prefab name is not registered, or if a spawn fails part-way
+   *   (every entity already spawned for it is destroyed first).
    */
   spawn(name: string, overrides?: SpawnOverrides): PrefabInstance {
     const template = this.templates.get(name);
     if (!template) throw new Error(`Prefab '${name}' is not registered`);
 
     const root = this.engine.spawn();
-    const rootZ = this.applyNode(root, template.root);
-
-    if (overrides) {
-      const pos = template.root.position ?? [0, 0, 0];
-      root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], overrides.z ?? pos[2]);
-    }
-
     const children = new Map<string, EntityHandle>();
-    if (template.children) {
-      for (const [key, childNode] of Object.entries(template.children)) {
-        const child = this.engine.spawn();
-        this.applyNode(child, childNode);
-        child.parent(root.id);
-        children.set(key, child);
-      }
-    }
+    try {
+      const rootZ = this.applyNode(root, template.root);
 
-    return new PrefabInstance(name, root, children, rootZ);
+      if (overrides) {
+        const pos = template.root.position ?? [0, 0, 0];
+        root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], overrides.z ?? pos[2]);
+      }
+
+      if (template.children) {
+        for (const [key, childNode] of Object.entries(template.children)) {
+          const child = this.engine.spawn();
+          children.set(key, child);
+          this.applyNode(child, childNode);
+          child.parent(root.id);
+        }
+      }
+
+      return new PrefabInstance(name, root, children, rootZ);
+    } catch (err) {
+      // A half-built prefab is unreachable by the caller: undo it, or its
+      // entities stay drawn and keep their slots forever.
+      for (const child of children.values()) child.destroy();
+      root.destroy();
+      throw err;
+    }
   }
 
   /**
