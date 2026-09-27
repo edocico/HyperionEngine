@@ -6,6 +6,7 @@ import type { ResolvedConfig } from './types';
 import { ExecutionMode } from './capabilities';
 import { SelectionManager } from './selection';
 import { AudioManager } from './audio-manager';
+import { LeakDetector } from './leak-detector';
 
 function mockBridge(): EngineBridge {
   let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
@@ -141,14 +142,6 @@ describe('Hyperion', () => {
     engine[Symbol.dispose]();
   });
 
-  it('entity handle returned to pool after destroy', () => {
-    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
-    const e1 = engine.spawn();
-    e1.destroy();
-    const e2 = engine.spawn();
-    expect(e2.alive).toBe(true);
-  });
-
   it('mode getter returns bridge mode string', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     expect(engine.mode).toBe('C');
@@ -161,6 +154,44 @@ describe('Hyperion', () => {
     engine.spawn();
     engine.spawn();
     expect(() => engine.spawn()).toThrow('Entity limit reached');
+  });
+
+  it('destroy() frees the slot: spawn keeps working past maxEntities cumulative spawns', () => {
+    const config = defaultConfig();
+    config.maxEntities = 2;
+    const engine = Hyperion.fromParts(config, mockBridge(), mockRenderer());
+    for (let i = 0; i < 10; i++) engine.spawn().destroy();
+    expect(engine.stats.entityCount).toBe(0);
+    engine.spawn();
+    engine.spawn();
+    expect(() => engine.spawn()).toThrow('Entity limit reached');
+  });
+
+  it('destroying a handle twice frees its slot once', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const a = engine.spawn();
+    engine.spawn();
+    a.destroy();
+    a.destroy();
+    expect(engine.stats.entityCount).toBe(1);
+  });
+
+  it('destroy() unregisters the handle from the leak detector', () => {
+    const unregister = vi.spyOn(LeakDetector.prototype, 'unregister');
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const e = engine.spawn();
+    e.destroy();
+    expect(unregister).toHaveBeenCalledWith(e);
+    unregister.mockRestore();
+  });
+
+  it('a destroyed handle is never handed out again (no aliasing)', () => {
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    const a = engine.spawn();
+    a.destroy();
+    const b = engine.spawn();
+    expect(b).not.toBe(a);
+    expect(a.alive).toBe(false);
   });
 
   it('spawn throws after engine is destroyed', () => {
@@ -249,7 +280,6 @@ describe('Hyperion', () => {
     const e = engine.spawn();
     expect(engine.stats.entityCount).toBe(1);
     e.destroy();
-    engine.returnHandle(e);
     expect(engine.stats.entityCount).toBe(0);
   });
 
@@ -445,7 +475,6 @@ describe('Hyperion immediate mode', () => {
     // positionImmediate should not throw and should send position through producer
     e.positionImmediate(10, 20, 30);
     e.destroy();
-    engine.returnHandle(e);
     engine.destroy();
   });
 
@@ -457,7 +486,6 @@ describe('Hyperion immediate mode', () => {
     e.positionImmediate(5, 10, 15);
     expect(bridge.commandBuffer.setPosition).toHaveBeenCalledWith(e.id, 5, 10, 15);
     e.destroy();
-    engine.returnHandle(e);
     engine.destroy();
   });
 

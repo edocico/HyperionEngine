@@ -17,7 +17,6 @@ import type { SelectionManager } from './selection';
 import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
 import { validateConfig } from './types';
 import { EntityHandle } from './entity-handle';
-import { EntityHandlePool } from './entity-pool';
 import { GameLoop } from './game-loop';
 import { Camera } from './camera';
 import { CameraAPI } from './camera-api';
@@ -59,7 +58,6 @@ export class Hyperion implements Disposable {
   private readonly camera: Camera;
   private readonly cameraApi: CameraAPI;
   private readonly loop: GameLoop;
-  private readonly pool: EntityHandlePool;
   private readonly leakDetector: LeakDetector;
   private readonly rawApi: RawAPI;
   private readonly pluginRegistry: PluginRegistry;
@@ -88,7 +86,6 @@ export class Hyperion implements Disposable {
     this.renderer = renderer;
     this.camera = new Camera();
     this.cameraApi = new CameraAPI(this.camera);
-    this.pool = new EntityHandlePool();
     this.leakDetector = new LeakDetector();
     this.rawApi = new RawAPI(bridge.commandBuffer, () => this.nextEntityId++);
     this.pluginRegistry = new PluginRegistry();
@@ -394,20 +391,20 @@ export class Hyperion implements Disposable {
     this.bridge.commandBuffer.spawnEntity(id);
     this.entityCount++;
 
-    const handle = this.pool.acquire(id, this.bridge.commandBuffer, this.immediateState);
+    const handle = new EntityHandle(id, this.bridge.commandBuffer, this.immediateState, this.releaseHandle);
     this.leakDetector.register(handle, id);
     return handle;
   }
 
   /**
-   * Return a handle to the pool after its entity has been destroyed.
-   * Called internally when the handle's destroy callback fires.
+   * Frees a destroyed handle's slot: its `destroy()` calls this once. The
+   * handle is not recycled, so a stale reference can never alias a newer
+   * entity.
    */
-  returnHandle(handle: EntityHandle): void {
+  private readonly releaseHandle = (handle: EntityHandle): void => {
     this.leakDetector.unregister(handle);
     this.entityCount--;
-    this.pool.release(handle);
-  }
+  };
 
   /**
    * Load a single texture from a URL. Returns a packed TextureHandle

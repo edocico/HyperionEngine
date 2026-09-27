@@ -226,10 +226,8 @@ HyperionEngine/
         │                               #   .mesh/.primitive/.parent/.unparent/.data/.line/
         │                               #   .gradient/.boxShadow/.positionImmediate/.clearImmediate.
         │                               #   Disposable. RenderPrimitiveType enum
-        ├── entity-handle.test.ts       # 28 test: fluent API, dispose, data, pool recycling,
+        ├── entity-handle.test.ts       # 28 test: fluent API, dispose, data, release callback,
         │                               #   line/gradient/boxShadow, immediate-mode
-        ├── entity-pool.ts              # EntityHandlePool: object pool (cap 1024) for recycling
-        ├── entity-pool.test.ts         # 5 test: acquire/release, capacity, init reset
         ├── game-loop.ts                # GameLoop: RAF lifecycle with preTick/postTick/frameEnd
         │                               #   hook phases, FPS tracking, lastTime=-1 sentinel
         ├── game-loop.test.ts           # 11 test: RAF lifecycle, hooks, FPS tracking, frame timing
@@ -1513,9 +1511,8 @@ ts/src/
                                            plugins, destroy, stats, compact, resize, input, picking,
                                            audio, selection, outlines, immediate mode, profiler,
                                            shader hot-reload, PluginContext
-  entity-handle.test.ts             28 test: fluent API, dispose, data map, pool recycling,
+  entity-handle.test.ts             28 test: fluent API, dispose, data map, release callback,
                                            positionImmediate, clearImmediate, line, gradient, boxShadow
-  entity-pool.test.ts                5 test: acquire/release, capacity limit, init reset
   game-loop.test.ts                 11 test: RAF lifecycle, hook phases, FPS tracking, frame timing
   raw-api.test.ts                    4 test: spawn/despawn/setPosition/setVelocity
   camera-api.test.ts                 3 test: zoom clamping, viewProjection delegation
@@ -1698,7 +1695,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | `createImageBitmap` non disponibile ovunque nei Worker | Firefox e Chrome supportano, Safari ha supporto parziale | `TextureManager` va istanziato solo dove `createImageBitmap` e disponibile |
 | WGSL non supporta dynamic indexing su texture bindings | Limitazione del linguaggio | `switch(tier)` nel fragment shader — aggiungere nuovi tier richiede aggiornare lo shader |
 | `Texture2DArray maxTextureArrayLayers` varia per device | WebGPU spec garantisce minimo 256 | `TextureManager` alloca 256 layer per tier. Su device con meno layer, il caricamento fallira |
-| `EntityHandle.data()` cleared on pool reuse | `EntityHandlePool.init()` resets the data map | Plugins that store data via `.data(key, value)` must handle disappearing data after pool recycling |
+| A destroyed `EntityHandle` stays dead | `destroy()` releases the slot via the callback from `Hyperion.spawn`; handles are never recycled (pool removed 2026-09-27) | A stale reference can never alias a newer entity; `.data()` lives as long as the handle |
 | `Hyperion.fromParts()` vs `Hyperion.create()` | Two factory methods serve different purposes | `fromParts()` is the test factory (pre-built components, no WASM/WebGPU). `create()` is production (capability detection, bridge, renderer) |
 | Plugin teardown order matters | Plugins may reference engine resources during cleanup | `pluginRegistry.destroyAll()` runs before bridge/renderer destroy in `Hyperion.destroy()` |
 | `GameLoop` first-frame dt spike | `performance.now()` would be the entire page lifetime | Uses `lastTime = -1` sentinel to detect first RAF callback and set dt=0 |
@@ -1749,8 +1746,8 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | Test Rust | 99 (tutti passanti) |
 | Test TypeScript | 409 (tutti passanti) |
 | Moduli Rust | 7 (`lib`, `engine`, `command_processor`, `ring_buffer`, `components`, `systems`, `render_state`) |
-| Moduli TypeScript | 45+ (`hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `plugin-context`, `event-bus`, `profiler`, `plugins/fps-counter`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` x 11, `vite-env.d.ts`) |
-| File test TypeScript | 41 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `entity-pool`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`, `event-bus`, `plugin-context`, `profiler`, `plugins/fps-counter`) |
+| Moduli TypeScript | 45+ (`hyperion`, `entity-handle`, `game-loop`, `camera-api`, `raw-api`, `plugin`, `plugin-context`, `event-bus`, `profiler`, `plugins/fps-counter`, `types`, `leak-detector`, `selection`, `index`, `main`, `capabilities`, `ring-buffer`, `worker-bridge`, `engine-worker`, `renderer`, `texture-manager`, `camera`, `render-worker`, `backpressure`, `supervisor`, `text/font-atlas`, `text/text-layout`, `text/text-manager`, `render/render-pass`, `render/resource-pool`, `render/render-graph`, `render/passes/cull-pass`, `render/passes/forward-pass`, `render/passes/fxaa-tonemap-pass`, `render/passes/selection-seed-pass`, `render/passes/jfa-pass`, `render/passes/outline-composite-pass`, `render/passes/prefix-sum-reference`, `shaders/*.wgsl` x 11, `vite-env.d.ts`) |
+| File test TypeScript | 41 (`capabilities`, `ring-buffer`, `ring-buffer-utils`, `camera`, `frustum`, `texture-manager`, `backpressure`, `supervisor`, `render-pass`, `render-graph`, `cull-pass`, `forward-pass`, `fxaa-tonemap-pass`, `selection-seed-pass`, `jfa-pass`, `outline-composite-pass`, `prefix-sum`, `integration`, `hyperion`, `entity-handle`, `game-loop`, `raw-api`, `camera-api`, `plugin`, `types`, `leak-detector`, `selection`, `input-manager`, `hit-tester`, `immediate-state`, `input-picking`, `text-layout`, `audio-types`, `sound-registry`, `playback-engine`, `audio-manager`, `event-bus`, `plugin-context`, `profiler`, `plugins/fps-counter`) |
 | Dipendenze Rust (runtime) | 4 (`wasm-bindgen`, `hecs`, `glam`, `bytemuck`) |
 | Dipendenze TypeScript (dev) | 4 (`typescript`, `vite`, `vitest`, `@webgpu/types`) |
 | Dipendenze TypeScript (runtime) | 0 |
@@ -1883,20 +1880,13 @@ const entity = engine.spawn()
     .parent(otherEntity);
 ```
 
-Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `.dispose()` invia `DespawnEntity` e rilascia l'handle al pool.
+Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `.dispose()` invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
 
-**Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). La data map viene resettata quando l'handle viene riciclato dal pool via `init()`.
+**Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). Vive quanto la handle.
 
-### 18.3 EntityHandlePool: Object Pooling
+### 18.3 EntityHandlePool (rimosso il 2026-09-27)
 
-**File**: `ts/src/entity-pool.ts`
-
-Per evitare pressione GC in scene con frequenti spawn/despawn, `EntityHandlePool` implementa un object pool LIFO con capacita massima di 1024 handle.
-
-- `acquire()` → pop dal pool (se disponibile) oppure crea nuovo
-- `release(handle)` → push nel pool (se sotto capacita) oppure scarta
-
-`init(id, producer)` resetta un handle riciclato: nuovo entity ID, stesso producer, data map pulita.
+Il pool non ha mai riciclato nulla: `destroy()` non restituiva la handle, e `returnHandle()` lo chiamavano solo i test. Riciclare avrebbe poi reso possibile l'aliasing (una handle stantia che torna `.alive` e muove un'altra entità). Il pool e `EntityHandle.init()` sono stati rimossi: ogni `spawn()` crea una handle nuova, e `destroy()` libera lo slot tramite il callback di rilascio.
 
 ### 18.4 GameLoop: RAF Lifecycle con Hook
 
@@ -2061,7 +2051,6 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **GPU-driven rendering** | Pattern dove la GPU decide cosa renderizzare (compute culling) e quante istanze (indirect draw), riducendo il coinvolgimento della CPU |
 | **Facade pattern** | Pattern dove una singola classe (`Hyperion`) espone un'interfaccia semplificata sopra un sottosistema complesso (bridge, renderer, camera, loop, plugins) |
 | **EntityHandle** | Wrapper fluent sopra un entity ID numerico. Metodi chainable (`.position().velocity().scale()`). Implementa `Disposable` per cleanup automatico |
-| **EntityHandlePool** | Object pool LIFO (cap 1024) per riciclare `EntityHandle` senza pressione GC. `acquire()` riusa, `release()` rimette nel pool |
 | **GameLoop** | Gestore del ciclo `requestAnimationFrame` con hook system (preTick/postTick/frameEnd) e FPS tracking |
 | **HyperionPlugin** | Interfaccia per plugin dell'engine: `install(engine)` per setup, `cleanup()` opzionale per teardown. Gestiti da `PluginRegistry` |
 | **Scene graph** | Gerarchia parent-child tra entita. `Parent` + `Children` components + `propagate_transforms` system. Le model matrix dei figli sono moltiplicate per la matrix del parent |
