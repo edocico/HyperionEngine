@@ -45,7 +45,7 @@ Le decisioni della §0 sono dell'utente.
 - Gli stati dei 10 tab dell'harness coincidono con quelli registrati al passo 0 (§7.3.5): nessun check fallito, gli stessi check in skip o pending, e ogni check che passava passa ancora. L'Input resta a 2/6 come su master.
 - I punti statici opachi della baseline senza perdita del passo 0 sono identici al bit (§7.3.5).
 - `readTransparentSort()` supera i controlli di §7.3.3 (insieme raccolto, chiavi, ordine, `digitBase`, due frame consecutivi uguali).
-- Il sort, cioè la somma dei quattro stadi, gather compreso, resta sotto 1 ms a ~99k trasparenti visibili sull'iGPU AMD, con lo scenario di benchmark committato (§7.3.6).
+- Il sort, cioè la somma dei quattro stadi, gather compreso, resta sotto 1 ms a 100 000 trasparenti visibili sull'iGPU AMD, con lo scenario di benchmark committato (§7.3.6).
 - Il costo del `forward` è misurato ai passi 0, 1, 3 e 4 e documentato (§7.3.6).
 
 ## 2. Architettura
@@ -178,15 +178,24 @@ Le condizioni dell'early-out dell'occluder restano quelle di oggi. `OccluderSeed
 
 **Due rinforzi a `GraphRequests`:**
 - **`write()` non può lanciare.** Il compositore è totale.
-- **La guardia sul pezzo vuoto guarda le statiche GREZZE dei pezzi** (`prelude`, `libraries[t]`), mai il testo composto. Sta nella closure del probe degli slot di pezzo in `renderer.ts`: se un pezzo è vuoto o fatto solo di spazi, lancia in modo sincrono prima di `validation.run`, senza incrementare la versione. Resta come rete di sicurezza per le chiamate dirette `recompileShader(pezzo, '')`. Va corretto anche il commento/mock di `graph-requests.test.ts:175-190`, che oggi fa pensare a una guardia per voce dentro `ForwardPass`.
+- **La guardia sul pezzo vuoto guarda le statiche GREZZE dei pezzi** (`prelude`, `libraries[t]`), mai il testo composto. Sta nella closure del probe degli slot di pezzo in `renderer.ts`: se un pezzo è vuoto o fatto solo di spazi, lancia in modo sincrono DENTRO `validation.run`, che toglie i suoi error scope e rilancia (`graph-host.ts:32-39`). `reloadShader` intercetta l'eccezione, restituisce 'rejected' e ripristina la sorgente vecchia nel `finally`, prima di incrementare la versione (`graph-requests.ts:166-178`). `reloadShaders` deve rispettare lo stesso ordine per tutti i suoi probe. La guardia resta come rete di sicurezza per le chiamate dirette `recompileShader(pezzo, '')`. Va corretto anche il commento/mock di `graph-requests.test.ts:175-190`, che oggi fa pensare a una guardia per voce dentro `ForwardPass`.
 - **Reload raggruppato.** Senza di esso, un nome cambiato nel preludio insieme al suo uso in una libreria arriva come due update Vite separati. Ognuno viene provato contro il testo VECCHIO dell'altro, entrambi vengono rifiutati, e ricaricare la pagina su questa macchina significa perdere il device.
   1. **Raccolta.** Solo gli `accept` dei pezzi passano da un debounce finale di 50 ms: ogni `accept` fa ripartire il timer. Si tiene l'ultimo valore NON vuoto per nome e si ignora `''`, così un salvataggio vuoto non sostituisce mai un candidato buono in attesa. Una finestra con soli vuoti non manda niente.
   2. **Verifica.** Nuovo `reloadShaders(entries): Promise<Map<string, ReloadOutcome>>`. Nella stessa finestra sincrona esegue il probe dell'UNIONE (tutti i candidati scritti) e poi un probe SINGOLO per voce (solo quella voce scritta sopra le sorgenti buone correnti). Ognuno è il suo scrivi-prova-ripristina, come fa oggi `reloadShader`, quindi niente di non validato sopravvive alla finestra.
-  3. **Verdetto.** Se l'unione passa, si tengono tutte le voci e si fa un solo `requestGraph`. Altrimenti si tengono solo le voci che passano da sole, e le altre vengono registrate come rifiutate. Si mantiene così la garanzia di oggi: con un "Save All" in cui c'è un solo file rotto si perde solo quel file. Due voci che passano da sole ma sono in conflitto tra loro (per esempio un nome di primo livello duplicato) le respinge la ricostruzione del grafo validata dalla GPU, e `restoreGoodSources` ripristina lo stato buono.
-  4. **API pubblica.** `recompileShader(name, src)` resta a slot singolo e chiama direttamente `reloadShader`, senza debounce.
-  5. **Test** passando dal raccoglitore, non da `reloadShader`:
+  3. **Verdetto.** Nessun grafo si costruisce mai da un insieme che un probe ha già respinto, o che nessun probe ha provato insieme:
+     - se l'unione passa, si tengono tutte le voci e si fa un solo `requestGraph`;
+     - se l'unione fallisce e TUTTE le voci passano da sole, sono in conflitto tra loro (per esempio un nome di primo livello duplicato): tutte rifiutate, con una sola riga di log, nessuna scrittura e nessun `requestGraph`. Una richiesta di modo in attesa (per esempio un `enableOutlines`) non viene toccata;
+     - se l'unione fallisce e solo ALCUNE voci passano da sole, si fa un ulteriore scrivi-prova-ripristina di quel sottoinsieme come unione, contro le sorgenti buone correnti, e si chiede un grafo solo se passa.
+
+     La garanzia è quella di oggi, ristretta ai **file indipendenti**: con un "Save All" di file indipendenti in cui c'è un solo file rotto, si perde solo quel file. **Limite dichiarato:** una modifica accoppiata (una rinomina nel preludio più i suoi usi) salvata insieme a un pezzo rotto e scollegato viene respinta per intero. Preludio e libreria vanno salvati di nuovo dopo aver corretto il pezzo rotto, perché Vite rimanda solo i file che cambiano.
+  4. **Versioni.** `reloadShaders` incrementa la versione di ogni voce che porta, solo dopo che i suoi probe sono partiti, come fa oggi `reloadShader` (così un pezzo vuoto non annulla niente). Al verdetto, una voce la cui versione si è mossa viene scartata e segnalata come 'superseded'. `recompileShader(pezzo)` condivide le stesse versioni per nome: una chiamata diretta sostituisce la voce in attesa di una finestra, e viceversa.
+  5. **API pubblica.** `recompileShader(name, src)` resta a slot singolo e chiama direttamente `reloadShader`, senza debounce.
+  6. **Test** passando dal raccoglitore, non da `reloadShader`:
      - una rinomina nel preludio insieme al suo uso in una libreria, nella stessa finestra: entrambi vanno live;
      - `line` rotto insieme a `quad` valido e indipendente: `quad` va live, `line` viene rifiutato;
+     - X e Y passano da sole ma l'unione fallisce: nessun `host.request`, tutte e due 'rejected', e un `enableOutlines` in attesa va comunque live;
+     - rinomina nel preludio + `line` che la usa + `quad` rotto e scollegato: tutte e tre respinte (il limite dichiarato);
+     - una voce sostituita da una finestra successiva risulta 'superseded', ed è live la sorgente più nuova;
      - `v1` poi `''` per lo stesso pezzo: va live `v1`;
      - `''` poi `v1`: va live `v1`.
 
@@ -260,7 +269,7 @@ Un contatore incrementale è stato scartato per due motivi:
 | Mode B, `worker-bridge.ts` ~133-155 | `rs.transparentCount`, `rs.entityIdsGeneration` |
 | Mode A, copia sul main thread ~267-289 | come il Mode B; `rs` viene inoltrato intero al render worker |
 | `render-worker.ts`: tipo `RenderState` 21-39 e ricostruzione 92-113 | i due campi |
-| `render/render-pass.ts`, `FrameState` | `transparentCount` (già normalizzato) |
+| `render/render-pass.ts`, `FrameState` | `transparentCount` (già normalizzato) e `frameStamp`. Quest'ultimo viene da un contatore locale della closure di `createRenderer`, quindi sopravvive agli swap del grafo e ai probe dell'HMR. Avanza una volta per `render()` con `stamp = stamp % 0xFFFFFFFE + 1`, e resta in [1, 0xFFFFFFFE]: mai 0, il valore di uno staging nuovo, e mai 0xFFFFFFFF, la sentinella (§5.2, §6.5) |
 
 **Normalizzazione nel renderer.** I messaggi dei worker sono `any`, quindi `tsc` non vede un campo dimenticato. La regola è che un campo mancante costi tempo, mai correttezza:
 - conteggio assente o non finito → `entityCount`;
@@ -304,7 +313,7 @@ Non si usa la colonna `gpu_depths`: per il 2D contiene +depth senza la composizi
 | `sort-keys-a` / `sort-keys-b` | pass, privati | 800 000 B ciascuno | STORAGE (+COPY_SRC dev) | SoA in un solo buffer: `lo[0..CAP)`, poi `hi[CAP..2CAP)` |
 | `sort-vals-a` | pass, privato | 400 000 B | STORAGE (+COPY_SRC dev) | slot, lato A |
 | `sort-hist` | pass, privato | (16 + 7·256 + 98·256) × 4 = 107 584 B | STORAGE, COPY_DST (+COPY_SRC dev) | `diag: array<atomic<u32>,16>`, `digitBase: array<u32, 1792>` (una riga per passata), `tiles: array<u32>` (98 tile × 256) |
-| `sort-gather-params` | pass | 16 B | UNIFORM, COPY_DST | `{limit, stamp, _pad0, _pad1}`. `stamp` è un contatore di frame del renderer, mai 0xFFFFFFFF |
+| `sort-gather-params` | pass | 16 B | UNIFORM, COPY_DST | `{limit, stamp, _pad0, _pad1}`. `stamp` è `FrameState.frameStamp` (§4.2), sempre in [1, 0xFFFFFFFE] |
 | `sort-pass-params` | pass | 7 × 256 B | UNIFORM, COPY_DST | slice *p* = `{passIndex = p, 0, 0, 0}` |
 
 **L'header `transparent-args`, parola per parola:**
@@ -401,7 +410,7 @@ Grazie a b5 in sola lettura, `n` è un valore UNIFORME. Lo stesso buffer fa anch
 ### 5.4 Uniform
 
 - `PassParams`: 7 slice costanti, scritte **una volta** nel `setup()`.
-- In `prepare()`, una volta per frame: `GatherParams {limit = B, stamp}`, il reset dell'header (`{6,0,0,0,0, 0,1,1, 0, B, 0, 0xFFFFFFFF, 0, …}`) e l'azzeramento dei 64 B di `diag`.
+- In `prepare()`, una volta per frame: `GatherParams {limit = B, stamp = frame.frameStamp}`, il reset dell'header (`{6,0,0,0,0, 0,1,1, 0, B, 0, 0xFFFFFFFF, 0, …}`) e l'azzeramento dei 64 B di `diag`.
 - **`execute()` non chiama mai `writeBuffer`**: la regola che `writeBuffer` arriva prima del *prossimo* submit la rende una trappola.
 - `prepare()` gira prima dell'encoding di tutti i pass. Per questo i conteggi del cull il gather li legge sulla GPU, non la CPU.
 - Le due struct uniform sono 4 × u32 con i pad espliciti. Le copre `uniform-layout.test.ts`.
@@ -504,17 +513,22 @@ Due slot, `transparent-gather` e `transparent-sort`, con probe = un `Transparent
   - Lo slot HMR costruisce `new TransparentSortPass()` senza, quindi le istanze usa e getta non vedono mai le richieste.
   - I grafi in attesa e quelli ritirati non eseguono mai `execute()`, quindi serve solo l'istanza viva.
 - **Servizio: una richiesta per frame, in ordine FIFO.**
-  - Se in `execute()` c'è una richiesta in attesa e il sort gira in quel frame, il pass la prende. Il probe allora crea per QUELLA richiesta buffer di staging NUOVI (`MAP_READ | COPY_DST`), che appartengono alla richiesta e non al pass: un `destroy()` del pass non può interrompere un map.
+  - Se in `execute()` c'è una richiesta in attesa e il sort gira in quel frame, il pass prende quella in TESTA e le consegna `frame.frameStamp`. Le altre restano in coda per i frame successivi. Il probe allora crea per QUELLA richiesta buffer di staging NUOVI (`MAP_READ | COPY_DST`), che appartengono alla richiesta e non al pass: un `destroy()` del pass non può interrompere un map.
   - Il pass si limita a codificare le copie:
     - l'uscita del gather (chiavi `lo`/`hi` e valori A), subito dopo il dispatch del gather: si chiude il compute pass, si copia, se ne apre un altro;
     - alla fine, l'header, `digitBase` + `diag` di `sort-hist`, e `transparent-order`.
   - **`execute()` e `prepare()` non chiamano mai `mapAsync`.** Un buffer in attesa di map al momento del submit invalida il command buffer di tutto il frame.
   - N richieste emesse insieme leggono N frame consecutivi.
 - **Mappatura.**
-  - Dopo `host.graph.render()`, nello stesso punto di `debugProbe.serve`, il renderer chiama `sortProbe.finish()`, che fa `mapAsync` sui buffer della richiesta servita.
+  - Dopo `host.graph.render()`, nello stesso punto di `debugProbe.serve`, il renderer chiama `sortProbe.finish(source)`, che fa `mapAsync` sui buffer della richiesta servita.
   - Solo nei frame con una readback, `host.graph.render()` è avvolto negli error scope `validation` e `out-of-memory`. Un errore in quel frame rifiuta la richiesta.
+  - Se `host.graph.render()` lancia, il renderer rifiuta la richiesta presa e tutte quelle in coda prima di rilanciare.
   - I buffer si distruggono dopo `unmap` o al rifiuto.
-- **Snapshot della CPU**, preso quando la richiesta viene servita e prima di qualunque `await`, come fa `serveTransforms`: al momento della risposta `latestRenderState` è già stato sostituito.
+- **Snapshot della CPU**, preso in `finish(source)` in modo sincrono, prima di qualunque `await`, come fa `serveTransforms`: al momento della risposta `latestRenderState` è già stato sostituito. Il pass vede solo `FrameState`, quindi lo snapshot lo compone il renderer, dai valori ancora in scope subito dopo `host.graph.render()`:
+  - `state.tickCount`, `frameStamp`, `state.entityCount`;
+  - il conteggio e la generazione normalizzati, e il flag "id caricati in questo frame";
+  - `Boolean(useScatter)` e `camera.viewProjection`;
+  - fette di `state.bounds`, `state.entityIds`, `state.renderMeta` e `state.texIndices`.
 - **Risultato:**
   ```ts
   interface TransparentSortReadback {
@@ -526,6 +540,7 @@ Due slot, `transparent-gather` e `transparent-sort`, con probe = un `Transparent
       bounds: Float32Array;                // 4 × entityCount, fetta dello state del frame
       entityIds: Uint32Array;              // entityCount
       renderMeta: Uint32Array;             // 2 × entityCount
+      texIndices: Uint32Array;             // entityCount: la regione (tier > 0 o overflow)
     };
     n: number; raw: number; limit: number; overflow: boolean;
     diag: Uint32Array;                     // 16
@@ -537,8 +552,8 @@ Due slot, `transparent-gather` e `transparent-sort`, con probe = un `Transparent
   La tabella dei tile non si copia: nessun controllo la usa.
 - **Input.** La CPU ha già gli input nello snapshot, quindi `COPY_SRC` in dev serve solo sui buffer del sort. `visible-indices`, `entity-bounds` e `indirect-args` non si toccano.
 - **Rifiuti.** Si rifiuta invece di rispondere con degli zeri:
-  - quando la parola 11 dell'header copiato (§5.2) non è lo `stamp` di quel frame. La sentinella di `prepare()` vuol dire che il gather non è partito. Il controllo regge perché lo staging è nuovo: WebGPU lo inizializza a zero, e lo stamp non vale mai 0xFFFFFFFF;
-  - quando una richiesta non viene presa da un pass vivo in quel frame, perché il sort è stato saltato (conteggio 0) o perché la richiesta ha incrociato uno swap del grafo. Dopo il frame, il renderer rifiuta ogni richiesta che il pass non ha preso;
+  - quando la parola 11 dell'header copiato (§5.2) non è lo `stamp` di quel frame. I valori sbagliati hanno due firme: 0 vuol dire che la copia non è partita (lo staging è nuovo, e WebGPU lo inizializza a zero); 0xFFFFFFFF vuol dire che il gather non è partito (la sentinella di `prepare()`). Lo stamp non può valere nessuno dei due;
+  - **dopo un frame in cui la coda non era vuota e il pass vivo non ha preso nessuna richiesta** (sort saltato con conteggio 0, oppure nessun `TransparentSortPass` vivo ha eseguito `execute()`): il renderer rifiuta la richiesta in TESTA, con l'errore "nessun trasparente in questo frame". Quelle dietro restano in coda e seguono la stessa regola nei frame successivi. Il probe sa se `take()` è stato chiamato nel frame grazie a un flag per frame che `finish()` controlla e azzera. Una richiesta presa si rifiuta solo per lo stamp o per l'error scope. Uno swap del grafo da solo non impedisce di prendere una richiesta: il pass vivo nuovo nasce con lo stesso `sortProbe`;
   - quando c'è un errore di validazione nel frame;
   - nel Mode A, senza renderer, in pausa, e al `destroy()`.
 - **Niente anello per frame.** Con il limite B vero e i dispatch indiretti non avrebbe più un compito.
@@ -578,7 +593,7 @@ Due file: `ts/src/render/passes/transparent-sort-reference.ts` e `transparent-so
   - memoria di workgroup per entry point ≤ 16 384 B (96 / 1024 / 1024 / 9216);
   - `PASSES` dispari, quindi il risultato va in `transparent-order`;
   - il `CAP` del WGSL è uguale a `MAX_GPU_ENTITIES`;
-  - `scan_main` contiene 17 barriere, così un WGSL a una barriera per passo non può staccarsi dal modello a due fasi.
+  - `scan_main` contiene nel testo esattamente 3 `workgroupBarrier()`: una prima del loop, dopo `totals[d] = sum`, e 2 nel corpo di Hillis-Steele, con la lettura in `v` prima della prima e `totals[d] += v` fra le due. Il conteggio ESEGUITO, ricavato dai limiti del loop letti nel testo (off = 1..128, 8 iterazioni), è 1 + 2·8 = 17, e deve coincidere con i confini di fase di `cpuScan` (numero di fasi − 1). Un WGSL con una barriera per passo darebbe 2 nel testo e 9 eseguite: la deriva si vede in entrambi i controlli.
 - **`TransparentSortPass` su device finto:**
   - `PassParams` scritti una volta nel `setup()`;
   - `GatherParams`, header e `diag` una volta per `prepare()`;
@@ -592,10 +607,12 @@ Due file: `ts/src/render/passes/transparent-sort-reference.ts` e `transparent-so
 - **`TransparentSortProbe` su device finto:**
   - `execute()` e `prepare()` non chiamano mai `mapAsync`;
   - le copie di un frame con readback vanno in buffer presi dalla richiesta, mai dal pass;
-  - due richieste in frame consecutivi usano buffer diversi, e una sola richiesta viene servita per frame;
-  - una richiesta che nessun pass prende nel frame (conteggio 0, swap) viene rifiutata;
+  - due richieste emesse insieme, con conteggio > 0: dopo il frame 1 la prima è servita e la seconda è ancora in coda (non rifiutata); dopo il frame 2 è servita anche la seconda, con lo stamp successivo. Le due usano buffer diversi;
+  - due richieste in coda con conteggio 0: dopo il frame viene rifiutata solo quella in testa, e la seconda resta in coda;
+  - se `host.graph.render()` lancia, la richiesta presa e quelle in coda vengono rifiutate;
   - un pass costruito senza probe (quello dell'HMR) non tocca le richieste;
-  - uno `stamp` sbagliato nell'header copiato fa rifiutare la richiesta;
+  - uno `stamp` sbagliato nell'header copiato fa rifiutare la richiesta, e così un header tutto a zero (la copia non è partita);
+  - il contatore del renderer: il primo stamp vale 1, e dopo 0xFFFFFFFE torna a 1;
   - `destroy()` rifiuta tutte le richieste in attesa.
 - **`ForwardPass`:** una pipeline uber con il descrittore trasparente; il bind group ordinato ha il binding 2 su `transparent-order`; un solo `drawIndexedIndirect(transparent-args, 0)`; il draw si salta a count 0; `reads` contiene le uscite del sort.
 - **Composizione del grafo:** in tutti e 6 i grafi `transparent-sort` sta dopo `cull` e prima di `forward`.
@@ -621,16 +638,27 @@ Due file: `ts/src/render/passes/transparent-sort-reference.ts` e `transparent-so
 Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mode B e in Mode C, con la pagina a una dimensione fissa (`resize_page` 1920×1080). Si registrano la dimensione della canvas e il `devicePixelRatio`, perché `fitView` inquadra in base all'aspetto.
 
 1. **La baseline del passo 0**, senza perdita. Si cattura sul commit base del branch e si salva in `docs/plans/assets/2026-09-27-transparent-sort-baseline/`, con lo script di cattura committato accanto: il corpo di `evaluate_script`, riusato identico ai passi 1-4.
-   - Per ognuno dei 10 tab, dopo `frames(4)`, si legge `engine.debug.probe({ target: 'scene-hdr', uv })` su una griglia UV fissa 64×36 più i punti dei check esistenti. Si salva `<mode>-<tab>.json` con dimensione della canvas, `devicePixelRatio`, `viewProjection`, punti e valori.
-   - **Maschera statica S:** i punti con valori identici al bit in 10 frame consecutivi. Esclude da sola i contenuti animati (le luci del tab Lighting, l'entità con velocità di Scene Graph, il genitore in movimento di 2D Twins), senza dover mettere in pausa: il probe rifiuta in pausa.
-   - **T ⊂ S:** i punti coperti da un'entità `.transparent()` o da una luce, ricavati dalla CPU (sfera di bounds proiettata con la `viewProjection`), in modo conservativo.
-   - **Stati:** per tab e per modo, il testo `N/M passed` più il nome e lo stato di ogni check (`statuses-<mode>.json`). Oggi l'Input è a 2/6 con 4 check di interazione in pending, e in Rendering FX 'Tonemap switch' è in skip.
+   - **Punto di cattura**, definito nello script: (1) un clic sul tab; (2) attesa della FINE del `setup()` del tab. Si osserva senza codice dell'app: prima del clic lo script avvolge `setup` del modulo della sezione (`const m = await import('/src/demo/<key>.ts')`; l'import lazy di `main.ts` risolve alla stessa istanza del modulo). In alternativa si usa un'attesa fissa oltre il setup più lento (almeno 7 s) più due letture identiche degli stati a 1 s di distanza; (3) `frames(4)`; (4) la finestra per S; (5) gli stati, letti in quello stesso punto: nessun check in pending tranne i 4 d'interazione dell'Input. Ogni tab si visita una volta sola per cattura, in ordine fisso, da una navigazione pulita, perché rientrare in un tab ne rilancia il `setup`.
+   - **Punti:** si legge `engine.debug.probe({ target: 'scene-hdr', uv })` su una griglia UV fissa 64×36, più i punti del mondo copiati dai check esistenti. Questi si proiettano con la `viewProjection` del frame di cattura (lo stesso `worldToUv` del probe) e si scartano quelli fuori da [0,1]: un solo punto fuori schermo fa rifiutare al probe l'intera richiesta. Gli scartati si registrano. Per esempio, la scena della depth di 2D Twins (x ≈ 36-43) al momento della cattura è fuori schermo: la baseline non la copre, e la coprono direttamente i check nuovi di §7.3.4.
+   - Si salva `<mode>-<tab>.json` con dimensione della canvas, `devicePixelRatio`, `viewProjection`, punti, valori e punti scartati.
+   - **Maschera statica S_x di una corsa x:** i punti con valori identici al bit in 10 letture successive.
+   - **Impronta del moto M_x:** 10 letture non bastano, perché la fase di un'animazione dipende dal tempo e cambia fra una corsa e l'altra. M_x si ricava dalla CPU:
+     - due istantanee di `engine.debug.readEntityTransforms()` (righe CPU + id per slot), prese ad almeno 1 s di distanza; un'entità si muove se la sua riga cambia fra le due;
+     - l'impronta di un'entità mobile è la sua sfera proiettata, di raggio ½·(|colonna 0| + |colonna 1|) della riga (conservativo per un quad sotto scala e rotazione), spazzata fra le due posizioni e dilatata di 2 px;
+     - il **tab Lighting** anima tutto ciò che le sue luci raggiungono, quindi non contribuisce punti al confronto al bit: lo coprono i suoi check e i suoi stati.
+   - **Insieme di confronto C = S_base ∩ S_run \ (M_base ∪ M_run).**
+   - **T ⊂ C:** i punti coperti da un'entità `.transparent()`, ricavati dalla CPU in modo conservativo (sfera di bounds proiettata con la `viewProjection`).
+   - **Verifica preliminare al passo 0:** due catture dello stesso commit, fatte in due caricamenti di pagina diversi, coincidono al bit su C. Dimostra che C elimina la varianza fra le corse prima di usarlo come cancello.
+   - **Stati:** per tab e per modo, il testo `N/M passed` più il nome e lo stato di ogni check (`statuses-<mode>.json`), letti nella stessa corsa, senza fermare le animazioni: 'Velocity' e il check delle righe in scatter del Mode C in 2D Twins dipendono dal moto. Oggi l'Input è a 2/6 con 4 check di interazione in pending, e in Rendering FX 'Tonemap switch' è in skip.
    - I vecchi JPEG di `assets/2026-09-27-harness-baseline` restano solo come riferimento visivo: sono con perdita, coprono 5 tab su 10 e sono più vecchi di HEAD.
-2. **Validazione degli shader, prima di costruire il resto:**
+2. **Validazione degli shader.** Per i 7 moduli composti (uber compreso) è bloccante al passo 1; per `transparent-gather.wgsl` e `transparent-sort.wgsl` è bloccante al passo 3:
    - Chrome: `getCompilationInfo` e creazione delle pipeline dentro `pushErrorScope('validation')` per gather, sort, uber e i 6 moduli per tipo composti.
-   - Firefox: uno script scrive su file i 7 moduli composti più gather e sort, e la CLI `naga` (`cargo install naga-cli`, lo stesso front-end di Firefox) li valida tutti.
+   - Firefox: uno script scrive su file i moduli composti (e al passo 3 gather e sort), e la CLI `naga` (`cargo install naga-cli`, lo stesso front-end di Firefox) li valida tutti.
    - Safari: non si può provare qui. È un rischio accettato (§10).
-3. **`readTransparentSort()` su scene vere.** Le scene riempiono **tutte e 12 le regioni del gather**, dispari comprese: servono sprite `.transparent()` con una texture in tier ≥ 1 o in overflow. Si usa un PNG 128×128 committato in `ts/public/`, che finisce nel tier 1 (o in overflow) su qualunque device, cioè in un bucket dispari; oggi nessun tab carica texture. Servono anche più tipi di primitiva. Ogni controllo usa lo snapshot `frame` della stessa risposta:
+3. **`readTransparentSort()` su scene vere.** Le scene dedicate riempiono **tutte e 12 le regioni del gather**. Per OGNI tipo 0-5 c'è almeno un'entità `.transparent()` a schermo con indice di texture 0 (regione pari 14+2t) e almeno una con l'indice impacchettato di un PNG 128×128 committato in `ts/public/` (regione dispari 15+2t). Quel PNG finisce nel tier 1, o in overflow, su qualunque device; oggi nessun tab carica texture.
+   - `.texture()` vale per ogni primitiva. In un gradiente texturizzato però G/B dello stop 1 vengono dai byte bassi dell'indice (il gotcha del gradiente), e msdf campiona il PNG come MSDF. Ai controlli del gather non importa, ma queste entità non si riusano nei check pixel di §7.3.4.
+   - Ogni controllo prima aspetta che lo stato del frame contenga la scena, riprovando sul rifiuto "nessun trasparente in questo frame" con un timeout di 3 s come `pixelCheck`. Nel Mode B `latestRenderState` è indietro di un tick.
+   - Ogni controllo usa lo snapshot `frame` della stessa risposta:
    - (a) **Insieme raccolto.** I `gathered.vals` sono unici, ognuno `< entityCount`, con il bit 8 e un tipo (`& 0xFF`) ≤ 5 in `frame.renderMeta`. `order` ne è una permutazione.
    - (b) **Sovrainsieme.** Ogni slot raccolto supera il test sfera-frustum a raggio ALLARGATO che usa `deriveLightGroups` (`r·1.01 + 1e-3`).
    - (c) **Sottoinsieme.** Ogni riga trasparente di tipo 0-5 che supera il test a raggio RIDOTTO (`r·0.99 − 1e-3`) è presente. Nelle scene dedicate, dove tutti i trasparenti sono a schermo, questo diventa un'uguaglianza esatta di insiemi.
@@ -639,23 +667,24 @@ Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mod
    - (f) **Ordine.** `order` è uguale all'oracolo (`Array.sort` dell'insieme raccolto per chiavi ricalcolate). `digitBase[p]` è uguale allo scan esclusivo dell'istogramma della cifra *p* delle chiavi ricalcolate, perché non dipende dall'ordine.
    - (g) **Due frame consecutivi.** Due richieste emesse insieme vengono servite in frame consecutivi: gli `stamp` sono consecutivi. In una scena statica, la sequenza degli id in `order` è identica.
    - (h) **Mode C con ricambio.** `?mode=C` con spawn e despawn a ogni frame, e molti trasparenti alla stessa z (il caso 2D comune, così l'oracolo esercita il pareggio per id). Almeno un frame servito deve avere `usedScatter && idsUploaded`.
-4. **Pixel nel tab 2D Twins**, estendendo il check sulla depth (`checkDepth`), che già distingue l'ordine con gradienti colorati:
+   - (i) **Regioni.** Si classifica ogni slot raccolto per `(renderMeta & 0xFF, tier > 0 || overflow)`, con tier e overflow letti da `frame.texIndices`. Tutte e 12 le classi devono essere non vuote.
+4. **Pixel nel tab 2D Twins: check NUOVI con un nome loro** (per esempio 'Depth orders transparent sprites'). Stanno accanto a `checkDepth` e ne riusano la struttura: gradienti colorati, probe su `scene-hdr`, 10 frame stabili, depth cambiate a runtime. 'Depth orders 2D sprites' resta invariato. Gli sprite nuovi non coprono i punti del probe del check esistente, e stanno fuori dalla vista delle coppie gemelle che il `setup()` ripristina alla fine (`twin-2d.ts:259`), oppure vengono rimossi dopo il loro check. Così la regola dei pixel di §7.3.5 resta valida per 2D Twins. I check verificano:
    - sprite `.transparent()` sovrapposti di tipi diversi, disegnati nell'ordine di z. Le coppie devono distinguere l'ordine: gradienti di colori diversi, un box shadow colorato e semitrasparente, lo sprite con la texture. Due sprite bianchi opachi, per esempio quad su quad, danno lo stesso colore in entrambi gli ordini e non provano niente;
    - a parità di z sta davanti l'id più alto;
    - l'ordine si inverte quando le depth cambiano a runtime;
    - i valori attesi si calcolano in forma chiusa dal blend a alfa dritto (`bg·(1−a) + c·a`; con alfa 1, il colore di sopra) e si leggono con il probe su `scene-hdr`.
 5. **Nessuna regressione**, contro la baseline del punto 1:
-   - **stati**: nessun check fallito; ogni tab ha gli stessi check in skip o pending della baseline; ogni check che passava passa ancora; un pending che nella baseline arriva a pass (Scene Graph 'Velocity', Lighting 'Backend lit') ci arriva anche qui;
-   - **pixel**: ai passi 1, 2 e 3 tutti i punti di S sono identici al bit (f16). Al passo 4 lo sono i punti di S \ T, mentre quelli di T stanno entro |Δ| ≤ 1/255 per canale;
+   - **stati**: nessun check fallito; ogni tab ha gli stessi check in skip o pending della baseline; ogni check che passava passa ancora; un pending che nella baseline arriva a pass (Scene Graph 'Velocity', Lighting 'Backend lit') ci arriva anche qui. Si confrontano solo i nomi di check già presenti nella baseline: 2D Twins ne guadagna di nuovi, che devono passare;
+   - **pixel**: ai passi 1, 2 e 3 tutti i punti di C sono identici al bit (f16). Al passo 4 lo sono i punti di C \ T, mentre quelli di C ∩ T stanno entro |Δ| ≤ 1/255 per canale;
    - **i check esistenti passano INVARIATI al passo 4.** Nessun trasparente esistente si sovrappone a un altro trasparente: i tre box shadow di Primitives e la cella box shadow di 2D Twins sono isolati. Un fallimento lì è quindi una regressione dell'uber, non un nuovo ordine. Solo i check nuovi del punto 4 dipendono dall'ordine dei trasparenti.
 6. **Prestazioni**, con lo **scenario di benchmark committato**: `docs/plans/assets/2026-09-27-transparent-sort-bench.js`, il corpo di `evaluate_script`, usato identico ai passi 0, 1, 3 e 4. Il file fissa:
    - canvas 1920×1080;
    - un mondo altrimenti vuoto: il passo 0 aggiunge a `main.ts` un flag di sola dev `?bench`, che non apre nessuna sezione;
-   - N = 1 000, 10 000 e 99 000 quad 2D `.transparent()` da 16×16 px a schermo, tutti dentro la vista. Sono 99 000 e non 100 000 perché il mondo deve stare sotto `maxEntities` = `MAX_GPU_ENTITIES`;
+   - N = 1 000, 10 000 e 100 000 quad 2D `.transparent()` da 16×16 px a schermo, tutti dentro la vista. 100 000 è esattamente `CAP` (98 tile pieni): il facade controlla `entityCount >= maxEntities` PRIMA dello spawn, quindi un mondo di esattamente `maxEntities` ci sta. Lo script distrugge il lotto precedente prima di crearne uno nuovo; `destroy()` abbassa `entityCount` subito;
    - depth tutte a 0, oppure tutte distinte in [0, 999], dentro near/far della camera di default;
    - illuminazione spenta, profiler acceso, media della finestra da 120 frame, in frame senza readback.
 
-   **Soglia: "sort" = la somma delle medie di `transparent-sort/{gather,upsweep,scan,scatter}`, < 1 ms a 99 000.** L'encoding del profiler (22 compute pass più i marker, contro 1) ne fa un limite superiore del costo in produzione.
+   **Soglia: "sort" = la somma delle medie di `transparent-sort/{gather,upsweep,scan,scatter}`, < 1 ms a 100 000.** L'encoding del profiler (22 compute pass più i marker, contro 1) ne fa un limite superiore del costo in produzione.
 
    **Il `forward`** si misura ai passi 0, 1, 3 e 4 con lo stesso scenario:
    - 1 − 0 è il costo della composizione (moduli composti, `VertexOutput` più largo);
@@ -672,9 +701,9 @@ Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mod
 | Passo | Contenuto | Criterio di uscita |
 |---|---|---|
 | 0 | Baseline, sul commit base e senza codice nuovo tranne il flag `?bench` | Baseline senza perdita e stati dei tab (§7.3.1), in Mode B e C. Tempo di `forward` con lo scenario di benchmark committato (§7.3.6). Tutto salvato in `assets/` |
-| 1 | Composizione (§3) | Test headless verdi. Validazione di §7.3.2: Chrome, più naga per Firefox; è un criterio bloccante. Sulla GPU i 7 moduli composti compilano e le pipeline si creano, uber compreso, ancora non disegnato. **Stati uguali alla baseline e tutti i punti di S identici al bit**: in questo passo i trasparenti usano ancora le pipeline per tipo. `forward` misurato. L'HMR di un pezzo funziona, compreso il reload raggruppato |
-| 2 | Colonna id e conteggio (§4), capacità (§6.4) | Test Rust e TS verdi, `protocol-sync-checker` pulito, stati uguali alla baseline, S identico al bit |
-| 3 | Gather + sort (§5), readback (§6.5) | Modello CPU e test del pass verdi. `ForwardPass` legge già le uscite del sort, quindi il sort gira a ogni frame, ma il draw non cambia ancora. Sulla GPU, i controlli (a)-(h) di §7.3.3 passano; il sort misurato resta < 1 ms a 99 000; `forward` misurato (è il riferimento del passo 4); stati e S invariati |
+| 1 | Composizione (§3) | Test headless verdi. Validazione di §7.3.2 per i 7 moduli composti (uber compreso): Chrome, più naga per Firefox; è un criterio bloccante. Sulla GPU i 7 moduli composti compilano e le pipeline si creano, uber compreso, ancora non disegnato. **Stati uguali alla baseline e tutti i punti di C identici al bit**: in questo passo i trasparenti usano ancora le pipeline per tipo. `forward` misurato. L'HMR di un pezzo funziona, compreso il reload raggruppato |
+| 2 | Colonna id e conteggio (§4), capacità (§6.4) | Test Rust e TS verdi, `protocol-sync-checker` pulito, stati uguali alla baseline, C identico al bit |
+| 3 | Gather + sort (§5), readback (§6.5) | Modello CPU e test del pass verdi. Validazione di §7.3.2 per `transparent-gather.wgsl` e `transparent-sort.wgsl` (Chrome + naga), bloccante. `ForwardPass` legge già le uscite del sort, quindi il sort gira a ogni frame, ma il draw non cambia ancora. Sulla GPU, i controlli (a)-(h) di §7.3.3 passano; il sort misurato resta < 1 ms a 100 000; `forward` misurato (è il riferimento del passo 4); stati e C invariati |
 | 4 | Draw uber (§6.2) | Check pixel nuovi (§7.3.4) verdi; nessuna regressione (§7.3.5); `forward` misurato contro il passo 3 |
 | 5 | Chiusura | Documentazione (§9), `preflight --full`, review avversariale, merge |
 
@@ -688,7 +717,7 @@ Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mod
     - "Multi-pipeline ForwardPass shared bind group layout": il preludio dichiara i gruppi 0, 1 e 2 una volta per tutti i moduli composti, e il gruppo 2 si raggiunge solo da `fs_main` tramite `applyLighting`;
     - "Packed texture index 0": `sampleTierOrWhite` nel preludio, con `msdf` volutamente su `sampleTier` crudo;
     - la riga di `render/light-groups.ts`: `LIT_PRIMITIVE_TYPES` è ricavato da `PRIMITIVE_LIBRARIES`, e il test è di raggiungibilità, non di dichiarazione di `@group(2)`;
-  - la nota sull'hot-reload: i pezzi si validano insieme, e da soli come ripiego (§3.3);
+  - la nota sull'hot-reload: i pezzi si validano insieme, e da soli come ripiego, e un grafo non nasce mai da un insieme respinto o non provato; con file indipendenti, un solo file rotto non blocca gli altri, ma una modifica accoppiata salvata insieme a un pezzo rotto va risalvata (§3.3);
   - i conti: 22 importati / 20 ricaricabili a caldo, 24 file `.wgsl`;
   - una voce nuova per `TransparentSortPass`, `entity-ids`, la generazione e `transparentCount`. Deve riportare l'avvertenza di D2: a parità di z vince l'id più alto, che dopo il riuso degli id non è più per forza il più recente; per ordinare si usa `.depth()`;
   - il conteggio dei test.
@@ -717,6 +746,6 @@ Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mod
 | `transparentCount` perso in un sito di trasporto (Mode A non verificabile qui) | Normalizzazione a `entityCount`, test della ricostruzione nel render worker |
 | Il modello CPU e il WGSL restano due codebase | Rispecchiamento riga per riga, test di accordo del testo, readback confrontata con l'oracolo |
 | Una regressione dell'uber scambiata per "nuovo ordine" | Nessun check esistente dipende dall'ordine dei trasparenti (§7.3.5): passano invariati, e un loro fallimento è una regressione. Solo i check nuovi di §7.3.4 dipendono dall'ordine |
-| La composizione (passo 1) cambia gli ultimi bit dei vertici (contrazione FMA, inlining) | S identico al bit al passo 1 è bloccante: una differenza si spiega prima di andare avanti |
+| La composizione (passo 1) cambia gli ultimi bit dei vertici (contrazione FMA, inlining) | C identico al bit al passo 1 è bloccante: una differenza si spiega prima di andare avanti |
 | Le righe degli errori di compilazione non corrispondono ai file | Marcatori `// --- piece: X ---` |
 | Il budget del profiler (256 marker) è condiviso | 22 marker più quelli di `LightGroupsPass` per set. Oltre il budget `beginFrame` lascia il frame non misurato; nessun effetto sul rendering |
