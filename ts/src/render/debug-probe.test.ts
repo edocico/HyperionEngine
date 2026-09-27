@@ -32,7 +32,7 @@ function ortho(): Float32Array {
  * filled with (uvx, uvy, layer, 1) per point, then the texture size, so a
  * test can see exactly what the shader was asked to read.
  */
-function mockDevice(size: [number, number] = [800, 600]) {
+function mockDevice(size: [number, number] = [800, 600], opts: { scopeError?: string; dropSubmits?: boolean } = {}) {
   const calls = { submits: 0, destroyed: 0, pipelines: [] as string[] };
   const buffers: { size: number; usage: number; data: ArrayBuffer }[] = [];
   const device = {
@@ -53,6 +53,8 @@ function mockDevice(size: [number, number] = [800, 600]) {
       return b;
     }),
     createBindGroup: vi.fn((d: GPUBindGroupDescriptor) => d),
+    pushErrorScope: vi.fn(),
+    popErrorScope: vi.fn(async () => (opts.scopeError ? { message: opts.scopeError } : null)),
     queue: {
       writeBuffer: vi.fn((buf: { data: ArrayBuffer }, offset: number, src: ArrayBufferView) => {
         new Uint8Array(buf.data, offset).set(new Uint8Array(src.buffer, src.byteOffset, src.byteLength));
@@ -69,6 +71,7 @@ function mockDevice(size: [number, number] = [800, 600]) {
           end() {},
         }),
         copyBufferToBuffer: (src: { data: ArrayBuffer }, so: number, dst: { data: ArrayBuffer }, d0: number, n: number) => {
+          if (opts.dropSubmits) return; // a submit that failed validation runs nothing
           // Pixel probe: fake the shader into `src` (the storage output) first.
           const entries = [...(bindGroup?.entries ?? [])] as { binding: number; resource: { buffer?: { data: ArrayBuffer } } }[];
           const points = entries.find((e) => e.binding === 0)?.resource.buffer;
@@ -96,6 +99,8 @@ function pool(names: string[]): ResourcePool {
 }
 
 const frame = { cameraViewProjection: ortho(), canvasWidth: 800, canvasHeight: 600 };
+/** A frame drawn by the lit graph, with two light groups. */
+const litFrame = { ...frame, lightGroups: { groups: [{}, {}] } };
 
 describe('worldToUv', () => {
   it('maps world through the camera to UV, top-left origin', () => {
@@ -129,7 +134,7 @@ describe('DebugProbe.pixels', () => {
     const { device } = mockDevice();
     const probe = new DebugProbe(device, 'wgsl');
     const pending = probe.pixels({ target: 'swapchain', world: [[5, 0]] });
-    probe.serve(pool(['swapchain']), frame, null);
+    probe.serve(pool(['swapchain']), frame, null, true);
     const result = await pending;
     expect(result.uv[0][0]).toBeCloseTo(0.75, 6);
     expect(result.uv[0][1]).toBeCloseTo(0.5, 6);
@@ -139,12 +144,12 @@ describe('DebugProbe.pixels', () => {
   it('reads the light buffer through the 2d-array entry point at the requested layer', async () => {
     const { device, calls, buffers } = mockDevice();
     const probe = new DebugProbe(device, 'wgsl');
-    const pending = probe.pixels({ target: 'light-buffer', layer: 2, uv: [[0.5, 0.5]] });
-    probe.serve(pool(['light-buffer']), frame, null);
+    const pending = probe.pixels({ target: 'light-buffer', layer: 1, uv: [[0.5, 0.5]] });
+    probe.serve(pool(['light-buffer']), litFrame, null);
     await pending;
     expect(calls.pipelines).toContain('probe_array');
     const params = buffers.find((b) => b.usage & GPUBufferUsage.UNIFORM)!;
-    expect(new Uint32Array(params.data)[0]).toBe(2);
+    expect(new Uint32Array(params.data)[0]).toBe(1);
   });
 
   it('rejects a target the live graph does not have, or a point outside the target', async () => {
@@ -155,6 +160,55 @@ describe('DebugProbe.pixels', () => {
     probe.serve(pool(['scene-hdr']), frame, null);
     await expect(missing).rejects.toThrow(/light-buffer/);
     await expect(outside).rejects.toThrow(/outside/);
+  });
+
+  it('rejects light-buffer on a frame the lit graph did not draw (a retired lit graph leaves its view in the pool)', async () => {
+    const { device } = mockDevice();
+    const probe = new DebugProbe(device, 'wgsl');
+    const pending = probe.pixels({ target: 'light-buffer', uv: [[0.5, 0.5]] });
+    probe.serve(pool(['light-buffer']), frame, null);
+    await expect(pending).rejects.toThrow(/not in the live render graph/);
+  });
+
+  it('rejects a light-buffer layer that is not one of the frame groups', async () => {
+    const { device } = mockDevice();
+    const probe = new DebugProbe(device, 'wgsl');
+    const bad = [2, -1, 0.5].map((layer) => probe.pixels({ target: 'light-buffer', layer, uv: [[0.5, 0.5]] }));
+    probe.serve(pool(['light-buffer']), litFrame, null);
+    for (const p of bad) await expect(p).rejects.toThrow(/layer/);
+  });
+
+  it('rejects, instead of answering zeros, when the GPU reported a validation error', async () => {
+    const { device } = mockDevice([800, 600], { scopeError: 'Destroyed texture used in a submit' });
+    const probe = new DebugProbe(device, 'wgsl');
+    const pending = probe.pixels({ target: 'scene-hdr', uv: [[0.5, 0.5]] });
+    probe.serve(pool(['scene-hdr']), frame, null);
+    await expect(pending).rejects.toThrow(/Destroyed texture/);
+  });
+
+  it('rejects when the dispatch never ran (no texture size came back)', async () => {
+    const { device } = mockDevice([800, 600], { dropSubmits: true });
+    const probe = new DebugProbe(device, 'wgsl');
+    const pending = probe.pixels({ target: 'scene-hdr', uv: [[0.5, 0.5]] });
+    probe.serve(pool(['scene-hdr']), frame, null);
+    await expect(pending).rejects.toThrow(/did not run/);
+  });
+
+  it('asks for a sampled swapchain and serves a swapchain request only once it has one', async () => {
+    const { device } = mockDevice();
+    const probe = new DebugProbe(device, 'wgsl');
+    expect(probe.wantsSwapchain).toBe(false);
+    const pending = probe.pixels({ target: 'swapchain', uv: [[0.5, 0.5]] });
+    expect(probe.wantsSwapchain).toBe(true);
+    let done = false;
+    void pending.then(() => { done = true; });
+    probe.serve(pool(['swapchain']), frame, null, false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(done).toBe(false);
+    probe.serve(pool(['swapchain']), frame, null, true);
+    await pending;
+    expect(probe.wantsSwapchain).toBe(false);
   });
 
   it('frees every buffer it created once a result is back', async () => {
@@ -194,5 +248,16 @@ describe('DebugProbe.transforms', () => {
     expect(Array.from(result.cpuRows.slice(16, 18))).toEqual([16.5, 17.5]);
     expect(Array.from(result.entityIds)).toEqual([7, 9]);
     expect(result.usedScatter).toBe(true);
+  });
+
+  it('rejects, instead of answering zeros, when the GPU reported an error', async () => {
+    const { device } = mockDevice([800, 600], { scopeError: 'copy past the end of the buffer' });
+    const probe = new DebugProbe(device, 'wgsl');
+    const gpu = device.createBuffer({ size: 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const pending = probe.transforms();
+    probe.serve(pool([]), frame, {
+      buffer: gpu, transforms: new Float32Array(16), entityIds: new Uint32Array([1]), entityCount: 1, usedScatter: false,
+    });
+    await expect(pending).rejects.toThrow(/past the end/);
   });
 });

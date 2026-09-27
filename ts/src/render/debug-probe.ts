@@ -59,6 +59,12 @@ export interface ProbeFrame {
   cameraViewProjection: Float32Array;
   canvasWidth: number;
   canvasHeight: number;
+  /**
+   * Present only when the lit graph drew this frame. A retired lit graph
+   * leaves its destroyed `light-buffer` view in the pool, so the view alone
+   * does not say the buffer is live.
+   */
+  lightGroups?: { readonly groups: readonly unknown[] };
 }
 
 /** World (x, y, z = 0) through a column-major view-projection to UV, top-left origin. */
@@ -95,11 +101,29 @@ export class DebugProbe {
     return this.enqueue(this.transformRequests, null);
   }
 
-  /** Answers every pending request against this frame. Called last in `render()`. */
-  serve(resources: ResourcePool, frame: ProbeFrame, transforms: TransformsSource | null): void {
+  /**
+   * Whether a pending request reads the swapchain: the renderer then
+   * configures the canvas with TEXTURE_BINDING, from the next frame on. Only
+   * then, so a dev session that never probes the swapchain runs on the same
+   * canvas configuration as production (and measures the same GPU times).
+   */
+  get wantsSwapchain(): boolean {
+    return this.pixelRequests.some((p) => p.request.target === 'swapchain');
+  }
+
+  /**
+   * Answers every pending request against this frame. Called last in
+   * `render()`. `swapchainSampled`: the canvas has TEXTURE_BINDING this frame;
+   * until it does, swapchain requests wait.
+   */
+  serve(resources: ResourcePool, frame: ProbeFrame, transforms: TransformsSource | null, swapchainSampled = false): void {
     const pixels = this.pixelRequests;
     this.pixelRequests = [];
     for (const p of pixels) {
+      if (p.request.target === 'swapchain' && !swapchainSampled) {
+        this.pixelRequests.push(p);
+        continue;
+      }
       try {
         this.servePixels(p, resources, frame);
       } catch (err) {
@@ -130,7 +154,15 @@ export class DebugProbe {
   private servePixels(p: Pending<PixelProbeResult, PixelProbeRequest>, resources: ResourcePool, frame: ProbeFrame): void {
     const { target, layer = 0 } = p.request;
     const view = resources.getTextureView(target);
-    if (!view) throw new Error(`Probe target '${target}' is not in the live render graph`);
+    const retiredLightBuffer = target === 'light-buffer' && !frame.lightGroups;
+    if (!view || retiredLightBuffer) throw new Error(`Probe target '${target}' is not in the live render graph`);
+    if (target === 'light-buffer') {
+      const groups = frame.lightGroups!.groups.length;
+      // Layers past this frame's groups still hold an earlier frame's light.
+      if (!Number.isInteger(layer) || layer < 0 || layer >= groups) {
+        throw new Error(`Probe layer ${layer} is not a light group of this frame (0..${groups - 1})`);
+      }
+    }
     const uv = p.request.uv
       ? p.request.uv.map(([u, v]) => [u, v] as [number, number])
       : (p.request.world ?? []).map(([x, y]) => worldToUv(x, y, frame.cameraViewProjection));
@@ -160,6 +192,9 @@ export class DebugProbe {
     } else {
       entries.push({ binding: 2, resource: view });
     }
+    // A failed submit (a destroyed view, a view of the wrong dimension) runs
+    // nothing and leaves the readback at zeros: catch it instead of answering zeros.
+    device.pushErrorScope('validation');
     const bindGroup = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
 
     const encoder = device.createCommandEncoder({ label: 'debug-probe' });
@@ -170,25 +205,31 @@ export class DebugProbe {
     pass.end();
     encoder.copyBufferToBuffer(results, 0, readback, 0, outBytes);
     device.queue.submit([encoder.finish()]);
+    const scope = device.popErrorScope();
 
     const viewProjection = new Float32Array(frame.cameraViewProjection);
     const canvasSize: [number, number] = [frame.canvasWidth, frame.canvasHeight];
     const free = () => { for (const b of created) b.destroy(); };
-    readback.mapAsync(GPUMapMode.READ).then(() => {
+    Promise.all([scope, readback.mapAsync(GPUMapMode.READ)]).then(([error]) => {
       const f = new Float32Array(readback.getMappedRange().slice(0));
       readback.unmap();
       free();
+      if (error) throw new Error(`Probe failed GPU validation: ${error.message}`);
+      // The shader always writes the size (>= 1): zero means it never ran.
+      if (f[4 * count] === 0) throw new Error('The probe dispatch did not run (no texture size came back)');
       const values = Array.from({ length: count }, (_, i) =>
         [f[4 * i], f[4 * i + 1], f[4 * i + 2], f[4 * i + 3]] as [number, number, number, number]);
       p.resolve({ values, uv, targetSize: [f[4 * count], f[4 * count + 1]], canvasSize, viewProjection });
-    }, (err: unknown) => {
+    }).catch((err: unknown) => {
       free();
       p.reject(err instanceof Error ? err : new Error(String(err)));
     });
   }
 
   private serveTransforms(p: Pending<TransformsProbeResult, null>, src: TransformsSource): void {
-    const bytes = src.entityCount * 64;
+    // Clamp to the buffer: a config with more entities than the renderer's
+    // buffer holds would otherwise copy past its end.
+    const bytes = Math.min(src.entityCount * 64, src.buffer.size);
     const cpuRows = src.transforms.slice(0, src.entityCount * 16);
     const entityIds = src.entityIds ? src.entityIds.slice(0, src.entityCount) : new Uint32Array(0);
     const { usedScatter, entityCount } = src;
@@ -197,15 +238,19 @@ export class DebugProbe {
       return;
     }
     const readback = this.device.createBuffer({ size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.device.pushErrorScope('validation');
     const encoder = this.device.createCommandEncoder({ label: 'debug-probe-transforms' });
     encoder.copyBufferToBuffer(src.buffer, 0, readback, 0, bytes);
     this.device.queue.submit([encoder.finish()]);
-    readback.mapAsync(GPUMapMode.READ).then(() => {
+    const scope = this.device.popErrorScope();
+    Promise.all([scope, readback.mapAsync(GPUMapMode.READ)]).then(([error]) => {
       const gpuRows = new Float32Array(readback.getMappedRange().slice(0));
       readback.unmap();
       readback.destroy();
+      // Zeros next to the CPU rows would read as "stale GPU rows": reject.
+      if (error) throw new Error(`Transform readback failed GPU validation: ${error.message}`);
       p.resolve({ gpuRows, cpuRows, entityIds, entityCount, usedScatter });
-    }, (err: unknown) => {
+    }).catch((err: unknown) => {
       readback.destroy();
       p.reject(err instanceof Error ? err : new Error(String(err)));
     });

@@ -209,14 +209,12 @@ export async function createRenderer(
 
   const context = canvas.getContext("webgpu")!;
   const format = navigator.gpu.getPreferredCanvasFormat();
-  // Dev builds: the pixel probe (engine.debug.probe) samples the swapchain.
+  context.configure({ device, format, alphaMode: "opaque" });
   const dev = typeof __DEV__ !== 'undefined' && __DEV__;
-  context.configure({
-    device,
-    format,
-    alphaMode: "opaque",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | (dev ? GPUTextureUsage.TEXTURE_BINDING : 0),
-  });
+  // Dev builds: set once a probe asks for the swapchain, which is then
+  // reconfigured with TEXTURE_BINDING. Never before, so GPU times measured in
+  // a dev session run on the production canvas configuration.
+  let swapchainSampled = false;
 
   // --- 2. Create TextureManager + SelectionManager ---
   const textureManager = new TextureManager(device, { compressedFormat });
@@ -858,6 +856,14 @@ export async function createRenderer(
         if (gpuProfilingEnabled) gpuProfiler?.reset();
       }
 
+      if (debugProbe?.wantsSwapchain && !swapchainSampled) {
+        context.configure({
+          device, format, alphaMode: "opaque",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        swapchainSampled = true;
+      }
+
       // Set swapchain view for this frame
       resources.setTextureView('swapchain', context.getCurrentTexture().createView());
 
@@ -923,7 +929,7 @@ export async function createRenderer(
         entityIds: state.entityIds,
         entityCount: state.entityCount,
         usedScatter: Boolean(useScatter),
-      });
+      }, swapchainSampled);
     },
 
     get gpuProfilingSupported() { return timestampSupported; },

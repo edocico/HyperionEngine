@@ -72,7 +72,7 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   - `collider_to_entity` indicizzato solo per indice: un `Stopped` può essere attribuito all'entità sbagliata;
   - `ecs-inspector.ts:114` chiama `selection.selectedIds()` come metodo, ma è un getter (il mock del test lo nasconde);
   - CLAUDE.md dà 600 000 come default del tape, ma è 1 000 000 (`command-tape.ts:22`).
-- **Passo 2 (probe):** lo scatter gira SOLO in Mode C, perché `engine-worker.ts` non invia mai `dirtyCount`/`stagingData`, quindi in Mode B e A ogni frame fa l'upload completo delle SoA. È una lacuna di prestazioni, non di correttezza. Per il passo 4, il formato 0 va verificato con `?mode=C`. Il probe legge la swapchain con `TEXTURE_BINDING` (configurato solo in dev) invece che con `COPY_SRC`: la capacità è la stessa (D2).
+- **Passo 2 (probe) — fatto** (review `wf_bf97d75c-ec7` + `webgpu-pass-reviewer`: 10 + 4 finding, tutti corretti e verificati su GPU). Lo scatter gira SOLO in Mode C, perché `engine-worker.ts` non invia mai `dirtyCount`/`stagingData`, quindi in Mode B e A ogni frame fa l'upload completo delle SoA. È una lacuna di prestazioni, non di correttezza. Per il passo 4, il formato 0 va verificato con `?mode=C`. Il probe legge la swapchain con `TEXTURE_BINDING` (configurato solo in dev) invece che con `COPY_SRC`: la capacità è la stessa (D2).
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada

@@ -852,6 +852,15 @@ describe('debug API', () => {
     await expect(engine.debug!.readEntityTransforms()).rejects.toThrow(/renderer/);
   });
 
+  it('probe rejects while the engine is paused: no frame would serve it', async () => {
+    const renderer = mockRenderer();
+    (renderer as { debugProbe: unknown }).debugProbe = { pixels: vi.fn(), transforms: vi.fn() };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    engine.pause();
+    await expect(engine.debug!.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] })).rejects.toThrow(/paused/);
+    await expect(engine.debug!.readEntityTransforms()).rejects.toThrow(/paused/);
+  });
+
   it('probe and readEntityTransforms delegate to the renderer debug probe', async () => {
     const renderer = mockRenderer();
     const pixels = { values: [[1, 2, 3, 4]] };
