@@ -189,7 +189,7 @@ HyperionEngine/
 │           │                           #   spiral-of-death cap, interpolation alpha,
 │           │                           #   propagate_transforms wired into update(),
 │           │                           #   listener position with velocity derivation + extrapolation
-│           ├── command_processor.rs     # EntityMap (sparse Vec + free-list + shrink_to_fit +
+│           ├── command_processor.rs     # EntityMap (sparse Vec + shrink_to_fit +
 │           │                           #   iter_mapped) + process_commands() incl. SetParent
 │           ├── ring_buffer.rs          # SPSC consumer: atomic heads, circular read, CommandType enum
 │           │                           #   (14 variants incl. SetParent, SetPrimParams0/1,
@@ -616,13 +616,13 @@ L'header e stato esteso da 16 a **32 byte** in Phase 4.5 per supportare il monit
 
 **Wrap-around**: Sia il producer che il consumer applicano `offset % capacity` su ogni accesso alla data region. Per letture multi-byte che attraversano il confine, il consumer legge byte per byte con wrap individuale (non `memcpy` — sarebbe scorretto ai confini).
 
-### 5.2 EntityMap: Sparse Vec con Free-List Recycling
+### 5.2 EntityMap: Sparse Vec indicizzato dall'ID esterno
 
 **File**: `crates/hyperion-core/src/command_processor.rs` — `EntityMap`
 
 Il problema: TypeScript assegna ID sequenziali alle entita (0, 1, 2, ...). `hecs` usa `Entity` opachi interni. Serve un mapping bidirezionale veloce.
 
-**Soluzione**: `Vec<Option<hecs::Entity>>` indicizzato dall'ID esterno (O(1) lookup) + free-list `Vec<u32>` per riciclare ID dopo despawn.
+**Soluzione**: `Vec<Option<hecs::Entity>>` indicizzato dall'ID esterno (O(1) lookup). L'`EntityMap` lega gli ID che sceglie TypeScript e non ne alloca nessuno: l'unico allocatore e quello TypeScript. Fino al 2026-09-27 c'era anche un `allocate()` Rust su una free-list, senza chiamanti, che restituiva ID vivi (`insert` non gli diceva quali ID erano presi): e stato rimosso.
 
 ```
                 EntityMap
@@ -630,15 +630,11 @@ Il problema: TypeScript assegna ID sequenziali alle entita (0, 1, 2, ...). `hecs
   map (Vec):    │ Some(E0) │ None │ Some(E2) │ None │
   index:        │    0     │  1   │    2     │  3   │
                 └───────────────────────────────────┘
-  free_list:    [1, 3]    ← ID riciclabili (LIFO)
-  next_id:      4         ← prossimo ID se free_list vuota
-
-  allocate() → pop free_list → 3
-  allocate() → pop free_list → 1
-  allocate() → free_list vuota → next_id++ → 4
+  insert(1, E1) → map[1] = Some(E1)
+  remove(2)     → map[2] = None
 ```
 
-**Perche non una HashMap?** Per 100k entita, una `HashMap<u32, Entity>` ha overhead di hashing e chaining. Un `Vec` indicizzato direttamente ha lookup O(1) con cache-friendliness perfetta. Il costo e spazio — se gli ID sono sparsi, il Vec ha buchi. Ma con la free-list, gli ID vengono riciclati mantenendo il Vec compatto.
+**Perche non una HashMap?** Per 100k entita, una `HashMap<u32, Entity>` ha overhead di hashing e chaining. Un `Vec` indicizzato direttamente ha lookup O(1) con cache-friendliness perfetta. Il costo e spazio — se gli ID sono sparsi, il Vec ha buchi. Il Vec cresce fino all'ID piu alto mai legato (al massimo `MAX_EXTERNAL_ID + 1` voci), e `shrink_to_fit()` tronca le voci `None` in coda.
 
 ### 5.3 Timestep Fisso con Accumulatore
 
@@ -1656,7 +1652,7 @@ Il Vite dev server serve gli header COOP/COEP necessari per SharedArrayBuffer e 
 | **`#[repr(C)]` + `Pod` su tutti i componenti** | `repr(Rust)`, serde serialization | Upload GPU diretto senza copie. `bytemuck::bytes_of()` costa zero runtime |
 | **`const enum` in TypeScript** | `enum`, string union, numeric constants | `const enum` e inlinato dal compiler — zero overhead runtime, nessun reverse mapping (non serve) |
 | **Vite (non webpack/esbuild)** | webpack 5, esbuild standalone | Vite ha supporto nativo per Worker ESM, header custom, e HMR. Webpack richiederebbe plugin per Worker bundling |
-| **Sparse Vec + free-list per EntityMap** | `HashMap<u32, Entity>`, `SlotMap` | O(1) lookup con cache-friendliness perfetta. Free-list mantiene ID compatti senza frammentazione |
+| **Sparse Vec per EntityMap** | `HashMap<u32, Entity>`, `SlotMap` | O(1) lookup con cache-friendliness perfetta. Gli ID li assegna TypeScript; Rust non ne alloca |
 | **WebGPU da TypeScript (non Rust wgpu)** | `wgpu` compilato a WASM, Emscripten WebGPU bindings | `wgpu` wrappa la stessa API browser con ~1MB overhead di binary bloat. WebGPU da TS ha accesso diretto e zero overhead |
 | **WGSL caricato via Vite `?raw`** | Embedding in stringhe Rust, file separati con fetch | `?raw` inlinea lo shader come stringa al build time, zero richieste runtime, hot-reload in dev mode |
 | **`engine_push_commands` pattern** | Passaggio diretto SAB pointer a WASM, `postMessage` serializzazione | SAB pointer non supportato da `wasm-bindgen`. Il Worker legge dal SAB e scrive nella WASM linear memory — zero copie aggiuntive rispetto al necessario |
@@ -1957,7 +1953,7 @@ Questo produce model matrix world-space corrette per la GPU, anche con gerarchie
 Phase 5 aggiunge la capacita di compattare le strutture dati interne dopo molti spawn/despawn:
 
 **Rust**:
-- `EntityMap::shrink_to_fit()` — rilascia capacita in eccesso nel Vec e nella free-list
+- `EntityMap::shrink_to_fit()` — rilascia capacita in eccesso nel Vec e nei flag 2D
 - `RenderState::shrink_to_fit()` — rilascia capacita in eccesso in tutti i buffer SoA
 
 **WASM exports**:

@@ -965,11 +965,6 @@ impl Engine {
                 new_entity_map.set_2d_flag(ext_id, flags & 1 != 0);
             }
         }
-        // `insert` never advances `next_id`, so a restored map used to report
-        // next_id == 0 and `allocate()` handed back an id already bound to a
-        // live entity (audit 2026-07, P3-11).
-        new_entity_map.reserve_ids_up_to_highest();
-
         // Rebuild the physics world. Always replaced wholesale — restoring
         // any snapshot on a physics build must not leak old Rapier bodies
         // (the pre-Phase-16 orphan-body bug).

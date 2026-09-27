@@ -53,14 +53,15 @@ pub const MAX_HIERARCHY_DEPTH: usize = 64;
 pub const MAX_EXTERNAL_ID: u32 = 1_048_575; // 2^20 - 1
 
 /// Maps external entity IDs (from TypeScript) to internal hecs entities.
+///
+/// It binds the ids the TypeScript side chooses and allocates none: the only
+/// allocator is TypeScript's. The Rust one it used to carry (`allocate()` over a
+/// free list) had no caller, and handed out LIVE ids — `insert` never told it
+/// which ids were taken (removed 2026-09-27).
 pub struct EntityMap {
     /// Sparse map: external ID -> hecs Entity.
     /// Uses a Vec for O(1) lookup. External IDs are sequential u32s.
     map: Vec<Option<hecs::Entity>>,
-    /// Free list for entity recycling.
-    free_list: Vec<u32>,
-    /// Next external ID to assign.
-    next_id: u32,
     /// Tracks whether each external ID is a 2D entity (Transform2D) vs 3D (Position+Rotation+Scale).
     /// Indexed by external ID. Default `false` = 3D.
     is_2d: Vec<bool>,
@@ -78,21 +79,8 @@ impl EntityMap {
     pub fn new() -> Self {
         Self {
             map: Vec::new(),
-            free_list: Vec::new(),
-            next_id: 0,
             is_2d: Vec::new(),
             rejected_ids: 0,
-        }
-    }
-
-    /// Allocate a new external ID (or recycle one).
-    pub fn allocate(&mut self) -> u32 {
-        if let Some(id) = self.free_list.pop() {
-            id
-        } else {
-            let id = self.next_id;
-            self.next_id += 1;
-            id
         }
     }
 
@@ -173,7 +161,7 @@ impl EntityMap {
             .filter_map(|(idx, opt)| opt.map(|entity| (idx as u32, entity)))
     }
 
-    /// Remove a mapping and add the ID to the free list.
+    /// Remove a mapping.
     pub fn remove(&mut self, external_id: u32) {
         let idx = external_id as usize;
         if idx < self.map.len() {
@@ -182,21 +170,6 @@ impl EntityMap {
         if idx < self.is_2d.len() {
             self.is_2d[idx] = false;
         }
-        if external_id < self.next_id {
-            self.free_list.push(external_id);
-        }
-    }
-
-    /// Advance `next_id` past every currently bound external id.
-    ///
-    /// `insert()` binds ids chosen by the TypeScript side and deliberately does
-    /// not touch `next_id`, so after a snapshot restore `allocate()` would hand
-    /// back id 0 — already bound to a live entity (audit 2026-07, P3-11).
-    pub fn reserve_ids_up_to_highest(&mut self) {
-        if let Some(idx) = self.map.iter().rposition(|opt| opt.is_some()) {
-            self.next_id = self.next_id.max(idx as u32 + 1);
-        }
-        self.free_list.retain(|&id| self.map.get(id as usize).is_none_or(|s| s.is_none()));
     }
 
     /// Current allocated capacity (length of the sparse map).
@@ -205,8 +178,7 @@ impl EntityMap {
     }
 
     /// Shrink the sparse map by truncating trailing `None` slots,
-    /// then releasing unused heap memory. Also prunes the free list
-    /// to remove IDs that are no longer within bounds.
+    /// then releasing unused heap memory.
     pub fn shrink_to_fit(&mut self) {
         let last_used = self.map.iter().rposition(|opt| opt.is_some());
         match last_used {
@@ -216,7 +188,6 @@ impl EntityMap {
         self.map.shrink_to_fit();
         self.is_2d.truncate(self.map.len());
         self.is_2d.shrink_to_fit();
-        self.free_list.retain(|&id| (id as usize) < self.map.len());
     }
 }
 
@@ -1600,19 +1571,6 @@ mod tests {
 
         assert!(map.get(0).is_none());
         assert!(world.get::<&Position>(entity).is_err());
-    }
-
-    #[test]
-    fn entity_id_recycling() {
-        let mut map = EntityMap::new();
-        let id1 = map.allocate();
-        let id2 = map.allocate();
-        assert_eq!(id1, 0);
-        assert_eq!(id2, 1);
-
-        map.remove(id1);
-        let id3 = map.allocate();
-        assert_eq!(id3, 0); // recycled
     }
 
     #[test]
