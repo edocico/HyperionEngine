@@ -72,9 +72,10 @@ each skip one check. `window.__hyperion` is the live facade for anything the tab
 ## 5. Console
 
 `list_console_messages` with types `error` and `warn`. A `404` is only acceptable for
-`favicon.ico` — confirm with `list_network_requests`. LeakDetector warnings about undisposed
-EntityHandles after a tab switch are a known, pre-existing demo issue. Anything mentioning
-WebGPU, validation, a pipeline or a device is a failure.
+`favicon.ico` — confirm with `list_network_requests`. A LeakDetector warning is a real leak since
+2026-09-27 (a handle collected without `destroy()`), and `[Hyperion] <phase> hook … threw` is a
+failing hook: report both. Anything mentioning WebGPU, validation, a pipeline or a device is a
+failure.
 
 ## 6. Pixels (when the question is "does it LOOK right")
 
