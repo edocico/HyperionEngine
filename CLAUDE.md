@@ -21,8 +21,8 @@ node scripts/determinism-cross-version.mjs <wasmDir> <scenario>   # wasm-vs-wasm
 ### Rust
 
 ```bash
-cargo test -p hyperion-core                  # All Rust unit tests (199 tests, 277 with physics-2d, 228 with dev-tools, 321 with all features)
-cargo test -p hyperion-core --all-features   # + 81 integration tests across 6 files (321 lib + 81 = 402 total)
+cargo test -p hyperion-core                  # All Rust unit tests (198 tests, 276 with physics-2d, 227 with dev-tools, 320 with all features)
+cargo test -p hyperion-core --all-features   # + 91 integration tests across 7 files (320 lib + 91 = 411 total)
 cargo clippy -p hyperion-core                # Lint check (treat warnings as errors)
 cargo build -p hyperion-core                 # Build crate (native, not WASM)
 cargo doc -p hyperion-core --open            # Generate and open API docs
@@ -31,7 +31,7 @@ cargo doc -p hyperion-core --open            # Generate and open API docs
 cargo test -p hyperion-core ring_buffer      # Ring buffer tests only (42 tests)
 cargo test -p hyperion-core engine           # Engine tests only (16 tests, 25 with physics-2d, 64 with physics-2d+dev-tools)
 cargo test -p hyperion-core render_state     # Render state tests only (55 tests)
-cargo test -p hyperion-core command_proc     # Command processor tests only (41 tests, 42 with physics-2d)
+cargo test -p hyperion-core command_proc     # Command processor tests only (40 tests, 41 with physics-2d)
 cargo test -p hyperion-core systems          # Systems tests only (19 tests, 21 with physics-2d)
 cargo test -p hyperion-core components       # Component tests only (28 tests)
 
@@ -79,15 +79,15 @@ cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI 
 cd ts && npx vitest run src/lighting-api.test.ts              # e.g. LightingAPI backend/ambient/quality/groups (21 tests)
 
 # Physics tests (requires feature flag)
-cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (277 lib tests, 349 with integration)
+cargo test -p hyperion-core --features physics-2d  # Includes physics simulation tests (276 lib tests, 358 with integration)
 cargo clippy -p hyperion-core --features physics-2d
 
 # Physics debug rendering (requires physics-debug feature, implies physics-2d)
-cargo test -p hyperion-core --features "physics-debug dev-tools"   # 321 lib tests (402 with integration)
+cargo test -p hyperion-core --features "physics-debug dev-tools"   # 320 lib tests (411 with integration)
 cd ts && npm run build:wasm:physics:dev            # dev WASM build with physics-2d + dev-tools + physics-debug
 
 # Debug/dev-tools (requires feature flag)
-cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (228 lib tests, 268 with integration)
+cargo test -p hyperion-core --features dev-tools   # Includes dev-tools gated tests (227 lib tests, 268 with integration)
 ```
 
 ### Development Workflow
@@ -527,6 +527,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 - **`pending_joints` consumed in `physics_sync_pre` Pass 4** — After bodies (Pass 1), colliders (Pass 2), kinematic sync (Pass 3). Joint creation requires both body handles to exist.
 - **`joint_map.retain()` cleanup on despawn** — When a body is despawned, `joint_map.retain(|_, entry| entry.entity_a != ext_id && entry.entity_b != ext_id)` removes orphaned joints. Rapier cascades joint removal when a body is removed.
 - **Double joint removal is safe** — `impulse_joints.remove(handle, true)` returns `None` for already-removed joints. No need to check existence before removing.
+- **A `SpawnEntity` on a live id retires the old entity, physics included, and a command reaches only the NEWEST entity with its id** (id reuse, 2026-09-27, `verify_reuse.rs` R1-R6) — the retire runs `despawn_physics_cleanup` (body, colliders, joints, controller, pending moves/teleports) like a despawn, and a spawn run naming an id twice creates only its last spawn. The physics second pass (`process_physics_commands`) resolves ids against the map at the END of the batch, so it skips every command for X placed before the last `SpawnEntity` of X in that batch (joint property commands excepted: they address a joint id). `MoveCharacter` for an unmapped id is dropped, and a `Create*Joint` needs BOTH ends mapped when it arrives, like `SetParent`: a joint to an entity spawned LATER in the batch is rejected. Rust allocates no ids: the dead `EntityMap::allocate` + free list, which handed out live ids, was removed.
 - **`JointHandle` is opaque branded type** — `number & { __brand: 'JointHandle' }`. The numeric value is the internal joint_id counter, NOT a Rapier handle index.
 - **Joint fluent methods return `JointHandle`, not `this`** — Unlike other `EntityHandle` methods that return `this` for chaining, `.revoluteJoint()` etc. return a `JointHandle`. Chain breaks at joint creation.
 - **`PrismaticJointBuilder` takes `Vector` not `UnitVector`** — `PrismaticJointBuilder::new(axis)` where axis is `vector![x, y].into()`. Rapier normalizes internally.
@@ -716,7 +717,7 @@ A full logic review of `crates/hyperion-core/src` found 39 defects, all reproduc
 | Hierarchy | one level deep only; despawn left dangling links; cycles accepted | multi-level propagation; full unlink on despawn; cycle/self guards |
 | Robustness | `snapshot_restore` could panic or abort on hostile bytes; NaN/Inf flowed to the GPU; an unknown opcode killed the stream silently | bounds/`checked_*` everywhere, HSNP v3 trailer, input validation, error counters |
 
-Regression coverage: 81 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 37, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4) — each asserts the corrected behaviour of a defect. P16/P17/P18-P18h/P19-P19d and H6-H8 (2026-09-26) are later than the audit. `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
+Regression coverage: 91 tests in `crates/hyperion-core/tests/verify_*.rs` (verify_findings 19, verify_physics 37, verify_ring 8, verify_hier 8, verify_snapshot 5, verify_determinism 4, verify_reuse 10) — each asserts the corrected behaviour of a defect. P16/P17/P18-P18h/P19-P19d and H6-H8 (2026-09-26) are later than the audit, and so is `verify_reuse` (2026-09-27, id reuse R1-R6). `verify_determinism` is newer (2026-08-02, rapier 0.34 upgrade) and guards the narrowphase deltas rather than an audit finding; it needs BOTH `physics-2d` and `dev-tools`, so it only runs under `--all-features`.
 
 | Phase | Name | Key Additions |
 |-------|------|---------------|
