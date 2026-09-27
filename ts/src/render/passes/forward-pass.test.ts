@@ -257,6 +257,28 @@ describe('ForwardPass @group(2): the light buffer', () => {
     expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0, 0, 0]);
   });
 
+  it('writes the canvas size into the camera uniform at bytes 68-72 (line widths in pixels)', () => {
+    const { writes, prepare } = setUp();
+    prepare({ canvasWidth: 800, canvasHeight: 600 });
+    const camera = writes.filter((w) => w.data.byteLength === 80).at(-1)!;
+    expect([...new Float32Array(camera.data, 68, 2)]).toEqual([800, 600]);
+  });
+
+  it('line.wgsl: viewport size in the camera at 68/72, width unit in primParams[7], fwidth before any branch', () => {
+    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
+    const camera = /struct CameraUniform \{([\s\S]*?)\}/.exec(src)![1]
+      .split('\n').map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean);
+    // mat4 (64 B), then four 4-byte scalars: occluderLayers at 64, the viewport at 68 and 72.
+    expect(camera.slice(0, 4)).toEqual([
+      'viewProjection: mat4x4f,', 'occluderLayers: u32,', 'viewportWidth: f32,', 'viewportHeight: f32,',
+    ]);
+    expect(src).toMatch(/primParams\[base \+ 7u\]/);
+    const shade = src.slice(src.indexOf('fn shade('));
+    const firstBranch = Math.min(...['switch', 'discard', 'if ('].map((k) => shade.indexOf(k)).filter((i) => i >= 0));
+    expect(shade.indexOf('fwidth(')).toBeGreaterThan(0);
+    expect(shade.indexOf('fwidth(')).toBeLessThan(firstBranch);
+  });
+
   it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
     const { buffers } = setUp();
     expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);

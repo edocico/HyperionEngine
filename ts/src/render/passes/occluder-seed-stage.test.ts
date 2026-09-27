@@ -87,6 +87,14 @@ describe('OccluderSeedStage', () => {
     }
   });
 
+  it('writes the FULL canvas size into every slice at byte 68, so a pixel-wide line casts what it draws', () => {
+    const { stage, device, writes, camera } = setUp({ 0: OCCLUDER_SHADER });
+    const frame = { cameraViewProjection: new Float32Array(16), canvasWidth: 1600, canvasHeight: 900 } as unknown as FrameState;
+    stage.prepare(device, frame, sets);
+    const mine = writes.filter((w) => w.buffer === camera()).at(-1)!;
+    sets.forEach((_, i) => expect([...new Float32Array(mine.data, i * 256 + 68, 2)]).toEqual([1600, 900]));
+  });
+
   it('writes one 256-byte camera slice per set, once, with its occluder layers at byte 64', () => {
     const { stage, device, frame, writes, camera } = setUp({ 0: OCCLUDER_SHADER });
     stage.prepare(device, frame, sets);

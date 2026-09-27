@@ -111,6 +111,9 @@ export class OccluderSeedStage {
     for (let s = 0; s < count; s++) {
       new Float32Array(data, s * SLICE, 16).set(frame.cameraViewProjection);
       new Uint32Array(data, s * SLICE + 64, 1)[0] = sets[s]?.occluderLayers ?? 0;
+      // The FULL canvas size, not this stage's half-resolution target: a
+      // pixel-wide line (line.wgsl) keeps the NDC footprint it is drawn with.
+      new Float32Array(data, s * SLICE + 68, 2).set([frame.canvasWidth, frame.canvasHeight]);
     }
     device.queue.writeBuffer(this.cameraBuffer, 0, data);
   }

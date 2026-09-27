@@ -301,6 +301,15 @@ describe('EntityHandle', () => {
       expect(p.setPrimParams1).toHaveBeenCalledWith(1, 2, 0, 0, 0);
     });
 
+    it('line() takes the width in pixels with { unit: "px" }: flag 1 in primParams[7]', () => {
+      const p = mockProducer();
+      const h = new EntityHandle(1, p);
+      h.line(0, 0, 100, 100, 3, { unit: 'px' });
+      expect(p.setPrimParams1).toHaveBeenLastCalledWith(1, 3, 0, 0, 1);
+      h.line(0, 0, 100, 100, 0.2, { unit: 'world' });
+      expect(p.setPrimParams1).toHaveBeenLastCalledWith(1, 0.2, 0, 0, 0);
+    });
+
     it('gradient() sets render primitive and params', () => {
       const p = mockProducer();
       const h = new EntityHandle(1, p);

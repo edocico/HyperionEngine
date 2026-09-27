@@ -96,24 +96,23 @@ const section: DemoSection = {
     // ── 4. Lines (6 vertical + 4 horizontal) ──────────────────────────
     const linesBefore = entities.length;
     engine.batch(() => {
-      // 6 vertical lines spread across x = 10..20
+      // 6 vertical lines across x = 10..20, 0.15 world units wide: they
+      // thicken and thin with the zoom.
       for (let i = 0; i < 6; i++) {
         const x = 10 + i * 2;
         entities.push(
           engine.spawn()
             .position(x, 0, 0)
-            .scale(1, 10, 1)
-            .line(0, -1, 0, 1, 2),
+            .line(0, -5, 0, 5, 0.15),
         );
       }
-      // 4 horizontal lines stacked vertically
+      // 4 horizontal lines, 3 screen pixels wide at every zoom.
       for (let i = 0; i < 4; i++) {
         const y = -3 + i * 2;
         entities.push(
           engine.spawn()
             .position(15, y, 0)
-            .scale(10, 1, 1)
-            .line(-1, 0, 1, 0, 2),
+            .line(-5, 0, 5, 0, 3, { unit: 'px' }),
         );
       }
     });

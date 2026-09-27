@@ -308,6 +308,11 @@ pub const RENDER_META_LIGHT_MASK_MASK: u32 = 0xFFFF;
 /// constructs one by hand can never corrupt `primType` or the transparent bit.
 pub const LIGHT_FLAGS_MASK: u32 = 0xFFFF_FE00;
 
+/// `RenderPrimitive` value of a line: `primParams` = [x0, y0, x1, y1, width,
+/// dashLen, gapLen, widthUnit (0 local/world units, 1 screen pixels)]. Its
+/// culling radius comes from the endpoints (`systems::update_bounding_radii`).
+pub const PRIM_TYPE_LINE: u8 = 1;
+
 /// `RenderPrimitive` discriminant for a 2D light. Lights are ECS entities like
 /// any other drawable, but no shader is registered for this type in the
 /// ForwardPass — `LightAccumStage` (inside `LightGroupsPass`) reads their draw

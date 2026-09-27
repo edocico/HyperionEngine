@@ -1,6 +1,7 @@
-// Instanced line shader — screen-space quad expansion from line parameters.
+// Instanced line shader — a quad expanded across the segment from line parameters.
 // PrimParams layout for Line:
-//   [0]=startX, [1]=startY, [2]=endX, [3]=endY, [4]=width, [5]=dashLen, [6]=gapLen, [7]=_pad
+//   [0]=startX, [1]=startY, [2]=endX, [3]=endY, [4]=width, [5]=dashLen, [6]=gapLen,
+//   [7]=width unit: 0 = local units (scaled by the entity and the zoom), 1 = screen pixels
 
 struct CameraUniform {
     viewProjection: mat4x4f,
@@ -8,8 +9,9 @@ struct CameraUniform {
     // 0 in ForwardPass, which never reads it. Scalars only: see
     // src/shaders/uniform-layout.test.ts.
     occluderLayers: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // The FULL canvas size in pixels (both writers), for pixel-wide lines.
+    viewportWidth: f32,
+    viewportHeight: f32,
     _pad2: u32,
 };
 
@@ -100,13 +102,29 @@ fn vs_main(
         + d * along * len
         + perp * across * width;
 
+    // Pixel width: offset across the segment as it lies ON SCREEN, by
+    // width/2 pixels turned into NDC. A missing viewport falls back to local units.
+    let viewport = vec2f(camera.viewportWidth, camera.viewportHeight);
+    let pixelWidth = primParams[base + 7u] > 0.5 && viewport.x > 0.0 && viewport.y > 0.0;
+
     // Decode texture tier and layer from packed u32
     let packed = texLayerIndices[entityIdx];
     let isOverflow = (packed >> 31u) & 1u;
     let tier = (packed >> 16u) & 0x7u;
     let layer = packed & 0xFFFFu;
 
-    out.clipPosition = camera.viewProjection * model * vec4f(worldPos, 0.0, 1.0);
+    if (pixelWidth) {
+        let c0 = camera.viewProjection * model * vec4f(startX, startY, 0.0, 1.0);
+        let c1 = camera.viewProjection * model * vec4f(endX, endY, 0.0, 1.0);
+        let s = (c1.xy / c1.w - c0.xy / c0.w) * viewport;  // on-screen direction, pixels
+        let sl = length(s);
+        let sd = select(vec2f(1.0, 0.0), s / sl, sl > 0.001);
+        let clip = mix(c0, c1, along);
+        let offsetNdc = vec2f(-sd.y, sd.x) * across * width * 2.0 / viewport;
+        out.clipPosition = vec4f(clip.xy + offsetNdc * clip.w, clip.zw);
+    } else {
+        out.clipPosition = camera.viewProjection * model * vec4f(worldPos, 0.0, 1.0);
+    }
     let ndc = out.clipPosition.xy / out.clipPosition.w;
     out.screenUV = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     out.uv = vec2f(along, across + 0.5);
@@ -121,9 +139,14 @@ fn vs_main(
 // The line's colour and coverage. Shared by both entry points: a line casts
 // the shadow of exactly what it draws, dash gaps and anti-aliased edges included.
 fn shade(in: VertexOutput) -> vec4f {
+    // Edge anti-aliasing: distance from the centre line, 0 there and 1 at the
+    // edge, faded over one screen pixel (fwidth) whatever the width unit.
+    // Derivatives need uniform control flow: first, before any branch.
+    let edge = abs(in.uv.y - 0.5) * 2.0;
+    let edgeAA = max(fwidth(edge), 1e-4);
+
     // Read line params for potential dash pattern
     let base = in.entityIdx * 8u;
-    let width = primParams[base + 4u];
     let dashLen = primParams[base + 5u];
     let gapLen = primParams[base + 6u];
 
@@ -168,11 +191,7 @@ fn shade(in: VertexOutput) -> vec4f {
         }
     }
 
-    // Anti-alias edges (SDF from line center)
-    let dist = abs(in.uv.y - 0.5) * width;
-    let halfWidth = width * 0.5;
-    let aa = 1.0 - smoothstep(halfWidth - 1.0, halfWidth, dist);
-    color.a *= aa;
+    color.a *= 1.0 - smoothstep(1.0 - edgeAA, 1.0, edge);
 
     return color;
 }
