@@ -257,6 +257,67 @@ describe('ForwardPass @group(2): the light buffer', () => {
     expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0, 0, 0]);
   });
 
+  it('writes the canvas size into the camera uniform at bytes 68-72 (line widths in pixels)', () => {
+    const { writes, prepare } = setUp();
+    prepare({ canvasWidth: 800, canvasHeight: 600 });
+    const camera = writes.filter((w) => w.data.byteLength === 80).at(-1)!;
+    expect([...new Float32Array(camera.data, 68, 2)]).toEqual([800, 600]);
+  });
+
+  it('line.wgsl: viewport size in the camera at 68/72, width unit in primParams[7], fwidth before any branch', () => {
+    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
+    const camera = /struct CameraUniform \{([\s\S]*?)\}/.exec(src)![1]
+      .split('\n').map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean);
+    // mat4 (64 B), then four 4-byte scalars: occluderLayers at 64, the viewport at 68 and 72.
+    expect(camera.slice(0, 4)).toEqual([
+      'viewProjection: mat4x4f,', 'occluderLayers: u32,', 'viewportWidth: f32,', 'viewportHeight: f32,',
+    ]);
+    expect(src).toMatch(/primParams\[base \+ 7u\]/);
+    const shade = src.slice(src.indexOf('fn shade('));
+    const firstBranch = Math.min(...['switch', 'discard', 'if ('].map((k) => shade.indexOf(k)).filter((i) => i >= 0));
+    expect(shade.indexOf('fwidth(')).toBeGreaterThan(0);
+    expect(shade.indexOf('fwidth(')).toBeLessThan(firstBranch);
+  });
+
+  it('line.wgsl: the AA ramp is measured on the LINEAR uv.y and centred on the edge', () => {
+    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
+    const shade = src.slice(src.indexOf('fn shade('), src.indexOf('@fragment'));
+    // fwidth of abs() has a kink at the centre: 2x2-quad derivatives collapse
+    // there and a ~2 px line's opacity follows pixel parity.
+    expect(shade).toMatch(/fwidth\(\s*in\.uv\.y\s*\)/);
+    expect(shade).not.toMatch(/fwidth\(\s*edge\s*\)/);
+    // Centred: alpha is 0.5 exactly at the edge, so every fragment inside the
+    // quad keeps alpha >= 0.5 and the occluder seed covers the whole stroke.
+    expect(shade).toMatch(/smoothstep\(1\.0 - edgeAA \* 0\.5, 1\.0 \+ edgeAA \* 0\.5, edge\)/);
+  });
+
+  it('line.wgsl: the quad is wider than the stroke, so the OUTER half of the edge ramp is rasterised', () => {
+    // Without the margin a pixel centred on the edge depends on the
+    // rasteriser's tie rule: a thin transparent line's coverage followed
+    // sub-pixel position (1.5 to 2.0 for 2 px, measured on GPU).
+    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
+    const output = /struct VertexOutput \{([\s\S]*?)\}/.exec(src)![1];
+    expect(output).toMatch(/edgeScale: f32/);
+    const shade = src.slice(src.indexOf('fn shade('), src.indexOf('@fragment'));
+    expect(shade).toMatch(/let edge = abs\(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
+    expect(src).toMatch(/quadWidth = strokeWidth \+ 1\.0/);
+    // The opaque pipeline has no blending: there a margin fragment (alpha
+    // < 0.5) must be dropped, or opaque lines draw one pixel wider.
+    const fsMain = src.slice(src.indexOf('fn fs_main('), src.indexOf('fn fs_occluder('));
+    expect(fsMain).toMatch(/if \(in\.transparent == 0u && !insideStroke\(in\)\) \{\s*discard;/);
+    expect(output).toMatch(/@interpolate\(flat\) transparent: u32/);
+    // The seed is exactly the opaque stroke: same half-open test.
+    expect(src.slice(src.indexOf('fn fs_occluder('))).toMatch(/!insideStroke\(in\)/);
+  });
+
+  it('line.wgsl: insideStroke is half-open, so an opaque W-px stroke covers W pixel rows at any alignment', () => {
+    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('fn insideStroke('), src.indexOf('fn shade('));
+    // Signed distance, one closed and one open end, both shifted the same way.
+    expect(fn).toMatch(/let d = \(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
+    expect(fn).toMatch(/return d >= -1\.0 - STROKE_TIE_EPS && d < 1\.0 - STROKE_TIE_EPS;/);
+  });
+
   it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
     const { buffers } = setUp();
     expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);

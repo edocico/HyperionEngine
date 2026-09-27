@@ -7,7 +7,7 @@ use hecs::World;
 
 use crate::components::{
     Active, BoundingRadius, BoundsOverride, LightFlags, LightType, ModelMatrix, Parent, Position,
-    PrimitiveParams, RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D,
+    PrimitiveParams, RenderPrimitive, Rotation, Scale, Transform2D, Velocity, PRIM_TYPE_LIGHT2D, PRIM_TYPE_LINE,
 };
 
 #[cfg(feature = "physics-2d")]
@@ -243,16 +243,28 @@ pub fn update_bounding_radii(world: &mut World) {
     // Global and directional lights light the whole screen, wherever their
     // transform is, so they get a radius no frustum plane can cull: f32::MAX,
     // finite so the snapshot and `state_hash` never see an infinity.
-    for (prim, params, radius, _active, flags) in world.query_mut::<hecs::Without<
+    //
+    // A line is the other primitive whose extent is in its params: its
+    // endpoints can lie anywhere in local space, far outside the unit box the
+    // first pass bounds, so a long line culled on that box vanished while its
+    // ends were still on screen. Its radius is the farther endpoint through
+    // the world matrix, plus half the width when the width is in local units
+    // (a pixel width has no world size here).
+    for (prim, params, matrix, radius, _active, flags) in world.query_mut::<hecs::Without<
         (
             &RenderPrimitive,
             &PrimitiveParams,
+            &ModelMatrix,
             &mut BoundingRadius,
             &Active,
             Option<&LightFlags>,
         ),
         &BoundsOverride,
     >>() {
+        if prim.0 == PRIM_TYPE_LINE {
+            radius.0 = line_radius(&params.0, &matrix.0);
+            continue;
+        }
         if prim.0 != PRIM_TYPE_LIGHT2D {
             continue;
         }
@@ -271,6 +283,23 @@ pub fn update_bounding_radii(world: &mut World) {
             0.0
         };
     }
+}
+
+/// Culling radius of a line (`PRIM_TYPE_LINE`): the farther endpoint through
+/// `m`'s linear part, plus half the width when it is in local units
+/// (`params[7] < 0.5`), scaled by the Frobenius norm of the 2D linear part — an
+/// upper bound on how far the matrix stretches any direction, where the
+/// largest column norm is not (under shear). Non-finite input gives 0.
+fn line_radius(params: &[f32; 8], m: &[f32; 16]) -> f32 {
+    let c0 = glam::Vec3::new(m[0], m[1], m[2]);
+    let c1 = glam::Vec3::new(m[4], m[5], m[6]);
+    let reach = |x: f32, y: f32| (c0 * x + c1 * y).length();
+    let mut r = reach(params[0], params[1]).max(reach(params[2], params[3]));
+    if params[7] < 0.5 {
+        let axis = (c0.length_squared() + c1.length_squared()).sqrt();
+        r += params[4].abs() * 0.5 * axis;
+    }
+    if r.is_finite() { r } else { 0.0 }
 }
 
 /// Circumradius of the unit box [-0.5, 0.5]^3 transformed by `m`'s linear part.
@@ -576,6 +605,98 @@ mod tests {
         let e = spawn_light(&mut world, 300.0, 1.0);
         update_bounding_radii(&mut world);
         assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 300.0);
+    }
+
+    /// A line from `p0` to `p1` (local units), `width` wide, in `unit` (0 world, 1 px).
+    fn spawn_line(world: &mut World, p0: (f32, f32), p1: (f32, f32), width: f32, unit: f32, scale: f32) -> hecs::Entity {
+        let params = [p0.0, p0.1, p1.0, p1.1, width, 0.0, 0.0, unit];
+        world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::splat(scale)),
+            ModelMatrix(
+                Mat4::from_scale_rotation_translation(Vec3::splat(scale), Quat::IDENTITY, Vec3::ZERO)
+                    .to_cols_array(),
+            ),
+            BoundingRadius(0.5),
+            RenderPrimitive(PRIM_TYPE_LINE),
+            PrimitiveParams(params),
+            Active,
+        ))
+    }
+
+    #[test]
+    fn line_radius_covers_its_endpoints_and_half_its_width() {
+        // The unit-box radius (0.87) would cull a 20-unit line as soon as its
+        // middle left the view, with both ends still on screen.
+        let mut world = World::new();
+        let e = spawn_line(&mut world, (-10.0, 0.0), (10.0, 0.0), 0.5, 0.0, 1.0);
+        update_bounding_radii(&mut world);
+        let want = 10.0 + 0.25 * std::f32::consts::SQRT_2; // Frobenius of the identity's 2D part
+        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - want).abs() < 1e-5);
+    }
+
+    #[test]
+    fn line_radius_follows_the_transform_scale() {
+        let mut world = World::new();
+        let e = spawn_line(&mut world, (0.0, 0.0), (3.0, 4.0), 1.0, 0.0, 2.0);
+        update_bounding_radii(&mut world);
+        // |(3,4)| * 2 = 10, plus half the width scaled by the Frobenius norm of
+        // diag(2, 2): 0.5 * 2*sqrt(2).
+        let want = 10.0 + 0.5 * 2.0 * std::f32::consts::SQRT_2;
+        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - want).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pixel_width_line_radius_is_its_endpoints() {
+        // A pixel width has no world size here: only the endpoints count.
+        let mut world = World::new();
+        let e = spawn_line(&mut world, (-10.0, 0.0), (10.0, 0.0), 6.0, 1.0, 1.0);
+        update_bounding_radii(&mut world);
+        assert!((world.get::<&BoundingRadius>(e).unwrap().0 - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn line_radius_holds_under_shear() {
+        // World linear part S(2,1) * R(45deg): both column norms are 1.58 but
+        // the matrix stretches some directions by 2. A short stroke far from
+        // the origin, perpendicular to its offset, 4 local units wide: its far
+        // corner must still lie inside the sphere.
+        let (s, c) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let m = Mat4::from_cols_array(&[
+            2.0 * c, s, 0.0, 0.0,
+            -2.0 * s, c, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]);
+        let (p0, p1) = ((2.086f32, -2.157f32), (2.157f32, -2.086f32));
+        let mut world = World::new();
+        let e = spawn_line(&mut world, p0, p1, 4.0, 0.0, 1.0);
+        world.get::<&mut ModelMatrix>(e).unwrap().0 = m.to_cols_array();
+        update_bounding_radii(&mut world);
+        let r = world.get::<&BoundingRadius>(e).unwrap().0;
+        // The farthest point of the stroke: an endpoint plus half the width
+        // along the stroke's normal, through the matrix.
+        let dir = glam::Vec2::new(p1.0 - p0.0, p1.1 - p0.1).normalize();
+        let normal = glam::Vec2::new(-dir.y, dir.x);
+        let mut farthest = 0.0f32;
+        for p in [p0, p1] {
+            for side in [-1.0f32, 1.0] {
+                let q = glam::Vec2::new(p.0, p.1) + normal * side * 2.0;
+                farthest = farthest.max(m.transform_vector3(glam::Vec3::new(q.x, q.y, 0.0)).length());
+            }
+        }
+        assert!(r >= farthest - 1e-4, "radius {r} < farthest point {farthest}");
+    }
+
+    #[test]
+    fn line_radius_yields_to_bounds_override() {
+        let mut world = World::new();
+        let e = spawn_line(&mut world, (-10.0, 0.0), (10.0, 0.0), 0.5, 0.0, 1.0);
+        world.insert_one(e, BoundsOverride).unwrap();
+        world.get::<&mut BoundingRadius>(e).unwrap().0 = 3.0;
+        update_bounding_radii(&mut world);
+        assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 3.0);
     }
 
     #[test]

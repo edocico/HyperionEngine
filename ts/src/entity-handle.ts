@@ -287,12 +287,19 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Configure this entity as a line. Returns `this` for chaining. */
-  line(x0: number, y0: number, x1: number, y1: number, width: number): this {
+  /**
+   * Configure this entity as a line from (x0, y0) to (x1, y1), in the entity's
+   * local units. `width` is in local units too — scaled by the entity and the
+   * zoom like any primitive — unless `{ unit: 'px' }`: then it is screen pixels,
+   * the same at every zoom. The culling radius follows the endpoints.
+   * Returns `this` for chaining.
+   */
+  line(x0: number, y0: number, x1: number, y1: number, width: number,
+       options?: { unit?: 'world' | 'px' }): this {
     this.check();
     this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Line);
     this._producer!.setPrimParams0(this._id, x0, y0, x1, y1);
-    this._producer!.setPrimParams1(this._id, width, 0, 0, 0);
+    this._producer!.setPrimParams1(this._id, width, 0, 0, options?.unit === 'px' ? 1 : 0);
     return this;
   }
 

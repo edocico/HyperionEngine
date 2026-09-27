@@ -20,7 +20,7 @@ export function halfResolution(canvasWidth: number, canvasHeight: number): [numb
 /** The fragment entry point a primitive shader exposes to cast shadows. */
 const OCCLUDER_ENTRY = 'fs_occluder';
 
-/** CameraUniform in every primitive shader: viewProjection + occluderLayers + pads. */
+/** CameraUniform in every primitive shader: viewProjection + occluderLayers + viewport size + pad. */
 const CAMERA_UNIFORM_SIZE = 80;
 
 /**
@@ -111,6 +111,9 @@ export class OccluderSeedStage {
     for (let s = 0; s < count; s++) {
       new Float32Array(data, s * SLICE, 16).set(frame.cameraViewProjection);
       new Uint32Array(data, s * SLICE + 64, 1)[0] = sets[s]?.occluderLayers ?? 0;
+      // The FULL canvas size, not this stage's half-resolution target: a
+      // pixel-wide line (line.wgsl) keeps the NDC footprint it is drawn with.
+      new Float32Array(data, s * SLICE + 68, 2).set([frame.canvasWidth, frame.canvasHeight]);
     }
     device.queue.writeBuffer(this.cameraBuffer, 0, data);
   }

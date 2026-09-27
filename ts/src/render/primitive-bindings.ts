@@ -12,7 +12,7 @@ export function primitiveGroup0LayoutEntries(): GPUBindGroupLayoutEntry[] {
   const vsFs = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   return [
     // CameraUniform is 80 bytes in every primitive shader (viewProjection +
-    // occluderLayers + pads). Declared, so a smaller buffer fails when the bind
+    // occluderLayers + the viewport size line.wgsl reads + a pad). Declared, so a smaller buffer fails when the bind
     // group is created instead of at draw time, where no test can see it.
     { binding: 0, visibility: vs, buffer: { type: 'uniform', minBindingSize: 80 } }, // camera
     { binding: 1, visibility: vs, buffer: { type: 'read-only-storage' } },     // transforms

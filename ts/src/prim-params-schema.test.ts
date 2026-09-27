@@ -5,7 +5,7 @@ describe('PRIM_PARAMS_SCHEMA', () => {
   it('maps Line params to float indices', () => {
     expect(PRIM_PARAMS_SCHEMA[RenderPrimitiveType.Line]).toEqual({
       startX: 0, startY: 1, endX: 2, endY: 3,
-      width: 4, dashLen: 5, gapLen: 6,
+      width: 4, dashLen: 5, gapLen: 6, widthUnit: 7,
     });
   });
 

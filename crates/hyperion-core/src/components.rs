@@ -87,7 +87,7 @@ pub struct RenderPrimitive(pub u8);
 
 /// Per-entity parameters interpreted by the active RenderPrimitive shader.
 /// 8 f32 (32 bytes) — meaning depends on primitive type:
-///   Line: [startX, startY, endX, endY, width, dashLen, gapLen, _pad]
+///   Line: [startX, startY, endX, endY, width, dashLen, gapLen, widthUnit (0 local units, 1 px)]
 ///   SDFGlyph: [atlasU0, atlasV0, atlasU1, atlasV1, screenPxRange, _pad, _pad, _pad]
 ///   Gradient: [type, angle, stop0pos, stop0r, stop0g, stop0b, stop1pos, stop1r]
 ///   BoxShadow: [rectW, rectH, cornerRadius, blur, colorR, colorG, colorB, colorA]
@@ -307,6 +307,11 @@ pub const RENDER_META_LIGHT_MASK_MASK: u32 = 0xFFFF;
 /// `LightFlags` is applied to `renderMeta` through this mask, so a caller that
 /// constructs one by hand can never corrupt `primType` or the transparent bit.
 pub const LIGHT_FLAGS_MASK: u32 = 0xFFFF_FE00;
+
+/// `RenderPrimitive` value of a line: `primParams` = [x0, y0, x1, y1, width,
+/// dashLen, gapLen, widthUnit (0 local/world units, 1 screen pixels)]. Its
+/// culling radius comes from the endpoints (`systems::update_bounding_radii`).
+pub const PRIM_TYPE_LINE: u8 = 1;
 
 /// `RenderPrimitive` discriminant for a 2D light. Lights are ECS entities like
 /// any other drawable, but no shader is registered for this type in the

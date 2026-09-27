@@ -52,6 +52,8 @@ export class ForwardPass implements RenderPass {
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
   private cameraBuffer: GPUBuffer | null = null;
+  /** CameraUniform staging, reused every frame. */
+  private readonly cameraData = new ArrayBuffer(80);
   private depthTexture: GPUTexture | null = null;
   private indirectBuffer: GPUBuffer | null = null;
   private device: GPUDevice | null = null;
@@ -122,7 +124,7 @@ export class ForwardPass implements RenderPass {
     });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
 
-    // --- Camera uniform: viewProjection + occluderLayers (unused here) + pads ---
+    // --- Camera uniform: viewProjection + occluderLayers (unused here) + viewport size + pad ---
     this.cameraBuffer = device.createBuffer({
       size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -257,8 +259,11 @@ export class ForwardPass implements RenderPass {
 
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.cameraBuffer) return;
-    // Only the matrix: occluderLayers and the pads stay 0 from creation.
-    device.queue.writeBuffer(this.cameraBuffer, 0, frame.cameraViewProjection as Float32Array<ArrayBuffer>);
+    // The matrix and the canvas size (line.wgsl turns pixel widths into NDC
+    // with it); occluderLayers stays 0.
+    new Float32Array(this.cameraData, 0, 16).set(frame.cameraViewProjection);
+    new Float32Array(this.cameraData, 68, 2).set([frame.canvasWidth, frame.canvasHeight]);
+    device.queue.writeBuffer(this.cameraBuffer, 0, this.cameraData);
     if (this.lightingBuffer) {
       const [lo, hi] = frame.lightGroups?.layerToGroup ?? [0, 0];
       device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, lo, hi, 0]));

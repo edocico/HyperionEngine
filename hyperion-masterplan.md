@@ -1106,7 +1106,7 @@ Sinergie:
 
 | Tecnica | Metodo | Fase | Stato |
 |---------|--------|------|-------|
-| Line rendering — instanced screen-space expansion | Quad expansion in vertex shader | Phase 5.5 | ✅ |
+| Line rendering — instanced quad expansion (larghezza in unità locali o pixel dal 2026-09-27) | Quad expansion in vertex shader | Phase 5.5 | ✅ |
 | Line rendering — SDF | distance_to_segment per fragment | Futuro | Pianificato |
 | MSDF text | median(r,g,b) + screen-pixel-range | Phase 5.5 | ✅ |
 | Bézier quadratiche — SDF Inigo Quilez | Distanza analitica + Cardano/trig | Phase 9 | ✅ |

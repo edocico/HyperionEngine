@@ -35,7 +35,7 @@ Il §7.3 del design dice "Mix in-shader", ma non si può fare: WebGPU non ha fra
 
 Decisioni rimandate, da prendere **prima del passo indicato**:
 - **Passo 2 — deciso (2026-09-27):** il probe è un'API dev del motore, `engine.debug.probe()` (solo `__DEV__`), usata sia dai check dei tab sia da `/gpu-check`; i check usano rapporti tra punti della stessa lettura per luci e ombre, e valori assoluti in HDR lineare con tolleranza per i colori statici.
-- **Passo 3:** se gli estremi di una linea devono guidare il `BoundingRadius`. Oggi la linea viene cullata sul quadrato unitario, anche quando è ancora visibile.
+- **Passo 3 — deciso (2026-09-27):** l'unità di default di `.line()` resta il mondo (`{ unit: 'px' }` per i pixel, flag in `primParams[7]`), e gli estremi guidano il `BoundingRadius` in Rust, come il range delle Light2D.
 - **Passo 5:** se Depth→z (S2) rientra in questo giro, e che cosa significa `.depth()` su un'entità 3D.
 - **Passo 6:** se `sdfOversize` rientra (senza, gli occluder fuori schermo compaiono di colpo al bordo), quale asse locale indica la direzione, quanto è ampia la penombra, e che le luci global non proiettano ombre.
 - **Passo 7:** l'ordine dei `mix` sovrapposti (non definito e documentato, oppure deterministico per id).
