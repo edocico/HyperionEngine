@@ -2133,7 +2133,7 @@ CullPass → ForwardPass (→ scene-hdr)
 
 **JFA iterations**: `ceil(log₂(max(width, height)))` — circa 11 per 1080p. Ogni iterazione e un nodo separato nel RenderGraph con nome risorsa unico (`jfa-iter-N`). Il renderer mappa queste risorse logiche a due texture fisiche di ping-pong nel ResourcePool.
 
-**SelectionManager** (`ts/src/selection.ts`): `Set<number>` CPU-side con dirty tracking. `uploadMask(device, buffer)` scrive una maschera u32 (0/1 per entita) nel buffer `selection-mask`. Il seed shader controlla questa maschera nel vertex shader e emette triangoli degeneri per entita non selezionate.
+**SelectionManager** (`ts/src/selection.ts`): `Set<number>` CPU-side con dirty tracking. `uploadMask(device, buffer, entityIds, entityCount)` scrive una maschera u32 (0/1) nel buffer `selection-mask`, indicizzata per **slot GPU** (lo stesso indice delle colonne SoA): `entityIds[slot]` dice quale entita sta in quello slot. Indicizzata per id esterno, delineava l'entita che occupava lo slot con quel numero, o niente. Con una selezione non vuota la maschera e riscritta **ogni frame**, non solo quando la selezione cambia: gli slot si spostano (swap-remove al despawn) anche a selezione ferma. Con la selezione vuota viene azzerata una volta, poi nessun upload. Il seed shader controlla questa maschera nel vertex shader e emette triangoli degeneri per entita non selezionate.
 
 ### 20.6 MSDF Text Rendering
 

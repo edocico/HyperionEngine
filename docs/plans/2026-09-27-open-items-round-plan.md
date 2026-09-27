@@ -73,6 +73,15 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   - `ecs-inspector.ts:114` chiama `selection.selectedIds()` come metodo, ma è un getter (il mock del test lo nasconde);
   - CLAUDE.md dà 600 000 come default del tape, ma è 1 000 000 (`command-tape.ts:22`).
 - **Passo 2 (probe) — fatto** (review `wf_bf97d75c-ec7` + `webgpu-pass-reviewer`: 10 + 4 finding, tutti corretti e verificati su GPU). Lo scatter gira SOLO in Mode C, perché `engine-worker.ts` non invia mai `dirtyCount`/`stagingData`, quindi in Mode B e A ogni frame fa l'upload completo delle SoA. È una lacuna di prestazioni, non di correttezza. Per il passo 4, il formato 0 va verificato con `?mode=C`. Il probe legge la swapchain con `TEXTURE_BINDING` (configurato solo in dev) invece che con `COPY_SRC`: la capacità è la stessa (D2).
+- **Passo 3b (check a pixel) — fatto.** Trovati e corretti lungo la strada:
+  - la maschera di selezione ora è per slot, e il check Outline lo verifica;
+  - un mondo vuoto non disegnava nulla e lasciava l'ultima immagine a schermo (Mode B/C; la Mode A resta per il passo 10);
+  - il cull a zero entità dava un warning;
+  - i box shadow della demo erano opachi, quindi quadrati pieni.
+
+  Registrati ma non corretti:
+  - `gradient()` non può impostare G/B dello stop1;
+  - Vite può servire la trasformazione stantia di uno shader dopo un checkout (bisogna riavviare il dev server).
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada

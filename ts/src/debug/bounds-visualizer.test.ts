@@ -72,6 +72,17 @@ describe('boundsVisualizerPlugin', () => {
     expect(ctx.rendering!.removePass).toHaveBeenCalledWith('bounds-visualizer');
   });
 
+  it('an empty world clears the circles (the last frame\'s used to stay drawn)', () => {
+    const ctx = mockCtx();
+    boundsVisualizerPlugin().install(ctx);
+    const hook = (ctx.systems.addPostTick as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const pass = (ctx.rendering!.addPass as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const generate = vi.spyOn(pass, 'generateFromBounds');
+    hook(1 / 60, { entityCount: 1, bounds: new Float32Array([0, 0, 0, 1]) });
+    hook(1 / 60, { entityCount: 0, bounds: new Float32Array(0) });
+    expect(generate).toHaveBeenLastCalledWith(expect.any(Float32Array), 0);
+  });
+
   it('returns void when no rendering API (headless)', () => {
     const ctx = mockCtx();
     (ctx as any).rendering = null;

@@ -504,6 +504,21 @@ describe('Hyperion picking', () => {
   });
 });
 
+describe('Hyperion empty world', () => {
+  it('still renders a frame when every entity is gone, or the last image stays on screen', () => {
+    const bridge = mockBridge();
+    (bridge as { latestRenderState: unknown }).latestRenderState = {
+      entityCount: 0, transforms: new Float32Array(0), bounds: new Float32Array(0),
+      renderMeta: new Uint32Array(0), texIndices: new Uint32Array(0), primParams: new Float32Array(0),
+      entityIds: new Uint32Array(0), listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 1,
+    };
+    const renderer = mockRenderer();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, renderer);
+    (engine as unknown as { tick(dt: number): void }).tick(1 / 60);
+    expect(renderer.render).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Hyperion immediate mode', () => {
   it('positionImmediate on spawned entity stores shadow state', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());

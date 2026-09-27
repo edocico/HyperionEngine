@@ -764,7 +764,9 @@ export async function createRenderer(
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
       followBackend(state.lightingBackend);
-      if (state.entityCount === 0) return;
+      // No early return on an empty world: its frame is the clear (CullPass
+      // skips its dispatch, the indirect draws count zero). Returning here left
+      // the last image on screen after the last entity was destroyed.
 
       // Scatter/full upload branching:
       // When dirty ratio is below threshold and scatter pass is available,
@@ -786,7 +788,7 @@ export async function createRenderer(
           state.dirtyCount,
         );
         // ScatterPass.execute() will be called by RenderGraph
-      } else {
+      } else if (state.entityCount > 0) {
         // Full upload path: write entire SoA buffers to GPU
         const transformBuf = resources.getBuffer('entity-transforms')!;
         device.queue.writeBuffer(
@@ -830,7 +832,7 @@ export async function createRenderer(
 
       // Upload selection mask if dirty
       if (requests.requested.mode.outlines || host.mode.outlines) {
-        selectionManager.uploadMask(device, selectionMaskBuffer);
+        selectionManager.uploadMask(device, selectionMaskBuffer, state.entityIds, state.entityCount);
       }
 
       // Recreate scene-hdr texture if canvas dimensions changed
