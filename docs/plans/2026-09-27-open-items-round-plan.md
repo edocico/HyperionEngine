@@ -36,6 +36,7 @@ Il §7.3 del design dice "Mix in-shader", ma non si può fare: WebGPU non ha fra
 Decisioni rimandate, da prendere **prima del passo indicato**:
 - **Passo 2 — deciso (2026-09-27):** il probe è un'API dev del motore, `engine.debug.probe()` (solo `__DEV__`), usata sia dai check dei tab sia da `/gpu-check`; i check usano rapporti tra punti della stessa lettura per luci e ombre, e valori assoluti in HDR lineare con tolleranza per i colori statici.
 - **Passo 3 — deciso (2026-09-27):** l'unità di default di `.line()` resta il mondo (`{ unit: 'px' }` per i pixel, flag in `primParams[7]`), e gli estremi guidano il `BoundingRadius` in Rust, come il range delle Light2D.
+- **Passo 4 — deciso (2026-09-27):** su un'entità 2D gli argomenti che hanno senso solo in 3D (z ≠ 0, `sz`, `vz`, un quaternione inclinato su X/Y) vengono ignorati come già fa Rust, con un `console.warn` dev per handle alla prima occorrenza; una sola classe `EntityHandle`, con z opzionale per tutti (`position`/`velocity` default 0, `scale` default `sz = 1`) e `handle.is2D`; i prefab entrano nel passo, con la modalità per template (`PrefabTemplate.mode: '2d'`, niente nodi misti).
 - **Passo 5:** se Depth→z (S2) rientra in questo giro, e che cosa significa `.depth()` su un'entità 3D.
 - **Passo 6:** se `sdfOversize` rientra (senza, gli occluder fuori schermo compaiono di colpo al bordo), quale asse locale indica la direzione, quanto è ampia la penombra, e che le luci global non proiettano ombre.
 - **Passo 7:** l'ordine dei `mix` sovrapposti (non definito e documentato, oppure deterministico per id).
@@ -82,6 +83,10 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   Registrati ma non corretti:
   - `gradient()` non può impostare G/B dello stop1;
   - Vite può servire la trasformazione stantia di uno shader dopo un checkout (bisogna riavviare il dev server).
+- **Passo 4 (spawn 2D pubblico) — fatto** (review `wf_24bad90e-4e1`: 8 finding minori, tutti corretti). Rust gestiva già tutto (payload 1 di SpawnEntity, da Phase 13): `tests/verify_2d.rs` lo fissa (gemelli con la stessa riga GPU; una Light2D su Transform2D culla sul range, formato 0). Criteri d'uscita verificati sull'iGPU AMD: in Mode C 12/12 frame via scatter, righe GPU = CPU entro 1.2e-7 (genitore in formato 0, figlio in formato 1); 4629/4629 texel uguali tra 2D e 3D, e mezzo pixel di scarto, anche sul solo figlio, fa fallire il check. Trovati lungo la strada:
+  - `PrefabInstance.moveTo` dimenticava la z di `overrides.z` (corretto);
+  - un reload di Vite dopo una modifica TS perde l'initScript: la pagina prende NVIDIA e perde il device (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) — documentato nella skill gpu-check;
+  - la doc prometteva un upload ridotto per il 2D: non esiste, ogni riga resta 16 parole (il risparmio è solo nel componente ECS).
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada

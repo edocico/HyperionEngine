@@ -6,11 +6,13 @@
 // of ONE read (animated lights move between reads).
 
 import type { Hyperion } from '../hyperion';
-import type { ProbeTarget } from '../render/debug-probe';
+import type { ProbeTarget, TransformsProbeResult } from '../render/debug-probe';
 import type { TestReporter } from './types';
 
 export type Rgba = [number, number, number, number];
 export type Probe = (target: ProbeTarget, world: [number, number][], layer?: number) => Promise<Rgba[]>;
+/** `engine.debug.readEntityTransforms()`, under the same timeout and skip rule as `Probe`. */
+export type ReadTransforms = () => Promise<TransformsProbeResult>;
 
 /**
  * A probe is served by the next rendered frame. When none comes (the loop is
@@ -25,28 +27,29 @@ const UNAVAILABLE = /main-thread renderer|DebugProbe destroyed/;
 class ProbeUnavailable extends Error {}
 
 /**
- * Runs one pixel check: `check` reads pixels with the given probe and returns
- * the verdict. Where the probe does not exist (Mode A, no renderer, a
- * production build) the check is skipped with the reason, never failed.
+ * Runs one pixel check: `check` reads pixels with the given probe (or GPU rows
+ * with `readTransforms`) and returns the verdict. Where the probe does not
+ * exist (Mode A, no renderer, a production build) the check is skipped with
+ * the reason, never failed.
  */
 export async function pixelCheck(
   reporter: TestReporter,
   name: string,
   engine: Hyperion,
-  check: (probe: Probe) => Promise<{ ok: boolean; detail: string }>,
+  check: (probe: Probe, readTransforms: ReadTransforms) => Promise<{ ok: boolean; detail: string }>,
 ): Promise<void> {
   const debug = engine.debug;
   if (!debug) {
     reporter.skip(name, 'pixel probe unavailable: production build');
     return;
   }
-  const probe: Probe = async (target, world, layer) => {
+  const guarded = async <T>(request: Promise<T>): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`no frame served the probe within ${PROBE_TIMEOUT_MS} ms`)), PROBE_TIMEOUT_MS);
     });
     try {
-      return (await Promise.race([debug.probe({ target, world, layer }), timeout])).values;
+      return await Promise.race([request, timeout]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw UNAVAILABLE.test(msg) ? new ProbeUnavailable(msg) : err;
@@ -54,8 +57,10 @@ export async function pixelCheck(
       clearTimeout(timer);
     }
   };
+  const probe: Probe = async (target, world, layer) => (await guarded(debug.probe({ target, world, layer }))).values;
+  const readTransforms: ReadTransforms = () => guarded(debug.readEntityTransforms());
   try {
-    const { ok, detail } = await check(probe);
+    const { ok, detail } = await check(probe, readTransforms);
     reporter.check(name, ok, detail);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

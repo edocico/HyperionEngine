@@ -121,6 +121,27 @@ describe('Hyperion', () => {
     expect(bridge.commandBuffer.spawnEntity).toHaveBeenCalled();
   });
 
+  it('spawn() makes a 3D entity; spawn({ mode: "2d" }) a Transform2D one', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    const e3 = engine.spawn();
+    const e2 = engine.spawn({ mode: '2d' });
+    const explicit3 = engine.spawn({ mode: '3d' });
+    expect(bridge.commandBuffer.spawnEntity).toHaveBeenNthCalledWith(1, e3.id, false);
+    expect(bridge.commandBuffer.spawnEntity).toHaveBeenNthCalledWith(2, e2.id, true);
+    expect(bridge.commandBuffer.spawnEntity).toHaveBeenNthCalledWith(3, explicit3.id, false);
+    expect([e3.is2D, e2.is2D, explicit3.is2D]).toEqual([false, true, false]);
+  });
+
+  it('spawn rejects an unknown mode without spending an id or a slot', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    expect(() => engine.spawn({ mode: '4d' as never })).toThrow(/mode/);
+    expect(bridge.commandBuffer.spawnEntity).not.toHaveBeenCalled();
+    expect(engine.stats.entityCount).toBe(0);
+    expect(engine.spawn().id).toBe(0);
+  });
+
   it('spawn auto-increments entity IDs', () => {
     const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
     const e1 = engine.spawn();

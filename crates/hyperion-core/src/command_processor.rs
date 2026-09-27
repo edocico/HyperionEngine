@@ -899,9 +899,9 @@ fn process_single_command(
                     // A 2D angle on a 3D entity is a rotation about Z, the
                     // screen normal, and it replaces the whole quaternion: the
                     // same "set the angle" that SetRotation means on a 2D
-                    // entity. engine.spawn() only makes 3D entities, so this
-                    // is what EntityHandle.rotation(angle) does in practice
-                    // (it used to be ignored, 2026-09-26).
+                    // entity. It is what EntityHandle.rotation(angle) does on
+                    // every entity of a plain engine.spawn() (it used to be
+                    // ignored, 2026-09-26); spawn({ mode: '2d' }) sets `rot`.
                     rot.0 = glam::Quat::from_rotation_z(angle);
                 }
                 if let Some(slot) = render_state.get_slot(entity) {

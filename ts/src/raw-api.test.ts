@@ -28,7 +28,34 @@ describe('RawAPI', () => {
     const raw = new RawAPI(p, () => nextId++);
     const id = raw.spawn();
     expect(id).toBe(0);
-    expect(p.spawnEntity).toHaveBeenCalledWith(0);
+    expect(p.spawnEntity).toHaveBeenCalledWith(0, false);
+  });
+
+  it('spawn({ mode: "2d" }) spawns a Transform2D entity', () => {
+    const p = mockProducer();
+    const raw = new RawAPI(p, () => 4);
+    raw.spawn({ mode: '2d' });
+    expect(p.spawnEntity).toHaveBeenCalledWith(4, true);
+  });
+
+  it('spawn rejects an unknown mode before allocating an id', () => {
+    const p = mockProducer();
+    const allocate = vi.fn(() => 4);
+    const raw = new RawAPI(p, allocate);
+    expect(() => raw.spawn({ mode: '4d' as never })).toThrow(/mode/);
+    expect(allocate).not.toHaveBeenCalled();
+    expect(p.spawnEntity).not.toHaveBeenCalled();
+  });
+
+  it('z is optional: setPosition/setVelocity default 0, setScale sz 1', () => {
+    const p = mockProducer();
+    const raw = new RawAPI(p, () => 0);
+    raw.setPosition(0, 1, 2);
+    raw.setVelocity(0, 3, 4);
+    raw.setScale(0, 2, 3);
+    expect(p.setPosition).toHaveBeenCalledWith(0, 1, 2, 0);
+    expect(p.setVelocity).toHaveBeenCalledWith(0, 3, 4, 0);
+    expect(p.setScale).toHaveBeenCalledWith(0, 2, 3, 1);
   });
 
   it('despawn sends DespawnEntity command', () => {

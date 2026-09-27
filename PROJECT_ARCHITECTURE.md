@@ -1839,7 +1839,7 @@ Phase 5 aggiunge un **Public API Layer** completo sopra i componenti interni del
 
 | Metodo | Scopo |
 |---|---|
-| `spawn()` | Crea un `EntityHandle` nuovo. Gli id liberati vengono riusati dopo una quarantena, e solo quando quelli nuovi (fino a `MAX_EXTERNAL_ID`) sono finiti: vedi `docs/plans/2026-09-27-id-reuse-design.md` |
+| `spawn(options?)` | Crea un `EntityHandle` nuovo. Gli id liberati vengono riusati dopo una quarantena, e solo quando quelli nuovi (fino a `MAX_EXTERNAL_ID`) sono finiti: vedi `docs/plans/2026-09-27-id-reuse-design.md`. `spawn({ mode: '2d' })` crea un'entità `Transform2D` (vedi sotto) |
 | `batch(fn)` | Esegue operazioni in batch, flush alla fine |
 | `start()` | Avvia il game loop (RAF) |
 | `pause()` | Sospende il game loop |
@@ -1876,7 +1876,11 @@ const entity = engine.spawn()
     .parent(otherEntity);
 ```
 
-Ogni metodo ritorna `this` per il chaining. `EntityHandle` implementa `Disposable` — `destroy()` (o `using`, cioè `[Symbol.dispose]()`) invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
+Ogni metodo ritorna `this` per il chaining. La z è facoltativa (`position`/`velocity` default 0, `scale` sz 1).
+
+**Entità 2D** (dal 2026-09-27): `engine.spawn({ mode: '2d' })` usa l'archetipo compatto `Transform2D` (x, y, angolo, sx, sy: 20 byte di componente ECS contro 40), disegnato a z = 0. Il caricamento sulla GPU non si riduce: ogni riga resta una matrice di 16 float; in Mode C una radice 2D viaggia nello scatter come "formato 0" (la GPU la ricostruisce da 6 di quelle parole, ma sempre dentro le 16), in Mode A/B l'upload è completo. La handle è la stessa classe (`handle.is2D`); ciò che esiste solo in 3D (una z, `sz`, `vz`, un quaternione inclinato fuori dall'asse Z) viene ignorato da Rust, con un avviso dev una volta per `EntityHandle` (l'API raw non controlla). Un template di prefab con `mode: '2d'` crea radice e figli 2D. Il tab "2D Twins" dell'harness verifica che ogni entità 2D disegni gli stessi texel del suo gemello 3D, e in Mode C che le righe arrivate in formato 0 coincidano con quelle della CPU.
+
+`EntityHandle` implementa `Disposable` — `destroy()` (o `using`, cioè `[Symbol.dispose]()`) invia `DespawnEntity` e chiama il callback di rilascio che `Hyperion.spawn` le passa (deregistrazione dal LeakDetector, `entityCount--`). Una handle distrutta non viene mai riciclata.
 
 **Data map**: `.data(key, value)` permette di associare dati arbitrari a un handle (es. per plugin). Vive quanto la handle.
 

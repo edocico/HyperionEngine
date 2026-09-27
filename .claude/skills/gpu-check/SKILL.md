@@ -44,6 +44,14 @@ Then read the adapter line (`list_console_messages`, types `log`/`info`/`warn`):
 not nvidia and not a software fallback (SwiftShader). Mode A cannot be checked here: the initScript
 does not reach workers, which then pick NVIDIA and lose the device.
 
+The initScript applies to ONE navigation. An edit Vite cannot hot-swap — any TS module, a demo
+section included — reloads the page without it: the reload gets NVIDIA and loses the device at its
+first large allocation (`VK_ERROR_OUT_OF_DEVICE_MEMORY`, every check "Device is lost"). That is not
+a leak: `navigate_page` again with the initScript and re-read the adapter line. The tell is a new
+`[vite] connecting...` and a second adapter line in the console. An edit to one of the 18
+hot-reloadable WGSL files (`import.meta.hot.accept` in `renderer.ts`) is swapped in place and the
+page stays: keep it when the shader hot-reload is what you are checking.
+
 ## 4. Run the tabs
 
 `evaluate_script` (replace `ONLY` with `[]` for every tab, or with the labels asked for):
@@ -73,8 +81,10 @@ Expected today (2026-09-27, the checks read pixels through the probe): every tab
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
 check. In Mode A the pixel checks skip ("pixel probe unavailable"). Lighting, Rendering FX and
-Lifecycle take a few seconds: wait ~7 s on them. `window.__hyperion` is the live facade for
-anything the tabs do not check.
+Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (2/2) is the one check of scatter
+format 0: run it once with `?mode=C`, where its row check must report scatter frames (Mode B
+uploads every row, so there it reports 0). `window.__hyperion` is the live facade for anything the
+tabs do not check.
 
 ## 5. Console
 

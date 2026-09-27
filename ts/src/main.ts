@@ -23,6 +23,7 @@ const TABS: TabDef[] = [
   { key: 'lighting',      label: 'Lighting' },
   { key: 'debug-tools',   label: 'Debug Tools' },
   { key: 'lifecycle',     label: 'Lifecycle' },
+  { key: 'twin-2d',       label: '2D Twins' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ const SECTION_LOADERS: Record<string, () => Promise<{ default: DemoSection }>> =
   lighting:       () => import('./demo/lighting'),
   'debug-tools':  () => import('./demo/debug-tools'),
   lifecycle:      () => import('./demo/lifecycle'),
+  'twin-2d':      () => import('./demo/twin-2d'),
 };
 
 // ---------------------------------------------------------------------------

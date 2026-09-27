@@ -1,4 +1,5 @@
 import type { BackpressuredProducer } from './backpressure';
+import { spawnIs2D, type SpawnOptions } from './types';
 
 /**
  * How RawAPI allocates and frees ids. `Hyperion` passes its id allocator, which
@@ -42,9 +43,11 @@ export class RawAPI {
       : ids;
   }
 
-  spawn(): number {
+  /** A 3D entity, or a Transform2D one with `{ mode: '2d' }` (see `SpawnOptions`). */
+  spawn(options?: SpawnOptions): number {
+    const is2D = spawnIs2D(options);
     const id = this.ids.allocate();
-    this.producer.spawnEntity(id);
+    this.producer.spawnEntity(id, is2D);
     return id;
   }
 
@@ -52,11 +55,11 @@ export class RawAPI {
     if (this.ids.release(id)) this.producer.despawnEntity(id);
   }
 
-  setPosition(id: number, x: number, y: number, z: number): void {
+  setPosition(id: number, x: number, y: number, z = 0): void {
     if (this.live(id)) this.producer.setPosition(id, x, y, z);
   }
 
-  setVelocity(id: number, vx: number, vy: number, vz: number): void {
+  setVelocity(id: number, vx: number, vy: number, vz = 0): void {
     if (this.live(id)) this.producer.setVelocity(id, vx, vy, vz);
   }
 
@@ -64,7 +67,7 @@ export class RawAPI {
     if (this.live(id)) this.producer.setRotation(id, x, y, z, w);
   }
 
-  setScale(id: number, sx: number, sy: number, sz: number): void {
+  setScale(id: number, sx: number, sy: number, sz = 1): void {
     if (this.live(id)) this.producer.setScale(id, sx, sy, sz);
   }
 
