@@ -83,6 +83,10 @@ Dentro L l'ordine è directional → mix → sprite: prima il raggio d'azione pi
   Registrati ma non corretti:
   - `gradient()` non può impostare G/B dello stop1;
   - Vite può servire la trasformazione stantia di uno shader dopo un checkout (bisogna riavviare il dev server).
+- **Passo 4 (spawn 2D pubblico) — fatto** (review `wf_24bad90e-4e1`: 8 finding minori, tutti corretti). Rust gestiva già tutto (payload 1 di SpawnEntity, da Phase 13): `tests/verify_2d.rs` lo fissa (gemelli con la stessa riga GPU; una Light2D su Transform2D culla sul range, formato 0). Criteri d'uscita verificati sull'iGPU AMD: in Mode C 12/12 frame via scatter, righe GPU = CPU entro 1.2e-7 (genitore in formato 0, figlio in formato 1); 4629/4629 texel uguali tra 2D e 3D, e mezzo pixel di scarto, anche sul solo figlio, fa fallire il check. Trovati lungo la strada:
+  - `PrefabInstance.moveTo` dimenticava la z di `overrides.z` (corretto);
+  - un reload di Vite dopo una modifica TS perde l'initScript: la pagina prende NVIDIA e perde il device (`VK_ERROR_OUT_OF_DEVICE_MEMORY`) — documentato nella skill gpu-check;
+  - la doc prometteva un upload ridotto per il 2D: non esiste, ogni riga resta 16 parole (il risparmio è solo nel componente ECS).
 - **Bug preesistente (stessa review):** `SelectionManager.uploadMask` scrive la maschera per id esterno, mentre `selection-seed.wgsl` la legge per slot SoA (`visibleIndices`). Quando id e slot divergono, le outline evidenziano l'entità sbagliata. Va affrontato nel passo 3, quando i check a pixel coprono le outline.
 
 ## 5. Documenti obsoleti da correggere lungo la strada
