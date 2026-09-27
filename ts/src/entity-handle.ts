@@ -125,25 +125,33 @@ export class EntityHandle implements Disposable {
    * them, so `shadows()` can change slot 7 without restating them.
    */
   private _lightCone: [number, number, number] = [...DEFAULT_LIGHT_CONE];
+  private readonly _is2D: boolean;
+  private _warned3DOnly = false;
 
   /**
    * @param onRelease - Called once, by the first `destroy()`. The engine
    *   passes the callback that frees the entity's slot.
+   * @param is2D - The entity is a Transform2D one (`spawn({ mode: '2d' })`).
    */
   constructor(
     id: number,
     producer: BackpressuredProducer,
     immediateState?: ImmediateState,
     onRelease?: (handle: EntityHandle) => void,
+    is2D = false,
   ) {
     this._id = id;
     this._producer = producer;
     this._immediateState = immediateState ?? null;
     this._onRelease = onRelease ?? null;
+    this._is2D = is2D;
   }
 
   /** The numeric entity ID this handle wraps. */
   get id(): number { return this._id; }
+
+  /** Whether the entity is a Transform2D one: no z, rotation about Z only. */
+  get is2D(): boolean { return this._is2D; }
 
   /** Whether the entity is still alive (not destroyed). */
   get alive(): boolean { return this._alive; }
@@ -161,9 +169,24 @@ export class EntityHandle implements Disposable {
     if (!target.alive) throw new Error(`Target EntityHandle ${target.id} has been destroyed`);
   }
 
-  /** Set entity position. Returns `this` for chaining. */
-  position(x: number, y: number, z: number): this {
+  /**
+   * On a 2D entity, a 3D-only argument is ignored by the engine: says so once
+   * per handle, in dev builds. Kept a warning, not an error: generic code
+   * that passes z = 0 or a Z-only quaternion never reaches it.
+   */
+  private ignoredOn2D(what: string): void {
+    if (this._warned3DOnly || typeof __DEV__ === 'undefined' || !__DEV__) return;
+    this._warned3DOnly = true;
+    console.warn(
+      `[Hyperion] 2D entity ${this._id}: ${what} is ignored (a Transform2D entity has no z, ` +
+      `no sz or vz, and rotates about Z only). Further ones on this entity are silent.`,
+    );
+  }
+
+  /** Set entity position (z defaults to 0; a 2D entity ignores it). Returns `this` for chaining. */
+  position(x: number, y: number, z = 0): this {
     this.check();
+    if (this._is2D && z !== 0) this.ignoredOn2D('position z');
     this._producer!.setPosition(this._id, x, y, z);
     return this;
   }
@@ -178,10 +201,12 @@ export class EntityHandle implements Disposable {
    *
    * Returns `this` for chaining.
    */
-  positionImmediate(x: number, y: number, z: number): this {
+  positionImmediate(x: number, y: number, z = 0): this {
     this.check();
+    if (this._is2D && z !== 0) this.ignoredOn2D('positionImmediate z');
     this._producer!.setPosition(this._id, x, y, z);
-    this._immediateState?.set(this._id, x, y, z);
+    // The shadow must match what the engine will draw: a 2D entity at z = 0.
+    this._immediateState?.set(this._id, x, y, this._is2D ? 0 : z);
     return this;
   }
 
@@ -196,9 +221,10 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Set entity velocity. Returns `this` for chaining. */
-  velocity(vx: number, vy: number, vz: number): this {
+  /** Set entity velocity (vz defaults to 0; a 2D entity ignores it). Returns `this` for chaining. */
+  velocity(vx: number, vy: number, vz = 0): this {
     this.check();
+    if (this._is2D && vz !== 0) this.ignoredOn2D('velocity vz');
     this._producer!.setVelocity(this._id, vx, vy, vz);
     return this;
   }
@@ -207,7 +233,8 @@ export class EntityHandle implements Disposable {
    * Set entity rotation. Returns `this` for chaining.
    * - 1 arg: an angle in radians about Z (the screen normal). It REPLACES the
    *   whole rotation, on any entity.
-   * - 4 args: a quaternion (x, y, z, w).
+   * - 4 args: a quaternion (x, y, z, w). A 2D entity keeps only its angle
+   *   about Z (a tilt off that axis is ignored).
    *
    * On a physics body both forms reposition the body (momentum kept), like
    * `position()`, also in the frame that creates it. Rapier is 2D: it keeps
@@ -219,14 +246,16 @@ export class EntityHandle implements Disposable {
     if (qy === undefined) {
       this._producer!.setRotation2D(this._id, angleOrQx);
     } else {
-      this._producer!.setRotation(this._id, angleOrQx, qy!, qz!, qw!);
+      if (this._is2D && (Math.abs(angleOrQx) > 1e-6 || Math.abs(qy) > 1e-6)) this.ignoredOn2D('a tilted quaternion');
+      this._producer!.setRotation(this._id, angleOrQx, qy, qz!, qw!);
     }
     return this;
   }
 
-  /** Set entity scale. Returns `this` for chaining. */
-  scale(sx: number, sy: number, sz: number): this {
+  /** Set entity scale (sz defaults to 1; a 2D entity ignores it). Returns `this` for chaining. */
+  scale(sx: number, sy: number, sz = 1): this {
     this.check();
+    if (this._is2D && sz !== 1) this.ignoredOn2D('scale sz');
     this._producer!.setScale(this._id, sx, sy, sz);
     return this;
   }

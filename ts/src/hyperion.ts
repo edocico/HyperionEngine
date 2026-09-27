@@ -15,8 +15,8 @@ import type { PixelProbeRequest, PixelProbeResult, TransformsProbeResult } from 
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
-import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions } from './types';
-import { validateConfig } from './types';
+import type { ResolvedConfig, HyperionConfig, TextureHandle, HyperionStats, MemoryStats, CompactOptions, SpawnOptions } from './types';
+import { validateConfig, spawnIs2D } from './types';
 import { EntityIdAllocator, type IdOwner } from './entity-id-allocator';
 import { EntityHandle } from './entity-handle';
 import { GameLoop } from './game-loop';
@@ -418,9 +418,11 @@ export class Hyperion implements Disposable {
   /**
    * Spawn a new entity and return its handle.
    * The handle provides a fluent builder API for setting components.
+   * `spawn({ mode: '2d' })` makes a Transform2D entity (see `SpawnOptions`).
    */
-  spawn(): EntityHandle {
+  spawn(options?: SpawnOptions): EntityHandle {
     this.checkDestroyed();
+    const is2D = spawnIs2D(options);
     if (this.entityCount >= this.config.maxEntities) {
       throw new Error(
         `Entity limit reached (${this.config.maxEntities}). ` +
@@ -428,10 +430,10 @@ export class Hyperion implements Disposable {
       );
     }
     const id = this.allocateId('handle');
-    this.bridge.commandBuffer.spawnEntity(id);
+    this.bridge.commandBuffer.spawnEntity(id, is2D);
     this.entityCount++;
 
-    const handle = new EntityHandle(id, this.bridge.commandBuffer, this.immediateState, this.releaseHandle);
+    const handle = new EntityHandle(id, this.bridge.commandBuffer, this.immediateState, this.releaseHandle, is2D);
     this.leakDetector.register(handle, id);
     return handle;
   }

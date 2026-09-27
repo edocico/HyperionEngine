@@ -212,6 +212,34 @@ describe('BackpressuredProducer', () => {
     expect(stats.writtenCount).toBe(0);
   });
 
+  it('keeps the 2D flag of a SpawnEntity queued under backpressure', () => {
+    const { bp, sab } = createSmallProducer();
+    const spawnsIn = (bytes: Uint8Array, into: Map<number, number>) => {
+      for (let off = 0; off < bytes.length;) {
+        const cmd = bytes[off] as CommandType;
+        const id = new DataView(bytes.buffer, bytes.byteOffset + off + 1, 4).getUint32(0, true);
+        if (cmd === CommandType.SpawnEntity) into.set(id, bytes[off + 5]);
+        off += 5 + PAYLOAD_SIZES[cmd];
+      }
+    };
+    for (let i = 0; i < 20; i++) bp.setPosition(i, 1, 2, 3);
+    bp.flush(); // 3 positions fill 51 of the 64 bytes
+    bp.spawnEntity(100, true);
+    bp.spawnEntity(101, false);
+    bp.spawnEntity(102, true);
+    bp.flush(); // room for two 6-byte spawns: 102 waits a whole flush
+
+    const first = new Map<number, number>();
+    spawnsIn(extractUnread(sab).bytes, first);
+    expect(first.has(102)).toBe(false);
+    const later = new Map<number, number>();
+    while (bp.pendingCount > 0) {
+      bp.flush();
+      spawnsIn(extractUnread(sab).bytes, later);
+    }
+    expect([first.get(100), first.get(101), later.get(102)]).toEqual([1, 0, 1]);
+  });
+
   it('should expose freeSpace from inner producer', () => {
     const { bp } = createSmallProducer();
     const initial = bp.freeSpace;

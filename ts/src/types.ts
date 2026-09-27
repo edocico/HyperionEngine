@@ -67,6 +67,25 @@ export interface MemoryStats {
  */
 export const MAX_EXTERNAL_ID = 1_048_575;
 
+/** Options of `engine.spawn()`, `engine.raw.spawn()` and a prefab template. */
+export interface SpawnOptions {
+  /**
+   * `'3d'` (the default): Position + Rotation + Scale. `'2d'`: the compact
+   * Transform2D archetype (x, y, angle, sx, sy — 20 bytes, against 40), drawn
+   * at z = 0 and uploaded as 6 floats (scatter format 0) while it is a root.
+   * What only 3D has — a z, `sz`, `vz`, a quaternion tilted off the Z axis —
+   * is ignored on it, with a one-time warning per handle in dev builds.
+   */
+  mode?: '2d' | '3d';
+}
+
+/** Whether `options` asks for a 2D entity. Throws on an unknown mode. */
+export function spawnIs2D(options?: SpawnOptions): boolean {
+  const mode = options?.mode ?? '3d';
+  if (mode !== '2d' && mode !== '3d') throw new Error(`Unknown spawn mode '${String(mode)}': use '2d' or '3d'`);
+  return mode === '2d';
+}
+
 /** Compaction options for engine.compact(). */
 export interface CompactOptions {
   entityMap?: boolean;

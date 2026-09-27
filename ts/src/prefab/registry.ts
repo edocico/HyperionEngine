@@ -63,19 +63,20 @@ export class PrefabRegistry {
     const template = this.templates.get(name);
     if (!template) throw new Error(`Prefab '${name}' is not registered`);
 
-    const root = this.engine.spawn();
+    const spawnOptions = { mode: template.mode };
+    const root = this.engine.spawn(spawnOptions);
     const children = new Map<string, EntityHandle>();
     try {
       const rootZ = this.applyNode(root, template.root);
 
       if (overrides) {
         const pos = template.root.position ?? [0, 0, 0];
-        root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], overrides.z ?? pos[2]);
+        root.position(overrides.x ?? pos[0], overrides.y ?? pos[1], overrides.z ?? pos[2] ?? 0);
       }
 
       if (template.children) {
         for (const [key, childNode] of Object.entries(template.children)) {
-          const child = this.engine.spawn();
+          const child = this.engine.spawn(spawnOptions);
           children.set(key, child);
           this.applyNode(child, childNode);
           child.parent(root.id);
@@ -100,17 +101,18 @@ export class PrefabRegistry {
   private applyNode(handle: EntityHandle, node: PrefabNode): number {
     let z = 0;
     if (node.position) {
-      handle.position(node.position[0], node.position[1], node.position[2]);
-      z = node.position[2];
+      z = node.position[2] ?? 0;
+      handle.position(node.position[0], node.position[1], z);
     }
     if (node.velocity) {
-      handle.velocity(node.velocity[0], node.velocity[1], node.velocity[2]);
+      handle.velocity(node.velocity[0], node.velocity[1], node.velocity[2] ?? 0);
     }
     if (node.scale !== undefined) {
       if (typeof node.scale === 'number') {
-        handle.scale(node.scale, node.scale, node.scale);
+        // Uniform in the entity's own dimensions: a 2D entity has no sz.
+        handle.scale(node.scale, node.scale, handle.is2D ? 1 : node.scale);
       } else {
-        handle.scale(node.scale[0], node.scale[1], node.scale[2]);
+        handle.scale(node.scale[0], node.scale[1], node.scale[2] ?? 1);
       }
     }
     if (node.rotation !== undefined) {

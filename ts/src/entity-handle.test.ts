@@ -745,3 +745,75 @@ describe('EntityHandle — lighting (Phase 17)', () => {
     expect(() => h.lightLayers(1)).toThrow(/destroyed/);
   });
 });
+
+describe('EntityHandle — 2D entities (spawn({ mode: "2d" }))', () => {
+  const quat = (angle: number) => [0, 0, Math.sin(angle / 2), Math.cos(angle / 2)] as const;
+
+  it('is 3D by default; is2D when built for a 2D entity', () => {
+    expect(new EntityHandle(1, mockProducer()).is2D).toBe(false);
+    expect(new EntityHandle(1, mockProducer(), undefined, undefined, true).is2D).toBe(true);
+  });
+
+  it('z is optional for every handle: position/velocity default 0, scale sz 1', () => {
+    const p = mockProducer();
+    new EntityHandle(3, p).position(1, 2).velocity(4, 5).scale(2, 3);
+    expect(p.setPosition).toHaveBeenCalledWith(3, 1, 2, 0);
+    expect(p.setVelocity).toHaveBeenCalledWith(3, 4, 5, 0);
+    expect(p.setScale).toHaveBeenCalledWith(3, 2, 3, 1);
+  });
+
+  it('a 2D handle warns once in dev when a 3D-only argument arrives, and still sends it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = mockProducer();
+      const h = new EntityHandle(7, p, undefined, undefined, true);
+      h.position(1, 2, 0).scale(2, 2, 1).velocity(1, 1, 0).rotation(...quat(0.5));
+      expect(warn).not.toHaveBeenCalled();
+      h.position(1, 2, 5);
+      expect(p.setPosition).toHaveBeenLastCalledWith(7, 1, 2, 5); // Rust ignores z
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/2D entity 7.*position z/);
+      h.scale(1, 1, 3).velocity(0, 0, 2).rotation(0.3, 0, 0, 0.95);
+      expect(warn).toHaveBeenCalledTimes(1); // once per handle
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    ['scale sz', (h: EntityHandle) => h.scale(1, 1, 3)],
+    ['velocity vz', (h: EntityHandle) => h.velocity(0, 0, 2)],
+    ['a tilted quaternion', (h: EntityHandle) => h.rotation(0.3, 0, 0, 0.95)],
+    ['positionImmediate z', (h: EntityHandle) => h.positionImmediate(1, 1, 4)],
+  ])('a 2D handle warns for %s', (what, call) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      call(new EntityHandle(8, mockProducer(), new ImmediateState(), undefined, true));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(what);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a 3D handle never warns for z, sz, vz or a tilt', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      new EntityHandle(9, mockProducer()).position(1, 2, 5).scale(1, 1, 3).velocity(0, 0, 2).rotation(0.3, 0, 0, 0.95);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('positionImmediate on a 2D handle shadows z = 0, where the engine draws it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const imm = new ImmediateState();
+      new EntityHandle(10, mockProducer(), imm, undefined, true).positionImmediate(1, 2, 4);
+      expect(imm.get(10)).toEqual([1, 2, 0]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

@@ -1,5 +1,5 @@
 export { Hyperion } from './hyperion';
-export type { HyperionConfig, ResolvedConfig, HyperionStats, MemoryStats, CompactOptions, TextureHandle } from './types';
+export type { HyperionConfig, ResolvedConfig, HyperionStats, MemoryStats, CompactOptions, TextureHandle, SpawnOptions } from './types';
 export type { HyperionPlugin } from './plugin';
 export type { HookPhase, HookFn } from './game-loop';
 export type { SystemViews } from './system-views';

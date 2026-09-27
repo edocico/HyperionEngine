@@ -123,6 +123,32 @@ describe('Prefab facade integration', () => {
     engine.destroy();
   });
 
+  it('a 2D template spawns its root and children as 2D entities', () => {
+    const bridge = mockBridge();
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      engine.prefabs.register('ship', {
+        mode: '2d',
+        root: { position: [10, 20], scale: 2, rotation: 0.5 },
+        children: { gun: { position: [1, 0], scale: [0.5, 0.5] } },
+      });
+      const instance = engine.prefabs.spawn('ship', { x: 5 });
+      const cb = bridge.commandBuffer;
+      expect(cb.spawnEntity).toHaveBeenCalledWith(instance.root.id, true);
+      expect(cb.spawnEntity).toHaveBeenCalledWith(instance.child('gun')!.id, true);
+      expect(instance.root.is2D && instance.child('gun')!.is2D).toBe(true);
+      // A uniform scale is (s, s, 1) on a 2D entity: no 3D-only argument.
+      expect(cb.setScale).toHaveBeenCalledWith(instance.root.id, 2, 2, 1);
+      expect(cb.setPosition).toHaveBeenLastCalledWith(instance.child('gun')!.id, 1, 0, 0);
+      instance.moveTo(7, 8);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      engine.destroy();
+    }
+  });
+
   it('destroyAll despawns all entities', () => {
     const bridge = mockBridge();
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());

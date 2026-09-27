@@ -73,3 +73,31 @@ describe('near / luminance', () => {
     expect(luminance([0, 1, 0, 1])).toBeCloseTo(0.7152, 4);
   });
 });
+
+describe('pixelCheck readTransforms', () => {
+  it('skips where the transform readback does not exist, like the pixel probe', async () => {
+    const reporter = createTestReporter();
+    const engine = {
+      debug: { readEntityTransforms: () => Promise.reject(new Error('The debug probe needs the main-thread renderer of a dev build')) },
+    } as unknown as Hyperion;
+    await pixelCheck(reporter, 'rows', engine, async (_probe, readTransforms) => {
+      await readTransforms();
+      return { ok: true, detail: '' };
+    });
+    expect(reporter.results()[0].status).toBe('skip');
+  });
+
+  it('fails after the timeout when no frame serves the readback', async () => {
+    vi.useFakeTimers();
+    const reporter = createTestReporter();
+    const engine = { debug: { readEntityTransforms: () => new Promise(() => {}) } } as unknown as Hyperion;
+    const done = pixelCheck(reporter, 'rows', engine, async (_probe, readTransforms) => {
+      await readTransforms();
+      return { ok: true, detail: '' };
+    });
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1);
+    await done;
+    vi.useRealTimers();
+    expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no frame served/) });
+  });
+});
