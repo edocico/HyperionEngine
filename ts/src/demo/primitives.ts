@@ -1,166 +1,153 @@
 // ts/src/demo/primitives.ts — Demo section: all 6 render primitive types
+//
+// Every check reads what the GPU drew (engine.debug.probe on scene-hdr, linear
+// values): the clear is 0.067, an untextured primitive 1.0. Checks that only
+// counted spawns passed with nothing on screen.
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
+import { pixelCheck, near, fmt, frames, type Rgba } from './probe-checks';
 
 const entities: EntityHandle[] = [];
+
+/** The clear colour of scene-hdr (ForwardPass). */
+const BACKGROUND = 0.067;
+/** Half the width of the scene below, margin included: it fits any aspect. */
+const SCENE_HALF_WIDTH = 19;
+const SCENE_CENTER_X = 4.5;
+
+const GRADIENT_X = -12.5;
+const SHADOW_X = -8;
+const LINE_X0 = 8;
+const BEZIER_X = 21;
 
 const section: DemoSection = {
   name: 'primitives',
   label: 'Primitives (Quad / Line / Gradient / BoxShadow / Bezier)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
-    // ── 1. Quad grid (5x5) ─────────────────────────────────────────────
     engine.batch(() => {
+      // ── 1. Quad grid (5x5), 1x1 white quads 2.5 apart ─────────────────
       for (let row = 0; row < 5; row++) {
         for (let col = 0; col < 5; col++) {
-          const x = (col - 2) * 2.5;
-          const y = (row - 2) * 2.5;
-          const e = engine.spawn()
-            .position(x, y, 0)
-            .scale(1, 1, 1);
-          entities.push(e);
+          entities.push(engine.spawn().position((col - 2) * 2.5, (row - 2) * 2.5, 0));
         }
       }
-    });
-    reporter.check(
-      'Quad grid (5x5)',
-      entities.length >= 25,
-      `spawned ${entities.length} quads`,
-    );
 
-    // ── 2. Gradients (3 types) ─────────────────────────────────────────
-    const gradientsBefore = entities.length;
-    engine.batch(() => {
-      // Linear gradient (type=0), angle ~45 deg
-      entities.push(
-        engine.spawn()
-          .position(-15, 4, 0)
-          .scale(3, 3, 1)
-          .gradient(0, 0.785, [1, 0, 0, 1, 0, 0]),
-      );
-      // Radial gradient (type=1)
-      entities.push(
-        engine.spawn()
-          .position(-15, 0, 0)
-          .scale(3, 3, 1)
-          .gradient(1, 0, [0, 1, 0, 1, 0, 1]),
-      );
-      // Conic gradient (type=2)
-      entities.push(
-        engine.spawn()
-          .position(-15, -4, 0)
-          .scale(3, 3, 1)
-          .gradient(2, 0, [0, 0, 1, 1, 1, 0]),
-      );
-    });
-    const gradientsSpawned = entities.length - gradientsBefore;
-    reporter.check(
-      'Gradients (linear/radial/conic)',
-      gradientsSpawned === 3,
-      `spawned ${gradientsSpawned} gradients`,
-    );
+      // ── 2. Gradients: stop0 at 0, stop1 at 1 (stop1 green/blue ride in the
+      // texture index, so the API gives stop1 red only) ─────────────────────
+      // Linear, angle 0: blue on the left to red on the right.
+      entities.push(engine.spawn().position(GRADIENT_X, 4, 0).scale(3, 3, 1).gradient(0, 0, [0, 0, 0, 1, 1, 1]));
+      // Radial: white at the centre to black at the edge.
+      entities.push(engine.spawn().position(GRADIENT_X, 0, 0).scale(3, 3, 1).gradient(1, 0, [0, 1, 1, 1, 1, 0]));
+      // Conic: green where the angle wraps (the left) to half red, half green on the right.
+      entities.push(engine.spawn().position(GRADIENT_X, -4, 0).scale(3, 3, 1).gradient(2, 0, [0, 0, 1, 0, 1, 1]));
 
-    // ── 3. Box shadows (3 variants) ────────────────────────────────────
-    const shadowsBefore = entities.length;
-    engine.batch(() => {
-      // Sharp shadow: no blur, no corner radius
-      entities.push(
-        engine.spawn()
-          .position(-8, 4, 0)
-          .scale(3, 3, 1)
-          .boxShadow(0.8, 0.8, 0, 0, 0.2, 0.2, 0.2, 0.9),
-      );
-      // Soft shadow: large blur
-      entities.push(
-        engine.spawn()
-          .position(-8, 0, 0)
-          .scale(3, 3, 1)
-          .boxShadow(0.7, 0.7, 0, 0.3, 0.1, 0.1, 0.4, 0.8),
-      );
-      // Rounded shadow: corner radius + moderate blur
-      entities.push(
-        engine.spawn()
-          .position(-8, -4, 0)
-          .scale(3, 3, 1)
-          .boxShadow(0.6, 0.6, 0.2, 0.15, 0.4, 0.1, 0.1, 0.85),
-      );
-    });
-    const shadowsSpawned = entities.length - shadowsBefore;
-    reporter.check(
-      'Box shadows (sharp/soft/rounded)',
-      shadowsSpawned === 3,
-      `spawned ${shadowsSpawned} box shadows`,
-    );
+      // ── 3. Box shadows: alpha-blended, or the opaque pipeline draws a solid square
+      entities.push(engine.spawn().position(SHADOW_X, 4, 0).scale(3, 3, 1).transparent()
+        .boxShadow(0.8, 0.8, 0, 0, 0.2, 0.2, 0.2, 0.9));   // sharp
+      entities.push(engine.spawn().position(SHADOW_X, 0, 0).scale(3, 3, 1).transparent()
+        .boxShadow(0.7, 0.7, 0, 0.3, 0.1, 0.1, 0.4, 0.8));  // soft
+      entities.push(engine.spawn().position(SHADOW_X, -4, 0).scale(3, 3, 1).transparent()
+        .boxShadow(0.6, 0.6, 0.2, 0.15, 0.4, 0.1, 0.1, 0.85)); // rounded
 
-    // ── 4. Lines (6 vertical + 4 horizontal) ──────────────────────────
-    const linesBefore = entities.length;
-    engine.batch(() => {
-      // 6 vertical lines across x = 10..20, 0.15 world units wide: they
-      // thicken and thin with the zoom.
+      // ── 4. Lines: 6 vertical, 0.15 world units wide (scale with the zoom);
+      // 4 horizontal, 3 screen pixels wide at every zoom ────────────────────
       for (let i = 0; i < 6; i++) {
-        const x = 10 + i * 2;
-        entities.push(
-          engine.spawn()
-            .position(x, 0, 0)
-            .line(0, -5, 0, 5, 0.15),
-        );
+        entities.push(engine.spawn().position(LINE_X0 + i * 2, 0, 0).line(0, -5, 0, 5, 0.15));
       }
-      // 4 horizontal lines, 3 screen pixels wide at every zoom.
       for (let i = 0; i < 4; i++) {
-        const y = -3 + i * 2;
-        entities.push(
-          engine.spawn()
-            .position(15, y, 0)
-            .line(-5, 0, 5, 0, 3, { unit: 'px' }),
-        );
+        entities.push(engine.spawn().position(LINE_X0 + 5, -3 + i * 2, 0).line(-5, 0, 5, 0, 3, { unit: 'px' }));
       }
-    });
-    const linesSpawned = entities.length - linesBefore;
-    reporter.check(
-      'Lines (6V + 4H)',
-      linesSpawned === 10,
-      `spawned ${linesSpawned} lines`,
-    );
 
-    // ── 5. Bezier curves (arch, S-curve, wave) ────────────────────────
-    const beziersBefore = entities.length;
-    engine.batch(() => {
-      // Arch: control point at top-center
-      entities.push(
-        engine.spawn()
-          .position(22, 4, 0)
-          .scale(4, 4, 1)
-          .bezier(0, 0, 0.5, 1, 1, 0, 0.04),
-      );
-      // S-curve: control point offset to the right
-      entities.push(
-        engine.spawn()
-          .position(22, 0, 0)
-          .scale(4, 4, 1)
-          .bezier(0, 0, 1, 0.5, 0, 1, 0.04),
-      );
-      // Wave: control point dips below
-      entities.push(
-        engine.spawn()
-          .position(22, -4, 0)
-          .scale(4, 4, 1)
-          .bezier(0, 0.5, 0.5, 0, 1, 0.5, 0.04),
-      );
+      // ── 5. Bezier curves: the arch and the S pass through their quad's
+      // centre at t = 0.5 ─────────────────────────────────────────────────
+      entities.push(engine.spawn().position(BEZIER_X, 4, 0).scale(4, 4, 1).bezier(0, 0, 0.5, 1, 1, 0, 0.04));   // arch
+      entities.push(engine.spawn().position(BEZIER_X, 0, 0).scale(4, 4, 1).bezier(0, 0, 1, 0.5, 0, 1, 0.04));   // S
+      entities.push(engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(0, 0.5, 0.5, 0, 1, 0.5, 0.04)); // wave
     });
-    const beziersSpawned = entities.length - beziersBefore;
-    reporter.check(
-      'Bezier curves (arch/S/wave)',
-      beziersSpawned === 3,
-      `spawned ${beziersSpawned} bezier curves`,
-    );
+
+    // Frame the whole scene at any canvas aspect (zoom <= 1).
+    engine.cam.position(SCENE_CENTER_X, 0, 0);
+    engine.cam.zoom(1);
+    const halfWidth = 1 / engine.cam.viewProjection[0];
+    engine.cam.zoom(Math.min(1, halfWidth / SCENE_HALF_WIDTH));
+    await frames(4);
+
+    await pixelCheck(reporter, 'Quad grid (5x5)', engine, async (probe) => {
+      const centres: [number, number][] = [];
+      for (let row = 0; row < 5; row++) for (let col = 0; col < 5; col++) centres.push([(col - 2) * 2.5, (row - 2) * 2.5]);
+      const gaps: [number, number][] = [[1.25, 1.25], [-1.25, -1.25], [3.75, 1.25], [-3.75, 3.75]];
+      const v = await probe('scene-hdr', [...centres, ...gaps]);
+      const white = v.slice(0, 25).filter((p) => near(p[0], 1, 0.02) && near(p[1], 1, 0.02) && near(p[2], 1, 0.02)).length;
+      const clear = v.slice(25).filter((p) => near(p[0], BACKGROUND, 0.01)).length;
+      return { ok: white === 25 && clear === gaps.length, detail: `${white}/25 centres white, ${clear}/${gaps.length} gaps at the clear` };
+    });
+
+    await pixelCheck(reporter, 'Gradients (linear/radial/conic)', engine, async (probe) => {
+      const at = (y: number, dx: number, dy = 0): [number, number] => [GRADIENT_X + dx * 3, y + dy * 3];
+      const [linL, linR, radC, radE, conL, conR] = await probe('scene-hdr', [
+        at(4, -0.3), at(4, 0.3),         // linear: 20% and 80% across
+        at(0, 0), at(0, 0.45),           // radial: centre and near the edge
+        at(-4, -0.3), at(-4, 0.3),       // conic: the wrap (left) and the opposite side
+      ]);
+      const linear = linL[2] > linL[0] + 0.3 && linR[0] > linR[2] + 0.3;
+      const radial = radC[0] > 0.9 && radE[0] < 0.2;
+      const conic = conL[1] > 0.8 && conL[0] < 0.2 && near(conR[0], 0.5, 0.15);
+      const show = (p: Rgba) => `(${fmt(p.slice(0, 3))})`;
+      return {
+        ok: linear && radial && conic,
+        detail: `linear ${show(linL)} -> ${show(linR)}; radial ${show(radC)} -> ${show(radE)}; conic ${show(conL)} / ${show(conR)}`,
+      };
+    });
+
+    await pixelCheck(reporter, 'Box shadows (sharp/soft/rounded)', engine, async (probe) => {
+      const at = (y: number, dx: number, dy = 0): [number, number] => [SHADOW_X + dx * 3, y + dy * 3];
+      const [sharpC, sharpOut, softC, softEdge, roundC, roundCorner] = await probe('scene-hdr', [
+        // sharp: inside, and just outside the entity quad — with no blur the
+        // rect fills the quad (it spans rect + 2 * blur per side)
+        at(4, 0), at(4, 0.55, 0.55),
+        at(0, 0), at(0, 0.47),           // soft: centre, where the blur has faded
+        at(-4, 0), at(-4, 0.4, 0.4),     // rounded: centre, the rounded-off corner
+      ]);
+      // Alpha-blended over the clear: bg * (1 - a) + colour * a.
+      const blend = (c: number, a: number) => BACKGROUND * (1 - a) + c * a;
+      const sharp = near(sharpC[0], blend(0.2, 0.9), 0.02) && near(sharpOut[0], BACKGROUND, 0.01);
+      const soft = near(softC[2], blend(0.4, 0.8), 0.03) && softEdge[2] < softC[2] - 0.1;
+      const rounded = roundC[0] > roundCorner[0] + 0.05;
+      return {
+        ok: sharp && soft && rounded,
+        detail: `sharp ${fmt([sharpC[0], sharpOut[0]])} (want ${fmt([blend(0.2, 0.9), BACKGROUND])}); soft b ${fmt([softC[2], softEdge[2]])}; rounded r ${fmt([roundC[0], roundCorner[0]])}`,
+      };
+    });
+
+    await pixelCheck(reporter, 'Lines (6V world + 4H 3px)', engine, async (probe) => {
+      // A vertical line at x = LINE_X0 between two horizontals (y = 1 and 3).
+      const [onV, besideV] = await probe('scene-hdr', [[LINE_X0, 2], [LINE_X0 + 0.3, 2]]);
+      // The horizontal line at y = 1, one screen pixel apart, across it.
+      const vp = engine.cam.viewProjection;
+      const worldPerPx = 2 / vp[5] / (document.querySelector('canvas')?.height ?? 1);
+      const column: [number, number][] = [];
+      for (let k = -4; k <= 4; k++) column.push([LINE_X0 + 1, 1 + k * worldPerPx]);
+      const rows = (await probe('scene-hdr', column)).filter((p) => p[0] > 0.5).length;
+      const ok = near(onV[0], 1, 0.02) && near(besideV[0], BACKGROUND, 0.01) && rows === 3;
+      return { ok, detail: `vertical ${fmt([onV[0], besideV[0]])}; horizontal covers ${rows} pixel rows (want 3)` };
+    });
+
+    await pixelCheck(reporter, 'Bezier curves (arch/S/wave)', engine, async (probe) => {
+      // Arch and S pass through their quad's centre; both off-curve points
+      // below are off the curve whichever way the quad's v runs.
+      const [archC, archOff1, archOff2, sC, waveMid] = await probe('scene-hdr', [
+        [BEZIER_X, 4], [BEZIER_X, 4 + 0.45 * 4], [BEZIER_X, 4 - 0.45 * 4],
+        [BEZIER_X, 0],
+        [BEZIER_X, -4],
+      ]);
+      const ok = archC[0] > 0.5 && near(archOff1[0], BACKGROUND, 0.01) && near(archOff2[0], BACKGROUND, 0.01) && sC[0] > 0.5;
+      return { ok, detail: `arch centre ${fmt([archC[0]])}, off-curve ${fmt([archOff1[0], archOff2[0]])}; S centre ${fmt([sC[0]])}; wave centre ${fmt([waveMid[0]])}` };
+    });
 
     // ── 6. MSDF text — skip (no font atlas in demo assets) ────────────
     reporter.skip('MSDF text', 'no font atlas in demo assets');
-
-    // ── Camera: position to show most content ─────────────────────────
-    engine.cam.position(3, 0, 0);
-    engine.cam.zoom(1);
   },
 
   teardown(engine: Hyperion) {

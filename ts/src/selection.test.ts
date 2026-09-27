@@ -100,3 +100,48 @@ describe('SelectionManager', () => {
     expect(sm.isDirty).toBe(false);
   });
 });
+
+describe('SelectionManager mask by GPU slot', () => {
+  /** A device that records each mask upload as a plain array. */
+  function recorder() {
+    const uploads: number[][] = [];
+    const device = {
+      queue: {
+        writeBuffer: (_b: unknown, _o: number, data: Uint32Array, dataOffset = 0, size?: number) => {
+          uploads.push(Array.from(data.subarray(dataOffset, dataOffset + (size ?? data.length))));
+        },
+      },
+    } as unknown as GPUDevice;
+    return { uploads, device };
+  }
+
+  it('marks the SLOT that holds a selected entity (selection-seed.wgsl reads the mask by slot)', () => {
+    const { uploads, device } = recorder();
+    const sm = new SelectionManager(100);
+    sm.select(7);
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([5, 9, 7]), 3);
+    expect(uploads.at(-1)).toEqual([0, 0, 1]);
+  });
+
+  it('follows a slot change without a selection change', () => {
+    const { uploads, device } = recorder();
+    const sm = new SelectionManager(100);
+    sm.select(7);
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([5, 9, 7]), 3);
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([7, 5]), 2);
+    expect(uploads.at(-1)).toEqual([1, 0]);
+  });
+
+  it('with nothing selected, clears the mask once and then uploads nothing', () => {
+    const { uploads, device } = recorder();
+    const sm = new SelectionManager(100);
+    sm.select(7);
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([7]), 1);
+    sm.deselect(7);
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([7]), 1);
+    expect(uploads.at(-1)!.every((v) => v === 0)).toBe(true);
+    const before = uploads.length;
+    sm.uploadMask(device, {} as GPUBuffer, new Uint32Array([7]), 1);
+    expect(uploads.length).toBe(before);
+  });
+});

@@ -3,6 +3,7 @@ import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
 import type { HookFn } from '../game-loop';
+import { pixelCheck, fmt } from './probe-checks';
 
 const entities: EntityHandle[] = [];
 const hooks: HookFn[] = [];
@@ -105,7 +106,6 @@ const section: DemoSection = {
         .light({ type: 'global', color: [0.25, 0.2, 0.35], energy: 0.5 });
       entities.push(point, spot, global);
     });
-    reporter.check('Scene', true, '1 lit floor, 4 shadow casters, lit + unlit gradient, point/spot/global light, a layer-1 sprite, light and two masked pillars');
 
     // ── 1. Backend 'lit', read back from WASM ─────────────────────────
     lighting.setAmbient([0.06, 0.07, 0.12], 1);
@@ -137,6 +137,25 @@ const section: DemoSection = {
       groups !== null && groups.groups.length === 2 && groups.sdfSets.length === 2,
       groups ? `${groups.groups.length} groups, ${groups.sdfSets.length} SDF sets` : 'no frame yet',
     );
+
+    // ── 5. On screen: what the GPU drew (before the lights start moving) ──
+    // The light group of a light layer: 4 bits per layer in layerToGroup.
+    const groupOf = (layer: number) => groups ? ((groups.layerToGroup[layer >> 3] >>> ((layer & 7) * 4)) & 0xf) : 0;
+    await pixelCheck(reporter, 'Lit vs unlit', engine, async (probe) => {
+      // The same gradient twice: the lit one must be the unlit one times the
+      // light buffer where it stands (ForwardPass multiplies them).
+      const [lit, unlit] = await probe('scene-hdr', [[-12, 3], [-12, -3]]);
+      const [light] = await probe('light-buffer', [[-12, 3]], groupOf(0));
+      const want = [unlit[0] * light[0], unlit[1] * light[1]];
+      const ok = [0, 1].every((c) => Math.abs(lit[c] - want[c]) <= 0.15 * Math.max(want[c], 0.02));
+      return { ok, detail: `lit ${fmt(lit.slice(0, 2))}, unlit x light ${fmt(want)} (light ${fmt(light.slice(0, 3))})` };
+    });
+    await pixelCheck(reporter, 'Layer shadow on screen', engine, async (probe) => {
+      // The layer-1 sprite under the blue light: the 0b11 pillar's shadow
+      // band (y ~ 2) against the symmetric point the 0b01 pillar may not shade.
+      const [shadow, open] = await probe('light-buffer', [[15, 2], [15, 6]], groupOf(1));
+      return { ok: open[2] > 2 * shadow[2], detail: `blue: in the band ${fmt([shadow[2]])}, mirrored point ${fmt([open[2]])}` };
+    });
 
     // ── Motion: the point light circles, the spot sweeps ──────────────
     let t = 0;

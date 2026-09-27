@@ -19,6 +19,10 @@ verify it with `cargo test -p hyperion-core --features physics-2d --test verify_
 
 ## 2. Dev server
 
+After a `git checkout` / merge / rebase that touched a shader, RESTART it (stop the background task,
+start it again): Vite can keep serving a stale transform of `?import&raw` with a 304, and the check
+then runs the old shader (2026-09-27: pixel-width lines drew in world units).
+
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5173/
 ```
@@ -65,9 +69,12 @@ async () => {
 }
 ```
 
-Expected today: every tab green except **Input at 2/6** — its 4 checks wait for real
-keyboard/click/pointer/scroll input (⏳), which is not a regression. Primitives and Debug Tools
-each skip one check. `window.__hyperion` is the live facade for anything the tabs do not check.
+Expected today (2026-09-27, the checks read pixels through the probe): every tab green except
+**Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
+not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
+check. In Mode A the pixel checks skip ("pixel probe unavailable"). Lighting, Rendering FX and
+Lifecycle take a few seconds: wait ~7 s on them. `window.__hyperion` is the live facade for
+anything the tabs do not check.
 
 ## 5. Console
 

@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BUCKETS_PER_TYPE, BLEND_MODES, OPAQUE_DRAW_BUCKETS, TOTAL_DRAW_BUCKETS, TRANSPARENT_BUCKET_OFFSET, extractTransparentFlag, extractPrimType } from './cull-pass';
 import cullShaderSource from '../../shaders/cull.wgsl?raw';
-import type { ResourcePool } from '../resource-pool';
+import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
 
 describe('CullPass', () => {
@@ -386,5 +386,18 @@ describe('culling keeps no state across frames', () => {
 
     expect(calls.writeBuffer.length - writesAtSetup).toBe(4);
     expect(calls.createBindGroup - bindGroupsAtSetup).toBe(0);
+  });
+});
+
+describe('CullPass with an empty world', () => {
+  it('dispatches nothing (0 workgroups is a WebGPU warning); the reset args already draw nothing', () => {
+    const pass = new CullPass();
+    Object.assign(pass as unknown as Record<string, unknown>, { pipeline: {}, bindGroup0: {} });
+    const beginComputePass = vi.fn(() => ({ setPipeline() {}, setBindGroup() {}, dispatchWorkgroups: vi.fn(), end() {} }));
+    const encoder = { beginComputePass } as unknown as GPUCommandEncoder;
+    pass.execute(encoder, { entityCount: 0 } as FrameState, new ResourcePool());
+    expect(beginComputePass).not.toHaveBeenCalled();
+    pass.execute(encoder, { entityCount: 3 } as FrameState, new ResourcePool());
+    expect(beginComputePass).toHaveBeenCalledTimes(1);
   });
 });

@@ -233,7 +233,9 @@ export class CullPass implements RenderPass {
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, _resources: ResourcePool): void {
-    if (!this.pipeline || !this.bindGroup0) return;
+    // An empty world: prepare() already reset every bucket to zero instances,
+    // and a 0-workgroup dispatch is a WebGPU warning on every frame.
+    if (!this.pipeline || !this.bindGroup0 || frame.entityCount === 0) return;
     const pass = encoder.beginComputePass();
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup0);

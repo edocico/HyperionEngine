@@ -816,7 +816,9 @@ export class Hyperion implements Disposable {
       else this.bridge.setLightingQuality?.(quality);
       this.lightingApi._clearRebuildFlag();
     }
-    if (this.renderer && state && state.entityCount > 0) {
+    // An empty world renders too: the frame is the clear. Skipping it left the
+    // last image on screen after the last entity was destroyed.
+    if (this.renderer && state) {
       this.renderer.render(state, this.camera, dt);
     }
     this.inputManager.resetFrame();
