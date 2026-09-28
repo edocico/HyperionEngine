@@ -9,6 +9,9 @@ import { OutlineCompositePass } from './passes/outline-composite-pass';
 import { DebugLinePass, LineBatchPass } from './passes/debug-line-pass';
 import { ForwardPass } from './passes/forward-pass';
 import { LightGroupsPass } from './passes/light-groups-pass';
+import { ScatterPass } from './passes/scatter-pass';
+import { CullPass } from './passes/cull-pass';
+import { TransparentSortPass } from './passes/transparent-sort-pass';
 
 // Scene passes are stand-ins carrying the real resource names. Every final
 // composite and every overlay is the real class, so what gets compiled is the
@@ -156,4 +159,26 @@ describe('composeRenderGraph — lighting', () => {
     expect(order).toContain('jfa-0');
     expect(order).toContain('light-groups');
   });
+});
+
+// Phase 5b: the sort runs in all six graphs (3 composites × lighting on/off),
+// between the cull that fills its regions and the forward pass that draws its
+// order. The scene here is made of the real passes, so what compiles is the
+// set of reads/writes the renderer ships.
+describe('composeRenderGraph — transparent sort', () => {
+  const realScene = (mode: GraphMode): RenderPass[] => [
+    new ScatterPass(), new CullPass(), new TransparentSortPass(), new ForwardPass({ lit: mode.lighting }),
+  ];
+  for (const { mode, composite } of MODES) {
+    for (const lighting of [false, true]) {
+      it(`${composite}${lighting ? ' + lighting' : ''}: transparent-sort runs after cull and before forward`, () => {
+        const f = { ...factories(), scene: vi.fn(realScene) };
+        const order = composeRenderGraph({ ...mode, lighting }, f, []).graph.compile();
+        const at = (name: string) => order.indexOf(name);
+        expect(at('cull')).toBeGreaterThan(-1);
+        expect(at('transparent-sort')).toBeGreaterThan(at('cull'));
+        expect(at('forward')).toBeGreaterThan(at('transparent-sort'));
+      });
+    }
+  }
 });

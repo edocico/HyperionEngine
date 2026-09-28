@@ -41,7 +41,14 @@ import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntr
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
-  readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params'];
+  // transparent-order / transparent-args (TransparentSortPass, Phase 5b) are
+  // read in lit and unlit graphs alike: that read orders the sort before this
+  // pass and keeps it alive. It is optional, and RadixSortPass was culled
+  // because nothing read its output.
+  readonly reads = [
+    'visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params',
+    'transparent-order', 'transparent-args',
+  ];
   readonly writes = ['scene-hdr'];
   readonly optional = false;
   /** Whether this graph has a light buffer to read (lighting backend `lit`). */

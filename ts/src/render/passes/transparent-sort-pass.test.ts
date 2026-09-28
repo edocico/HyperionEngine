@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   TransparentSortPass, SORT_READBACK_BYTES, type SortReadbackTaker, type SortReadbackTarget,
 } from './transparent-sort-pass';
@@ -519,5 +520,55 @@ describe('TransparentSortPass.destroy', () => {
     pass.execute(encoder, frameOf(10), pool);
     expect(cmds).toEqual([]);
     expect(pass.profileStages(frameOf(10))).toEqual([]);
+  });
+});
+
+// createRenderer needs a GPU, so its wiring is checked as text, as
+// light-groups.test.ts already does for renderer.ts. A missing accept block
+// turns every kernel edit into a full page reload, which on this machine loses
+// the device.
+describe('renderer wiring', () => {
+  const renderer = readFileSync(new URL('../../renderer.ts', import.meta.url), 'utf8');
+
+  it('imports both kernels and publishes them before GraphRequests seeds its good sources', () => {
+    const gather = /import (\w+) from '\.\/shaders\/transparent-gather\.wgsl\?raw';/.exec(renderer);
+    const sort = /import (\w+) from '\.\/shaders\/transparent-sort\.wgsl\?raw';/.exec(renderer);
+    expect(gather).not.toBeNull();
+    expect(sort).not.toBeNull();
+    const requests = renderer.indexOf('new GraphRequests<');
+    for (const publish of [
+      `TransparentSortPass.GATHER_SOURCE = ${gather![1]};`,
+      `TransparentSortPass.SORT_SOURCE = ${sort![1]};`,
+    ]) {
+      expect(renderer.indexOf(publish), publish).toBeGreaterThan(-1);
+      expect(renderer.indexOf(publish), publish).toBeLessThan(requests);
+    }
+  });
+
+  it('creates transparent-order and transparent-args in the pool before the first graph is set up', () => {
+    const host = renderer.indexOf('new RenderGraphHost(');
+    for (const name of ['transparent-order', 'transparent-args']) {
+      const at = renderer.indexOf(`resources.setBuffer('${name}'`);
+      expect(at, name).toBeGreaterThan(-1);
+      expect(at, name).toBeLessThan(host);
+    }
+  });
+
+  it('runs the sort between cull and forward in the scene factory', () => {
+    expect(renderer).toMatch(/new CullPass\(\), new TransparentSortPass\([^)]*\), new ForwardPass\(/);
+  });
+
+  it('gives each kernel a hot-reload slot probed by a throwaway pass, and an accept block', () => {
+    for (const name of ['transparent-gather', 'transparent-sort']) {
+      expect(renderer).toMatch(new RegExp(
+        `'${name}': \\{[\\s\\S]*?probe: probe\\(\\(\\) => new TransparentSortPass\\(\\)\\),[\\s\\S]*?usedBy: inEveryMode`,
+      ));
+      expect(renderer).toContain(`import.meta.hot.accept('./shaders/${name}.wgsl?raw'`);
+      expect(renderer).toContain(`recompileShader('${name}', mod.default)`);
+    }
+  });
+
+  it('keeps no trace of RadixSortPass', () => {
+    expect(renderer).not.toMatch(/RadixSort|radix-sort|radixSort/);
   });
 });

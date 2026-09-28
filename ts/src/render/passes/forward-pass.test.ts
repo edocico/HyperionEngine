@@ -687,3 +687,13 @@ describe('every binding an entry point reaches is in its pipeline layout, for it
     expect(fs).toEqual(expect.arrayContaining(['tier0Tex', 'lightBuffer', 'primParams']));
   });
 });
+
+// Phase 5b: ForwardPass reads the transparent sort's outputs in every graph.
+// That read is what orders TransparentSortPass before it and keeps it alive:
+// the sort is optional, and RadixSortPass was culled because nothing read it.
+describe('ForwardPass reads the transparent sort outputs', () => {
+  it.each([false, true])('lit=%s: transparent-order and transparent-args are reads', (lit) => {
+    const pass = new ForwardPass({ lit });
+    expect(pass.reads).toEqual(expect.arrayContaining(['transparent-order', 'transparent-args']));
+  });
+});

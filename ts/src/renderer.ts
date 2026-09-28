@@ -15,7 +15,8 @@ import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import scatterShaderCode from './shaders/scatter.wgsl?raw';
-import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
+import transparentGatherShaderCode from './shaders/transparent-gather.wgsl?raw';
+import transparentSortShaderCode from './shaders/transparent-sort.wgsl?raw';
 import sdfJfaShaderCode from './shaders/sdf-jfa.wgsl?raw';
 import lightAccumShaderCode from './shaders/light-accum.wgsl?raw';
 import { TextureManager } from './texture-manager';
@@ -33,7 +34,8 @@ import { LineBatchPass } from './render/passes/debug-line-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
-import { RadixSortPass } from './render/passes/radix-sort-pass';
+import { TransparentSortPass } from './render/passes/transparent-sort-pass';
+import { CAP as SORT_CAPACITY, HEADER_BYTES as SORT_HEADER_BYTES } from './render/passes/transparent-sort-constants';
 import { LightGroupsPass } from './render/passes/light-groups-pass';
 import { SdfChainStage } from './render/passes/sdf-chain-stage';
 import { LightAccumStage } from './render/passes/light-accum-stage';
@@ -324,6 +326,22 @@ export async function createRenderer(
   });
   resources.setBuffer('entity-ids', entityIdsBuffer);
 
+  // Transparent sort (Phase 5b). Renderer-owned on purpose: a hot-reload probe
+  // runs TransparentSortPass.setup() and then destroy() on this LIVE pool, so a
+  // pass that registered them would destroy the live graph's buffers. COPY_SRC
+  // in dev builds: engine.debug.readTransparentSort() copies them out.
+  resources.setBuffer('transparent-order', device.createBuffer({
+    label: 'transparent-order',
+    size: SORT_CAPACITY * 4,  // the sorted slots; the uber draw reads them (step 4)
+    usage: GPUBufferUsage.STORAGE | (dev ? GPUBufferUsage.COPY_SRC : 0),
+  }));
+  resources.setBuffer('transparent-args', device.createBuffer({
+    label: 'transparent-args',
+    size: SORT_HEADER_BYTES,  // draw args, dispatch args at 20 B, raw/limit/overflow/stamp
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
+      | (dev ? GPUBufferUsage.COPY_SRC : 0),
+  }));
+
   // --- 4. Populate texture views + sampler in ResourcePool ---
   // A tier that grows replaces its view and destroys the old texture, so the
   // pool is refreshed on every growth; ForwardPass rebinds when it sees it.
@@ -376,8 +394,9 @@ export async function createRenderer(
   let scatterPass: ScatterPass | null = null;
   const resolvedScatterThreshold = scatterThreshold ?? 0.3;
 
-  // --- 6c. RadixSortPass for transparent entity ordering (created with the graph) ---
-  RadixSortPass.SHADER_SOURCE = radixSortShaderCode;
+  // --- 6c. TransparentSortPass: gather + GPU radix sort of the transparents (created with the graph) ---
+  TransparentSortPass.GATHER_SOURCE = transparentGatherShaderCode;
+  TransparentSortPass.SORT_SOURCE = transparentSortShaderCode;
 
   // --- 7. GPU profiler state ---
   // Constructed on the first enableGpuProfiling(), never here, so that the
@@ -525,7 +544,9 @@ export async function createRenderer(
 
   /** Constructs the passes of one graph. No GPU work: see GraphPassFactories. */
   const graphFactories: GraphPassFactories = {
-    scene: (mode) => [new ScatterPass(), new CullPass(), new RadixSortPass(), new ForwardPass({ lit: mode.lighting })],
+    // The sort sits between the cull (its input regions) and the forward pass
+    // (which reads its order, and so keeps it alive).
+    scene: (mode) => [new ScatterPass(), new CullPass(), new TransparentSortPass(), new ForwardPass({ lit: mode.lighting })],
     outline() {
       const maxDim = Math.max(canvas.width, canvas.height);
       const n = JFAPass.iterationsForDimension(maxDim);
@@ -656,10 +677,18 @@ export async function createRenderer(
       probe: probe(() => new ScatterPass()),
       usedBy: inEveryMode,
     },
-    'radix-sort': {
-      read: () => RadixSortPass.SHADER_SOURCE,
-      write: (src) => { RadixSortPass.SHADER_SOURCE = src; },
-      probe: probe(() => new RadixSortPass()),
+    // A throwaway TransparentSortPass compiles both modules (4 pipelines) and
+    // binds the pool buffers, which already exist: it writes nothing there.
+    'transparent-gather': {
+      read: () => TransparentSortPass.GATHER_SOURCE,
+      write: (src) => { TransparentSortPass.GATHER_SOURCE = src; },
+      probe: probe(() => new TransparentSortPass()),
+      usedBy: inEveryMode,
+    },
+    'transparent-sort': {
+      read: () => TransparentSortPass.SORT_SOURCE,
+      write: (src) => { TransparentSortPass.SORT_SOURCE = src; },
+      probe: probe(() => new TransparentSortPass()),
       usedBy: inEveryMode,
     },
     'fxaa-tonemap': {
@@ -1138,8 +1167,11 @@ export async function createRenderer(
     import.meta.hot.accept('./shaders/scatter.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('scatter', mod.default);
     });
-    import.meta.hot.accept('./shaders/radix-sort.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('radix-sort', mod.default);
+    import.meta.hot.accept('./shaders/transparent-gather.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('transparent-gather', mod.default);
+    });
+    import.meta.hot.accept('./shaders/transparent-sort.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('transparent-sort', mod.default);
     });
     import.meta.hot.accept('./shaders/sdf-jfa.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('sdf-jfa', mod.default);
