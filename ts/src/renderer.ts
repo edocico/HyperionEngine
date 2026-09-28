@@ -1,9 +1,10 @@
-import shaderCode from './shaders/basic.wgsl?raw';
-import lineShaderCode from './shaders/line.wgsl?raw';
-import msdfShaderCode from './shaders/msdf-text.wgsl?raw';
-import gradientShaderCode from './shaders/gradient.wgsl?raw';
-import boxShadowShaderCode from './shaders/box-shadow.wgsl?raw';
-import bezierShaderCode from './shaders/bezier.wgsl?raw';
+import preludeShaderCode from './shaders/primitives/prelude.wgsl?raw';
+import quadShaderCode from './shaders/primitives/quad.wgsl?raw';
+import lineShaderCode from './shaders/primitives/line.wgsl?raw';
+import msdfShaderCode from './shaders/primitives/msdf-text.wgsl?raw';
+import bezierShaderCode from './shaders/primitives/bezier.wgsl?raw';
+import gradientShaderCode from './shaders/primitives/gradient.wgsl?raw';
+import boxShadowShaderCode from './shaders/primitives/box-shadow.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
 import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
@@ -22,6 +23,7 @@ import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
 import { CullPass, TOTAL_DRAW_BUCKETS, prepareShaderSource } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
+import { composeTypeModules, composeUberModule, type PrimitivePieces } from './render/primitive-shaders';
 import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
@@ -56,6 +58,35 @@ import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
 const MAX_ENTITIES = 100_000;
 // 28 draw entries (14 opaque + 14 transparent) x 5 u32 x 4 bytes = 560 bytes
 const INDIRECT_BUFFER_SIZE = TOTAL_DRAW_BUCKETS * 5 * 4;
+
+/**
+ * The primitive shader pieces (design 2026-09-27 §3): the prelude and one
+ * library per primitive type, keyed like PRIMITIVE_LIBRARIES. The GPU never
+ * compiles a piece alone, only what `publishPrimitiveShaders` composes. The
+ * hot-reload slots write into this object.
+ */
+const primitivePieces: PrimitivePieces = {
+  prelude: preludeShaderCode,
+  libraries: {
+    0: quadShaderCode,          // Quad
+    1: lineShaderCode,          // Line
+    2: msdfShaderCode,          // SDFGlyph (MSDF text)
+    3: bezierShaderCode,        // BezierPath
+    4: gradientShaderCode,      // Gradient
+    5: boxShadowShaderCode,     // BoxShadow
+  },
+};
+
+/**
+ * Compose the six per-type modules and the uber module from `primitivePieces`.
+ * `ForwardPass.SHADER_SOURCES` is updated IN PLACE: LightGroupsPass (the
+ * occluder pipelines) and the hot-reload probes hold that object. Pure
+ * concatenation: it cannot throw.
+ */
+function publishPrimitiveShaders(): void {
+  Object.assign(ForwardPass.SHADER_SOURCES, composeTypeModules(primitivePieces));
+  ForwardPass.UBER_SOURCE = composeUberModule(primitivePieces);
+}
 
 export interface OutlineOptions {
   color: [number, number, number, number];
@@ -120,6 +151,13 @@ export interface Renderer {
    * defaults for now; a different value is reported once.
    */
   setLightingQuality(quality: LightingQuality): void;
+  /**
+   * Dev tool: replace one shader, and rebuild what uses it once the GPU has
+   * validated it. For a primitive ('basic'/'quad', 'line', 'msdf-text',
+   * 'bezier', 'gradient', 'box-shadow') the source is that primitive's LIBRARY
+   * piece (shaders/primitives/<name>.wgsl: prefixed functions, no bindings, no
+   * entry points), not a whole module: the renderer composes it with the prelude.
+   */
   recompileShader(passName: string, shaderCode: string): void;
 
   /**
@@ -297,14 +335,9 @@ export async function createRenderer(
     useSubgroups,
     useSubgroups && subgroupSupport.hasSubgroupId,
   );
-  ForwardPass.SHADER_SOURCES = {
-    0: shaderCode,              // Quad
-    1: lineShaderCode,          // Line
-    2: msdfShaderCode,          // SDFGlyph (MSDF text)
-    3: bezierShaderCode,        // BezierPath
-    4: gradientShaderCode,      // Gradient
-    5: boxShadowShaderCode,     // BoxShadow
-  };
+  // The six per-type modules and the uber, composed from the pieces, before
+  // RenderGraphHost builds the first graph: ForwardPass.setup needs both.
+  publishPrimitiveShaders();
   FXAATonemapPass.SHADER_SOURCE = fxaaShaderCode;
   SelectionSeedPass.SHADER_SOURCE = selectionSeedShaderCode;
   JFAPass.SHADER_SOURCE = jfaShaderCode;
@@ -543,13 +576,17 @@ export async function createRenderer(
   const inOutlineMode = (m: GraphMode): boolean => m.outlines;
   const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
   const inLightingMode = (m: GraphMode): boolean => m.lighting;
-  // A primitive module has two users: ForwardPass (fs_main, three groups) and
-  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups). The
-  // probe compiles both, so an edit that breaks only the occluder entry point
-  // is caught here too.
-  const forwardSlot = (i: number): ShaderSlot => ({
-    read: () => ForwardPass.SHADER_SOURCES[i],
-    write: (src) => { ForwardPass.SHADER_SOURCES[i] = src; },
+  // A library piece has two users: ForwardPass (its per-type module through
+  // fs_main, three groups, and the uber module) and the occluder pipelines of
+  // LightGroupsPass (fs_occluder, two groups). The write recomposes every
+  // module in place, and the probe compiles all of them, so an edit that
+  // breaks only the occluder entry point or only the uber is caught here too.
+  const forwardSlot = (type: number): ShaderSlot => ({
+    read: () => primitivePieces.libraries[type],
+    write: (src) => {
+      primitivePieces.libraries[type] = src;
+      publishPrimitiveShaders();
+    },
     probe: probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]),
     usedBy: inEveryMode,
   });
@@ -978,22 +1015,24 @@ export async function createRenderer(
 
   // --- Shader Hot-Reload (dev only) ---
   if (import.meta.hot) {
-    import.meta.hot.accept('./shaders/basic.wgsl?raw', (mod) => {
+    // The primitives' library pieces. The prelude has no slot yet: an edit to
+    // it reloads the page.
+    import.meta.hot.accept('./shaders/primitives/quad.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('basic', mod.default);
     });
-    import.meta.hot.accept('./shaders/line.wgsl?raw', (mod) => {
+    import.meta.hot.accept('./shaders/primitives/line.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('line', mod.default);
     });
-    import.meta.hot.accept('./shaders/msdf-text.wgsl?raw', (mod) => {
+    import.meta.hot.accept('./shaders/primitives/msdf-text.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('msdf-text', mod.default);
     });
-    import.meta.hot.accept('./shaders/gradient.wgsl?raw', (mod) => {
+    import.meta.hot.accept('./shaders/primitives/gradient.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('gradient', mod.default);
     });
-    import.meta.hot.accept('./shaders/box-shadow.wgsl?raw', (mod) => {
+    import.meta.hot.accept('./shaders/primitives/box-shadow.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('box-shadow', mod.default);
     });
-    import.meta.hot.accept('./shaders/bezier.wgsl?raw', (mod) => {
+    import.meta.hot.accept('./shaders/primitives/bezier.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('bezier', mod.default);
     });
     import.meta.hot.accept('./shaders/cull.wgsl?raw', (mod) => {

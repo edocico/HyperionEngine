@@ -1,4 +1,5 @@
 import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
+import { PRIMITIVE_LIBRARIES } from './primitive-shaders';
 
 /**
  * Light layers (Phase 17, design 2026-09-26): which receiver layers share a
@@ -70,12 +71,13 @@ const MARGIN_SCALE = 1.01;
 const MARGIN_ADD = 1e-3;
 
 /**
- * The primitive types whose shader samples the light buffer (declares
- * `@group(2)`): Quad and Gradient. A receiver of any other type is drawn unlit
+ * The primitive types whose shader samples the light buffer: the `lit` rows of
+ * PRIMITIVE_LIBRARIES (Quad and Gradient), whose `<prefix>_fs` calls the
+ * prelude's `applyLighting`. A receiver of any other type is drawn unlit
  * whatever its flag, so its layer needs no group. `light-groups.test.ts`
- * checks this list against the shaders `renderer.ts` registers.
+ * checks the table against what the composed modules' fs_main reaches.
  */
-export const LIT_PRIMITIVE_TYPES: readonly number[] = [0, 4];
+export const LIT_PRIMITIVE_TYPES: readonly number[] = PRIMITIVE_LIBRARIES.filter((l) => l.lit).map((l) => l.type);
 const LIT = new Uint8Array(256);
 for (const type of LIT_PRIMITIVE_TYPES) LIT[type] = 1;
 

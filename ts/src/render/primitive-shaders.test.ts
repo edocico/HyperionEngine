@@ -5,6 +5,7 @@ import {
   type PrimitivePieces,
 } from './primitive-shaders';
 import { primitiveGroup0LayoutEntries, textureTierLayoutEntries } from './primitive-bindings';
+import { loadPrimitivePieces } from './primitive-pieces.fixture';
 import { RenderPrimitiveType } from '../entity-handle';
 import {
   stripComments, topLevelDecls, functionBody, callGraph, reachableFrom, bindingDecls, localNames, directives,
@@ -17,11 +18,10 @@ import {
 const g = globalThis as Record<string, unknown>;
 g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
 
-const files = import.meta.glob('../shaders/primitives/*.wgsl', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
-const piece = (name: string): string => files[`../shaders/primitives/${name}.wgsl`] ?? '';
-const libraries: Record<number, string> = {};
-for (const l of PRIMITIVE_LIBRARIES) libraries[l.type] = piece(l.name);
-const pieces: PrimitivePieces = { prelude: piece('prelude'), libraries };
+// The committed pieces, through the loader every test shares
+// (primitive-pieces.fixture.ts): it throws when shaders/primitives/ holds
+// anything but the prelude and one library per PRIMITIVE_LIBRARIES row.
+const pieces = loadPrimitivePieces();
 
 const typeModules = composeTypeModules(pieces);
 const uber = composeUberModule(pieces);
@@ -41,9 +41,14 @@ const indexOrInfinity = (i: number): number => (i < 0 ? Infinity : i);
 
 describe('primitive pieces', () => {
   it('finds the prelude and the six libraries, and nothing else', () => {
-    const names = Object.keys(files).map((f) => f.replace('../shaders/primitives/', '').replace('.wgsl', '')).sort();
-    expect(names).toEqual(['prelude', ...PRIMITIVE_LIBRARIES.map((l) => l.name)].sort());
-    for (const name of names) expect(piece(name).trim().length, name).toBeGreaterThan(0);
+    // A missing or stray piece makes the loader throw; none is empty.
+    const loaded = loadPrimitivePieces();
+    const named: Array<[string, string]> = [
+      ['prelude', loaded.prelude],
+      ...PRIMITIVE_LIBRARIES.map((l): [string, string] => [l.name, loaded.libraries[l.type]]),
+    ];
+    expect(named.map(([name]) => name).sort()).toEqual(['prelude', 'quad', 'line', 'msdf-text', 'bezier', 'gradient', 'box-shadow'].sort());
+    for (const [name, text] of named) expect(text.trim().length, name).toBeGreaterThan(0);
   });
 
   it('PRIMITIVE_LIBRARIES: types 0-5 in RenderPrimitiveType order, quad and gradient lit', () => {

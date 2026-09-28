@@ -1,10 +1,60 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { ForwardPass } from './forward-pass';
-import { primitiveGroup0LayoutEntries } from '../primitive-bindings';
+import { primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
-import basicShaderSource from '../../shaders/basic.wgsl?raw';
+import { SCENE_HDR_FORMAT } from '../formats';
+import {
+  PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule,
+  type PrimitiveLibrary, type PrimitiveLibraryName,
+} from '../primitive-shaders';
+import { loadPrimitivePieces } from '../primitive-pieces.fixture';
+import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
+
+// The WebGPU enums the fake devices and the shared layouts read (node has no WebGPU).
+const g = globalThis as Record<string, unknown>;
+g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
+g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
+g.GPUTextureUsage ??= { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
+
+/** Stand-in for the uber module: the fake devices compile nothing, they record. */
+const UBER_STUB = 'uber stub';
+
+/**
+ * The fixture every setup() in this file shares: a pool holding what
+ * ForwardPass.setup reads (its buffers, the tier views and scene-hdr, the
+ * sampler), and `pass` set up on `device` over it with `sources` as
+ * SHADER_SOURCES and `uber` as UBER_SOURCE. SHADER_SOURCES is filled in place,
+ * as the renderer does (LightGroupsPass and the probes hold the object); both
+ * statics are restored afterwards, also when setup() throws.
+ */
+function setUpOnPool(pass: ForwardPass, device: GPUDevice, sources: Record<number, string>, uber = UBER_STUB): ResourcePool {
+  const pool = new ResourcePool();
+  for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
+    pool.setBuffer(name, {} as GPUBuffer);
+  }
+  for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
+    pool.setTextureView(name, { name } as unknown as GPUTextureView);
+  }
+  pool.setSampler('texSampler', {} as GPUSampler);
+
+  const savedSources = { ...ForwardPass.SHADER_SOURCES };
+  const savedUber = ForwardPass.UBER_SOURCE;
+  const replaceSources = (next: Record<number, string>) => {
+    for (const key of Object.keys(ForwardPass.SHADER_SOURCES)) delete ForwardPass.SHADER_SOURCES[Number(key)];
+    Object.assign(ForwardPass.SHADER_SOURCES, next);
+  };
+  replaceSources(sources);
+  ForwardPass.UBER_SOURCE = uber;
+  try {
+    pass.setup(device, pool);
+  } finally {
+    replaceSources(savedSources);
+    ForwardPass.UBER_SOURCE = savedUber;
+  }
+  return pool;
+}
 
 describe('ForwardPass', () => {
   it('should implement RenderPass interface', () => {
@@ -25,11 +75,14 @@ describe('ForwardPass', () => {
   });
 
   it('should start with empty pipeline maps', () => {
+    // Nothing is built before setup(): execute() begins no render pass, so it
+    // sets no pipeline, and destroying a pass never set up is safe.
     const pass = new ForwardPass();
-    // Access via destroy to verify no pipelines exist
-    pass.destroy();
-    // If no error, pipelines were successfully cleared (even though empty)
-    expect(true).toBe(true);
+    const begun: unknown[] = [];
+    const encoder = { beginRenderPass: (d: unknown) => { begun.push(d); return {}; } } as unknown as GPUCommandEncoder;
+    pass.execute(encoder, { canvasWidth: 64, canvasHeight: 64 } as FrameState, new ResourcePool());
+    expect(begun).toEqual([]);
+    expect(() => pass.destroy()).not.toThrow();
   });
 });
 
@@ -38,11 +91,6 @@ describe('ForwardPass', () => {
 // follow, or every draw uses a destroyed texture and the frame is dropped.
 describe('ForwardPass group 1 follows the texture tiers', () => {
   function setUp() {
-    const g = globalThis as Record<string, unknown>;
-    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
-    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
-    g.GPUTextureUsage ??= { TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
-
     const texture = () => ({ createView: () => ({}), destroy() {} });
     const device = {
       createBuffer: () => ({ destroy() {} }),
@@ -56,23 +104,8 @@ describe('ForwardPass group 1 follows the texture tiers', () => {
       queue: { writeBuffer() {}, writeTexture() {} },
     } as unknown as GPUDevice;
 
-    const pool = new ResourcePool();
-    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
-      pool.setBuffer(name, {} as GPUBuffer);
-    }
-    for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
-      pool.setTextureView(name, { name } as unknown as GPUTextureView);
-    }
-    pool.setSampler('texSampler', {} as GPUSampler);
-
-    const saved = ForwardPass.SHADER_SOURCES;
-    ForwardPass.SHADER_SOURCES = { 0: 'stub' };
     const pass = new ForwardPass();
-    try {
-      pass.setup(device, pool);
-    } finally {
-      ForwardPass.SHADER_SOURCES = saved;
-    }
+    const pool = setUpOnPool(pass, device, { 0: 'stub' });
 
     const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
     const group1Views = () => {
@@ -109,123 +142,72 @@ describe('ForwardPass group 1 follows the texture tiers', () => {
   });
 });
 
-// An untextured entity carries packed texture index 0: tier 0, layer 0, not
-// overflow. Layer 0 is reserved and never holds a real texture. It is meant to
-// be white, but on a compressed tier (BC7/ASTC) it is never filled, because
-// writeTexture cannot take raw pixels there. An all-zero BC7 block decodes to
-// transparent black, so every untextured quad drew black on desktop and white
-// on an rgba8-only device. The shader answers index 0 itself. WGSL does not run
-// headless, so this pins the rule in the source; the GPU check is visual.
-describe('basic.wgsl draws an untextured quad white on every tier format', () => {
-  it('returns white for packed index 0 before sampling any tier', () => {
-    // The colour/coverage function both entry points (fs_main, fs_occluder) share.
-    const fs = basicShaderSource.slice(basicShaderSource.indexOf('fn shade'));
-    const untextured = fs.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
-    expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
-    expect(untextured).toBeLessThan(fs.indexOf('textureSampleLevel'));
-  });
-});
+/**
+ * ForwardPass set up on a recording fake device (setUpOnPool): stub sources
+ * for types 0, 1 and 4, and `uberSource` as UBER_SOURCE.
+ */
+function setUpForward(options?: { lit?: boolean }, uberSource = UBER_STUB) {
+  const layouts: GPUBindGroupLayoutDescriptor[] = [];
+  const pipelineLayouts: GPUPipelineLayoutDescriptor[] = [];
+  const pipelines: GPURenderPipelineDescriptor[] = [];
+  const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
+  const textures: GPUTextureDescriptor[] = [];
+  const buffers: Array<{ size: number; usage: number }> = [];
+  const device = {
+    createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
+    createShaderModule: (d: GPUShaderModuleDescriptor) => ({ code: d.code }),
+    createSampler: () => ({ sampler: true }),
+    createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return { d }; },
+    createPipelineLayout: (d: GPUPipelineLayoutDescriptor) => { pipelineLayouts.push(d); return { d }; },
+    createRenderPipeline: (d: GPURenderPipelineDescriptor) => { pipelines.push(d); return { descriptor: d }; },
+    createBindGroup: (d: GPUBindGroupDescriptor) => ({ layout: d.layout, entries: [...d.entries] }),
+    createTexture: (d: GPUTextureDescriptor) => {
+      textures.push(d);
+      return { createView: (vd?: GPUTextureViewDescriptor) => ({ placeholderOf: d, vd }), destroy() {} };
+    },
+    queue: {
+      writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
+        writes.push({ buffer, data: data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
+      },
+      writeTexture() {},
+    },
+  } as unknown as GPUDevice;
 
-// The same rule for every shader whose colour comes from the texture tiers.
-// Lines and beziers sampled layer 0 of the compressed tier too, and on desktop
-// drew black with alpha 0, so as occluders they cast nothing. MSDF text is
-// excluded, because its "texture" is the glyph atlas, which it cannot render
-// without.
-const tierSamplingShaders = import.meta.glob(
-  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/bezier.wgsl'],
-  { query: '?raw', import: 'default', eager: true },
-) as Record<string, string>;
+  const pass = new ForwardPass(options);
+  const pool = setUpOnPool(pass, device, { 0: 'stub', 1: 'stub', 4: 'stub' }, uberSource);
 
-describe('packed index 0 is white in every tier-sampling primitive', () => {
-  it.each(Object.entries(tierSamplingShaders))('%s answers index 0 before sampling a tier', (_file, src) => {
-    const shade = src.slice(src.indexOf('fn shade'));
-    const check = shade.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u/);
-    expect(check, 'the untextured check').toBeGreaterThan(-1);
-    expect(check).toBeLessThan(shade.indexOf('textureSampleLevel(tier0Tex'));
-  });
-});
+  type Call = { op: string; index?: number; group?: { entries: GPUBindGroupEntry[] }; pipeline?: GPURenderPipelineDescriptor };
+  const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
+  const draw = (): Call[] => {
+    const calls: Call[] = [];
+    const encoder = {
+      beginRenderPass: () => ({
+        setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, end() {},
+        setPipeline: (p: { descriptor: GPURenderPipelineDescriptor }) => { calls.push({ op: 'pipeline', pipeline: p.descriptor }); },
+        setBindGroup: (index: number, group: { entries: GPUBindGroupEntry[] }) => { calls.push({ op: 'group', index, group }); },
+      }),
+    } as unknown as GPUCommandEncoder;
+    pass.execute(encoder, frame, pool);
+    return calls;
+  };
+  const group2Texture = (calls: Call[]) => {
+    const bound = calls.filter((c) => c.op === 'group' && c.index === 2);
+    expect(bound.length).toBeGreaterThan(0);
+    return bound.map((c) => c.group!.entries.find((e) => e.binding === 0)!.resource);
+  };
+  const prepare = (over: Partial<FrameState> = {}) =>
+    pass.prepare(device, { cameraViewProjection: new Float32Array(16), ...over } as FrameState);
+  return { pass, pool, layouts, pipelineLayouts, pipelines, writes, textures, draw, group2Texture, buffers, prepare };
+}
 
 // Phase 17, Task 10: ForwardPass reads the light buffer through a third bind
-// group. All six primitive shaders share one pipeline layout, now of three
-// groups; only the shaders that apply lighting declare group 2. A layout may
-// hold groups a shader does not use, but the bind group must still be set for
-// every pipeline, or the draw fails validation. With lighting off, group 2
+// group. Every primitive pipeline shares one layout of three groups. A layout
+// may hold groups a shader does not use, but the bind group must still be set
+// for every pipeline, or the draw fails validation. With lighting off, group 2
 // binds a 1×1 placeholder and the lighting uniform says "disabled".
 describe('ForwardPass @group(2): the light buffer', () => {
-  function setUp(options?: { lit?: boolean }) {
-    const g = globalThis as Record<string, unknown>;
-    g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
-    g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
-    g.GPUTextureUsage ??= { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
-
-    const layouts: GPUBindGroupLayoutDescriptor[] = [];
-    const pipelineLayouts: GPUPipelineLayoutDescriptor[] = [];
-    const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
-    const textures: GPUTextureDescriptor[] = [];
-    const buffers: Array<{ size: number; usage: number }> = [];
-    const device = {
-      createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
-      createShaderModule: () => ({}),
-      createSampler: () => ({ sampler: true }),
-      createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return { d }; },
-      createPipelineLayout: (d: GPUPipelineLayoutDescriptor) => { pipelineLayouts.push(d); return {}; },
-      createRenderPipeline: () => ({}),
-      createBindGroup: (d: GPUBindGroupDescriptor) => ({ layout: d.layout, entries: [...d.entries] }),
-      createTexture: (d: GPUTextureDescriptor) => {
-        textures.push(d);
-        return { createView: (vd?: GPUTextureViewDescriptor) => ({ placeholderOf: d, vd }), destroy() {} };
-      },
-      queue: {
-        writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
-          writes.push({ buffer, data: data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
-        },
-        writeTexture() {},
-      },
-    } as unknown as GPUDevice;
-
-    const pool = new ResourcePool();
-    for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
-      pool.setBuffer(name, {} as GPUBuffer);
-    }
-    for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
-      pool.setTextureView(name, { name } as unknown as GPUTextureView);
-    }
-    pool.setSampler('texSampler', {} as GPUSampler);
-
-    const saved = ForwardPass.SHADER_SOURCES;
-    ForwardPass.SHADER_SOURCES = { 0: 'stub', 1: 'stub', 4: 'stub' };
-    const pass = new ForwardPass(options);
-    try {
-      pass.setup(device, pool);
-    } finally {
-      ForwardPass.SHADER_SOURCES = saved;
-    }
-
-    const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
-    const draw = () => {
-      const calls: Array<{ op: string; index?: number; group?: { entries: GPUBindGroupEntry[] } }> = [];
-      const encoder = {
-        beginRenderPass: () => ({
-          setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, end() {},
-          setPipeline: () => { calls.push({ op: 'pipeline' }); },
-          setBindGroup: (index: number, group: { entries: GPUBindGroupEntry[] }) => { calls.push({ op: 'group', index, group }); },
-        }),
-      } as unknown as GPUCommandEncoder;
-      pass.execute(encoder, frame, pool);
-      return calls;
-    };
-    const group2Texture = (calls: ReturnType<typeof draw>) => {
-      const bound = calls.filter((c) => c.op === 'group' && c.index === 2);
-      expect(bound.length).toBeGreaterThan(0);
-      return bound.map((c) => c.group!.entries.find((e) => e.binding === 0)!.resource);
-    };
-    const prepare = (over: Partial<FrameState> = {}) =>
-      pass.prepare(device, { cameraViewProjection: new Float32Array(16), ...over } as FrameState);
-    return { pass, pool, layouts, pipelineLayouts, writes, textures, draw, group2Texture, buffers, prepare };
-  }
-
   it('builds every pipeline on a three-group layout; group 2 is texture, filtering sampler, uniform', () => {
-    const { pipelineLayouts, layouts } = setUp();
+    const { pipelineLayouts, layouts } = setUpForward();
     expect(pipelineLayouts.length).toBeGreaterThan(0);
     for (const pl of pipelineLayouts) expect([...pl.bindGroupLayouts]).toHaveLength(3);
     // Group 0 has 6 entries, group 1 has 9: group 2 is the one with 3.
@@ -240,7 +222,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
 
   // Light layers (design 2026-09-26): one light-buffer layer per light group.
   it('group 2 binds the light buffer as a 2d-array, and the placeholder is a 1-layer 2d-array', () => {
-    const { layouts, textures, draw, group2Texture } = setUp();
+    const { layouts, textures, draw, group2Texture } = setUpForward();
     const group2 = layouts.find((l) => [...l.entries].length === 3)!;
     expect([...group2.entries].find((e) => e.binding === 0)!.texture?.viewDimension).toBe('2d-array');
     const placeholder = textures.find((t) => t.format === 'rgba8unorm')!;
@@ -250,7 +232,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
   });
 
   it('writes the layer→group table every frame, from FrameState.lightGroups', () => {
-    const { writes, prepare } = setUp({ lit: true });
+    const { writes, prepare } = setUpForward({ lit: true });
     prepare({ lightGroups: { layerToGroup: [0x10, 0x2] } as FrameState['lightGroups'] });
     expect([...new Uint32Array(writes.filter((w) => w.data.byteLength === 16).at(-1)!.data)]).toEqual([1, 0x10, 0x2, 0]);
     prepare({});
@@ -258,82 +240,28 @@ describe('ForwardPass @group(2): the light buffer', () => {
   });
 
   it('writes the canvas size into the camera uniform at bytes 68-72 (line widths in pixels)', () => {
-    const { writes, prepare } = setUp();
+    const { writes, prepare } = setUpForward();
     prepare({ canvasWidth: 800, canvasHeight: 600 });
     const camera = writes.filter((w) => w.data.byteLength === 80).at(-1)!;
     expect([...new Float32Array(camera.data, 68, 2)]).toEqual([800, 600]);
   });
 
-  it('line.wgsl: viewport size in the camera at 68/72, width unit in primParams[7], fwidth before any branch', () => {
-    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
-    const camera = /struct CameraUniform \{([\s\S]*?)\}/.exec(src)![1]
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '').trim()).filter(Boolean);
-    // mat4 (64 B), then four 4-byte scalars: occluderLayers at 64, the viewport at 68 and 72.
-    expect(camera.slice(0, 4)).toEqual([
-      'viewProjection: mat4x4f,', 'occluderLayers: u32,', 'viewportWidth: f32,', 'viewportHeight: f32,',
-    ]);
-    expect(src).toMatch(/primParams\[base \+ 7u\]/);
-    const shade = src.slice(src.indexOf('fn shade('));
-    const firstBranch = Math.min(...['switch', 'discard', 'if ('].map((k) => shade.indexOf(k)).filter((i) => i >= 0));
-    expect(shade.indexOf('fwidth(')).toBeGreaterThan(0);
-    expect(shade.indexOf('fwidth(')).toBeLessThan(firstBranch);
-  });
-
-  it('line.wgsl: the AA ramp is measured on the LINEAR uv.y and centred on the edge', () => {
-    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
-    const shade = src.slice(src.indexOf('fn shade('), src.indexOf('@fragment'));
-    // fwidth of abs() has a kink at the centre: 2x2-quad derivatives collapse
-    // there and a ~2 px line's opacity follows pixel parity.
-    expect(shade).toMatch(/fwidth\(\s*in\.uv\.y\s*\)/);
-    expect(shade).not.toMatch(/fwidth\(\s*edge\s*\)/);
-    // Centred: alpha is 0.5 exactly at the edge, so every fragment inside the
-    // quad keeps alpha >= 0.5 and the occluder seed covers the whole stroke.
-    expect(shade).toMatch(/smoothstep\(1\.0 - edgeAA \* 0\.5, 1\.0 \+ edgeAA \* 0\.5, edge\)/);
-  });
-
-  it('line.wgsl: the quad is wider than the stroke, so the OUTER half of the edge ramp is rasterised', () => {
-    // Without the margin a pixel centred on the edge depends on the
-    // rasteriser's tie rule: a thin transparent line's coverage followed
-    // sub-pixel position (1.5 to 2.0 for 2 px, measured on GPU).
-    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
-    const output = /struct VertexOutput \{([\s\S]*?)\}/.exec(src)![1];
-    expect(output).toMatch(/edgeScale: f32/);
-    const shade = src.slice(src.indexOf('fn shade('), src.indexOf('@fragment'));
-    expect(shade).toMatch(/let edge = abs\(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
-    expect(src).toMatch(/quadWidth = strokeWidth \+ 1\.0/);
-    // The opaque pipeline has no blending: there a margin fragment (alpha
-    // < 0.5) must be dropped, or opaque lines draw one pixel wider.
-    const fsMain = src.slice(src.indexOf('fn fs_main('), src.indexOf('fn fs_occluder('));
-    expect(fsMain).toMatch(/if \(in\.transparent == 0u && !insideStroke\(in\)\) \{\s*discard;/);
-    expect(output).toMatch(/@interpolate\(flat\) transparent: u32/);
-    // The seed is exactly the opaque stroke: same half-open test.
-    expect(src.slice(src.indexOf('fn fs_occluder('))).toMatch(/!insideStroke\(in\)/);
-  });
-
-  it('line.wgsl: insideStroke is half-open, so an opaque W-px stroke covers W pixel rows at any alignment', () => {
-    const src = readFileSync(new URL('../../shaders/line.wgsl', import.meta.url), 'utf8');
-    const fn = src.slice(src.indexOf('fn insideStroke('), src.indexOf('fn shade('));
-    // Signed distance, one closed and one open end, both shifted the same way.
-    expect(fn).toMatch(/let d = \(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
-    expect(fn).toMatch(/return d >= -1\.0 - STROKE_TIE_EPS && d < 1\.0 - STROKE_TIE_EPS;/);
-  });
-
   it('the camera uniform is 80 bytes, and the shared layout says so (minBindingSize)', () => {
-    const { buffers } = setUp();
+    const { buffers } = setUpForward();
     expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);
     expect(primitiveGroup0LayoutEntries()[0].buffer?.minBindingSize).toBe(80);
   });
 
-  it('sets group 2 for every pipeline, including shaders that ignore it', () => {
-    const { draw } = setUp();
+  it('sets group 2 for every pipeline it draws, including shaders that ignore it', () => {
+    const { draw } = setUpForward();
     const calls = draw();
     const pipelines = calls.filter((c) => c.op === 'pipeline').length;
-    expect(pipelines).toBe(6); // 3 types, opaque + transparent
+    expect(pipelines).toBe(6); // 3 types, opaque + transparent (the uber is built, not drawn)
     expect(calls.filter((c) => c.op === 'group' && c.index === 2)).toHaveLength(pipelines);
   });
 
   it('without lighting: does not read light-buffer, binds a placeholder, and the uniform says disabled', () => {
-    const { pass, pool, writes, draw, group2Texture } = setUp();
+    const { pass, pool, writes, draw, group2Texture } = setUpForward();
     expect(pass.reads).not.toContain('light-buffer');
     // A view left in the pool by a lit graph that has since been retired: its
     // texture is destroyed, and binding it would drop the frame.
@@ -346,7 +274,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
   });
 
   it('with lighting: reads light-buffer, binds the pool view, and the uniform says enabled', () => {
-    const { pass, pool, writes, draw, group2Texture } = setUp({ lit: true });
+    const { pass, pool, writes, draw, group2Texture } = setUpForward({ lit: true });
     expect(pass.reads).toContain('light-buffer');
     const lightBuffer = { name: 'light-buffer' } as unknown as GPUTextureView;
     pool.setTextureView('light-buffer', lightBuffer);
@@ -356,7 +284,7 @@ describe('ForwardPass @group(2): the light buffer', () => {
   });
 
   it('with lighting: follows the light-buffer view when LightGroupsPass recreates it (resize)', () => {
-    const { pool, draw, group2Texture } = setUp({ lit: true });
+    const { pool, draw, group2Texture } = setUpForward({ lit: true });
     pool.setTextureView('light-buffer', { name: 'before' } as unknown as GPUTextureView);
     draw();
     const resized = { name: 'after resize' } as unknown as GPUTextureView;
@@ -365,51 +293,397 @@ describe('ForwardPass @group(2): the light buffer', () => {
   });
 });
 
-// Which shaders apply lighting, and how. Only basic.wgsl (sprites) and
-// gradient.wgsl declare group 2 (design §7.4). The lookup lives in fs_main, not
-// in shade(): OccluderSeedStage runs the same module through fs_occluder on a
-// TWO-group layout, and a binding statically used there would fail validation.
-const allPrimitiveShaders = import.meta.glob(
-  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/msdf-text.wgsl',
-    '../../shaders/bezier.wgsl', '../../shaders/gradient.wgsl', '../../shaders/box-shadow.wgsl'],
-  { query: '?raw', import: 'default', eager: true },
-) as Record<string, string>;
-const LIT_SHADERS = ['basic.wgsl', 'gradient.wgsl'];
+// The uber module (design 2026-09-27 §3.2): every primitive type behind one
+// pipeline, for the sorted transparent draw. setup() builds it with exactly the
+// descriptor of today's transparent pipelines, so every graph and every
+// hot-reload probe validates it; the transparent sub-pass does not use it yet.
+describe('ForwardPass builds the uber pipeline, not drawn yet', () => {
+  const codeOf = (p: GPURenderPipelineDescriptor): string => (p.vertex.module as unknown as { code: string }).code;
 
-describe('lit primitive shaders', () => {
-  it.each(Object.entries(allPrimitiveShaders))('%s declares group 2 only if it is lit', (file, src) => {
-    const lit = LIT_SHADERS.some((name) => file.endsWith(name));
-    expect(/@group\(2\)/.test(src)).toBe(lit);
+  it('builds it once, from UBER_SOURCE, with exactly the transparent descriptor', () => {
+    const { pipelines } = setUpForward();
+    // 3 stub types × (opaque + transparent), and the uber.
+    expect(pipelines).toHaveLength(7);
+    const ubers = pipelines.filter((p) => codeOf(p) === UBER_STUB);
+    expect(ubers).toHaveLength(1);
+    const uberPipeline = ubers[0];
+    expect(uberPipeline.fragment?.module).toBe(uberPipeline.vertex.module);
+    expect(uberPipeline.vertex.entryPoint).toBe('vs_main');
+    expect(uberPipeline.fragment?.entryPoint).toBe('fs_main');
+    expect([...(uberPipeline.vertex.buffers ?? [])]).toEqual([
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+    ]);
+    expect([...(uberPipeline.fragment?.targets ?? [])]).toEqual([{
+      format: SCENE_HDR_FORMAT,
+      blend: {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      },
+    }]);
+    expect(uberPipeline.depthStencil).toEqual({ format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' });
+    expect(uberPipeline.primitive).toEqual({ topology: 'triangle-list', cullMode: 'back' });
+    // Module aside, the same descriptor as every per-type transparent
+    // pipeline, the three-group layout included.
+    const withoutModule = (p: GPURenderPipelineDescriptor) => ({
+      ...p, vertex: { ...p.vertex, module: null }, fragment: { ...p.fragment, module: null },
+    });
+    const transparent = pipelines.filter((p) => p !== uberPipeline && p.depthStencil?.depthWriteEnabled === false);
+    expect(transparent).toHaveLength(3);
+    for (const p of transparent) expect(withoutModule(p)).toEqual(withoutModule(uberPipeline));
   });
 
-  it.each(LIT_SHADERS)('%s samples the light buffer in fs_main only, with textureSampleLevel, gated on receivesLight', (name) => {
-    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
-    const fsMain = src.slice(src.indexOf('fn fs_main'), src.indexOf('fn fs_occluder'));
-    const beforeFsMain = src.slice(0, src.indexOf('fn fs_main'));
-    expect(fsMain).toMatch(/textureSampleLevel\s*\(\s*lightBuffer\b/);
-    expect(fsMain).toMatch(/RECEIVES_LIGHT_BIT/);
-    expect(fsMain).toMatch(/lighting\.enabled/);
-    expect(beforeFsMain).not.toMatch(/lightBuffer\s*,|textureSample\w*\s*\(\s*lightBuffer/);
-    expect(src.slice(src.indexOf('fn fs_occluder'))).not.toMatch(/lightBuffer|lighting\./);
+  it('does not draw it yet: the transparent sub-pass still draws each type with its own pipeline', () => {
+    const { pipelines, draw } = setUpForward();
+    const uberPipeline = pipelines.find((p) => codeOf(p) === UBER_STUB);
+    expect(uberPipeline).toBeDefined();
+    const drawn = draw().filter((c) => c.op === 'pipeline').map((c) => c.pipeline);
+    expect(drawn).toHaveLength(6);
+    expect(drawn).not.toContain(uberPipeline);
   });
 
-  it.each(LIT_SHADERS)('%s samples the layer of its group: a 2d-array, the lowest mask bit, a 4-bit table', (name) => {
-    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
-    expect(src).toMatch(/@group\(2\) @binding\(0\) var lightBuffer: texture_2d_array<f32>;/);
-    expect(src).toMatch(/groupTableLo: u32,(?:\s|\/\/[^\n]*)*groupTableHi: u32,/);
-    const fn = src.slice(src.indexOf('fn lightGroupOf'), src.indexOf('}', src.indexOf('fn lightGroupOf')));
+  it('refuses to set up without an uber module: publishPrimitiveShaders() runs first', () => {
+    expect(() => setUpForward({}, '')).toThrow(/UBER_SOURCE/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The primitive shaders are composed (render/primitive-shaders.ts, design
+// 2026-09-27 §3): the prelude (shared names, bindings, helpers), one library
+// per type, generated wrappers. The GPU compiles the composed modules, so every
+// check reads them — or the prelude, once, where the text lives there: the
+// first check proves every module contains it verbatim. What a library does is
+// found through the call graph, never by slicing between entry points, and
+// `body` throws on a missing function, so no negative check passes on ''.
+// WGSL does not run headless: these pin the source.
+const pieces = loadPrimitivePieces();
+const prelude = stripComments(pieces.prelude);
+const typeModules = composeTypeModules(pieces);
+const uber = stripComments(composeUberModule(pieces));
+
+const libOf = (name: PrimitiveLibraryName): PrimitiveLibrary => {
+  const lib = PRIMITIVE_LIBRARIES.find((l) => l.name === name);
+  if (!lib) throw new Error(`no library '${name}'`);
+  return lib;
+};
+const moduleOf = (name: PrimitiveLibraryName): string => stripComments(typeModules[libOf(name).type]);
+const fnOf = (name: PrimitiveLibraryName, suffix: 'vs' | 'fs' | 'occluder' | 'shade'): string => `${libOf(name).prefix}${suffix}`;
+
+/** A function's body; throws when the function is missing. */
+function body(src: string, fn: string): string {
+  const text = functionBody(src, fn);
+  if (text === null) throw new Error(`fn ${fn} not found`);
+  return text;
+}
+
+describe('the composed primitive modules', () => {
+  it('one module per type 0-5 and the uber, each containing the prelude verbatim', () => {
+    expect(PRIMITIVE_LIBRARIES.map((l) => l.type)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(Object.keys(typeModules).map(Number)).toEqual([0, 1, 2, 3, 4, 5]);
+    for (const src of [...Object.values(typeModules), composeUberModule(pieces)]) {
+      expect(src.includes(pieces.prelude.trim())).toBe(true);
+    }
+  });
+});
+
+// An untextured entity carries packed texture index 0: tier 0, layer 0, not
+// overflow. Layer 0 is reserved and never holds a real texture. It is meant to
+// be white, but on a compressed tier (BC7/ASTC) it is never filled, because
+// writeTexture cannot take raw pixels there. An all-zero BC7 block decodes to
+// transparent black, so every untextured quad drew black on desktop and white
+// on an rgba8-only device. The prelude answers index 0 itself
+// (sampleTierOrWhite); lines and beziers replace only the colour and keep their
+// coverage. MSDF text is the exception: its "texture" is the glyph atlas.
+const TIERS = ['tier0Tex', 'tier1Tex', 'tier2Tex', 'tier3Tex', 'ovf0Tex', 'ovf1Tex', 'ovf2Tex', 'ovf3Tex'];
+const WHITE_AT_INDEX_0: PrimitiveLibraryName[] = ['quad', 'line', 'bezier'];
+
+describe('packed index 0 is white in every tier-sampling primitive', () => {
+  it('sampleTierOrWhite returns white for packed index 0 before it samples a tier', () => {
+    const fn = body(prelude, 'sampleTierOrWhite');
+    const untextured = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u/);
+    expect(untextured, 'the untextured check').toBeGreaterThan(-1);
+    expect(fn).toMatch(/vec4f\(1\.0\)/);
+    expect(fn.indexOf('sampleTier(in)')).toBeGreaterThan(untextured);
+    expect(fn).not.toMatch(/textureSample/);
+  });
+
+  it('sampleTier is the one function that samples the tiers: all eight, with textureSampleLevel', () => {
+    const fn = body(prelude, 'sampleTier');
+    for (const tier of TIERS) {
+      expect(fn).toMatch(new RegExp(`textureSampleLevel\\(\\s*${tier}\\s*,\\s*texSampler\\s*,\\s*in\\.uv\\s*,\\s*in\\.texLayer\\s*,\\s*0\\.0\\s*\\)`));
+    }
+    const samplers = [...callGraph(uber)].filter(([, refs]) => TIERS.some((t) => refs.has(t))).map(([name]) => name);
+    expect(samplers).toEqual(['sampleTier']);
+  });
+
+  it.each(WHITE_AT_INDEX_0)('%s: its coverage function takes the colour from sampleTierOrWhite, never sampleTier', (name) => {
+    for (const src of [moduleOf(name), uber]) {
+      const refs = callGraph(src).get(fnOf(name, 'shade'));
+      expect(refs, fnOf(name, 'shade')).toBeDefined();
+      expect(refs!.has('sampleTierOrWhite')).toBe(true);
+      expect(refs!.has('sampleTier')).toBe(false);
+    }
+  });
+
+  // A glyph with index 0 stays what the raw sample gives (on BC7/ASTC
+  // transparent black, discarded), not a solid white box.
+  it('msdf-text samples the atlas raw, without the white answer', () => {
+    for (const src of [moduleOf('msdf-text'), uber]) {
+      const refs = callGraph(src).get(fnOf('msdf-text', 'shade'));
+      expect(refs, fnOf('msdf-text', 'shade')).toBeDefined();
+      expect(refs!.has('sampleTier')).toBe(true);
+      expect(reachableFrom(src, fnOf('msdf-text', 'shade')).has('sampleTierOrWhite')).toBe(false);
+    }
+  });
+
+  it.each(['gradient', 'box-shadow'] as PrimitiveLibraryName[])('%s never samples the tiers', (name) => {
+    const reached = reachableFrom(moduleOf(name), 'fs_main');
+    expect(reached.has('sampleTier')).toBe(false);
+    expect(reached.has('sampleTierOrWhite')).toBe(false);
+  });
+});
+
+describe('line: pixel widths, anti-aliasing, the half-open stroke', () => {
+  const line = moduleOf('line');
+  // The uber embeds the same library for the transparent draw: checked in both.
+  const both = [line, uber];
+
+  /** The stroke test: line's one `(in: VertexOutput) -> bool` function. */
+  const insideStroke = (): string => {
+    const m = /fn (line_\w+)\s*\(\s*in\s*:\s*VertexOutput\s*\)\s*->\s*bool/.exec(line);
+    if (!m) throw new Error('line has no stroke test: fn line_…(in: VertexOutput) -> bool');
+    return m[1];
+  };
+
+  it('the camera uniform carries the viewport size at 68/72; line_vs reads the width unit in primParams[7]', () => {
+    const camera = /struct CameraUniform\s*\{([\s\S]*?)\}/.exec(prelude)![1]
+      .split('\n').map((l) => l.trim()).filter(Boolean);
+    // mat4 (64 B), then four 4-byte scalars: occluderLayers at 64, the viewport at 68 and 72.
+    expect(camera.slice(0, 4)).toEqual([
+      'viewProjection: mat4x4f,', 'occluderLayers: u32,', 'viewportWidth: f32,', 'viewportHeight: f32,',
+    ]);
+    for (const src of both) expect(body(src, fnOf('line', 'vs'))).toMatch(/primParams\[base \+ 7u\]/);
+  });
+
+  it('line_shade takes fwidth before any branch or tier sample', () => {
+    // Derivatives need uniform control flow. In the uber the call sits in the
+    // type switch, which its diagnostic(off, derivative_uniformity) covers.
+    for (const src of both) {
+      const shade = body(src, fnOf('line', 'shade'));
+      const firstBranch = Math.min(...['switch', 'discard', 'if (', 'sampleTier'].map((k) => shade.indexOf(k)).filter((i) => i >= 0));
+      expect(shade.indexOf('fwidth(')).toBeGreaterThanOrEqual(0);
+      expect(shade.indexOf('fwidth(')).toBeLessThan(firstBranch);
+    }
+  });
+
+  it('the AA ramp is measured on the LINEAR uv.y and centred on the edge', () => {
+    for (const src of both) {
+      const shade = body(src, fnOf('line', 'shade'));
+      // fwidth of abs() has a kink at the centre: 2x2-quad derivatives collapse
+      // there and a ~2 px line's opacity follows pixel parity.
+      expect(shade).toMatch(/fwidth\(\s*in\.uv\.y\s*\)/);
+      expect(shade).not.toMatch(/fwidth\(\s*edge\s*\)/);
+      // Centred: alpha is 0.5 exactly at the edge, so every fragment inside the
+      // quad keeps alpha >= 0.5 and the occluder seed covers the whole stroke.
+      expect(shade).toMatch(/smoothstep\(1\.0 - edgeAA \* 0\.5, 1\.0 \+ edgeAA \* 0\.5, edge\)/);
+    }
+  });
+
+  it('the quad is wider than the stroke, so the OUTER half of the edge ramp is rasterised', () => {
+    // Without the margin a pixel centred on the edge depends on the
+    // rasteriser's tie rule: a thin transparent line's coverage followed
+    // sub-pixel position (1.5 to 2.0 for 2 px, measured on GPU).
+    const output = /struct VertexOutput\s*\{([\s\S]*?)\}/.exec(prelude)![1];
+    // Interpolated with perspective, not flat: the half-open test compares its last bits.
+    expect(output).toMatch(/@location\(6\)\s+edgeScale\s*:\s*f32/);
+    expect(output).toMatch(/@location\(7\)\s+@interpolate\(flat\)\s+transparent\s*:\s*u32/);
+    const inside = insideStroke();
+    for (const src of both) {
+      expect(body(src, fnOf('line', 'shade'))).toMatch(/let edge = abs\(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
+      const vs = body(src, fnOf('line', 'vs'));
+      expect(vs).toMatch(/quadWidth = strokeWidth \+ 1\.0/);
+      // From renderMeta bit 8, never hard-wired: the uber draws only
+      // transparent lines because of the buckets it is fed, not by construction.
+      expect(vs).toMatch(/out\.transparent = select\(0u, 1u, \(renderMeta\[entityIdx \* 2u \+ 1u\] & 0x100u\) != 0u\);/);
+      // The opaque pipeline has no blending: there a margin fragment (alpha
+      // < 0.5) must be dropped, or opaque lines draw one pixel wider.
+      expect(body(src, fnOf('line', 'fs'))).toMatch(new RegExp(`if \\(in\\.transparent == 0u && !${inside}\\(in\\)\\) \\{\\s*discard;`));
+      // The seed is exactly the opaque stroke: same half-open test. A texel
+      // with no alpha (a textured line) casts nothing either.
+      expect(body(src, fnOf('line', 'occluder'))).toMatch(new RegExp(`if \\(color\\.a <= 0\\.0 \\|\\| !${inside}\\(in\\)\\) \\{\\s*discard;`));
+    }
+  });
+
+  it('the stroke test is half-open, so an opaque W-px stroke covers W pixel rows at any alignment', () => {
+    for (const src of both) {
+      const fn = body(src, insideStroke());
+      // Signed distance, one closed and one open end, both shifted the same way.
+      expect(fn).toMatch(/let d = \(in\.uv\.y - 0\.5\) \* 2\.0 \* in\.edgeScale;/);
+      expect(fn).toMatch(/return d >= -1\.0 - (\w+) && d < 1\.0 - \1;/);
+    }
+  });
+});
+
+// Which modules apply lighting, and where. ForwardPass binds group 2 (the light
+// buffer) for every pipeline, and the prelude declares it in every module: what
+// must hold is REACHABILITY. OccluderSeedStage runs the same per-type modules
+// through vs_main and fs_occluder on a TWO-group layout, and WebGPU rejects a
+// pipeline whose entry point statically uses a binding its layout lacks: the
+// lit graph is then rejected and lighting silently stays off. The group-2 names
+// come from the prelude's own declarations, plus the helper that reads its table.
+const GROUP2 = bindingDecls(prelude).filter((b) => b.group === 2).map((b) => b.name);
+const LIGHT_NAMES = [...GROUP2, 'lightGroupOf'];
+const reachesLight = (src: string, entry: string): string[] => {
+  const reached = reachableFrom(src, entry);
+  return LIGHT_NAMES.filter((name) => reached.has(name));
+};
+
+/** The uber's fs_main: primitive type → the function its case returns. */
+function uberFragmentCases(): Map<number, string> {
+  const cases = new Map<number, string>();
+  const re = /case\s+(\d+)u\s*(?:,\s*default\s*)?:\s*\{\s*return\s+(\w+)\s*\(\s*in\s*\)\s*;\s*\}/g;
+  for (const m of body(uber, 'fs_main').matchAll(re)) cases.set(Number(m[1]), m[2]);
+  return cases;
+}
+
+describe('lit primitives: group 2 is reached from fs_main of the lit types only', () => {
+  it('group 2 is the light buffer, its sampler and the lighting uniform', () => {
+    expect([...GROUP2].sort()).toEqual(['lightBuffer', 'lightSampler', 'lighting']);
+  });
+
+  it.each(PRIMITIVE_LIBRARIES.map((l): [string, PrimitiveLibrary] => [l.name, l]))(
+    '%s: fs_main reaches group 2 exactly when the type is lit; fs_occluder and vs_main never',
+    (_name, l) => {
+      const src = stripComments(typeModules[l.type]);
+      expect(reachesLight(src, 'fs_main').length > 0).toBe(l.lit);
+      expect(reachesLight(src, 'fs_occluder')).toEqual([]);
+      expect(reachesLight(src, 'vs_main')).toEqual([]);
+    },
+  );
+
+  it('the uber: every case of fs_main returns its library fs, which reaches group 2 exactly when lit; vs_main never', () => {
+    const cases = uberFragmentCases();
+    expect([...cases.keys()].sort((a, b) => a - b)).toEqual(PRIMITIVE_LIBRARIES.map((l) => l.type));
+    for (const l of PRIMITIVE_LIBRARIES) {
+      expect(cases.get(l.type)).toBe(`${l.prefix}fs`);
+      expect(reachesLight(uber, `${l.prefix}fs`).length > 0, l.name).toBe(l.lit);
+    }
+    expect(reachesLight(uber, 'vs_main')).toEqual([]);
+  });
+
+  it('applyLighting samples the light buffer gated on lighting.enabled and receivesLight; only the lit fs call it', () => {
+    const fn = body(prelude, 'applyLighting');
+    expect(fn).toMatch(/textureSampleLevel\s*\(\s*lightBuffer\b/);
+    expect(fn).toMatch(/RECEIVES_LIGHT_BIT/);
+    expect(fn).toMatch(/lighting\.enabled/);
+    const graph = [...callGraph(uber)];
+    expect(graph.filter(([, refs]) => refs.has('lightBuffer') || refs.has('lightSampler')).map(([name]) => name))
+      .toEqual(['applyLighting']);
+    // Never after the uber's switch: the other types would turn lit, which
+    // deriveLightGroups does not model.
+    expect(graph.filter(([, refs]) => refs.has('applyLighting')).map(([name]) => name).sort())
+      .toEqual(PRIMITIVE_LIBRARIES.filter((l) => l.lit).map((l) => `${l.prefix}fs`).sort());
+  });
+
+  it('the light buffer is a 2d-array, sampled at the layer of the receiver group: lowest mask bit, 4-bit table', () => {
+    expect(prelude).toMatch(/@group\(2\) @binding\(0\) var lightBuffer: texture_2d_array<f32>;/);
+    expect(prelude).toMatch(/groupTableLo: u32,\s*groupTableHi: u32,/);
+    const fn = body(prelude, 'lightGroupOf');
     expect(fn).toMatch(/firstTrailingBit\(mask\)/);
     expect(fn).toMatch(/0xFu/);
-    const fsMain = src.slice(src.indexOf('fn fs_main'), src.indexOf('fn fs_occluder'));
-    expect(fsMain).toMatch(/textureSampleLevel\(lightBuffer, lightSampler, in\.screenUV, lightGroupOf\(/);
+    expect(body(prelude, 'applyLighting')).toMatch(/textureSampleLevel\(lightBuffer, lightSampler, in\.screenUV, lightGroupOf\(/);
   });
 
-  it.each(LIT_SHADERS)('%s: RECEIVES_LIGHT_BIT matches RENDER_META_RECEIVES_LIGHT_BIT in components.rs', (name) => {
-    const src = Object.entries(allPrimitiveShaders).find(([f]) => f.endsWith(name))![1];
+  it('RECEIVES_LIGHT_BIT matches RENDER_META_RECEIVES_LIGHT_BIT in components.rs', () => {
     const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
     const rustBit = Number(/RENDER_META_RECEIVES_LIGHT_BIT: u32 = 1 << (\d+);/.exec(rust)?.[1]);
-    const wgslBit = Number(/const RECEIVES_LIGHT_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(src)?.[1]);
+    const wgslBit = Number(/const RECEIVES_LIGHT_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(prelude)?.[1]);
     expect(rustBit).toBe(10);
     expect(wgslBit).toBe(rustBit);
+  });
+});
+
+// Binding against layout. ForwardPass runs a per-type module's vs_main and
+// fs_main on groups 0-2, OccluderSeedStage its vs_main and fs_occluder on
+// groups 0-1, and the uber runs on groups 0-2. A binding an entry point reaches
+// must be in that layout and visible to that stage: camera, transforms and
+// visibleIndices are vertex-only, groups 1 and 2 fragment-only. WebGPU reports
+// a violation only at pipeline creation, on a GPU: headless this is the check.
+type Layouts = Record<number, GPUBindGroupLayoutEntry[]>;
+
+/** The layouts the primitive pipelines are built with: the shared ones, and ForwardPass's group 2. */
+function primitiveLayouts(): Layouts {
+  const group2 = setUpForward().layouts.find((l) => [...l.entries].length === 3);
+  if (!group2) throw new Error('ForwardPass built no three-entry layout (group 2)');
+  return { 0: primitiveGroup0LayoutEntries(), 1: textureTierLayoutEntries(), 2: [...group2.entries] };
+}
+
+const DECL = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]+)>)?\s+(\w+)\s*:\s*([^;]+);/g;
+const declKind = (space: string | undefined, type: string): string => (space ?? type).replace(/\s+/g, '');
+function layoutKind(e: GPUBindGroupLayoutEntry): string {
+  if (e.buffer) return e.buffer.type === 'read-only-storage' ? 'storage,read' : (e.buffer.type ?? 'uniform');
+  if (e.sampler) return 'sampler';
+  if (e.texture) {
+    const sample = (e.texture.sampleType ?? 'float') === 'float' ? 'f32' : String(e.texture.sampleType);
+    return `texture_${(e.texture.viewDimension ?? '2d').replace('-', '_')}<${sample}>`;
+  }
+  return 'unknown';
+}
+
+/** The bindings `entry` reaches, each checked against `groups` and the stage visibility; returns their names. */
+function checkReach(src: string, entry: string, stage: number, groups: number[], layouts: Layouts): string[] {
+  const reached = reachableFrom(src, entry);
+  const hit = bindingDecls(src).filter((b) => reached.has(b.name));
+  for (const b of hit) {
+    expect(groups, `${entry} reaches ${b.name} in group ${b.group}`).toContain(b.group);
+    const e = layouts[b.group]?.find((x) => x.binding === b.binding);
+    expect(e !== undefined && (e.visibility & stage) !== 0, `${b.name} is visible to ${entry}`).toBe(true);
+  }
+  return hit.map((b) => b.name);
+}
+
+describe('every binding an entry point reaches is in its pipeline layout, for its stage', () => {
+  it('the layouts: camera, transforms and visibleIndices vertex-only; groups 1 and 2 fragment-only', () => {
+    const layouts = primitiveLayouts();
+    for (const binding of [0, 1, 2]) {
+      expect(layouts[0].find((e) => e.binding === binding)?.visibility).toBe(GPUShaderStage.VERTEX);
+    }
+    for (const e of [...layouts[1], ...layouts[2]]) expect(e.visibility).toBe(GPUShaderStage.FRAGMENT);
+  });
+
+  it('every prelude binding has a layout entry of its kind, and every layout entry a binding', () => {
+    const layouts = primitiveLayouts();
+    const decls = [...prelude.matchAll(DECL)].map((m) => ({
+      group: Number(m[1]), binding: Number(m[2]), name: m[4], kind: declKind(m[3], m[5]),
+    }));
+    // The regex sees exactly what wgsl-analysis sees.
+    expect(decls.map((d) => d.name).sort()).toEqual(bindingDecls(prelude).map((b) => b.name).sort());
+    for (const d of decls) {
+      const entry = layouts[d.group]?.find((e) => e.binding === d.binding);
+      expect(entry, `${d.name} @group(${d.group}) @binding(${d.binding})`).toBeDefined();
+      expect(layoutKind(entry!), d.name).toBe(d.kind);
+    }
+    for (const [group, entries] of Object.entries(layouts)) {
+      expect(decls.filter((d) => d.group === Number(group)), `group ${group}`).toHaveLength(entries.length);
+    }
+  });
+
+  it.each(PRIMITIVE_LIBRARIES.map((l): [string, PrimitiveLibrary] => [l.name, l]))(
+    '%s: vs_main, fs_main and fs_occluder stay inside their layouts',
+    (_name, l) => {
+      const layouts = primitiveLayouts();
+      const src = stripComments(typeModules[l.type]);
+      // vs_main runs in the ForwardPass pipelines AND the occluder ones: two groups.
+      expect(checkReach(src, 'vs_main', GPUShaderStage.VERTEX, [0, 1], layouts)).toContain('visibleIndices');
+      checkReach(src, 'fs_main', GPUShaderStage.FRAGMENT, [0, 1, 2], layouts);
+      checkReach(src, 'fs_occluder', GPUShaderStage.FRAGMENT, [0, 1], layouts);
+    },
+  );
+
+  it('the uber: vs_main and fs_main stay inside the ForwardPass layout', () => {
+    const layouts = primitiveLayouts();
+    const vs = checkReach(uber, 'vs_main', GPUShaderStage.VERTEX, [0, 1, 2], layouts);
+    const fs = checkReach(uber, 'fs_main', GPUShaderStage.FRAGMENT, [0, 1, 2], layouts);
+    expect(vs).toEqual(expect.arrayContaining(['camera', 'transforms', 'visibleIndices', 'renderMeta']));
+    expect(fs).toEqual(expect.arrayContaining(['tier0Tex', 'lightBuffer', 'primParams']));
   });
 });
