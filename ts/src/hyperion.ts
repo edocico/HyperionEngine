@@ -743,9 +743,10 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Recompile a named shader with new WGSL source (dev tool). For a primitive
-   * ('basic'/'quad', 'line', 'msdf-text', 'bezier', 'gradient', 'box-shadow')
-   * the source is that primitive's library piece, not a whole module.
+   * Recompile a named shader pass with new WGSL source (dev tool). For the
+   * primitive shaders the name is a piece — 'prelude', 'quad' (alias
+   * 'basic'), 'line', 'msdf-text', 'bezier', 'gradient', 'box-shadow' — and
+   * the source is that piece, not a complete module.
    */
   recompileShader(passName: string, shaderCode: string): void {
     this.checkDestroyed();

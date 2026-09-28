@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { PieceReloadCollector, assertPiecesNotEmpty, type PieceReloadTimers } from './piece-reload-collector';
 import { PRIMITIVE_LIBRARIES, type PrimitivePieces } from './primitive-shaders';
 
@@ -167,5 +168,38 @@ describe('assertPiecesNotEmpty — the guard on the RAW pieces', () => {
     const pieces = full();
     pieces.libraries[type] = ' ';
     expect(() => assertPiecesNotEmpty(pieces)).toThrow(`Shader piece "${name}" is empty`);
+  });
+});
+
+// Vite's hot.accept(dep) works only in the module that imports dep, so the
+// wiring lives in renderer.ts and is checked on its text.
+describe('renderer.ts — every primitive piece reaches the collector', () => {
+  const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const PIECES = ['prelude', ...PRIMITIVE_LIBRARIES.map((lib) => lib.name)];
+
+  it.each(PIECES)('%s: imported ?raw, accepted, and offered under its slot name', (piece) => {
+    const path = `./shaders/primitives/${piece}.wgsl?raw`;
+    expect(renderer).toContain(`from '${path}';`);
+    expect(renderer).toMatch(new RegExp(
+      String.raw`import\.meta\.hot\.accept\('${escape(path)}', \(mod\) => \{\s*if \(mod\) pieceReloads\.offer\('${piece}', mod\.default\);\s*\}\);`,
+    ));
+  });
+
+  it('no piece accept bypasses the collector', () => {
+    expect(renderer).not.toMatch(/accept\('\.\/shaders\/primitives\/[\w-]+\.wgsl\?raw',[^;]*recompileShader/);
+  });
+
+  it('the collector feeds GraphRequests.reloadShaders', () => {
+    expect(renderer).toContain('new PieceReloadCollector((entries) => requests.reloadShaders(entries))');
+  });
+
+  it('the piece probe guards the RAW pieces, before compiling', () => {
+    expect(renderer).toMatch(/assertPiecesNotEmpty\(primitivePieces\);\s*compilePrimitives\(\);/);
+  });
+
+  it("'basic' is an alias of the 'quad' slot, not a slot of its own", () => {
+    expect(renderer).toContain("requests.reloadShader(passName === 'basic' ? 'quad' : passName, shaderCode)");
+    expect(renderer).not.toMatch(/^\s+basic: /m);
   });
 });

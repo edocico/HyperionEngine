@@ -23,7 +23,8 @@ import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
 import { CullPass, TOTAL_DRAW_BUCKETS, prepareShaderSource } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
-import { composeTypeModules, composeUberModule, type PrimitivePieces } from './render/primitive-shaders';
+import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule, type PrimitivePieces } from './render/primitive-shaders';
+import { PieceReloadCollector, assertPiecesNotEmpty } from './render/piece-reload-collector';
 import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
@@ -152,11 +153,14 @@ export interface Renderer {
    */
   setLightingQuality(quality: LightingQuality): void;
   /**
-   * Dev tool: replace one shader, and rebuild what uses it once the GPU has
-   * validated it. For a primitive ('basic'/'quad', 'line', 'msdf-text',
-   * 'bezier', 'gradient', 'box-shadow') the source is that primitive's LIBRARY
-   * piece (shaders/primitives/<name>.wgsl: prefixed functions, no bindings, no
-   * entry points), not a whole module: the renderer composes it with the prelude.
+   * Hot-reload one shader from new WGSL (dev tool); the GPU validates it
+   * before any graph uses it. For the primitives the name is a PIECE —
+   * 'prelude', 'quad' (alias 'basic'), 'line', 'msdf-text', 'bezier',
+   * 'gradient', 'box-shadow' — and the code is that piece, not a complete
+   * module: the six per-type modules and the uber module are recomposed from
+   * the pieces. One piece per call, no debounce: an edit spanning two pieces
+   * (a prelude rename and its uses) goes live only through the grouped HMR
+   * reload, where the pieces are validated together.
    */
   recompileShader(passName: string, shaderCode: string): void;
 
@@ -576,20 +580,42 @@ export async function createRenderer(
   const inOutlineMode = (m: GraphMode): boolean => m.outlines;
   const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
   const inLightingMode = (m: GraphMode): boolean => m.lighting;
-  // A library piece has two users: ForwardPass (its per-type module through
-  // fs_main, three groups, and the uber module) and the occluder pipelines of
-  // LightGroupsPass (fs_occluder, two groups). The write recomposes every
-  // module in place, and the probe compiles all of them, so an edit that
-  // breaks only the occluder entry point or only the uber is caught here too.
-  const forwardSlot = (type: number): ShaderSlot => ({
-    read: () => primitivePieces.libraries[type],
+  // The seven primitive pieces: the prelude and one library per type. A write
+  // recomposes the six per-type modules and the uber module in place
+  // (publishPrimitiveShaders: concatenation only, it cannot throw), so the
+  // factories and probes holding ForwardPass.SHADER_SOURCES see the new text.
+  // Every piece shares ONE probe, which compiles every module a piece is in:
+  // ForwardPass (six opaque pipelines + the uber: fs_main, three groups) and
+  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups), so
+  // an edit that breaks only one entry point is caught too. Shared, a grouped
+  // reload (GraphRequests.reloadShaders) compiles it once per probe set.
+  const compilePrimitives = probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]);
+  const primitiveProbe = (): void => {
+    // A composed module is never empty (prelude, markers, wrappers): only the
+    // RAW pieces show an editor's truncated save. The throw is synchronous,
+    // inside the validation window, so the reload is rejected without
+    // superseding the edit in flight.
+    assertPiecesNotEmpty(primitivePieces);
+    compilePrimitives();
+  };
+  const pieceSlot = (read: () => string, store: (src: string) => void): ShaderSlot => ({
+    read,
     write: (src) => {
-      primitivePieces.libraries[type] = src;
+      store(src);
       publishPrimitiveShaders();
     },
-    probe: probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]),
+    probe: primitiveProbe,
     usedBy: inEveryMode,
   });
+  const primitiveSlots: Record<string, ShaderSlot> = {
+    prelude: pieceSlot(() => primitivePieces.prelude, (src) => { primitivePieces.prelude = src; }),
+  };
+  for (const lib of PRIMITIVE_LIBRARIES) {
+    primitiveSlots[lib.name] = pieceSlot(
+      () => primitivePieces.libraries[lib.type],
+      (src) => { primitivePieces.libraries[lib.type] = src; },
+    );
+  }
   const shaderSlots: Record<string, ShaderSlot> = {
     cull: {
       read: () => CullPass.SHADER_SOURCE,
@@ -598,13 +624,7 @@ export async function createRenderer(
       probe: probe(() => new CullPass()),
       usedBy: inEveryMode,
     },
-    basic: forwardSlot(0),
-    quad: forwardSlot(0),
-    line: forwardSlot(1),
-    'msdf-text': forwardSlot(2),
-    bezier: forwardSlot(3),
-    gradient: forwardSlot(4),
-    'box-shadow': forwardSlot(5),
+    ...primitiveSlots,
     scatter: {
       read: () => ScatterPass.SHADER_SOURCE,
       write: (src) => { ScatterPass.SHADER_SOURCE = src; },
@@ -796,7 +816,9 @@ export async function createRenderer(
           reloadParticleShader('render', shaderCode);
           return;
       }
-      void requests.reloadShader(passName, shaderCode);
+      // 'basic' is the quad library's old file name (basic.wgsl): an alias, so
+      // both names share one slot, one good source and one reload version.
+      void requests.reloadShader(passName === 'basic' ? 'quad' : passName, shaderCode);
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
@@ -1015,25 +1037,30 @@ export async function createRenderer(
 
   // --- Shader Hot-Reload (dev only) ---
   if (import.meta.hot) {
-    // The primitives' library pieces. The prelude has no slot yet: an edit to
-    // it reloads the page.
+    // Primitive pieces wait for a quiet 50 ms window and reload as a group:
+    // a prelude rename and its uses in a library arrive as separate updates,
+    // and each alone would be probed against the other's old text.
+    const pieceReloads = new PieceReloadCollector((entries) => requests.reloadShaders(entries));
+    import.meta.hot.accept('./shaders/primitives/prelude.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('prelude', mod.default);
+    });
     import.meta.hot.accept('./shaders/primitives/quad.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('basic', mod.default);
+      if (mod) pieceReloads.offer('quad', mod.default);
     });
     import.meta.hot.accept('./shaders/primitives/line.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('line', mod.default);
+      if (mod) pieceReloads.offer('line', mod.default);
     });
     import.meta.hot.accept('./shaders/primitives/msdf-text.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('msdf-text', mod.default);
-    });
-    import.meta.hot.accept('./shaders/primitives/gradient.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('gradient', mod.default);
-    });
-    import.meta.hot.accept('./shaders/primitives/box-shadow.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('box-shadow', mod.default);
+      if (mod) pieceReloads.offer('msdf-text', mod.default);
     });
     import.meta.hot.accept('./shaders/primitives/bezier.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('bezier', mod.default);
+      if (mod) pieceReloads.offer('bezier', mod.default);
+    });
+    import.meta.hot.accept('./shaders/primitives/gradient.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('gradient', mod.default);
+    });
+    import.meta.hot.accept('./shaders/primitives/box-shadow.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('box-shadow', mod.default);
     });
     import.meta.hot.accept('./shaders/cull.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('cull', mod.default);
