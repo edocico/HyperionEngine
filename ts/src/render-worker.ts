@@ -13,32 +13,13 @@
 import { Camera } from "./camera";
 import { createRenderer, type Renderer } from "./renderer";
 import type { LightingQuality } from "./lighting-api";
+import { toGPURenderState, type WorkerRenderState } from "./worker-render-state";
 
 const camera = new Camera();
 let renderer: Renderer | null = null;
 let offscreenCanvas: OffscreenCanvas | null = null;
 
-interface RenderState {
-  entityCount: number;
-  transforms: ArrayBuffer;
-  bounds: ArrayBuffer;
-  renderMeta: ArrayBuffer;
-  texIndices: ArrayBuffer;
-  primParams: ArrayBuffer;
-  entityIds: ArrayBuffer;
-  listenerX?: number;
-  listenerY?: number;
-  listenerZ?: number;
-  // Lighting engine-level state (Phase 17), forwarded from the ECS worker.
-  ambientR?: number;
-  ambientG?: number;
-  ambientB?: number;
-  ambientIntensity?: number;
-  lightingBackend?: number;
-  tickCount?: number;
-}
-
-let latestRenderState: RenderState | null = null;
+let latestRenderState: WorkerRenderState | null = null;
 let pendingQuality: LightingQuality | null = null;
 
 self.onmessage = async (event: MessageEvent) => {
@@ -89,28 +70,7 @@ self.onmessage = async (event: MessageEvent) => {
 function renderLoop(): void {
   function renderFrame() {
     if (renderer && latestRenderState && latestRenderState.entityCount > 0) {
-      renderer.render({
-        entityCount: latestRenderState.entityCount,
-        transforms: new Float32Array(latestRenderState.transforms),
-        bounds: new Float32Array(latestRenderState.bounds),
-        renderMeta: new Uint32Array(latestRenderState.renderMeta),
-        texIndices: new Uint32Array(latestRenderState.texIndices),
-        primParams: new Float32Array(latestRenderState.primParams ?? []),
-        entityIds: new Uint32Array(latestRenderState.entityIds ?? []),
-        listenerX: latestRenderState.listenerX ?? 0,
-        listenerY: latestRenderState.listenerY ?? 0,
-        listenerZ: latestRenderState.listenerZ ?? 0,
-        ambientR: latestRenderState.ambientR ?? 0,
-        ambientG: latestRenderState.ambientG ?? 0,
-        ambientB: latestRenderState.ambientB ?? 0,
-        ambientIntensity: latestRenderState.ambientIntensity ?? 1,
-        lightingBackend: latestRenderState.lightingBackend ?? 0,
-        tickCount: latestRenderState.tickCount ?? 0,
-        dirtyCount: 0,
-        dirtyRatio: 0,
-        stagingData: null,
-        dirtyIndices: null,
-      }, camera);
+      renderer.render(toGPURenderState(latestRenderState), camera);
     }
 
     requestAnimationFrame(renderFrame);

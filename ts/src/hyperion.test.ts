@@ -13,6 +13,7 @@ import { EntityIdAllocator } from './entity-id-allocator';
 import { BackpressuredProducer } from './backpressure';
 import { RingBufferProducer, extractUnread } from './ring-buffer';
 import { TickSequencer } from './tick-sequencer';
+import { makeRenderState } from './render-state.fixture';
 
 function mockBridge(): EngineBridge {
   let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
@@ -312,14 +313,7 @@ describe('Hyperion', () => {
 
   it('stats.tickCount reads from render state', () => {
     const bridge = mockBridge();
-    bridge.latestRenderState = {
-      entityCount: 0, transforms: new Float32Array(0), bounds: new Float32Array(0),
-      renderMeta: new Uint32Array(0), texIndices: new Uint32Array(0),
-      primParams: new Float32Array(0), entityIds: new Uint32Array(0),
-      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 42,
-      ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
-      dirtyCount: 0, dirtyRatio: 0, stagingData: null, dirtyIndices: null,
-    };
+    bridge.latestRenderState = makeRenderState({ tickCount: 42 });
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
     expect(engine.stats.tickCount).toBe(42);
   });

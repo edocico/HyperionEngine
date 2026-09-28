@@ -54,6 +54,7 @@ import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 import { DebugProbe } from './render/debug-probe';
+import { normalizeTransparentCount } from './render/frame-inputs';
 import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
 
 const MAX_ENTITIES = 100_000;
@@ -947,6 +948,7 @@ export async function createRenderer(
         physicsDebugLines: state.physicsDebugLines ?? undefined,
         ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
         shadowSteps: lightingQuality.shadowSteps,
+        transparentCount: normalizeTransparentCount(state.transparentCount, state.entityCount),
       };
       // Light layers: which layers share a light buffer and an SDF, this frame.
       if (host.mode.lighting) {

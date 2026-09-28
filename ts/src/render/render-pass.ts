@@ -24,6 +24,12 @@ export interface FrameState {
    * graph is lit.
    */
   lightGroups?: import('./light-groups').LightGroups;
+  /**
+   * Transparent sort (phase 5b): live rows with the Transparent bit, already
+   * normalised (`normalizeTransparentCount`: a missing count becomes
+   * `entityCount`). It bounds the sort's gather; 0 skips the sort.
+   */
+  transparentCount: number;
 }
 
 export interface RenderPass {

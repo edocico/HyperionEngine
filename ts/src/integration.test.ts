@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { RingBufferProducer, CommandType } from "./ring-buffer";
 import { selectExecutionMode, ExecutionMode, type Capabilities } from "./capabilities";
+import { makeRenderState } from "./render-state.fixture";
 
 describe("Integration: Ring Buffer Protocol", () => {
   it("produces commands that match the Rust-expected binary format", () => {
@@ -56,7 +57,7 @@ describe("Integration: Texture Layer Index Pipeline", () => {
   });
 
   it("GPURenderState has SoA fields", () => {
-    const state: import("./worker-bridge").GPURenderState = {
+    const state: import("./worker-bridge").GPURenderState = makeRenderState({
       entityCount: 1,
       transforms: new Float32Array(16),
       bounds: new Float32Array(4),
@@ -64,26 +65,17 @@ describe("Integration: Texture Layer Index Pipeline", () => {
       texIndices: new Uint32Array([0]),
       primParams: new Float32Array(8),
       entityIds: new Uint32Array([42]),
-      listenerX: 0,
-      listenerY: 0,
-      listenerZ: 0,
-      ambientR: 0,
-      ambientG: 0,
-      ambientB: 0,
-      ambientIntensity: 1,
-      lightingBackend: 0,
-      tickCount: 0,
-      dirtyCount: 0,
-      dirtyRatio: 0,
-      stagingData: null,
-      dirtyIndices: null,
-    };
+      transparentCount: 0,
+      entityIdsGeneration: 1,
+    });
     expect(state.transforms.length).toBe(16);
     expect(state.bounds.length).toBe(4);
     expect(state.renderMeta.length).toBe(2);
     expect(state.texIndices.length).toBe(1);
     expect(state.primParams.length).toBe(8);
     expect(state.entityIds.length).toBe(1);
+    expect(typeof state.transparentCount).toBe("number");
+    expect(typeof state.entityIdsGeneration).toBe("number");
   });
 });
 
