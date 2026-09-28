@@ -2,7 +2,10 @@
 // Run: node --test docs/plans/assets/2026-09-27-transparent-sort-baseline/compare.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TABS, comparePixels, compareStatuses, parseJsonOutput } from './compare.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { TABS, comparePixels, compareStatuses, framingDiff, main, parseJsonOutput } from './compare.mjs';
 
 const VP = [0.05, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -0.001, 0, 0, 0, 0, 1];
 const GREY = [0.067, 0.067, 0.067, 1];
@@ -98,6 +101,46 @@ test('C must keep at least half of the grid', () => {
   assert.match(r.problems[0], /C keeps 1\/4 grid points/);
 });
 
+/** A capture of the real 64x36 grid (2304 points), every point at the clear colour. */
+function gridCapture(extra = {}) {
+  const f = new Float32Array(64 * 36 * 4);
+  for (let i = 0; i < 64 * 36; i++) f.set(GREY, 4 * i);
+  return capture([], { tab: 'audio', gridSize: [64, 36], bitsB64: Buffer.from(f.buffer).toString('base64'), ...extra });
+}
+const mover = (id) => ({ id, from: [0, 0], to: [1, 0], radius: 1 });
+
+test('instability new in the run fails instead of shrinking C (600 points of audio, the review repro)', () => {
+  const unstable = Array.from({ length: 600 }, (_, i) => i);
+  const r = comparePixels(gridCapture(), gridCapture({ unstable }), 1);
+  assert.equal(r.c, 1704);
+  assert.equal(r.ok, false);
+  assert.equal(r.newUnstable.length, 600);
+  assert.match(r.problems.join('\n'), /600 points unstable in the run only/);
+});
+
+test('run instability inside the baseline instability or either motion footprint is allowed', () => {
+  const base = gridCapture({ unstable: [0], moving: [1] });
+  const run = gridCapture({ unstable: [0, 1, 2], moving: [2] });
+  const r = comparePixels(base, run, 1);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.newUnstable, []);
+  assert.equal(r.c, 2301);
+});
+
+test('a different set of mover ids fails and names both sets', () => {
+  const r = comparePixels(capture(four(), { movers: [mover(47)] }), capture(four(), { movers: [mover(48)] }), 1);
+  assert.equal(r.ok, false);
+  assert.match(r.problems.join('\n'), /mover ids differ: baseline \[47\], run \[48\]/);
+  const extra = comparePixels(capture(four(), { movers: [mover(47)] }), capture(four(), { movers: [mover(47), mover(50)] }), 1);
+  assert.equal(extra.ok, false);
+  assert.match(extra.problems.join('\n'), /mover ids differ: baseline \[47\], run \[47,50\]/);
+});
+
+test('the same mover ids in another order pass', () => {
+  const r = comparePixels(capture(four(), { movers: [mover(2), mover(1)] }), capture(four(), { movers: [mover(1), mover(2)] }), 1);
+  assert.equal(r.ok, true);
+});
+
 /** Statuses of every tab: one passing check each, Input with its 4 interaction checks pending. */
 function statuses(overrides = {}) {
   const tabs = {};
@@ -155,4 +198,44 @@ test('parseJsonOutput reads plain, wrapped and double-encoded JSON', () => {
   assert.deepEqual(parseJsonOutput('{"a":1}'), { a: 1 });
   assert.deepEqual(parseJsonOutput('Script ran on page and returned:\n```json\n{"a":1}\n```'), { a: 1 });
   assert.deepEqual(parseJsonOutput(JSON.stringify(JSON.stringify({ a: 1 }))), { a: 1 });
+});
+
+test('framingDiff names a canvas and a devicePixelRatio difference, and passes equal framings', () => {
+  assert.equal(framingDiff(capture(four()), capture(four())), null);
+  assert.equal(framingDiff(capture(four()), capture(four(), { canvasSize: [120, 50] })), 'canvas 100,50 vs 120,50');
+  assert.equal(framingDiff(capture(four()), capture(four(), { dpr: 1.5 })), 'devicePixelRatio 1.25 vs 1.5');
+});
+
+/** A capture directory for mode B: the ten tabs and the statuses; `change(tab, cap)` edits one capture. */
+function captureDir(change = (_tab, cap) => cap) {
+  const dir = mkdtempSync(join(tmpdir(), 'compare-test-'));
+  for (const tab of TABS) writeFileSync(join(dir, `B-${tab}.json`), JSON.stringify(change(tab, capture(four(), { tab }))));
+  writeFileSync(join(dir, 'statuses-B.json'), JSON.stringify(statuses()));
+  return dir;
+}
+/** main() with its console output swallowed. */
+function quietMain(argv) {
+  const { log, error } = console;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    return main(argv);
+  } finally {
+    console.log = log;
+    console.error = error;
+  }
+}
+
+test('main exits 0 on PASS, 1 on FAIL and 2 on bad arguments or unreadable files', () => {
+  const base = captureDir();
+  const same = captureDir();
+  const changed = captureDir((tab, cap) => (tab === 'primitives' ? capture(withPoint(0, [1, 1, 1, 1]), { tab }) : cap));
+  const args = (run, step = '0') => ['--base', base, '--run', run, '--mode', 'B', '--step', step];
+  assert.equal(quietMain(args(same)), 0);
+  assert.equal(quietMain(args(changed)), 1);
+  assert.equal(quietMain(['--base', base, '--run', same, '--step', '0']), 2);
+  assert.equal(quietMain(['--base', base, '--run', same, '--mode', 'X', '--step', '0']), 2);
+  assert.equal(quietMain(args(same, '5')), 2);
+  assert.equal(quietMain([...args(same), '--bogus']), 2);
+  assert.equal(quietMain(args(mkdtempSync(join(tmpdir(), 'compare-test-empty-')))), 2);
 });

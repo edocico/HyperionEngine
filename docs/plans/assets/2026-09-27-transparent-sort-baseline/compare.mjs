@@ -7,6 +7,9 @@
 //   --step 0..3: every point of C bit-identical (the f32 bits of the f16 texel)
 //   --step 4:    C \ T bit-identical, C ∩ T within 1/255 per channel
 // plus the check statuses of every tab (statuses-<mode>.json).
+// C shrinks only by what the baseline explains: every tab but Lighting fails
+// when the run has unstable points outside (unstable_base ∪ M_base ∪ M_run),
+// or when its set of mover ids differs from the baseline's.
 //
 // Usage: node compare.mjs --base <dir> --run <dir> --mode B|C --step 0|1|2|3|4
 //                         [--allow-new-skip '<check name>' ...]
@@ -82,7 +85,7 @@ export function framingDiff(base, run) {
 
 /** Pixel verdict of one tab. */
 export function comparePixels(base, run, step) {
-  const result = { excluded: null, c: 0, cMinusT: 0, cAndT: 0, gridInC: 0, grid: gridCount(base), mismatches: [], problems: [], ok: false };
+  const result = { excluded: null, c: 0, cMinusT: 0, cAndT: 0, gridInC: 0, grid: gridCount(base), mismatches: [], newUnstable: [], problems: [], ok: false };
   const framing = framingDiff(base, run);
   if (framing) {
     result.problems.push(`framing differs: ${framing}`);
@@ -96,6 +99,20 @@ export function comparePixels(base, run, step) {
   if (!base.bitExact || !run.bitExact) {
     result.problems.push(`the ${base.bitExact ? 'run' : 'baseline'} is not bit-exact: the camera or the scene-hdr size changed during the window (cameraStable false): capture it again`);
     return result;
+  }
+  // C may only shrink by what the baseline already explains: a run that
+  // flickers, or moves an entity the baseline did not, fails here instead of
+  // dropping those points out of C in silence.
+  const ids = (cap) => [...new Set(cap.movers.map((m) => m.id))].sort((a, b) => a - b);
+  const baseIds = ids(base);
+  const runIds = ids(run);
+  if (!sameList(baseIds, runIds)) {
+    result.problems.push(`mover ids differ: baseline [${baseIds}], run [${runIds}]: an entity moves in one run only`);
+  }
+  const explained = new Set([...base.unstable, ...base.moving, ...run.moving]);
+  result.newUnstable = run.unstable.filter((i) => !explained.has(i));
+  if (result.newUnstable.length > 0) {
+    result.problems.push(`${result.newUnstable.length} points unstable in the run only (outside the baseline's unstable points and both motion footprints): new flicker or motion`);
   }
   const n = pointCount(base);
   const out = new Set([...base.unstable, ...run.unstable, ...base.moving, ...run.moving]);
@@ -201,6 +218,9 @@ export function main(argv) {
         : `C=${r.c} (grid ${r.gridInC}/${r.grid}) C\\T=${r.cMinusT} C∩T=${r.cAndT} movers ${base.movers.length}/${run.movers.length}`;
       console.log(`${args.mode} ${tab.padEnd(13)} ${r.ok ? 'OK  ' : 'FAIL'} ${sizes}`);
       for (const p of r.problems) console.log(`    ${p}`);
+      for (const i of r.newUnstable.slice(0, 8)) {
+        console.log(`    unstable in the run only: point ${i} uv ${uvOf(base, i).map((x) => x.toFixed(4))}`);
+      }
       for (const m of r.mismatches.slice(0, 8)) {
         console.log(`    point ${m.index} uv ${m.uv.map((x) => x.toFixed(4))}${m.inT ? ' (T)' : ''}: ${m.base} -> ${m.run}`);
       }
