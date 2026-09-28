@@ -9,6 +9,8 @@
  * constant default (0) would do neither — 0 transparents draws nothing, and a
  * generation stuck at 0 freezes the id upload after the first frame.
  */
+import type { GPURenderState } from '../worker-bridge';
+import { MAX_GPU_ENTITIES } from '../types';
 
 /** The gather's bound: a finite count as a non-negative integer, else `entityCount`. */
 export function normalizeTransparentCount(count: number | undefined, entityCount: number): number {
@@ -30,4 +32,53 @@ export function normalizeIdsGeneration(generation: number | undefined): number {
  */
 export function nextFrameStamp(prev: number): number {
   return (prev % 0xFFFFFFFE) + 1;
+}
+
+/**
+ * Upload the slot -> external id column when its generation moved (phase 5b
+ * §4.3, D6), the whole live part of it. Returns the generation the GPU now
+ * holds and whether this frame wrote. The renderer calls it on EVERY frame
+ * kind, scatter frames included: the 32-word scatter staging has no room for
+ * the id, and a swap-remove moves rows between slots.
+ */
+export function uploadEntityIds(
+  queue: Pick<GPUQueue, 'writeBuffer'>,
+  buffer: GPUBuffer,
+  state: Pick<GPURenderState, 'entityIds' | 'entityCount' | 'entityIdsGeneration'>,
+  uploadedGeneration: number,
+): { generation: number; uploaded: boolean } {
+  const generation = normalizeIdsGeneration(state.entityIdsGeneration);
+  // NaN never equals the marker: a missing generation uploads every frame.
+  if (generation === uploadedGeneration || state.entityCount === 0) {
+    return { generation, uploaded: false };
+  }
+  queue.writeBuffer(buffer, 0, state.entityIds as Uint32Array<ArrayBuffer>, 0, state.entityCount);
+  return { generation, uploaded: true };
+}
+
+/**
+ * The phase-5b fields a render state lacks (absent or not finite): a WASM
+ * build older than the exports, or a transport site that drops them. The
+ * renderer warns once, in dev.
+ */
+export function missingSortInputs(
+  state: Pick<GPURenderState, 'transparentCount' | 'entityIdsGeneration'>,
+): string[] {
+  const missing: string[] = [];
+  if (!Number.isFinite(state.transparentCount)) missing.push('transparentCount');
+  if (!Number.isFinite(state.entityIdsGeneration)) missing.push('entityIdsGeneration');
+  return missing;
+}
+
+/**
+ * The one-time warning for a frame with more rows than the GPU buffers hold,
+ * or null. The facade refuses spawns past `maxEntities` (≤ MAX_GPU_ENTITIES),
+ * but raw spawns are not counted; past the capacity every SoA `writeBuffer`
+ * fails validation, so the frame is lost anyway.
+ */
+export function overCapacityWarning(entityCount: number): string | null {
+  if (entityCount <= MAX_GPU_ENTITIES) return null;
+  return `[Hyperion] ${entityCount} entities exceed MAX_GPU_ENTITIES (${MAX_GPU_ENTITIES}): `
+    + 'the GPU buffers hold that many rows, so the uploads of these frames fail validation. '
+    + 'Raw spawns (engine.raw) are not counted against maxEntities.';
 }

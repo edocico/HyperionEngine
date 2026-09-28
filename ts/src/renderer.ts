@@ -54,10 +54,12 @@ import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 import { DebugProbe } from './render/debug-probe';
-import { normalizeTransparentCount } from './render/frame-inputs';
+import {
+  normalizeTransparentCount, nextFrameStamp, uploadEntityIds, missingSortInputs, overCapacityWarning,
+} from './render/frame-inputs';
+import { MAX_GPU_ENTITIES } from './types';
 import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
 
-const MAX_ENTITIES = 100_000;
 // 28 draw entries (14 opaque + 14 transparent) x 5 u32 x 4 bytes = 560 bytes
 const INDIRECT_BUFFER_SIZE = TOTAL_DRAW_BUCKETS * 5 * 4;
 
@@ -261,25 +263,25 @@ export async function createRenderer(
 
   // --- 2. Create TextureManager + SelectionManager ---
   const textureManager = new TextureManager(device, { compressedFormat });
-  const selectionManager = new SelectionManager(MAX_ENTITIES);
+  const selectionManager = new SelectionManager(MAX_GPU_ENTITIES);
 
   // --- 3. Create shared GPU buffers in ResourcePool ---
   const resources = new ResourcePool();
 
   resources.setBuffer('entity-transforms', device.createBuffer({
-    size: MAX_ENTITIES * 16 * 4,
+    size: MAX_GPU_ENTITIES * 16 * 4,
     // COPY_SRC in dev builds: engine.debug.readEntityTransforms reads it back.
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
   }));
   const debugProbe = dev ? new DebugProbe(device, pixelProbeShaderCode) : null;
 
   resources.setBuffer('entity-bounds', device.createBuffer({
-    size: MAX_ENTITIES * 4 * 4,
+    size: MAX_GPU_ENTITIES * 4 * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4,  // 28 regions x 100k x u32 = 11.2 MB
+    size: TOTAL_DRAW_BUCKETS * MAX_GPU_ENTITIES * 4,  // 28 regions x 100k x u32 = 11.2 MB
     usage: GPUBufferUsage.STORAGE,
   }));
 
@@ -289,26 +291,38 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('tex-indices', device.createBuffer({
-    size: MAX_ENTITIES * 4,
+    size: MAX_GPU_ENTITIES * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('render-meta', device.createBuffer({
-    size: MAX_ENTITIES * 2 * 4,  // 2 u32/entity
+    size: MAX_GPU_ENTITIES * 2 * 4,  // 2 u32/entity
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('prim-params', device.createBuffer({
-    size: MAX_ENTITIES * 8 * 4,  // 8 f32/entity
+    size: MAX_GPU_ENTITIES * 8 * 4,  // 8 f32/entity
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   // Selection mask buffer: 1 u32 per entity (0=unselected, 1=selected)
   const selectionMaskBuffer = device.createBuffer({
-    size: MAX_ENTITIES * 4,
+    size: MAX_GPU_ENTITIES * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   resources.setBuffer('selection-mask', selectionMaskBuffer);
+
+  // Slot -> external id (phase 5b §4.3): the transparent sort breaks z ties
+  // by id. Renderer-owned like every pool buffer: graph swaps and hot-reload
+  // probes re-run their passes' setup(), so a pass-owned buffer would come
+  // back empty while `uploadedIdsGeneration` still said "uploaded".
+  const entityIdsBuffer = device.createBuffer({
+    size: MAX_GPU_ENTITIES * 4,
+    // COPY_SRC in dev builds (design §4.3), like entity-transforms.
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
+    label: 'entity-ids',
+  });
+  resources.setBuffer('entity-ids', entityIdsBuffer);
 
   // --- 4. Populate texture views + sampler in ResourcePool ---
   // A tier that grows replaces its view and destroys the old texture, so the
@@ -486,6 +500,16 @@ export async function createRenderer(
   let lightingQuality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
   const reportedQuality = new Set<keyof LightingQuality>();
   let warnedMultiBitReceiver = false;
+
+  // --- 8b''. Transparent sort inputs (phase 5b §4.2-4.3) ---
+  // Closure locals, not pass state: they must survive graph swaps and the
+  // hot-reload probes. NaN never equals a generation, so the first frame
+  // uploads the entity ids; a renderer ever put back under a re-initialised
+  // engine (whose generation restarts at 0) must reset this marker to NaN.
+  let uploadedIdsGeneration = NaN;
+  let frameStamp = 0; // the first render() stamps 1
+  let warnedMissingSortInputs = false;
+  let warnedOverCapacity = false;
 
   // --- 8c. RenderGraph ---
   // RenderGraphHost owns the graph: a new one goes live only once the GPU has
@@ -827,7 +851,22 @@ export async function createRenderer(
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
+      frameStamp = nextFrameStamp(frameStamp);
       followBackend(state.lightingBackend);
+      if (dev && !warnedMissingSortInputs) {
+        const missing = missingSortInputs(state);
+        if (missing.length > 0) {
+          warnedMissingSortInputs = true;
+          console.warn(`[Hyperion] The render state lacks ${missing.join(' and ')} (a WASM build older than phase 5b, or a transport site that drops it): the transparent sort is sized from entityCount and the entity ids are uploaded every frame.`);
+        }
+      }
+      if (!warnedOverCapacity) {
+        const overCapacity = overCapacityWarning(state.entityCount);
+        if (overCapacity) {
+          warnedOverCapacity = true;
+          console.warn(overCapacity);
+        }
+      }
       // No early return on an empty world: its frame is the clear (CullPass
       // skips its dispatch, the indirect draws count zero). Returning here left
       // the last image on screen after the last entity was destroyed.
@@ -894,6 +933,12 @@ export async function createRenderer(
         }
       }
 
+      // Entity ids: on EVERY frame kind, outside the if/else above — the
+      // scatter staging carries no id, and a swap-remove moves rows between
+      // slots. Only when the slot -> id mapping changed (its generation).
+      const idsUpload = uploadEntityIds(device.queue, entityIdsBuffer, state, uploadedIdsGeneration);
+      uploadedIdsGeneration = idsUpload.generation;
+
       // Upload selection mask if dirty
       if (requests.requested.mode.outlines || host.mode.outlines) {
         selectionManager.uploadMask(device, selectionMaskBuffer, state.entityIds, state.entityCount);
@@ -949,6 +994,7 @@ export async function createRenderer(
         ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
         shadowSteps: lightingQuality.shadowSteps,
         transparentCount: normalizeTransparentCount(state.transparentCount, state.entityCount),
+        frameStamp,
       };
       // Light layers: which layers share a light buffer and an SDF, this frame.
       if (host.mode.lighting) {

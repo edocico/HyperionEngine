@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeTransparentCount, normalizeIdsGeneration, nextFrameStamp } from './frame-inputs';
+import { readFileSync } from 'node:fs';
+import {
+  normalizeTransparentCount, normalizeIdsGeneration, nextFrameStamp,
+  uploadEntityIds, missingSortInputs, overCapacityWarning,
+} from './frame-inputs';
+import { MAX_GPU_ENTITIES } from '../types';
 
 describe('normalizeTransparentCount', () => {
   it('keeps a finite count, floored and never negative', () => {
@@ -50,5 +55,87 @@ describe('nextFrameStamp', () => {
       expect(s).toBeGreaterThanOrEqual(1);
       expect(s).toBeLessThanOrEqual(0xFFFFFFFE);
     }
+  });
+});
+
+describe('uploadEntityIds', () => {
+  function recordingQueue() {
+    const writes: Array<{ offset: number; data: Uint32Array; dataOffset: number; size: number }> = [];
+    const queue = {
+      writeBuffer: (_b: GPUBuffer, offset: number, data: Uint32Array, dataOffset: number, size: number) => {
+        writes.push({ offset, data, dataOffset, size });
+      },
+    } as unknown as Pick<GPUQueue, 'writeBuffer'>;
+    return { queue, writes };
+  }
+  const buffer = {} as GPUBuffer;
+  const ids = new Uint32Array([4, 9, 2]);
+
+  it('writes the whole live column when the generation moved, then not again', () => {
+    const { queue, writes } = recordingQueue();
+    let marker = NaN; // the renderer's initial marker
+    const state = { entityIds: ids, entityCount: 3, entityIdsGeneration: 5 };
+    let r = uploadEntityIds(queue, buffer, state, marker);
+    expect(r).toEqual({ generation: 5, uploaded: true });
+    expect(writes).toEqual([{ offset: 0, data: ids, dataOffset: 0, size: 3 }]);
+    marker = r.generation;
+    r = uploadEntityIds(queue, buffer, state, marker);
+    expect(r.uploaded).toBe(false);
+    r = uploadEntityIds(queue, buffer, { ...state, entityIdsGeneration: 6 }, marker);
+    expect(r).toEqual({ generation: 6, uploaded: true });
+    expect(writes).toHaveLength(2);
+  });
+
+  it('uploads every frame when the generation is missing (NaN never matches)', () => {
+    const { queue, writes } = recordingQueue();
+    let marker = NaN;
+    for (let frame = 0; frame < 3; frame++) {
+      const r = uploadEntityIds(queue, buffer, { entityIds: ids, entityCount: 3, entityIdsGeneration: undefined as unknown as number }, marker);
+      expect(r.uploaded).toBe(true);
+      marker = r.generation;
+    }
+    expect(writes).toHaveLength(3);
+  });
+
+  it('writes nothing for an empty world, but moves the marker', () => {
+    const { queue, writes } = recordingQueue();
+    const r = uploadEntityIds(queue, buffer, { entityIds: new Uint32Array(0), entityCount: 0, entityIdsGeneration: 8 }, 7);
+    expect(r).toEqual({ generation: 8, uploaded: false });
+    expect(writes).toHaveLength(0);
+  });
+});
+
+describe('renderer.ts uploads the entity ids on every frame kind', () => {
+  it('calls uploadEntityIds once, after the scatter/full-upload if/else and outside both branches', () => {
+    const src = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+    const branch = src.indexOf('if (useScatter) {');
+    const call = src.indexOf('uploadEntityIds(', branch);
+    const mask = src.indexOf('selectionManager.uploadMask(', branch);
+    expect(branch).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(branch);
+    expect(mask).toBeGreaterThan(call);
+    // Every brace the if/else opened is closed before the call: it runs on
+    // scatter frames (Mode C spawns) as well as on full uploads.
+    const between = src.slice(branch, call);
+    const depth = (between.match(/\{/g) ?? []).length - (between.match(/\}/g) ?? []).length;
+    expect(depth).toBe(0);
+    expect(src.split('uploadEntityIds(').length - 1).toBe(1);
+  });
+});
+
+describe('missingSortInputs', () => {
+  it('names the fields that are absent or not finite', () => {
+    expect(missingSortInputs({ transparentCount: 0, entityIdsGeneration: 0 })).toEqual([]);
+    expect(missingSortInputs({ transparentCount: NaN, entityIdsGeneration: 3 })).toEqual(['transparentCount']);
+    expect(missingSortInputs({ transparentCount: 1, entityIdsGeneration: undefined as unknown as number }))
+      .toEqual(['entityIdsGeneration']);
+  });
+});
+
+describe('overCapacityWarning', () => {
+  it('is null up to MAX_GPU_ENTITIES and names the limit past it', () => {
+    expect(overCapacityWarning(0)).toBeNull();
+    expect(overCapacityWarning(MAX_GPU_ENTITIES)).toBeNull();
+    expect(overCapacityWarning(MAX_GPU_ENTITIES + 1)).toContain(`MAX_GPU_ENTITIES (${MAX_GPU_ENTITIES})`);
   });
 });

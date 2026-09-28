@@ -3,6 +3,7 @@ import { CullPass, computeWorkgroupSize, prepareShaderSource, NUM_PRIM_TYPES, BU
 import cullShaderSource from '../../shaders/cull.wgsl?raw';
 import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
+import { MAX_GPU_ENTITIES } from '../../types';
 
 describe('CullPass', () => {
   it('should implement RenderPass interface', () => {
@@ -399,5 +400,26 @@ describe('CullPass with an empty world', () => {
     expect(beginComputePass).not.toHaveBeenCalled();
     pass.execute(encoder, { entityCount: 3 } as FrameState, new ResourcePool());
     expect(beginComputePass).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CullPass sizes its regions with MAX_GPU_ENTITIES', () => {
+  it('writes it as maxEntitiesPerType and as the stride of every firstInstance', () => {
+    const pass = new CullPass();
+    const uniform = { label: 'cull-uniform' };
+    const indirect = { label: 'indirect-args' };
+    Object.assign(pass as unknown as Record<string, unknown>, { cullUniformBuffer: uniform, indirectBuffer: indirect });
+    const writes = new Map<unknown, ArrayBuffer | Uint32Array>();
+    const device = {
+      queue: { writeBuffer: (target: unknown, _offset: number, data: ArrayBuffer | Uint32Array) => { writes.set(target, data); } },
+    } as unknown as GPUDevice;
+    const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    pass.prepare(device, { entityCount: 5, cameraViewProjection: identity } as unknown as FrameState);
+
+    expect(new Uint32Array(writes.get(uniform) as ArrayBuffer, 96, 4)[1]).toBe(MAX_GPU_ENTITIES);
+    const args = writes.get(indirect) as Uint32Array;
+    for (let i = 0; i < TOTAL_DRAW_BUCKETS; i++) {
+      expect(args[i * 5 + 4], `bucket ${i}`).toBe(i * MAX_GPU_ENTITIES);
+    }
   });
 });

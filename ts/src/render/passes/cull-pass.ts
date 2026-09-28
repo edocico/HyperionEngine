@@ -1,6 +1,7 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import { extractFrustumPlanes } from '../../camera';
+import { MAX_GPU_ENTITIES } from '../../types';
 
 const WORKGROUP_SIZE = 256;
 
@@ -212,7 +213,7 @@ export class CullPass implements RenderPass {
     cullFloats.set(frustumPlanes);
     const cullUints = new Uint32Array(cullData, 96, 4);
     cullUints[0] = frame.entityCount;    // totalEntities
-    cullUints[1] = 100_000;             // maxEntitiesPerType (MAX_ENTITIES)
+    cullUints[1] = MAX_GPU_ENTITIES;    // maxEntitiesPerType: the region size per bucket
     // cullUints[2..3] = 0 (padding)
     device.queue.writeBuffer(this.cullUniformBuffer, 0, cullData);
 
@@ -220,14 +221,13 @@ export class CullPass implements RenderPass {
     // Reset indirect draw arguments: 28 buckets (14 opaque + 14 transparent) × 5 u32 each.
     // firstInstance encodes the visible-indices region offset so the vertex shader
     // can read visibleIndices[instance_index] directly (instance_index = firstInstance + slot).
-    const MAX_ENTITIES_PER_TYPE = 100_000;
     const resetData = new Uint32Array(TOTAL_DRAW_BUCKETS * 5);
     for (let i = 0; i < TOTAL_DRAW_BUCKETS; i++) {
       resetData[i * 5 + 0] = 6;  // indexCount (quad = 6 indices)
       resetData[i * 5 + 1] = 0;  // instanceCount (reset by cull shader)
       resetData[i * 5 + 2] = 0;  // firstIndex
       resetData[i * 5 + 3] = 0;  // baseVertex
-      resetData[i * 5 + 4] = i * MAX_ENTITIES_PER_TYPE;  // firstInstance = region offset
+      resetData[i * 5 + 4] = i * MAX_GPU_ENTITIES;  // firstInstance = region offset
     }
     device.queue.writeBuffer(this.indirectBuffer, 0, resetData);
   }
