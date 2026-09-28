@@ -57,6 +57,14 @@ pub struct Engine {
     /// Active lighting backend (CommandType 56): 0=off, 1=lit, 2=gi.
     /// Same snapshot gap as `ambient_light`.
     lighting_backend: u8,
+    /// Generation of the slot -> external id mapping (phase 5b §4.1, D6):
+    /// bumped (wrapping) at most once per frame in which the mapping changed,
+    /// and on every `reset` / `snapshot_restore`. TS uploads the entity-ids
+    /// column only when it moves. It lives here, not in `RenderState`, because
+    /// `reset` and `snapshot_restore` replace the render state wholesale: a
+    /// counter there would restart at 0 and could land on the value TS last
+    /// uploaded, and the remapped column would never reach the GPU.
+    ids_generation: u32,
 }
 
 impl Default for Engine {
@@ -85,6 +93,7 @@ impl Engine {
             listener_vel: [0.0; 3],
             ambient_light: [0.0, 0.0, 0.0, 1.0],
             lighting_backend: 0,
+            ids_generation: 0,
         }
     }
 
@@ -236,6 +245,12 @@ impl Engine {
         // This replaces the legacy collect_gpu() — the retained slot mapping
         // keeps SoA buffers up-to-date incrementally via write_slot().
         self.render_state.collect_and_cache_dirty(&self.world);
+
+        // 4b. One new ids generation per frame whose slot -> id mapping changed
+        // (spawn, despawn, id reuse), however many rows moved (phase 5b §4.1).
+        if self.render_state.take_ids_changed() {
+            self.ids_generation = self.ids_generation.wrapping_add(1);
+        }
 
         // 5. Physics debug lines: once per FRAME, not per tick (I-1).
         #[cfg(feature = "physics-debug")]
@@ -421,6 +436,12 @@ impl Engine {
     pub fn lighting_backend(&self) -> u8 {
         self.lighting_backend
     }
+
+    /// Generation of the slot -> external id mapping (phase 5b): it differs
+    /// from the previous frame's whenever the entity-ids column changed.
+    pub fn ids_generation(&self) -> u32 {
+        self.ids_generation
+    }
 }
 
 // ── Dev-tools debug methods ──────────────────────────────────────
@@ -450,6 +471,9 @@ impl Engine {
         // Same values as `Engine::new()`.
         self.ambient_light = [0.0, 0.0, 0.0, 1.0];
         self.lighting_backend = 0;
+        // NOT back to 0: the render state was replaced, and a generation that
+        // restarted could equal the one TS last uploaded (phase 5b §4.1).
+        self.ids_generation = self.ids_generation.wrapping_add(1);
     }
 
     /// Serialize the entire engine state into a binary snapshot.
@@ -999,11 +1023,17 @@ impl Engine {
         // it between restore and the next update() drew nothing before
         // (audit 2026-07, P3-11 sibling).
         new_render_state.collect(&new_world);
+        // Phase 5b: the transparent count of the rebuilt rows, and one ids
+        // generation for the whole rebuild — the flag the assign_slot loop
+        // raised is consumed here, so the next update does not bump again.
+        new_render_state.recount_transparent();
+        let _ = new_render_state.take_ids_changed();
 
         // Replace engine state
         self.world = new_world;
         self.entity_map = new_entity_map;
         self.render_state = new_render_state;
+        self.ids_generation = self.ids_generation.wrapping_add(1);
         #[cfg(feature = "physics-2d")]
         {
             self.physics = new_physics;
@@ -2995,5 +3025,226 @@ mod tests {
         };
 
         assert_eq!(run(&snapshot), run(&snapshot));
+    }
+
+    // ── Phase 5b: ids generation and transparent count (design §4.1, §7.2) ──
+    mod ids_and_transparency {
+        use super::*;
+        use crate::components::{Transparent, RENDER_META_TRANSPARENT_BIT};
+
+        fn spawn_2d(id: u32) -> Command {
+            let mut payload = [0u8; 16];
+            payload[0] = 1; // Transform2D archetype
+            Command { cmd_type: CommandType::SpawnEntity, entity_id: id, payload }
+        }
+
+        fn despawn(id: u32) -> Command {
+            Command { cmd_type: CommandType::DespawnEntity, entity_id: id, payload: [0; 16] }
+        }
+
+        fn set_transparent(id: u32, on: bool) -> Command {
+            let mut payload = [0u8; 16];
+            payload[0] = u8::from(on);
+            Command { cmd_type: CommandType::SetTransparent, entity_id: id, payload }
+        }
+
+        /// Brute force over the ROWS: bit 8 of word 1, live rows only.
+        fn rows_transparent(e: &Engine) -> u32 {
+            let n = e.render_state.gpu_entity_count() as usize;
+            e.render_state.gpu_render_meta()[..n * 2]
+                .chunks_exact(2)
+                .filter(|row| row[1] & RENDER_META_TRANSPARENT_BIT != 0)
+                .count() as u32
+        }
+
+        /// An oracle independent of the rows: the ECS. After `update` the two agree.
+        fn ecs_transparent(e: &Engine) -> u32 {
+            e.entity_map
+                .iter_mapped()
+                .filter(|&(_, ent)| e.world.get::<&Transparent>(ent).is_ok())
+                .count() as u32
+        }
+
+        /// The entity-ids column TS uploads: slot -> external id, live rows only.
+        fn id_column(e: &Engine) -> Vec<u32> {
+            let n = e.render_state.gpu_entity_count() as usize;
+            e.render_state.gpu_entity_ids()[..n].to_vec()
+        }
+
+        /// xorshift32: a seeded sequence without a dev-dependency.
+        struct XorShift(u32);
+        impl XorShift {
+            fn next(&mut self) -> u32 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                self.0 = x;
+                x
+            }
+        }
+
+        #[test]
+        fn generation_bumps_once_per_frame_that_changes_the_mapping() {
+            let mut e = Engine::new();
+            assert_eq!(e.ids_generation(), 0);
+
+            e.process_commands(&[spawn_cmd(0), spawn_cmd(1), spawn_cmd(2)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), 1, "three spawns, one frame: one bump");
+
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), 1, "a frame without commands");
+
+            e.process_commands(&[make_position_cmd(1, 3.0, 4.0, 0.0), set_transparent(2, true)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), 1, "rows rewritten in place keep their ids");
+
+            e.process_commands(&[despawn(1)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), 2, "a despawn swap-removes a row");
+
+            e.process_commands(&[spawn_cmd(3), despawn(0)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), 3, "a spawn and a despawn in one frame: one bump");
+            let mut ids = id_column(&e);
+            ids.sort_unstable();
+            assert_eq!(ids, vec![2, 3]);
+        }
+
+        #[test]
+        fn generation_ignores_shrink_to_fit() {
+            let mut e = Engine::new();
+            e.process_commands(&[spawn_cmd(0), spawn_cmd(1)]);
+            e.update(FIXED_DT);
+            e.process_commands(&[despawn(1)]);
+            e.update(FIXED_DT);
+            let g = e.ids_generation();
+            e.render_state.shrink_to_fit();
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), g);
+        }
+
+        #[test]
+        fn spawn_on_a_live_id_gives_a_new_generation_and_the_right_ids() {
+            let mut e = Engine::new();
+            e.process_commands(&[spawn_cmd(0), spawn_cmd(1)]);
+            e.update(FIXED_DT);
+            let g = e.ids_generation();
+            let old = e.entity_map.get(0).unwrap();
+
+            // One SpawnEntity for a live id: the old entity is retired, the new
+            // one takes a row (queue_despawn + assign_slot).
+            e.process_commands(&[spawn_2d(0)]);
+            e.update(FIXED_DT);
+            let new = e.entity_map.get(0).unwrap();
+            assert_ne!(new, old);
+            assert_ne!(e.ids_generation(), g);
+            let mut ids = id_column(&e);
+            ids.sort_unstable();
+            assert_eq!(ids, vec![0, 1]);
+            let slot = e.render_state.get_slot(new).unwrap() as usize;
+            assert_eq!(e.render_state.gpu_entity_ids()[slot], 0);
+        }
+
+        #[test]
+        fn transparent_count_follows_set_transparent_and_a_despawn_in_the_same_frame() {
+            let mut e = Engine::new();
+            e.process_commands(&[spawn_cmd(0), spawn_cmd(1), spawn_2d(2)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.render_state.transparent_count(), 0);
+
+            e.process_commands(&[set_transparent(0, true), set_transparent(1, true), despawn(0)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.render_state.transparent_count(), 1, "only entity 1 is left transparent");
+            assert_eq!(rows_transparent(&e), 1);
+
+            e.process_commands(&[set_transparent(2, true), set_transparent(1, false)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.render_state.transparent_count(), 1);
+            assert_eq!(ecs_transparent(&e), 1);
+        }
+
+        #[test]
+        fn recount_and_generation_hold_over_seeded_random_churn() {
+            let mut saw_stale_tail = false;
+            for seed in [0x9E37_79B9u32, 0x0BAD_F00D, 12_345, 0xDEAD_BEEF] {
+                let mut rng = XorShift(seed);
+                let mut e = Engine::new();
+                let mut prev_ids = id_column(&e);
+                let mut prev_gen = e.ids_generation();
+                for frame in 0..300 {
+                    let ops = 1 + rng.next() % 8;
+                    let mut cmds = Vec::new();
+                    for _ in 0..ops {
+                        let id = rng.next() % 48;
+                        cmds.push(match rng.next() % 5 {
+                            0 => spawn_cmd(id),
+                            1 => spawn_2d(id),
+                            2 => despawn(id),
+                            _ => set_transparent(id, rng.next().is_multiple_of(2)),
+                        });
+                    }
+                    e.process_commands(&cmds);
+                    e.update(FIXED_DT);
+
+                    let ctx = format!("seed {seed:#x}, frame {frame}");
+                    let count = e.render_state.transparent_count();
+                    assert_eq!(count, rows_transparent(&e), "{ctx}: recount vs live rows");
+                    assert_eq!(count, ecs_transparent(&e), "{ctx}: recount vs ECS");
+
+                    let n = e.render_state.gpu_entity_count() as usize;
+                    saw_stale_tail |= e.render_state.gpu_render_meta()[n * 2..]
+                        .chunks_exact(2)
+                        .any(|row| row[1] & RENDER_META_TRANSPARENT_BIT != 0);
+
+                    let ids = id_column(&e);
+                    let generation = e.ids_generation();
+                    assert!(generation.wrapping_sub(prev_gen) <= 1, "{ctx}: at most one bump per frame");
+                    if ids != prev_ids {
+                        assert_ne!(generation, prev_gen, "{ctx}: the id column changed, the generation did not");
+                    }
+                    prev_ids = ids;
+                    prev_gen = generation;
+                }
+            }
+            assert!(saw_stale_tail, "no run left a transparent bit past gpu_count: the stale-tail case went untested");
+        }
+
+        #[cfg(feature = "dev-tools")]
+        #[test]
+        fn reset_bumps_the_generation_and_zeroes_the_count() {
+            let mut e = Engine::new();
+            e.process_commands(&[spawn_cmd(0), set_transparent(0, true)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.render_state.transparent_count(), 1);
+            let g = e.ids_generation();
+
+            e.reset();
+            assert_eq!(e.ids_generation(), g.wrapping_add(1), "reset never restarts it at 0");
+            assert_eq!(e.render_state.transparent_count(), 0);
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), g.wrapping_add(1));
+        }
+
+        #[cfg(feature = "dev-tools")]
+        #[test]
+        fn snapshot_restore_bumps_the_generation_once_and_recounts() {
+            let mut e = Engine::new();
+            e.process_commands(&[spawn_cmd(0), spawn_cmd(1), set_transparent(0, true)]);
+            e.update(FIXED_DT);
+            let snapshot = e.snapshot_create();
+
+            e.process_commands(&[set_transparent(1, true)]);
+            e.update(FIXED_DT);
+            assert_eq!(e.render_state.transparent_count(), 2);
+            let g = e.ids_generation();
+
+            assert!(e.snapshot_restore(&snapshot));
+            assert_eq!(e.render_state.transparent_count(), 1, "recounted without an update");
+            assert_eq!(e.ids_generation(), g.wrapping_add(1));
+            e.update(FIXED_DT);
+            assert_eq!(e.ids_generation(), g.wrapping_add(1), "the restore's slot flag was consumed");
+        }
     }
 }
