@@ -104,6 +104,19 @@ describe('PieceReloadCollector', () => {
     expect(armed.size).toBe(0);
   });
 
+  it('dispose cancels the pending window, and every later offer is ignored', () => {
+    // The HMR accepts outlive the renderer: after destroy() nothing may reach a destroyed device.
+    const { c, apply, armed, fire } = collector();
+    c.offer('quad', 'q1');
+    c.dispose();
+    expect(armed.size).toBe(0);
+    c.offer('line', 'l1');
+    expect(armed.size).toBe(0);
+    fire();
+    c.flushNow();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it('waits the delay it is given', () => {
     const { c, armed } = collector(120);
     c.offer('quad', 'q1');
@@ -196,6 +209,11 @@ describe('renderer.ts — every primitive piece reaches the collector', () => {
 
   it('the piece probe guards the RAW pieces, before compiling', () => {
     expect(renderer).toMatch(/assertPiecesNotEmpty\(primitivePieces\);\s*compilePrimitives\(\);/);
+  });
+
+  it('destroy() disposes the collector first: a pending window never reaches the destroyed device', () => {
+    expect(renderer).toContain('cancelPieceReloads = () => pieceReloads.dispose();');
+    expect(renderer).toMatch(/\n {4}destroy\(\) \{\n {6}cancelPieceReloads\(\);\n/);
   });
 
   it("'basic' is an alias of the 'quad' slot, not a slot of its own", () => {

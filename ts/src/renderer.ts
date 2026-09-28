@@ -743,6 +743,10 @@ export async function createRenderer(
     });
   }
 
+  // Dev only: cancels the primitive pieces' pending HMR window. Set in the
+  // import.meta.hot block below; destroy() calls it first.
+  let cancelPieceReloads = (): void => {};
+
   // --- 9. Build the Renderer object ---
   const rendererObj: Renderer = {
     textureManager,
@@ -1018,6 +1022,7 @@ export async function createRenderer(
     debugProbe,
 
     destroy() {
+      cancelPieceReloads();
       debugProbe?.destroy();
       gpuProfiler?.destroy();
       particleSystem.destroy();
@@ -1041,6 +1046,8 @@ export async function createRenderer(
     // a prelude rename and its uses in a library arrive as separate updates,
     // and each alone would be probed against the other's old text.
     const pieceReloads = new PieceReloadCollector((entries) => requests.reloadShaders(entries));
+    // The accepts outlive the renderer: after destroy() no window may reach its device.
+    cancelPieceReloads = () => pieceReloads.dispose();
     import.meta.hot.accept('./shaders/primitives/prelude.wgsl?raw', (mod) => {
       if (mod) pieceReloads.offer('prelude', mod.default);
     });

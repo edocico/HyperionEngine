@@ -484,11 +484,14 @@ function compileToy(pieces: Record<string, string>): string[] {
  * Pieces sharing ONE probe, like the renderer's piece slots. The probe
  * compiles the current text of every piece together (recorded in `compiled`)
  * and throws synchronously on an empty piece, like assertPiecesNotEmpty. The
- * validation resolves with the errors of the probe it ran.
+ * validation resolves with the errors of the probe it ran: at once, or, with
+ * `deferVerdicts`, when the test calls the entry `verdicts` holds for it (like
+ * popErrorScope, which answers later).
  */
-function toyPieces(initial: Record<string, string>) {
+function toyPieces(initial: Record<string, string>, deferVerdicts = false) {
   const sources: Record<string, string> = { ...initial };
   const compiled: Array<Record<string, string>> = [];
+  const verdicts: Array<() => void> = [];
   let errors: string[] | null = null;
   const probe = (): void => {
     for (const [name, src] of Object.entries(sources)) {
@@ -507,7 +510,8 @@ function toyPieces(initial: Record<string, string>) {
       } finally {
         errors = null;
       }
-      return Promise.resolve(found);
+      if (!deferVerdicts) return Promise.resolve(found);
+      return new Promise((resolve) => verdicts.push(() => resolve(found)));
     },
   };
   const slots: Record<string, ShaderSlot> = {};
@@ -519,7 +523,7 @@ function toyPieces(initial: Record<string, string>) {
       usedBy: () => true,
     };
   }
-  return { sources, slots, validation, compiled };
+  return { sources, slots, validation, compiled, verdicts };
 }
 
 /** Timers fired by hand: the collector's debounce window closes when the test says so. */
@@ -551,10 +555,19 @@ const PIECES: Record<string, string> = {
   line: 'use:camera use:lineHelper def:line_fs',
 };
 
-/** GraphRequests over toy pieces, fed by a PieceReloadCollector as HMR feeds it. */
-function grouped(initial: Record<string, string> = PIECES) {
-  const toy = toyPieces(initial);
+/**
+ * GraphRequests over toy pieces, fed by a PieceReloadCollector as HMR feeds it.
+ * `builtFrom` records the sources every graph request was made from.
+ */
+function grouped(initial: Record<string, string> = PIECES, deferVerdicts = false) {
+  const toy = toyPieces(initial, deferVerdicts);
   const env = setup(toy.slots, toy.validation);
+  const builtFrom: Array<Record<string, string>> = [];
+  const request = env.host.request.getMockImplementation()!;
+  env.host.request.mockImplementation((mode: GraphMode) => {
+    builtFrom.push({ ...toy.sources });
+    return request(mode);
+  });
   const timers = manualTimers();
   const windows: Array<Promise<Map<string, ReloadOutcome>>> = [];
   const collector = new PieceReloadCollector((entries) => {
@@ -562,7 +575,28 @@ function grouped(initial: Record<string, string> = PIECES) {
     windows.push(outcome);
     return outcome;
   }, 50, timers.timers);
-  return { ...env, ...toy, collector, fire: timers.fire, windows };
+  return { ...env, ...toy, collector, fire: timers.fire, windows, builtFrom };
+}
+
+type Grouped = ReturnType<typeof grouped>;
+
+/** Answer the pending GPU verdict at `index` (the oldest by default), and let what awaits it run. */
+async function settle(env: Grouped, index = 0): Promise<void> {
+  env.verdicts.splice(index, 1)[0]();
+  await tick();
+}
+
+/** Answer every pending verdict, oldest first, including the ones they lead to. */
+async function settleAll(env: Grouped): Promise<void> {
+  while (env.verdicts.length > 0) await settle(env);
+}
+
+/** Spec §3.3: every graph was requested from a set some probe compiled, and it compiles. */
+function expectEveryGraphProbed(env: Grouped): void {
+  for (const set of env.builtFrom) {
+    expect(env.compiled).toContainEqual(set);
+    expect(compileToy(set)).toEqual([]);
+  }
 }
 
 const outcomesOf = async (p: Promise<Map<string, ReloadOutcome>>) => Object.fromEntries(await p);
@@ -796,5 +830,145 @@ describe('GraphRequests — reloadShaders', () => {
     expect(env.host.request).not.toHaveBeenCalled();
     expect(env.sources.quad).toBe(PIECES.quad);
     expect(env.sources.gradient).toBe('use:camera def:gradient_fs');
+  });
+});
+
+// Spec §3.3 point 3 across calls: a verdict is about the sources current when
+// its probe ran. Another reload committing meanwhile makes the set untried.
+describe('GraphRequests — reloadShaders over sources committed meanwhile', () => {
+  const RENAMED = { prelude: 'def:camera def:X2', quad: 'use:camera use:X2 def:quad_fs' };
+  const BEFORE_RENAME = { prelude: 'def:camera def:X', quad: 'use:camera use:X def:quad_fs', line: 'use:camera def:line_fs' };
+  const renameWindow = (env: Grouped) => env.graph.reloadShaders([
+    { name: 'prelude', code: RENAMED.prelude },
+    { name: 'quad', code: RENAMED.quad },
+  ]);
+
+  it('a window probed before another window committed is probed again: no graph from an untried set, the rename stays', async () => {
+    const env = grouped(BEFORE_RENAME, true);
+    // A: the coupled rename X -> X2. The union passes, each piece alone fails.
+    const a = renameWindow(env);
+    // B, before A's verdict: line starts using X. Probed over the OLD prelude, it passes.
+    const b = env.graph.reloadShaders([{ name: 'line', code: 'use:camera use:X def:line_fs' }]);
+    await settleAll(env);
+
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+    expect(await outcomesOf(a)).toEqual({ prelude: 'swapped', quad: 'swapped' });
+    expect(await outcomesOf(b)).toEqual({ line: 'rejected' });
+    expect(env.sources).toEqual({ ...BEFORE_RENAME, ...RENAMED });
+    expect(env.log.error).toHaveBeenCalledWith(expect.stringMatching(
+      /Shader "line" rejected over the sources another reload committed meanwhile.*line: unresolved identifier X/s,
+    ));
+    expectEveryGraphProbed(env);
+  });
+
+  it('a coupled window whose quad is saved again before the verdict: both windows rejected (the declared limit)', async () => {
+    const env = grouped(BEFORE_RENAME, true);
+    const a = renameWindow(env);
+    // quad saved again, still using X2: it supersedes A's quad and is probed over the OLD prelude.
+    const b = env.graph.reloadShaders([{ name: 'quad', code: 'use:camera use:X2 def:quad_fs def:q3' }]);
+    await settleAll(env);
+
+    expect(await outcomesOf(a)).toEqual({ prelude: 'rejected', quad: 'superseded' });
+    expect(await outcomesOf(b)).toEqual({ quad: 'rejected' });
+    expect(env.host.request).not.toHaveBeenCalled();
+    expect(env.sources).toEqual(BEFORE_RENAME);
+  });
+
+  it('an independent window probed before the commit is probed again over it, and goes live', async () => {
+    const env = grouped(BEFORE_RENAME, true);
+    const a = renameWindow(env);
+    const b = env.graph.reloadShaders([{ name: 'line', code: 'use:camera def:line_fs def:extra' }]);
+    await settleAll(env);
+
+    // A: the union and two solos. B: its probe, then once more over A's commit.
+    expect(env.compiled).toHaveLength(5);
+    expect(env.compiled[4]).toEqual({ ...RENAMED, line: 'use:camera def:line_fs def:extra' });
+    expect(env.host.request).toHaveBeenCalledTimes(2);
+    env.requests[0].settle('swapped');
+    env.requests[1].settle('swapped');
+    expect(await outcomesOf(a)).toEqual({ prelude: 'swapped', quad: 'swapped' });
+    expect(await outcomesOf(b)).toEqual({ line: 'swapped' });
+    expectEveryGraphProbed(env);
+  });
+
+  it('a revert (a rejected graph) while a window waits makes it probe again', async () => {
+    const env = grouped(PIECES, true);
+    const first = env.graph.reloadShaders([{ name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:q2' }]);
+    await settleAll(env); // quad committed, graph requested
+    // Probed over the committed quad, which it uses.
+    const second = env.graph.reloadShaders([{ name: 'line', code: 'use:camera use:lineHelper def:line_fs use:q2' }]);
+    env.requests[0].settle('rejected', ['out of memory']); // quad goes back to its old source
+    await tick();
+    expect(env.sources.quad).toBe(PIECES.quad);
+    await settleAll(env);
+
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    expect(await outcomesOf(first)).toEqual({ quad: 'rejected' });
+    expect(await outcomesOf(second)).toEqual({ line: 'rejected' });
+    expect(env.sources.line).toBe(PIECES.line);
+  });
+
+  it('a member superseded while the survivors are probed together: the lone survivor, proven alone, goes live', async () => {
+    const env = grouped({ ...PIECES, gradient: 'use:camera def:gradient_fs' }, true);
+    const Q2 = 'use:camera use:quadHelper def:quad_fs def:q2';
+    const G2 = 'use:camera def:gradient_fs def:g2';
+    const G3 = 'use:camera def:gradient_fs def:g3';
+    const w = env.graph.reloadShaders([
+      { name: 'quad', code: Q2 },
+      { name: 'line', code: 'use:camera use:lineHelper def:line_fs bad' },
+      { name: 'gradient', code: G2 },
+    ]);
+    for (let i = 0; i < 4; i++) await settle(env); // the union and three solos
+    // quad and gradient pass alone: probed together now.
+    expect(env.compiled[4]).toEqual({ ...PIECES, quad: Q2, gradient: G2 });
+    // Before that verdict, a later window reloads gradient.
+    const later = env.graph.reloadShaders([{ name: 'gradient', code: G3 }]);
+    await settle(env); // the together probe: gradient superseded, quad alone left
+
+    expect(env.compiled).toHaveLength(6); // quad was proven alone over these sources: not probed again
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    expect(env.builtFrom[0]).toEqual({ ...PIECES, quad: Q2, gradient: 'use:camera def:gradient_fs' });
+
+    await settleAll(env); // the later window, probed again over quad's commit
+    expect(env.compiled).toHaveLength(7);
+    env.requests[0].settle('swapped');
+    env.requests[1].settle('swapped');
+    expect(await outcomesOf(w)).toEqual({ quad: 'swapped', line: 'rejected', gradient: 'superseded' });
+    expect(await outcomesOf(later)).toEqual({ gradient: 'swapped' });
+    expect(env.sources).toEqual({ ...PIECES, quad: Q2, gradient: G3 });
+    expectEveryGraphProbed(env);
+  });
+
+  it('the union passed but a member was superseded: the others are probed together before any graph', async () => {
+    const env = grouped(PIECES, true);
+    const P2 = 'def:camera def:quadHelper def:lineHelper def:p2';
+    const Q2 = 'use:camera use:quadHelper def:quad_fs def:q2';
+    const w = env.graph.reloadShaders([
+      { name: 'prelude', code: P2 },
+      { name: 'quad', code: Q2 },
+      { name: 'line', code: 'use:camera use:lineHelper def:line_fs def:l2' },
+    ]);
+    const L3 = 'use:camera use:lineHelper def:line_fs def:l3';
+    const later = env.graph.reloadShaders([{ name: 'line', code: L3 }]); // supersedes w's line
+    for (let i = 0; i < 4; i++) await settle(env); // w: the union (passes) and three solos
+
+    // The union held w's line, which is gone: prelude + quad were never tried together.
+    expect(env.compiled).toHaveLength(6);
+    expect(env.compiled[5]).toEqual({ ...PIECES, prelude: P2, quad: Q2 });
+    expect(env.host.request).not.toHaveBeenCalled();
+
+    await settle(env, 1); // that probe's verdict, before the later window's
+    expect(env.compiled).toHaveLength(6);
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    expect(env.builtFrom[0]).toEqual({ ...PIECES, prelude: P2, quad: Q2 });
+
+    await settleAll(env);
+    env.requests[0].settle('swapped');
+    env.requests[1].settle('swapped');
+    expect(await outcomesOf(w)).toEqual({ prelude: 'swapped', quad: 'swapped', line: 'superseded' });
+    expect(await outcomesOf(later)).toEqual({ line: 'swapped' });
+    expect(env.sources).toEqual({ prelude: P2, quad: Q2, line: L3 });
+    expectEveryGraphProbed(env);
   });
 });

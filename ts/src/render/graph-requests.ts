@@ -81,11 +81,15 @@ const DISABLING: Record<Feature, string> = {
  *
  * Shaders that depend on each other (the primitive pieces: a prelude rename
  * and its uses in a library) are reloaded as a group by `reloadShaders`:
- * validated together, and alone as a fallback. No graph is ever built from a
- * set a probe rejected, or that no probe tried together. With independent
- * files, a broken one in a batch (Save All, a checkout) cannot take a valid
- * one down with it; a coupled edit saved together with an unrelated broken
- * piece is rejected whole and must be saved again.
+ * validated together, and alone as a fallback. It never requests a graph
+ * from a set a probe rejected, or from one no probe tried together over the
+ * sources current when it commits: if another reload committed while it
+ * waited for the GPU, it probes its set again. (`reloadShader`, one shader,
+ * commits on the verdict of its own probe.) With independent files, a broken
+ * one in a batch (Save All, a checkout) cannot take a valid one down with it.
+ * Two declared limits, both fixed by saving the pieces again: a coupled edit
+ * saved together with an unrelated broken piece is rejected whole, and so is
+ * a coupled window one of whose pieces is saved again before its verdict.
  *
  * If the GPU nevertheless rejects a graph, every slot goes back to the source
  * the live graph was built from, and `requested` to the live mode.
@@ -110,6 +114,13 @@ export class GraphRequests<O, B> {
   private requestSeq = 0;
   /** A shader the live graph uses was validated while a switch away was pending: rebuild if that switch fails. */
   private liveStale = false;
+  /**
+   * Committing writes so far: a reload keeping its source, a revert after a
+   * rejected graph (not the write-probe-restore of a probe). A verdict is
+   * about the sources current when its probe ran: `reloadShaders` probes its
+   * set again when this moved in between.
+   */
+  private commits = 0;
 
   constructor(private readonly deps: GraphRequestsDeps<O, B>) {
     for (const [name, slot] of Object.entries(deps.slots)) this.goodSources.set(name, slot.read());
@@ -212,6 +223,7 @@ export class GraphRequests<O, B> {
         );
         return 'rejected';
       }
+      this.commits++;
       slot.write(source);
       if (!slot.usedBy(this.wanted.mode)) {
         this.goodSources.set(name, source);
@@ -240,11 +252,21 @@ export class GraphRequests<O, B> {
    *   restored once more TOGETHER, over the sources current then, and a graph
    *   is requested only if that passes.
    *
+   * A verdict is about the sources current when its probe ran. If another
+   * reload committed, or a rejected graph reverted the sources, while this
+   * call waited for the GPU, the kept set — a lone entry too — is written,
+   * probed and restored again over the current sources, until a verdict
+   * arrives with nothing committed in between, or the set is rejected.
+   *
    * Versions are the ones `reloadShader` uses, per name: each entry whose
    * probe reached the GPU bumps its version (an entry that threw — an empty
    * piece — supersedes nothing), and an entry whose version moved before the
    * verdict (a later window, a direct `reloadShader`) is dropped as
-   * 'superseded'.
+   * 'superseded'. Declared limit: a coupled window (a prelude rename + its
+   * uses) that loses an entry this way loses its partner too — the rest is
+   * rejected unless it compiles alone, and the newer window, probed over the
+   * rest's OLD text, usually fails as well. Both pieces must then be saved
+   * again, together.
    *
    * Resolves to one outcome per name.
    */
@@ -265,6 +287,8 @@ export class GraphRequests<O, B> {
     if (candidates.length === 0) return outcomes;
 
     // --- One synchronous window: the union, then each entry alone. ---
+    // Every verdict below is about the sources as they are now.
+    const startCommits = this.commits;
     const union = this.probeTogether(candidates);
     const solos = candidates.length === 1 ? [union] : candidates.map((c) => this.probeTogether([c]));
     const probed: Array<ReloadCandidate & { version: number; solo: Promise<string[]> }> = [];
@@ -295,12 +319,13 @@ export class GraphRequests<O, B> {
     });
 
     let keep: typeof alive;
-    let proven: boolean;
+    /** The commit count at which `keep` compiled as one set; null: never tried together. */
+    let provenAt: number | null;
     // Proven by the union only if every candidate is still in: an entry that
     // threw or was superseded leaves a subset no probe tried together.
     if (unionErrors.length === 0 && alive.length === candidates.length) {
       keep = alive;
-      proven = true;
+      provenAt = startCommits;
     } else {
       keep = [];
       for (const c of alive) {
@@ -323,10 +348,15 @@ export class GraphRequests<O, B> {
         return outcomes;
       }
       // A single survivor was proven by its own probe; more must be tried together.
-      proven = keep.length <= 1;
+      provenAt = keep.length <= 1 ? startCommits : null;
     }
 
-    while (!proven) {
+    // Write-probe-restore `keep` as one set over the CURRENT sources until a
+    // verdict is about sources still current: another reload may have
+    // committed while this one waited for the GPU, and its sources plus
+    // `keep` are a set no probe tried. A lone survivor is no exception.
+    while (keep.length > 0 && provenAt !== this.commits) {
+      const at = this.commits;
       const again = this.probeTogether(keep);
       const errors = again.threw ? [String(again.error)] : await again.messages;
       const current = keep.filter(isCurrent);
@@ -334,20 +364,27 @@ export class GraphRequests<O, B> {
         // A member was reloaded again meanwhile: this verdict was about another set.
         for (const c of keep) if (!isCurrent(c)) outcomes.set(c.name, 'superseded');
         keep = current;
-        proven = keep.length <= 1;
+        // A lone survivor that compiled alone did so over this call's first
+        // sources; any other set left has not been tried as it is.
+        provenAt = keep.length === 1 && keep[0].errors.length === 0 ? startCommits : null;
         continue;
       }
       if (errors.length > 0) {
         for (const c of keep) outcomes.set(c.name, 'rejected');
+        const why = at === startCommits
+          ? 'compile alone but not together'
+          : 'rejected over the sources another reload committed meanwhile';
         this.deps.log.error(
-          `[Hyperion] ${shaderLabel(keep)} compile alone but not together — keeping the previous sources:\n${errors.join('\n')}`,
+          `[Hyperion] ${shaderLabel(keep)} ${why} — keeping the previous sources:\n${errors.join('\n')}`,
         );
         return outcomes;
       }
-      proven = true;
+      provenAt = at;
     }
     if (keep.length === 0) return outcomes;
 
+    // Synchronous since the loop's last check: the counter is still provenAt.
+    this.commits++;
     for (const c of keep) c.slot.write(c.source);
     const unused = keep.filter((c) => !c.slot.usedBy(this.wanted.mode));
     const used = keep.filter((c) => c.slot.usedBy(this.wanted.mode));
@@ -493,6 +530,7 @@ export class GraphRequests<O, B> {
       if (!slot.usedBy(rejected)) continue;
       const good = this.goodSources.get(name);
       if (good !== undefined && slot.read() !== good) {
+        this.commits++;
         slot.write(good);
         reverted.push(name);
       }

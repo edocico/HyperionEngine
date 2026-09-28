@@ -30,6 +30,7 @@ export class PieceReloadCollector {
   private readonly pending = new Map<string, string>();
   private handle: unknown = null;
   private armed = false;
+  private disposed = false;
 
   constructor(
     private readonly apply: (entries: Array<{ name: string; code: string }>) => Promise<unknown>,
@@ -39,6 +40,7 @@ export class PieceReloadCollector {
 
   /** A piece's new text, as an HMR `accept` delivers it. */
   offer(name: string, code: string): void {
+    if (this.disposed) return;
     if (code.trim() !== '') this.pending.set(name, code);
     this.disarm();
     this.armed = true;
@@ -52,7 +54,7 @@ export class PieceReloadCollector {
   /** Send the window now: every pending piece, in the order first offered. */
   flushNow(): void {
     this.disarm();
-    if (this.pending.size === 0) return;
+    if (this.disposed || this.pending.size === 0) return;
     const entries = [...this.pending].map(([name, code]) => ({ name, code }));
     this.pending.clear();
     let settled: Promise<unknown>;
@@ -63,6 +65,18 @@ export class PieceReloadCollector {
     }
     // An HMR callback has nobody to report to: log, never leave a rejection unhandled.
     settled.catch((err: unknown) => console.error('[Hyperion] Piece hot-reload failed:', err));
+  }
+
+  /**
+   * Cancel the pending window and ignore every later offer. The renderer calls
+   * it from destroy(): the HMR accept callbacks outlive the renderer, and a
+   * reload probed on a destroyed device passes vacuously (its error scopes
+   * resolve null), then commits into the module-level shader sources.
+   */
+  dispose(): void {
+    this.disposed = true;
+    this.disarm();
+    this.pending.clear();
   }
 
   private disarm(): void {
