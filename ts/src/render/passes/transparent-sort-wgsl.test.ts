@@ -379,6 +379,16 @@ describe('gather_main (§5.3 gather)', () => {
     expect(b).toContain('if (i >= n) { return; }');
   });
 
+  it('lane 0 fills regionEnd/regionBase BEFORE the barrier, every lane reads them after it', () => {
+    const [fill, read] = b.split(/workgroupBarrier\s*\(\s*\)\s*;/);
+    expect(fill).toMatch(/^\s*if\s*\(\s*lid\s*==\s*0u\s*\)\s*\{/);
+    expect(fill).toContain('for (var region = 0u; region < GATHER_REGIONS; region++)');
+    expect(fill).toContain('regionEnd[region] = acc;');
+    expect(fill).toContain('regionBase[region] = indirectArgs[arg + ARG_FIRST_INSTANCE];');
+    expect(read).toContain('let raw = regionEnd[GATHER_REGIONS - 1u];');
+    expect(read).not.toMatch(/region(?:End|Base)\[[^\]]*\]\s*=[^=]/);
+  });
+
   it('only lane 0 of workgroup 0 writes the header, words 0-11 including the stamp', () => {
     const at = b.search(/if\s*\(\s*wid\.x\s*==\s*0u\s*&&\s*lid\s*==\s*0u\s*\)\s*\{/);
     expect(at).toBeGreaterThan(-1);
@@ -403,6 +413,8 @@ describe('gather_main (§5.3 gather)', () => {
       'header[H_OVERFLOW] = select(0u, 1u, raw > params.limit);',
       'header[H_STAMP] = params.stamp;',
     ]) expect(block).toContain(line);
+    // Exactly those 12: words 12-15 keep what prepare() wrote.
+    expect([...block.matchAll(/header\[/g)]).toHaveLength(12);
   });
 
   it('finds the region of element i without select over an index, then writes lo, hi and the slot', () => {
@@ -430,6 +442,17 @@ describe('upsweep_main, scan_main, scatter_main (§5.3 sort)', () => {
     expect(body(sortSource, 'digitOf')).toContain('select(hi, lo, p < LO_PASSES)');
   });
 
+  it('digitShift and digitOf, whole: the digit of pass p, as the CPU model takes it', () => {
+    const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
+    expect(flat(body(sortSource, 'digitShift')))
+      .toBe('if (p < LO_PASSES) { return p * DIGIT_BITS; } return (p - LO_PASSES) * DIGIT_BITS;');
+    expect(flat(body(sortSource, 'digitOf')))
+      .toBe('return (select(hi, lo, p < LO_PASSES) >> digitShift(p)) & DIGIT_MASK;');
+    // Their callers: the upsweep's shift, the scatter's digit.
+    expect(body(sortSource, 'upsweep_main')).toContain('let shift = digitShift(p);');
+    expect(body(sortSource, 'scatter_main')).toContain('d = digitOf(lo[r], hi[r], p);');
+  });
+
   it.each(['upsweep_main', 'scatter_main'])('%s: the tile guard depends only on workgroup_id and the read-only header', (entry) => {
     const b = body(sortSource, entry);
     expect(b).toContain('let n = header[H_INSTANCES];');
@@ -447,6 +470,13 @@ describe('upsweep_main, scan_main, scatter_main (§5.3 sort)', () => {
     expect(b).toContain('let wordBase = select(CAP, 0u, p < LO_PASSES);');
     expect(b).toContain('atomicAdd(&wgHist[(keysIn[wordBase + i] >> shift) & DIGIT_MASK], 1u);');
     expect(b).toContain('hist.tiles[t * RADIX + lid] = atomicLoad(&wgHist[lid]);');
+    // Each on its side of the barriers: zeroed before the counts, stored after the last one.
+    const [zero, count, store] = b.split(/workgroupBarrier\s*\(\s*\)\s*;/);
+    expect(zero).toContain('atomicStore(&wgHist[lid], 0u);');
+    expect(count).toContain('atomicAdd(&wgHist[');
+    expect(count).not.toContain('atomicStore(');
+    expect(store).toContain('hist.tiles[t * RADIX + lid] = atomicLoad(&wgHist[lid]);');
+    expect(b.indexOf('hist.tiles[')).toBeGreaterThan(b.lastIndexOf('workgroupBarrier'));
   });
 
   it('scan: 3 barriers in the text, 2 in the Hillis-Steele loop — read into v, barrier, add, barrier — 17 executed', () => {
@@ -472,6 +502,24 @@ describe('upsweep_main, scan_main, scatter_main (§5.3 sort)', () => {
     expect(executedBarriers(b, defs)).toBe(17);
     expect(b).toContain('hist.digitBase[p * RADIX + d] = incl - sum;');
     expect(b).toMatch(/if \(d == RADIX - 1u && incl != n\) \{\s*atomicOr\(&hist\.diag\[0\], DIAG_SCAN_MISMATCH\);\s*\}/);
+    // incl is read after the loop's last barrier, not before the loop.
+    const after = b.slice(matchBrace(b, open) + 1);
+    expect(after).toContain('let incl = totals[d];');
+    expect(textBarriers(after)).toBe(0);
+  });
+
+  it('scan: the column scan is EXCLUSIVE (store the sum, then add) over numTiles = ceil(n / TILE) tiles', () => {
+    const b = body(sortSource, 'scan_main');
+    expect(b).toContain('let n = header[H_INSTANCES];');
+    expect(b).toContain('let numTiles = (n + TILE - 1u) / TILE;');
+    expect(b).toContain('let batches = numTiles / SCAN_CHUNK;');
+    expect(b).toMatch(/for \(var b = 0u; b < batches; b\+\+\) \{\s*let t0 = b \* SCAN_CHUNK;/);
+    expect(b).toContain('for (var j = 0u; j < SCAN_CHUNK; j++) { c[j] = hist.tiles[(t0 + j) * RADIX + d]; }');
+    expect(b).toMatch(/for \(var j = 0u; j < SCAN_CHUNK; j\+\+\) \{\s*hist\.tiles\[\(t0 \+ j\) \* RADIX \+ d\] = sum;\s*sum \+= c\[j\];\s*\}/);
+    expect(b).toContain('for (var t = batches * SCAN_CHUNK; t < numTiles; t++)');
+    expect(b).toMatch(/let c = hist\.tiles\[t \* RADIX \+ d\];\s*hist\.tiles\[t \* RADIX \+ d\] = sum;\s*sum \+= c;/);
+    // Those two stores are the scan's only writes to the tile table.
+    expect([...b.matchAll(/hist\.tiles\[[^\]]*\]\s*=[^=]/g)]).toHaveLength(2);
   });
 
   it('scatter: B0, then per round (a) mark, (b) count and read the cursor — no writes —, (c) write and move the cursor: 13', () => {
