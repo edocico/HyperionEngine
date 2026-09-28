@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { GraphRequests, type ShaderSlot } from './graph-requests';
+import { GraphRequests, type ReloadOutcome, type ShaderSlot } from './graph-requests';
+import { PieceReloadCollector, type PieceReloadTimers } from './piece-reload-collector';
 import type { GraphMode } from './graph-assembly';
 import type { GpuValidation, RequestResult } from './graph-host';
 
@@ -50,9 +51,11 @@ function slot(source: string, usedBy: (m: GraphMode) => boolean = () => true) {
   return s;
 }
 
-function setup(slots: Record<string, ShaderSlot> = {}) {
+function setup(slots: Record<string, ShaderSlot> = {}, validationOverride?: GpuValidation) {
   const { host, requests } = fakeHost();
-  const { validation, runs } = deferredValidation();
+  const deferred = deferredValidation();
+  const validation = validationOverride ?? deferred.validation;
+  const runs = deferred.runs;
   const log = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const applyOutlineOptions = vi.fn();
   const applyBloomConfig = vi.fn();
@@ -174,20 +177,24 @@ describe('GraphRequests — shader hot-reload', () => {
 
   it('an empty file saved right after a good edit does not cancel the good one', async () => {
     // Editors can truncate before writing: HMR then delivers '' right after the edit.
-    const basic = slot('v0', () => false);
-    const probe = basic.probe;
-    basic.probe = () => {
-      if (basic.read() === '') throw new Error('ForwardPass.SHADER_SOURCES[0] must be set');
+    // The guard is NOT in ForwardPass (it never throws for one empty module):
+    // it is the renderer's piece-slot probe, assertPiecesNotEmpty on the RAW
+    // pieces, which throws synchronously inside validation.run. This probe
+    // stands for it.
+    const quad = slot('v0', () => false);
+    const probe = quad.probe;
+    quad.probe = () => {
+      if (quad.read().trim() === '') throw new Error('Shader piece "quad" is empty');
       probe();
     };
-    const { graph, runs } = setup({ basic });
+    const { graph, runs } = setup({ quad });
 
-    const good = graph.reloadShader('basic', 'v1');
-    expect(await graph.reloadShader('basic', '')).toBe('rejected');
+    const good = graph.reloadShader('quad', 'v1');
+    expect(await graph.reloadShader('quad', '')).toBe('rejected');
     runs.shift()!([]);
 
     expect(await good).toBe('validated');
-    expect(basic.read()).toBe('v1');
+    expect(quad.read()).toBe('v1');
   });
 
   it('a shader validated while unused survives a swap and a later unrelated rejection', async () => {
@@ -445,5 +452,349 @@ describe('GraphRequests — a switch-off survives the rejection of a later reque
 describe('GraphRequests — no rebuild of an unchanged graph', () => {
   it('has no rebuild()', () => {
     expect('rebuild' in GraphRequests.prototype).toBe(false);
+  });
+});
+
+/**
+ * A toy compiler for pieces compiled together, like the primitive prelude and
+ * libraries: `def:x` declares x (twice is a redeclaration), `use:x` needs a
+ * declaration in some piece, `bad` is a syntax error.
+ */
+function compileToy(pieces: Record<string, string>): string[] {
+  const errors: string[] = [];
+  const tokens = Object.entries(pieces).flatMap(([piece, src]) =>
+    src.split(/\s+/).filter(Boolean).map((token) => ({ piece, token })));
+  const declared = new Set<string>();
+  for (const { piece, token } of tokens) {
+    if (token === 'bad') errors.push(`${piece}: syntax error`);
+    if (!token.startsWith('def:')) continue;
+    const name = token.slice(4);
+    if (declared.has(name)) errors.push(`${piece}: redeclaration of ${name}`);
+    declared.add(name);
+  }
+  for (const { piece, token } of tokens) {
+    if (token.startsWith('use:') && !declared.has(token.slice(4))) {
+      errors.push(`${piece}: unresolved identifier ${token.slice(4)}`);
+    }
+  }
+  return errors;
+}
+
+/**
+ * Pieces sharing ONE probe, like the renderer's piece slots. The probe
+ * compiles the current text of every piece together (recorded in `compiled`)
+ * and throws synchronously on an empty piece, like assertPiecesNotEmpty. The
+ * validation resolves with the errors of the probe it ran.
+ */
+function toyPieces(initial: Record<string, string>) {
+  const sources: Record<string, string> = { ...initial };
+  const compiled: Array<Record<string, string>> = [];
+  let errors: string[] | null = null;
+  const probe = (): void => {
+    for (const [name, src] of Object.entries(sources)) {
+      if (src.trim() === '') throw new Error(`Shader piece "${name}" is empty`);
+    }
+    if (!errors) throw new Error('probe outside a validation window');
+    compiled.push({ ...sources });
+    errors.push(...compileToy(sources));
+  };
+  const validation: GpuValidation = {
+    run(fn) {
+      const found: string[] = [];
+      errors = found;
+      try {
+        fn();
+      } finally {
+        errors = null;
+      }
+      return Promise.resolve(found);
+    },
+  };
+  const slots: Record<string, ShaderSlot> = {};
+  for (const name of Object.keys(sources)) {
+    slots[name] = {
+      read: () => sources[name],
+      write: (src) => { sources[name] = src; },
+      probe,
+      usedBy: () => true,
+    };
+  }
+  return { sources, slots, validation, compiled };
+}
+
+/** Timers fired by hand: the collector's debounce window closes when the test says so. */
+function manualTimers() {
+  let pending: { id: number; fn: () => void } | null = null;
+  let ids = 0;
+  const timers: PieceReloadTimers = {
+    set: (fn) => {
+      pending = { id: ++ids, fn };
+      return pending.id;
+    },
+    clear: (handle) => {
+      if (pending?.id === handle) pending = null;
+    },
+  };
+  return {
+    timers,
+    fire(): void {
+      const due = pending;
+      pending = null;
+      due?.fn();
+    },
+  };
+}
+
+const PIECES: Record<string, string> = {
+  prelude: 'def:camera def:quadHelper def:lineHelper',
+  quad: 'use:camera use:quadHelper def:quad_fs',
+  line: 'use:camera use:lineHelper def:line_fs',
+};
+
+/** GraphRequests over toy pieces, fed by a PieceReloadCollector as HMR feeds it. */
+function grouped(initial: Record<string, string> = PIECES) {
+  const toy = toyPieces(initial);
+  const env = setup(toy.slots, toy.validation);
+  const timers = manualTimers();
+  const windows: Array<Promise<Map<string, ReloadOutcome>>> = [];
+  const collector = new PieceReloadCollector((entries) => {
+    const outcome = env.graph.reloadShaders(entries);
+    windows.push(outcome);
+    return outcome;
+  }, 50, timers.timers);
+  return { ...env, ...toy, collector, fire: timers.fire, windows };
+}
+
+const outcomesOf = async (p: Promise<Map<string, ReloadOutcome>>) => Object.fromEntries(await p);
+
+// Spec §3.3 point 6: the grouped reload, driven through the collector.
+describe('GraphRequests — grouped piece reload, through the collector', () => {
+  it('a prelude rename and its use in a library, in one window, go live together', async () => {
+    const env = grouped();
+    env.collector.offer('prelude', 'def:camera def:quadHelper2 def:lineHelper');
+    env.collector.offer('quad', 'use:camera use:quadHelper2 def:quad_fs');
+    env.fire();
+    await tick();
+    expect(env.compiled).toHaveLength(3); // the union, then each alone (both fail alone)
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ prelude: 'swapped', quad: 'swapped' });
+    expect(env.sources.prelude).toContain('def:quadHelper2');
+    expect(env.sources.quad).toContain('use:quadHelper2');
+    expect(env.log.log).toHaveBeenCalledWith('[Hyperion] Shaders "prelude", "quad" hot-reloaded');
+  });
+
+  it('a broken line and an independent valid quad: quad goes live, line is rejected', async () => {
+    const env = grouped();
+    env.collector.offer('line', 'use:camera use:lineHelper def:line_fs bad');
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:quad_extra');
+    env.fire();
+    await tick();
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ line: 'rejected', quad: 'swapped' });
+    expect(env.sources.line).toBe(PIECES.line);
+    expect(env.sources.quad).toContain('def:quad_extra');
+    expect(env.log.error).toHaveBeenCalledWith(expect.stringMatching(/Shader "line" rejected.*line: syntax error/s));
+  });
+
+  it('two pieces that compile alone but not together: both rejected, no graph request, a pending mode switch still goes live', async () => {
+    const env = grouped();
+    env.graph.enableOutlines('red'); // requests[0], still pending
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:shared');
+    env.collector.offer('line', 'use:camera use:lineHelper def:line_fs def:shared');
+    env.fire();
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ quad: 'rejected', line: 'rejected' });
+    expect(env.compiled).toHaveLength(3); // the union and the two solos: the rejected set is not tried again
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    expect(env.sources.quad).toBe(PIECES.quad);
+    expect(env.sources.line).toBe(PIECES.line);
+    expect(env.log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/Shaders "quad", "line" compile alone but not together.*redeclaration of shared/s),
+    );
+
+    env.requests[0].settle('swapped');
+    await tick();
+    expect(env.graph.requested.mode).toEqual(OUTLINES);
+    expect(env.host.mode).toEqual(OUTLINES);
+  });
+
+  it('a prelude rename + the line using it + an unrelated broken quad: all three rejected (the declared limit)', async () => {
+    const env = grouped();
+    env.collector.offer('prelude', 'def:camera def:quadHelper def:lineHelper2');
+    env.collector.offer('line', 'use:camera use:lineHelper2 def:line_fs');
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs bad');
+    env.fire();
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ prelude: 'rejected', line: 'rejected', quad: 'rejected' });
+    expect(env.host.request).not.toHaveBeenCalled();
+    expect(env.sources).toEqual(PIECES);
+  });
+
+  it('an entry replaced by a later window is superseded, and the newer source goes live', async () => {
+    const env = grouped();
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:v1');
+    env.fire();
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:v2');
+    env.fire();
+    await tick();
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ quad: 'superseded' });
+    expect(await outcomesOf(env.windows[1])).toEqual({ quad: 'swapped' });
+    expect(env.sources.quad).toContain('def:v2');
+  });
+
+  it("v1 then '' for the same piece in one window: v1 goes live", async () => {
+    const env = grouped();
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:v1');
+    env.collector.offer('quad', '');
+    env.fire();
+    await tick();
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ quad: 'swapped' });
+    expect(env.sources.quad).toContain('def:v1');
+  });
+
+  it("'' then v1 for the same piece in one window: v1 goes live", async () => {
+    const env = grouped();
+    env.collector.offer('quad', '');
+    env.collector.offer('quad', 'use:camera use:quadHelper def:quad_fs def:v1');
+    env.fire();
+    await tick();
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(env.windows[0])).toEqual({ quad: 'swapped' });
+    expect(env.sources.quad).toContain('def:v1');
+  });
+});
+
+describe('GraphRequests — reloadShaders', () => {
+  const PRELUDE_EXTRA = 'def:camera def:quadHelper def:lineHelper def:extra';
+  const QUAD_EXTRA = 'use:camera use:quadHelper def:quad_fs use:extra';
+
+  it('probes the union, then each entry alone, all inside the call; every source is back after', () => {
+    const env = grouped();
+    void env.graph.reloadShaders([{ name: 'prelude', code: PRELUDE_EXTRA }, { name: 'quad', code: QUAD_EXTRA }]);
+    expect(env.compiled).toEqual([
+      { prelude: PRELUDE_EXTRA, quad: QUAD_EXTRA, line: PIECES.line }, // the union
+      { prelude: PRELUDE_EXTRA, quad: PIECES.quad, line: PIECES.line }, // prelude alone
+      { prelude: PIECES.prelude, quad: QUAD_EXTRA, line: PIECES.line }, // quad alone
+    ]);
+    expect(env.sources).toEqual(PIECES);
+  });
+
+  it('a single entry is probed once', () => {
+    const env = grouped();
+    void env.graph.reloadShaders([{ name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:v1' }]);
+    expect(env.compiled).toHaveLength(1);
+  });
+
+  it('an entry whose probe throws is rejected at once and supersedes nothing', async () => {
+    const env = grouped();
+    const good = env.graph.reloadShader('quad', 'use:camera use:quadHelper def:quad_fs def:v1');
+    expect(await outcomesOf(env.graph.reloadShaders([{ name: 'quad', code: '' }]))).toEqual({ quad: 'rejected' });
+    expect(env.log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/Shader "quad" did not compile/), expect.objectContaining({ message: 'Shader piece "quad" is empty' }),
+    );
+    await tick();
+    env.requests[0].settle('swapped');
+
+    expect(await good).toBe('swapped');
+    expect(env.sources.quad).toContain('def:v1');
+  });
+
+  it('a direct reloadShader of a piece supersedes the entry of a pending window', async () => {
+    const env = grouped();
+    const batch = env.graph.reloadShaders([{ name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:v1' }]);
+    const direct = env.graph.reloadShader('quad', 'use:camera use:quadHelper def:quad_fs def:v2');
+    await tick();
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(batch)).toEqual({ quad: 'superseded' });
+    expect(await direct).toBe('swapped');
+    expect(env.sources.quad).toContain('def:v2');
+  });
+
+  it('and the other way round: a window supersedes a pending direct reloadShader', async () => {
+    const env = grouped();
+    const direct = env.graph.reloadShader('quad', 'use:camera use:quadHelper def:quad_fs def:v1');
+    const batch = env.graph.reloadShaders([{ name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:v2' }]);
+    await tick();
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await direct).toBe('superseded');
+    expect(await outcomesOf(batch)).toEqual({ quad: 'swapped' });
+    expect(env.sources.quad).toContain('def:v2');
+  });
+
+  it('an empty entry next to a valid one: the valid one still goes live', async () => {
+    const env = grouped();
+    const outcome = env.graph.reloadShaders([
+      { name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:v1' },
+      { name: 'line', code: '' },
+    ]);
+    await tick();
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(outcome)).toEqual({ quad: 'swapped', line: 'rejected' });
+    expect(env.sources.quad).toContain('def:v1');
+    expect(env.sources.line).toBe(PIECES.line);
+  });
+
+  it('an unknown name is reported, the others still reload', async () => {
+    const env = grouped();
+    const outcome = env.graph.reloadShaders([
+      { name: 'nope', code: 'x' },
+      { name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:v1' },
+    ]);
+    await tick();
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(outcome)).toEqual({ nope: 'unknown', quad: 'swapped' });
+    expect(env.log.warn).toHaveBeenCalledWith('[Hyperion] Unknown shader pass: nope');
+  });
+
+  it('some pass alone: the passing ones are probed together once more before any graph request', async () => {
+    const env = grouped({ ...PIECES, gradient: 'use:camera def:gradient_fs' });
+    const outcome = env.graph.reloadShaders([
+      { name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:q2' },
+      { name: 'line', code: 'use:camera use:lineHelper def:line_fs bad' },
+      { name: 'gradient', code: 'use:camera def:gradient_fs def:g2' },
+    ]);
+    await tick();
+    // The union, three solos, then quad + gradient together over the current sources.
+    expect(env.compiled).toHaveLength(5);
+    expect(env.compiled[4]).toEqual({
+      prelude: PIECES.prelude,
+      quad: 'use:camera use:quadHelper def:quad_fs def:q2',
+      line: PIECES.line,
+      gradient: 'use:camera def:gradient_fs def:g2',
+    });
+    env.requests[0].settle('swapped');
+
+    expect(await outcomesOf(outcome)).toEqual({ quad: 'swapped', line: 'rejected', gradient: 'swapped' });
+  });
+
+  it('a passing subset that fails together is rejected, with no graph request', async () => {
+    const env = grouped({ ...PIECES, gradient: 'use:camera def:gradient_fs' });
+    const outcome = env.graph.reloadShaders([
+      { name: 'quad', code: 'use:camera use:quadHelper def:quad_fs def:shared' },
+      { name: 'line', code: 'use:camera use:lineHelper def:line_fs bad' },
+      { name: 'gradient', code: 'use:camera def:gradient_fs def:shared' },
+    ]);
+
+    expect(await outcomesOf(outcome)).toEqual({ quad: 'rejected', line: 'rejected', gradient: 'rejected' });
+    expect(env.host.request).not.toHaveBeenCalled();
+    expect(env.sources.quad).toBe(PIECES.quad);
+    expect(env.sources.gradient).toBe('use:camera def:gradient_fs');
   });
 });
