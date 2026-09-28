@@ -4,7 +4,9 @@ import { OccluderSeedStage, halfResolution } from './occluder-seed-stage';
 import { ResourcePool } from '../resource-pool';
 import { JFA_FORMAT } from '../formats';
 import type { FrameState } from '../render-pass';
-import basicShaderSource from '../../shaders/basic.wgsl?raw';
+import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule, type PrimitiveLibrary } from '../primitive-shaders';
+import { loadPrimitivePieces } from '../primitive-pieces.fixture';
+import { callGraph, functionBody, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
 
 // OccluderSeedStage rasterises the occluders of ONE SDF set into the seed
 // texture (light layers, design 2026-09-26). It runs each primitive's own
@@ -148,59 +150,87 @@ describe('halfResolution', () => {
   });
 });
 
-describe('basic.wgsl occluder entry', () => {
-  it('drops non-casters in the vertex stage only when the pipeline asks for it', () => {
-    // Default false: the ForwardPass pipelines constant-fold the check away.
-    expect(basicShaderSource).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
+// ---------------------------------------------------------------------------
+// The primitive modules are composed (render/primitive-shaders.ts). What every
+// module shares lives once in the prelude and is checked there
+// (forward-pass.test.ts checks that each module contains it verbatim); the
+// generated wrappers are checked on each per-type module; the library's
+// coverage function through the call graph.
+const pieces = loadPrimitivePieces();
+const prelude = stripComments(pieces.prelude);
+const typeModules = composeTypeModules(pieces);
+const perType = PRIMITIVE_LIBRARIES.map(
+  (l): [string, PrimitiveLibrary, string] => [l.name, l, stripComments(typeModules[l.type])],
+);
+
+/** A function's body; throws when the function is missing. */
+function body(src: string, fn: string): string {
+  const text = functionBody(src, fn);
+  if (text === null) throw new Error(`fn ${fn} not found`);
+  return text;
+}
+
+describe('the prelude: the occluder switch, the castsShadow bit, the occluder layers', () => {
+  it('declares OCCLUDER_PASS, default false: the ForwardPass pipelines fold the check away', () => {
+    expect(prelude).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
   });
 
   it('agrees with Rust on the castsShadow bit of renderMeta', () => {
     const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
     const rustBit = Number(/RENDER_META_CASTS_SHADOW_BIT: u32 = 1 << (\d+);/.exec(rust)?.[1]);
-    const wgslBit = Number(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(basicShaderSource)?.[1]);
+    const wgslBit = Number(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << (\d+)u;/.exec(prelude)?.[1]);
     expect(rustBit).toBe(9);
     expect(wgslBit).toBe(rustBit);
   });
 
-  it('exposes fs_occluder', () => {
-    expect(basicShaderSource).toMatch(/fn fs_occluder\s*\(/);
+  // Light layers (design 2026-09-26): an occluder shadows only the layers in
+  // its mask, so a set's seed holds only its casters. The set's layers ride in
+  // the camera uniform, which every module shares with ForwardPass.
+  it('carries the set layers in the camera uniform; castsInto reads the mask, 0 = every layer', () => {
+    expect(prelude).toMatch(/struct CameraUniform\s*\{\s*viewProjection: mat4x4f,[^}]*occluderLayers: u32,/);
+    expect(prelude).toMatch(/fn castsInto\(meta1: u32, layers: u32\) -> bool/);
+    const casts = body(prelude, 'castsInto');
+    expect(casts).toMatch(/select\(meta1 >> 16u, 0xFFFFu, \(meta1 >> 16u\) == 0u\)/);
+    expect(casts).toContain('CASTS_SHADOW_BIT');
   });
 });
 
 // Every primitive ForwardPass draws must cast its own shape (design §6.2).
-// Light2D (type 6) has no shader and is not an occluder.
-const primitiveShaders = import.meta.glob(
-  ['../../shaders/basic.wgsl', '../../shaders/line.wgsl', '../../shaders/gradient.wgsl',
-   '../../shaders/box-shadow.wgsl', '../../shaders/bezier.wgsl', '../../shaders/msdf-text.wgsl'],
-  { query: '?raw', import: 'default', eager: true },
-) as Record<string, string>;
-
-describe('every primitive shader can cast its shape', () => {
-  it('finds the six primitive shaders', () => {
-    expect(Object.keys(primitiveShaders)).toHaveLength(6);
+// Light2D (type 6) has no module and is not an occluder.
+describe('every per-type module can cast its shape', () => {
+  it('the composer yields one module per type 0-5, and none for Light2D', () => {
+    expect(Object.keys(typeModules).map(Number)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(typeModules[6]).toBeUndefined();
   });
 
-  // Light layers (design 2026-09-26): an occluder shadows only the layers in
-  // its mask, so a set's seed holds only its casters. The set's layers ride in
-  // the camera uniform, which every primitive shader shares with ForwardPass.
-  it.each(Object.entries(primitiveShaders))('%s seeds only the occluders of the set being drawn', (_file, src) => {
-    expect(src).toMatch(/struct CameraUniform\s*\{\s*viewProjection: mat4x4f,[^}]*occluderLayers: u32,/);
-    expect(src).toMatch(/fn castsInto\(meta1: u32, layers: u32\) -> bool/);
-    // Mask 0 means every layer, for an occluder.
-    expect(src).toMatch(/select\(meta1 >> 16u, 0xFFFFu, \(meta1 >> 16u\) == 0u\)/);
-    expect(src).toMatch(/if \(OCCLUDER_PASS && !castsInto\(renderMeta\[entityIdx \* 2u \+ 1u\], camera\.occluderLayers\)\)/);
+  it('OccluderSeedStage builds an occluder pipeline from every composed module, and none from the uber', () => {
+    const { pipelines } = setUp(composeTypeModules(pieces));
+    expect(pipelines).toHaveLength(6);
+    for (const p of pipelines) {
+      expect(p.vertex.constants).toEqual({ OCCLUDER_PASS: 1 });
+      expect(p.fragment?.entryPoint).toBe('fs_occluder');
+    }
+    // The stage picks modules by the TEXT `fn fs_occluder`: a piece whose
+    // comment named it would make the uber look like a caster, and its
+    // pipeline fail (the lit graph rejected, lighting silently off).
+    expect(setUp({ 0: composeUberModule(pieces) }).pipelines).toHaveLength(0);
   });
 
-  it.each(Object.entries(primitiveShaders))('%s has the occluder entry, the override, and the castsShadow bit', (_file, src) => {
-    expect(src).toMatch(/override OCCLUDER_PASS\s*:\s*bool\s*=\s*false;/);
-    expect(src).toMatch(/const CASTS_SHADOW_BIT\s*:\s*u32\s*=\s*1u << 9u;/);
-    expect(src).toMatch(/@fragment\s*\n\s*fn fs_occluder\s*\(/);
-    // fs_main and fs_occluder share one coverage function, so the shadow is
-    // exactly what is drawn.
-    const shared = /fn (\w+)\(in: VertexOutput\) -> vec4f \{/.exec(src)?.[1];
-    expect(shared, 'a shared coverage function').toBeDefined();
-    const body = (entry: string) => src.slice(src.indexOf(`fn ${entry}`), src.indexOf('}', src.indexOf(`fn ${entry}`)));
-    expect(body('fs_main')).toContain(`${shared}(in)`);
-    expect(src.slice(src.indexOf('fn fs_occluder'))).toContain(`${shared}(in)`);
+  it.each(perType)('%s: vs_main drops non-casters when OCCLUDER_PASS is set, then tags the type', (_name, l, src) => {
+    const vs = body(src, 'vs_main');
+    expect(vs).toMatch(/if \(OCCLUDER_PASS && !castsInto\(renderMeta\[entityIdx \* 2u \+ 1u\], camera\.occluderLayers\)\)\s*\{\s*return culledVertex\(\);\s*\}/);
+    expect(vs).toMatch(new RegExp(`out\\.primType\\s*=\\s*${l.type}u?\\s*;`));
+    expect(callGraph(src).get('vs_main')?.has(`${l.prefix}vs`)).toBe(true);
+  });
+
+  it.each(perType)('%s: fs_occluder is an entry point, and it and fs_main reach the same coverage function', (_name, l, src) => {
+    expect(typeModules[l.type]).toMatch(/@fragment\s+fn fs_occluder\s*\(/);
+    const graph = callGraph(src);
+    expect(graph.get('fs_main')?.has(`${l.prefix}fs`)).toBe(true);
+    expect(graph.get('fs_occluder')?.has(`${l.prefix}occluder`)).toBe(true);
+    // One coverage function behind both, so the shadow is exactly what is drawn.
+    const shade = `${l.prefix}shade`;
+    expect(reachableFrom(src, 'fs_main').has(shade)).toBe(true);
+    expect(reachableFrom(src, 'fs_occluder').has(shade)).toBe(true);
   });
 });

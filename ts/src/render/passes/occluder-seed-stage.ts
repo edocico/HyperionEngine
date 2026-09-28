@@ -20,19 +20,20 @@ export function halfResolution(canvasWidth: number, canvasHeight: number): [numb
 /** The fragment entry point a primitive shader exposes to cast shadows. */
 const OCCLUDER_ENTRY = 'fs_occluder';
 
-/** CameraUniform in every primitive shader: viewProjection + occluderLayers + viewport size + pad. */
+/** CameraUniform (the prelude of every composed primitive module): viewProjection + occluderLayers + viewport size + pad. */
 const CAMERA_UNIFORM_SIZE = 80;
 
 /**
  * Rasterises the occluders of ONE SDF set into a seed texture (light layers,
  * design 2026-09-26). A stage of LightGroupsPass, not a graph node.
  *
- * It does not use a shader of its own. It runs each primitive's OWN module
- * through `fs_occluder`, which reuses the primitive's coverage: a sprite casts
- * the shadow of the texels it draws, a bezier of its curve. The pipelines set
- * `OCCLUDER_PASS = true`; the vertex stage then drops every entity that casts
- * no shadow or whose mask misses the set's layers (`castsInto`, in each
- * primitive shader). A primitive with no `fs_occluder` casts nothing.
+ * It does not use a shader of its own. It runs each primitive's OWN composed
+ * module (render/primitive-shaders.ts: prelude + library + wrappers) through
+ * `fs_occluder`, which reuses the library's coverage: a sprite casts the
+ * shadow of the texels it draws, a bezier of its curve. The pipelines set
+ * `OCCLUDER_PASS = true`; the generated `vs_main` then drops every entity that
+ * casts no shadow or whose mask misses the set's layers (`castsInto`, in the
+ * prelude). A module with no `fs_occluder` (the uber) casts nothing.
  *
  * The set's layers ride in the camera uniform: one 256-byte slice per set, all
  * written once in `prepare()`. Opaque and transparent buckets alike. The target is cleared to
@@ -53,8 +54,9 @@ export class OccluderSeedStage {
   private device: GPUDevice | null = null;
 
   /**
-   * @param shaderSources primitive type → WGSL module, the same map ForwardPass
-   *   uses (`ForwardPass.SHADER_SOURCES`), read at `setup()`.
+   * @param shaderSources primitive type → composed WGSL module, the same map
+   *   ForwardPass uses (`ForwardPass.SHADER_SOURCES`, recomposed in place on a
+   *   hot-reload), read at `setup()`.
    */
   constructor(private readonly shaderSources: Record<number, string>) {}
 
@@ -112,7 +114,7 @@ export class OccluderSeedStage {
       new Float32Array(data, s * SLICE, 16).set(frame.cameraViewProjection);
       new Uint32Array(data, s * SLICE + 64, 1)[0] = sets[s]?.occluderLayers ?? 0;
       // The FULL canvas size, not this stage's half-resolution target: a
-      // pixel-wide line (line.wgsl) keeps the NDC footprint it is drawn with.
+      // pixel-wide line (line_vs) keeps the NDC footprint it is drawn with.
       new Float32Array(data, s * SLICE + 68, 2).set([frame.canvasWidth, frame.canvasHeight]);
     }
     device.queue.writeBuffer(this.cameraBuffer, 0, data);

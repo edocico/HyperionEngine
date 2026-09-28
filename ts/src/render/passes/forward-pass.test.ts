@@ -399,9 +399,9 @@ const WHITE_AT_INDEX_0: PrimitiveLibraryName[] = ['quad', 'line', 'bezier'];
 describe('packed index 0 is white in every tier-sampling primitive', () => {
   it('sampleTierOrWhite returns white for packed index 0 before it samples a tier', () => {
     const fn = body(prelude, 'sampleTierOrWhite');
-    const untextured = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u/);
-    expect(untextured, 'the untextured check').toBeGreaterThan(-1);
-    expect(fn).toMatch(/vec4f\(1\.0\)/);
+    // The untextured check returns white itself, as the per-file shaders did.
+    const untextured = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
+    expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
     expect(fn.indexOf('sampleTier(in)')).toBeGreaterThan(untextured);
     expect(fn).not.toMatch(/textureSample/);
   });

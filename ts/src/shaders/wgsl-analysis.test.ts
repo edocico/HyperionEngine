@@ -4,8 +4,9 @@ import {
   bindingDecls, localNames, directives,
 } from './wgsl-analysis';
 
-// A cut-down primitive module in today's shape (basic.wgsl): bindings in three
-// groups, a lit fs_main, an fs_occluder that must not reach group 2.
+// A cut-down primitive module in the pre-5b one-file shape (the quad shader the
+// composed modules replaced): bindings in three groups, a lit fs_main, an
+// fs_occluder that must not reach group 2.
 const MODULE = `
 // Instanced quad shader.
 struct CameraUniform {
