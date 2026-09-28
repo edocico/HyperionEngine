@@ -1,0 +1,55 @@
+Phase 5b, step 1 — piece hot-reload smoke test (Task 8, Steps 16-19)
+Page: http://localhost:5173/?mode=B (low-power initScript), adapter amd / rdna-3,
+Primitives tab open, window.__hmrMarker set once. Each save below is ONE shell
+command writing the files in place; console read ~5 s later (types log/warn/error,
+new lines only). "control" = the Step 16 control script.
+
+== Step 16 — start ==
+grep -l 'applyLighting' ts/src/shaders/primitives/*.wgsl
+  -> prelude.wgsl, gradient.wgsl, quad.wgsl
+control: samePage true, rendering true, smoke1 {types:[],uber:false}, smoke3 {types:[],uber:false},
+         renamed {types:[],uber:false}, oldName {types:[0,1,2,3,4,5],uber:true}, broken {types:[],uber:false}
+
+== Step 17 — one library ==
+$ printf '\n// hmr-smoke-1\n' >> ts/src/shaders/primitives/quad.wgsl        (17:41:15)
+console: [log] [Hyperion] Shader "quad" hot-reloaded
+control: samePage true, rendering true, smoke1 {types:[0],uber:true}
+
+$ git checkout -- ts/src/shaders/primitives/quad.wgsl                        (17:41:31)
+console: [log] [Hyperion] Shader "quad" hot-reloaded   (the same line again: "[2 times]")
+control: samePage true, rendering true, smoke1 {types:[],uber:false}
+
+== Step 18 — coupled rename prelude + libraries, one save ==
+$ node -e "...replace(/\bapplyLighting\b/g,'applyLightingHmr')..." $(grep -l 'applyLighting' ts/src/shaders/primitives/*.wgsl)   (17:41:47)
+  (git diff --stat: gradient.wgsl 2 +-, prelude.wgsl 6 +++---, quad.wgsl 2 +-)
+console: [log] [Hyperion] Shaders "gradient", "quad", "prelude" hot-reloaded
+         (ONE line; no "rejected", "compile alone but not together" or "did not compile")
+control: samePage true, rendering true, renamed {types:[0,1,2,3,4,5],uber:true}, oldName {types:[],uber:false}
+
+$ git checkout -- ts/src/shaders/primitives/                                  (17:42:02)
+console: [log] [Hyperion] Shaders "gradient", "prelude", "quad" hot-reloaded   (ONE line)
+control: samePage true, rendering true, renamed {types:[],uber:false}, oldName {types:[0,1,2,3,4,5],uber:true}
+
+== Step 19 — one broken piece + one independent valid piece, one save ==
+$ node -e "fs.appendFileSync('.../line.wgsl','\nfn line_hmr_broken( {\n'); fs.appendFileSync('.../quad.wgsl','\n// hmr-smoke-3\n');"   (17:42:18)
+console: [error] [Hyperion] Shader "line" rejected by the GPU — keeping the previous source:
+         Error while parsing WGSL: :376:21 error: expected ')' for function declaration
+         fn line_hmr_broken( {
+                             ^
+         :378:2 error: unexpected attributes
+         @vertex
+         :379:1 error: expected '}' for function body
+         fn vs_main(@location(0) position: vec3f, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
+          - While calling [Device].CreateShaderModule([ShaderModuleDescriptor]).
+         [log] [Hyperion] Shader "quad" hot-reloaded
+control: samePage true, rendering true, smoke3 {types:[0],uber:true}, broken {types:[],uber:false}
+
+$ git checkout -- ts/src/shaders/primitives/ && git diff --exit-code ts/src/shaders/primitives; echo "exit $?"   (17:42:33)
+  -> exit 0
+console: [log] [Hyperion] Shaders "line", "quad" hot-reloaded
+control: samePage true, rendering true, smoke3 {types:[],uber:false}, broken {types:[],uber:false},
+         oldName {types:[0,1,2,3,4,5],uber:true}
+
+== Console at the end (types error, warn) ==
+Only the intended Step 19 rejection of "line". No "Device is lost", no VK_ERROR_*,
+no other validation error. The page never reloaded (samePage true throughout).

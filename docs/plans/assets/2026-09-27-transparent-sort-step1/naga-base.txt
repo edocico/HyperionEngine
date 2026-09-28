@@ -1,0 +1,7 @@
+ok   old-basic.wgsl
+ok   old-bezier.wgsl
+ok   old-box-shadow.wgsl
+ok   old-gradient.wgsl
+ok   old-line.wgsl
+ok   old-msdf-text.wgsl
+6/6 valid (naga)
