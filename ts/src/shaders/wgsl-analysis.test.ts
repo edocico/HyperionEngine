@@ -173,6 +173,13 @@ fn f(@builtin(position) p: vec4f, s: S) -> u32 { return s.lighting + 0xFFu + 1u;
     expect([...callGraph(src).get('f')!]).toEqual(['S']);
   });
 
+  it('counts an address-of use (&wgHist[lid]) as a reference to the module-scope name', () => {
+    const src = `
+var<workgroup> wgHist: array<u32, 8>;
+fn f(lid: u32) { atomicAdd(&wgHist[lid], 1u); }`;
+    expect([...callGraph(src).get('f')!]).toEqual(['wgHist']);
+  });
+
   it('follows calls transitively and collects the globals on the way', () => {
     const fromMain = reachableFrom(MODULE, 'fs_main');
     expect(fromMain.has('lightBuffer')).toBe(true);
