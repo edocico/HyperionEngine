@@ -119,7 +119,10 @@ cd ts && npm install
 
 # Pinned toolchains (do not use ad-hoc versions)
 # - Rust:  rust-toolchain.toml pins 1.97.1 + wasm32 target + clippy/rustfmt (rustup auto-installs)
-# - Node:  ts/package.json "engines": "^24" + ts/.nvmrc; ts/.npmrc sets engine-strict=true
+# - Node:  ts/package.json "engines": "^24" + ts/.nvmrc + the repo-root .node-version; ts/.npmrc sets engine-strict=true
+#          (.node-version: version managers that resolve from the CWD, like the Vite+ shim on the Mac, would give
+#          `npm --prefix ts …` run from the root the latest LTS; engines.node, .nvmrc, .node-version and @types/node
+#          change together, never one alone)
 ```
 
 ## Architecture
