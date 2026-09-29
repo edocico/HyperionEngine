@@ -343,8 +343,11 @@ export class EntityHandle implements Disposable {
   /**
    * Configure this entity as a line from (x0, y0) to (x1, y1), in the entity's
    * local units. `width` is in local units too — scaled by the entity and the
-   * zoom like any primitive — unless `{ unit: 'px' }`: then it is screen pixels,
-   * the same at every zoom. The culling radius follows the endpoints.
+   * zoom like any primitive — unless `{ unit: 'px' }`: then it is DEVICE pixels
+   * of the canvas backing store, the same at every zoom. At devicePixelRatio 2
+   * (a Retina display) a 3 px line is 1.5 CSS pixels wide: multiply by
+   * `devicePixelRatio` for a width in CSS pixels. The culling radius follows
+   * the endpoints.
    * Returns `this` for chaining.
    */
   line(x0: number, y0: number, x1: number, y1: number, width: number,
