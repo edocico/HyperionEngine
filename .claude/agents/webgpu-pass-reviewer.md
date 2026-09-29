@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 ---
 
 You review the TypeScript side of Hyperion's WebGPU passes (`ts/src/render/**`, `ts/src/renderer.ts`,
-`ts/src/particle-system.ts`) against the WGSL they drive (`ts/src/shaders/*.wgsl`). WebGPU cannot run
+`ts/src/particle-system.ts`) against the WGSL they drive (`ts/src/shaders/**/*.wgsl`; for a primitive, the COMPOSED module — prelude + library — is what runs). WebGPU cannot run
 headless here, so the unit tests use mock devices: every item below has shipped at least once with a
 green suite, and each one either drops whole frames at draw time or fails silently.
 
@@ -32,10 +32,18 @@ Given a change (a diff range or a list of files), check each pass it touches:
 7. **Indirect draws.** `drawIndexedIndirect(buffer, slot * 20)`: slot + 1 within the 28-entry,
    560-byte `indirect-args`; a non-zero `firstInstance` needs the `indirect-first-instance` device
    feature. For Light2D, LIGHT2D_ARG_SLOTS must be every slot cull.wgsl can fill (12, 13, 26, 27).
+   The uber transparent draw is `drawIndexedIndirect(transparent-args, 0)`: its 64-byte header is
+   DrawIndexedIndirect {6, n, 0, 0, 0} at word 0, DispatchIndirect {ceil(n/1024), 1, 1} at byte 20,
+   raw/limit/overflow/stamp at words 8-11 — `prepare()` resets it, the gather fills it; firstInstance
+   0, so it needs no feature. In a render pass `transparent-args` is INDIRECT only, never bound (the
+   usage scope is the whole pass); the sort binds it read-only in the dispatches it also drives.
 8. **Groups a pipeline's layout lacks.** An entry point that statically uses a binding its pipeline
-   layout does not have fails pipeline creation (group 2 is read in `fs_main` only, because
-   OccluderSeedStage runs `fs_occluder` on a two-group layout). Conversely `setBindGroup(2, …)` is
-   needed for every ForwardPass pipeline.
+   layout does not have fails pipeline creation. Every composed primitive module DECLARES group 2
+   (the prelude does), but only the lit types' `fs_main` (quad, gradient; their cases in the uber)
+   may reach it, through `applyLighting` — never `<p>_shade`, `<p>_vs` or a prelude helper that
+   `fs_occluder` reaches, because OccluderSeedStage runs `fs_occluder` on a two-group layout.
+   Conversely `setBindGroup(2, …)` is needed for every ForwardPass pipeline, the uber included. The
+   uber module must never reach OccluderSeedStage (it is not in `SHADER_SOURCES`).
 9. **Formats in pairs.** A pipeline target format and its texture format come from the same
    constant (`SCENE_HDR_FORMAT`, `JFA_FORMAT`); anything drawing to the swapchain uses
    `getPreferredCanvasFormat()`.
@@ -45,6 +53,11 @@ Given a change (a diff range or a list of files), check each pass it touches:
 11. **Render graph declarations.** One blind writer per resource; a pass drawing over the graph's
     output (`loadOp: 'load'`) reads AND writes `swapchain`; a staged pass's `profileStages` list
     matches its `mark()` calls one for one.
+12. **Pool resources owned by the renderer.** A pass must not register pool resources in `setup()`:
+    HMR probes run `setup()` then `destroy()` against the LIVE pool. `entity-ids`,
+    `transparent-order` and `transparent-args` are created by `createRenderer`; `entity-ids` is
+    uploaded there when `entityIdsGeneration` changes, scatter frames included, and nothing in
+    `execute()` may call `writeBuffer` on a buffer an earlier pass of the same submit reads.
 
 Method: read the pass, its shader and its test side by side; compute sizes and offsets explicitly
 rather than trusting comments. For each problem report file:line, the rule broken, the concrete

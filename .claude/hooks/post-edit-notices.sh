@@ -26,12 +26,31 @@ add() { notices="${notices}
 $1
 "; }
 
-case "$base" in
+case "$file" in
+  */shaders/primitives/prelude.wgsl)
+    add "Primitive PRELUDE modified ($base).
+  The prelude is the ONLY place that declares the primitive bindings (groups 0, 1, 2),
+  CameraUniform (80 B), VertexOutput, OCCLUDER_PASS/castsInto and the lighting block
+  (applyLighting). Changing a binding means changing render/primitive-bindings.ts,
+  ForwardPass (group 2 too) and OccluderSeedStage together; CameraUniform also means both
+  camera writers. It is composed into all 7 modules (6 per-type + the uber). Run
+    npx --prefix ts vitest run --root ts src/render/primitive-shaders.test.ts
+  and the wgsl-validator agent before committing."
+    ;;
+  */shaders/primitives/*.wgsl)
+    add "Primitive LIBRARY modified ($base).
+  A library declares no @group/@binding, no entry point, no directive and never the
+  text 'fn fs_occluder'. Every top-level name carries its prefix (quad_ line_ msdf_
+  bezier_ gradient_ boxshadow_), and it exposes <prefix>_vs/_fs/_occluder only (plus its
+  <prefix>_shade coverage). Lighting only through applyLighting, from quad_fs/gradient_fs.
+  Derivatives before any branch. It is composed into its per-type module AND the uber. Run
+    npx --prefix ts vitest run --root ts src/render/primitive-shaders.test.ts
+  and the wgsl-validator agent before committing."
+    ;;
   *.wgsl)
     add "WGSL shader modified ($base).
-  Every primitive shader must declare an IDENTICAL bind group layout, including
-  bindings it never reads — group 0: camera, transforms, visibleIndices, texIndices,
-  renderMeta, primParams; group 1: tier0-tier3 + sampler + ovf0-ovf3.
+  The TS pass that builds its pipeline must declare the same bind group layout, and
+  every pool resource it binds must be registered under the same name.
   ScatterPass @group(1) must also match what CullPass reads from the ResourcePool.
   Run the wgsl-validator agent before committing."
     ;;

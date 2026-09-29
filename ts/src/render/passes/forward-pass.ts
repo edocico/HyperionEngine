@@ -6,12 +6,14 @@ import { SCENE_HDR_FORMAT } from '../formats';
 import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 
 /**
- * Forward rendering pass with multi-pipeline per-type dispatch, 2-bucket material sort,
- * and separate opaque/transparent sub-passes.
+ * Forward rendering pass to the scene-hdr intermediate texture. Opaque entities
+ * are drawn PER TYPE: one pipeline per primitive type (its own composed
+ * per-type module), over 2 material buckets. Every transparent entity, of
+ * whatever type, is drawn by ONE uber draw over the GPU-sorted order
+ * (`transparent-order`, `transparent-args`) — never per type.
  *
  * Reads entity transforms, visible indices (from CullPass), texture layer
- * indices, render metadata, and primitive parameters, then issues per-type
- * indirect indexed draws to the scene-hdr intermediate texture.
+ * indices, render metadata, and primitive parameters.
  *
  * Each registered primitive type (via SHADER_SOURCES, the COMPOSED per-type
  * modules) gets ONE opaque pipeline (depth write, no blend), drawn from the

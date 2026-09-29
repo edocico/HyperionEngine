@@ -33,7 +33,7 @@ const CAMERA_UNIFORM_SIZE = 80;
  * shadow of the texels it draws, a bezier of its curve. The pipelines set
  * `OCCLUDER_PASS = true`; the generated `vs_main` then drops every entity that
  * casts no shadow or whose mask misses the set's layers (`castsInto`, in the
- * prelude). A module with no `fs_occluder` (the uber) casts nothing.
+ * prelude). A module with no `fs_occluder` (the uber) casts nothing and is never given here.
  *
  * The set's layers ride in the camera uniform: one 256-byte slice per set, all
  * written once in `prepare()`. Opaque and transparent buckets alike. The target is cleared to

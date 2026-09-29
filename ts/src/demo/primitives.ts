@@ -49,7 +49,7 @@ const section: DemoSection = {
         .boxShadow(0.8, 0.8, 0, 0, 0.2, 0.2, 0.2, 0.9));   // sharp
       entities.push(engine.spawn().position(SHADOW_X, 0, 0).scale(3, 3, 1).transparent()
         .boxShadow(0.7, 0.7, 0, 0.3, 0.1, 0.1, 0.4, 0.8));  // soft
-      // Rounded, and crisp: shaders/primitives/box-shadow.wgsl rounds the corners only in its
+      // Rounded, and crisp: the box-shadow library rounds the corners only in its
       // no-blur branch (the blurred one ignores cornerRadius).
       entities.push(engine.spawn().position(SHADOW_X, -4, 0).scale(3, 3, 1).transparent()
         .boxShadow(0.6, 0.6, 0.2, 0, 0.4, 0.1, 0.1, 0.85)); // rounded

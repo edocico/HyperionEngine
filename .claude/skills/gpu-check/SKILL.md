@@ -48,9 +48,10 @@ The initScript applies to ONE navigation. An edit Vite cannot hot-swap — any T
 section included — reloads the page without it: the reload gets NVIDIA and loses the device at its
 first large allocation (`VK_ERROR_OUT_OF_DEVICE_MEMORY`, every check "Device is lost"). That is not
 a leak: `navigate_page` again with the initScript and re-read the adapter line. The tell is a new
-`[vite] connecting...` and a second adapter line in the console. An edit to one of the 18
-hot-reloadable WGSL files (`import.meta.hot.accept` in `renderer.ts`) is swapped in place and the
-page stays: keep it when the shader hot-reload is what you are checking.
+`[vite] connecting...` and a second adapter line in the console. An edit to one of the 20
+hot-reloadable WGSL files (`import.meta.hot.accept` in `renderer.ts`; the 7 primitive pieces are
+grouped by a 50 ms debounce) is swapped in place and the page stays: keep it when the shader
+hot-reload is what you are checking. A WGSL file WITHOUT its own accept reloads the whole page.
 
 ## 4. Run the tabs
 
@@ -81,10 +82,12 @@ Expected today (2026-09-27, the checks read pixels through the probe): every tab
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
 check. In Mode A the pixel checks skip ("pixel probe unavailable"). Lighting, Rendering FX and
-Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (3/3) is the one check of scatter
-format 0: run it once with `?mode=C`, where its row check must report scatter frames (Mode B
-uploads every row, so there it reports 0). `window.__hyperion` is the live facade for anything the
-tabs do not check.
+Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (6 checks) holds the one check of
+scatter format 0 and the transparent-sort checks: run it with `?mode=C` too, where its row check
+must report scatter frames (Mode B uploads every row, so there it reports 0) and 'Transparent sort
+under churn' runs (in Mode B it skips: 5/6 passed · 1 skipped). Its setup takes several seconds
+(texture load, 10-frame reads): wait for it. `window.__hyperion` is the live facade for anything
+the tabs do not check.
 
 ## 5. Console
 

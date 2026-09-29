@@ -338,9 +338,12 @@ HyperionEngine/
         │       │                       #   per-primitive-type grouping (6 types). prepare() +
         │       │                       #   execute()
         │       ├── cull-pass.test.ts   # 2 test: CullPass construction + type grouping
-        │       ├── forward-pass.ts     # ForwardPass: multi-pipeline forward rendering with
-        │       │                       #   SHADER_SOURCES per primitive type, SoA transforms,
-        │       │                       #   per-type drawIndexedIndirect. Writes scene-hdr
+        │       ├── forward-pass.ts     # ForwardPass: opachi = 1 pipeline per tipo (moduli
+        │       │                       #   composti, SHADER_SOURCES); trasparenti = 1 pipeline
+        │       │                       #   uber (UBER_SOURCE), 1 drawIndexedIndirect(transparent-
+        │       │                       #   args, 0) nell'ordine del sort. Scrive scene-hdr
+        │       ├── transparent-sort-pass.ts # TransparentSortPass (fase 5b): gather dei trasparenti
+        │       │                            #   visibili + radix sort stabile a 7 passate per (z, id)
         │       ├── forward-pass.test.ts # 2 test: ForwardPass construction + multi-pipeline
         │       ├── fxaa-tonemap-pass.ts  # FXAATonemapPass: full-screen triangle post-process.
         │       │                         #   Reads scene-hdr, writes swapchain. Configurable
@@ -359,19 +362,23 @@ HyperionEngine/
         │       ├── prefix-sum-reference.ts # CPU Blelloch exclusive scan reference
         │       └── prefix-sum.test.ts  # 6 test: Blelloch scan correctness
         ├── shaders/
-        │   ├── basic.wgsl              # Quad render: SoA transforms, visibility indirection,
-        │   │                           #   renderMeta + primParams, multi-tier Texture2DArray
-        │   ├── line.wgsl               # Line render: quad expanded across the segment, width in local units or pixels,
-        │   │                           #   SDF dash pattern, anti-aliased edges
-        │   ├── gradient.wgsl           # 2-stop gradient (linear, radial, conic)
-        │   ├── box-shadow.wgsl         # SDF box shadow (Evan Wallace erf approximation)
-        │   ├── msdf-text.wgsl          # MSDF text: median(r,g,b) signed distance + AA
+        │   ├── primitives/             # Fase 5b: pezzi, composti in TS da render/primitive-shaders.ts
+        │   │   ├── prelude.wgsl        #   binding dei gruppi 0/1/2, CameraUniform, VertexOutput,
+        │   │   │                       #   OCCLUDER_PASS/castsInto, blocco luci, helper (sampleTier, ...)
+        │   │   ├── quad.wgsl           #   tipo 0 (quad_), era basic.wgsl
+        │   │   ├── line.wgsl           #   tipo 1 (line_): quad lungo il segmento, larghezza locale o px
+        │   │   ├── msdf-text.wgsl      #   tipo 2 (msdf_): median(r,g,b) + AA
+        │   │   ├── bezier.wgsl         #   tipo 3 (bezier_): SDF di Bezier quadratica
+        │   │   ├── gradient.wgsl       #   tipo 4 (gradient_): gradiente a 2 stop
+        │   │   └── box-shadow.wgsl     #   tipo 5 (boxshadow_): box shadow SDF (erf)
         │   ├── fxaa-tonemap.wgsl       # Combined FXAA (Lottes) + PBR Neutral/ACES tonemapping
         │   ├── selection-seed.wgsl     # Selection seed: UV-encoded seed positions for JFA
         │   ├── jfa.wgsl                # Jump Flood Algorithm: 9 neighbors at ±step
         │   ├── outline-composite.wgsl  # SDF distance outline from JFA result + built-in FXAA
         │   ├── cull.wgsl               # Compute: sphere-frustum culling (SoA), per-type grouping,
         │   │                           #   6 DrawIndirectArgs, atomicAdd
+        │   ├── transparent-gather.wgsl # Fase 5b: gather dei trasparenti visibili (bucket 14-25)
+        │   ├── transparent-sort.wgsl   # Fase 5b: radix LSD a 8 bit × 7 (upsweep, scan, scatter)
         │   └── prefix-sum.wgsl         # Compute: Blelloch exclusive scan (workgroup-level)
         └── integration.test.ts         # 5 test: binary protocol, texture pipeline, GPU data format
 ```
@@ -481,13 +488,15 @@ HyperionEngine/
     │  └──────────────────────────────────────────────┘   │
     │                      │                             │
     │                      ▼                             │
-    │  ┌─── Phase 7: GPU Draw (Indirect) ───────────┐   │
-    │  │  basic.wgsl (vertex + fragment shader)      │   │
-    │  │    vertex: visibleIndices → transforms[idx]  │   │
-    │  │      → decode packed texIdx (tier, layer)   │   │
-    │  │      → transform + project                   │   │
-    │  │    fragment: switch(tier) → sample tex array │   │
-    │  │  drawIndexedIndirect(indirectBuffer)         │   │
+    │  ┌─── Phase 7: GPU Sort + Draw (Indirect) ──────┐   │
+    │  │  TransparentSortPass: gather + radix         │   │
+    │  │    (7 passate) → transparent-order/-args     │   │
+    │  │  opachi: 1 pipeline per tipo (preludio +     │   │
+    │  │    libreria), drawIndexedIndirect/bucket     │   │
+    │  │  trasparenti: 1 pipeline uber, un draw       │   │
+    │  │    drawIndexedIndirect(transparent-args, 0)  │   │
+    │  │  vertex: visibleIndices → transforms[idx]    │   │
+    │  │  fragment: sampleTier / <p>_shade            │   │
     │  └──────────────────────────────────────────────┘   │
     └────────────────────────────────────────────────────┘
 ```
@@ -805,7 +814,7 @@ interface GPURenderState {
     renderMeta: Uint32Array;       // SoA: 1 u32/entity (packed render flags)
     texIndices: Uint32Array;       // SoA: 1 u32/entity (packed tier|layer)
     primParams: Float32Array;      // SoA: 8 f32/entity (shader params per primitive type)
-    entityIds: Uint32Array;        // SoA: 1 u32/entity (external ID, CPU-only for picking)
+    entityIds: Uint32Array;        // SoA: 1 u32/entity (external ID: picking on the CPU, the sort's tie-break on the GPU as 'entity-ids')
     listenerX: number;             // Audio listener X (WASM-extrapolated)
     listenerY: number;             // Audio listener Y (WASM-extrapolated)
     listenerZ: number;             // Audio listener Z (WASM-extrapolated)
@@ -1079,7 +1088,7 @@ La separazione e netta: Rust/WASM produce dati GPU-ready (entity data come buffe
 
 **File**: `ts/src/renderer.ts`
 
-Il renderer usa un pattern **RenderGraph coordinator** con compute culling e indirect draw. `createRenderer()` crea un `ResourcePool` con buffer GPU condivisi, wires `CullPass` + `ForwardPass`, compila un `RenderGraph` DAG, e restituisce un'interfaccia `Renderer`. Ogni frame: (1) uploada i buffer SoA nella GPU, (2) `CullPass` esegue frustum culling per-entity, (3) `ForwardPass` renderizza le entita visibili via `drawIndexedIndirect`.
+Il renderer usa un pattern **RenderGraph coordinator** con compute culling e indirect draw. `createRenderer()` crea un `ResourcePool` con buffer GPU condivisi (compresi `entity-ids`, `transparent-order` e `transparent-args`, posseduti dal renderer), collega `ScatterPass` + `CullPass` + `TransparentSortPass` + `ForwardPass`, compila un `RenderGraph` DAG, e restituisce un'interfaccia `Renderer`. Ogni frame: (1) uploada i buffer SoA nella GPU (la colonna `entity-ids` solo quando cambia `entityIdsGeneration`), (2) `CullPass` esegue frustum culling per-entity, (3) `TransparentSortPass` ordina i trasparenti visibili dal fondo al davanti, (4) `ForwardPass` disegna gli opachi con una pipeline per tipo e tutti i trasparenti con un solo draw uber.
 
 ```
                 renderer.render(state: GPURenderState, camera)
@@ -1109,18 +1118,33 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
               │  Output: indirect draw args           │                  │
               └────────────────────┬────────────────┘                  │
                                    ▼                                   │
+              ┌─── TransparentSortPass.prepare() ───┐                  │
+              │  B = min(transparentCount, CAP)     │                  │
+              │  writeBuffer(header, gatherParams)  │                  │
+              └────────────────────┬────────────────┘                  │
+                                   ▼                                   │
+              ┌─── TransparentSortPass.execute() ───┐                  │
+              │  gather: bucket 14-25 → chiavi      │                  │
+              │    (zKey, id esterno) + slot        │                  │
+              │  7 × (upsweep, scan, scatter)       │                  │
+              │  → transparent-order, -args         │                  │
+              └────────────────────┬────────────────┘                  │
+                                   ▼                                   │
               ┌─── ForwardPass.prepare() ───────────┐                  │
-              │  writeBuffer(cameraBuf, viewProj)    │                  │
+              │  writeBuffer(cameraBuf, viewProj)   │                  │
               └────────────────────┬────────────────┘                  │
                                    ▼                                   │
               ┌─── ForwardPass.execute() ───────────┐                  │
-              │  ensureDepthTexture(w, h)            │◄─────────────────┘
-              │  vertex: visibleIndices[inst_id]     │
+              │  ensureDepthTexture(w, h)           │◄─────────────────┘
+              │  opachi: 6 pipeline per tipo,       │
+              │    drawIndexedIndirect per bucket   │
+              │  trasparenti: pipeline uber,        │
+              │    group 0 con transparent-order,   │
+              │    drawIndexedIndirect(             │
+              │      transparent-args, 0)           │
+              │  vertex: visibleIndices[inst_id]    │
               │    → transforms[idx] → model mat    │
-              │    → texLayerIndices[idx] → tier,lay│
-              │  fragment: switch(tier)               │
-              │    → textureSample(tierN, uv, layer) │
-              │  drawIndexedIndirect(indirectBuffer)  │
+              │  fragment: <p>_shade / sampleTier   │
               └────────────────────┬────────────────┘
                                    ▼
                    graph.render(device, frameState, resources)
@@ -1132,8 +1156,9 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
 
 | Costante | Valore | Scopo |
 | --- | --- | --- |
-| `MAX_ENTITIES` | 100,000 | Limite massimo entita supportate |
-| `INDIRECT_BUFFER_SIZE` | 120 bytes | 6 tipi × 5 × u32 (drawIndexedIndirect args per tipo primitivo) |
+| `MAX_GPU_ENTITIES` (`types.ts`) | 100,000 | Righe di ogni buffer GPU; `validateConfig` rifiuta un `maxEntities` maggiore |
+| `indirect-args` | 560 bytes | 7 tipi × 2 bucket di materiale × 2 blend × 5 u32 |
+| `transparent-args` | 64 bytes | Header del sort: draw `{6, n, 0, 0, 0}`, dispatch a 20 B, raw/limit/overflow/stamp alle parole 8-11 |
 
 **Buffer layout GPU (SoA — Structure of Arrays)**:
 
@@ -1146,9 +1171,12 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
 | Prim params | `prim-params` | `STORAGE \| COPY_DST` | `[f32]` × 8N (shader params) | Ogni frame via `writeBuffer` |
 | Selection mask | `selection-mask` | `STORAGE \| COPY_DST` | `[u32]` × ceil(N/32) (bitfield) | Su dirty flag via `SelectionManager.uploadMask()` |
 | Cull uniforms | (CullPass internal) | `UNIFORM \| COPY_DST` | 6 × vec4 frustum planes + u32 count | Ogni frame in `CullPass.prepare()` |
-| Camera uniform | (ForwardPass internal) | `UNIFORM \| COPY_DST` | `mat4×4 viewProjection` | Ogni frame in `ForwardPass.prepare()` |
+| Camera uniform | (ForwardPass internal) | `UNIFORM \| COPY_DST` | `CameraUniform` 80 B (viewProjection, occluderLayers, viewport) | Ogni frame in `ForwardPass.prepare()` |
 | Visible indices | `visible-indices` | `STORAGE` | `[u32]` × MAX_ENTITIES | Scritto dal compute shader |
-| Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 6 × 5 × u32 (120 bytes, per-type) | Reset in `CullPass.prepare()` + atomicAdd dal compute |
+| Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 28 × 5 × u32 (560 bytes) | Reset in `CullPass.prepare()` + atomicAdd dal compute |
+| Entity ids | `entity-ids` | `STORAGE \| COPY_DST` | `[u32]` × MAX_GPU_ENTITIES (id esterno per slot) | Tutta la colonna, solo quando cambia `entityIdsGeneration` (anche nei frame di scatter) |
+| Ordine dei trasparenti | `transparent-order` | `STORAGE` | `[u32]` × MAX_GPU_ENTITIES (slot dal fondo al davanti) | Scritto dall'ultima passata di `TransparentSortPass`, letto dal draw uber come group 0 binding 2 |
+| Header del sort | `transparent-args` | `STORAGE \| INDIRECT \| COPY_DST` | 16 × u32 (64 bytes) | Reset in `TransparentSortPass.prepare()`, scritto dal gather, argomenti indiretti dei dispatch e del draw uber |
 | Depth texture | (ForwardPass internal) | `GPUTexture` | `depth24plus` | Lazy creato/ricreato al resize via `ensureDepthTexture()` |
 | Vertex/Index buffer | (ForwardPass internal) | `VERTEX \| INDEX` | Unit quad (4 vertices + 6 indices) | Creato in `ForwardPass.setup()`, immutabile |
 | Scene HDR | `scene-hdr` | `GPUTexture` (rgba16float) | HDR render target | ForwardPass output, FXAATonemapPass/OutlineComposite input |
@@ -1202,49 +1230,41 @@ struct DrawIndirectArgs {
 
 **CullPass lifecycle**: `setup()` crea il pipeline e bind group. `prepare()` estrae i frustum planes da `frame.cameraViewProjection` via `extractFrustumPlanes()` (importata da `camera.ts`), uploada i cull uniforms, e resetta i **6 × 5 u32** indirect draw args (uno per tipo primitivo: Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow). Il compute shader scrive `visibleIndices` e incrementa atomicamente `instanceCount` nell'args del tipo corrispondente. `execute()` dispatcha `ceil(entityCount / 256)` workgroups.
 
-### Pipeline Render: Visibility Indirection (basic.wgsl)
+### Pipeline Render: Visibility Indirection (preludio + moduli composti)
 
-**File**: `ts/src/shaders/basic.wgsl`
+**File**: `ts/src/shaders/primitives/prelude.wgsl` (binding e helper) e una libreria per tipo in `ts/src/shaders/primitives/`, composti da `ts/src/render/primitive-shaders.ts`
 
-Il render shader usa **visibility indirection**: il vertex shader non legge direttamente dall'instance_index, ma lo usa come indice nel `visibleIndices` buffer per ottenere l'indice reale dell'entita nei buffer SoA.
+Il render shader usa **visibility indirection**: il vertex shader non legge direttamente dall'`instance_index`, ma lo usa come indice nel buffer legato al binding 2 del gruppo 0, per ottenere l'indice reale dell'entita nei buffer SoA. Per gli opachi quel buffer e `visible-indices` (scritto dal cull); per il draw uber dei trasparenti e `transparent-order` (scritto dal sort). Lo shader e lo stesso, cambia solo il bind group.
 
 ```
-// Bind Group 0 (Vertex stage) — SoA layout
-@group(0) @binding(0) var<uniform> camera: CameraUniform;        // viewProjection mat4x4
-@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;    // SoA: model matrices
-@group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;     // dal compute
-@group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;    // packed tier|layer
+// Preludio — Bind Group 0 (camera, transforms e visibleIndices solo nel vertex stage)
+@group(0) @binding(0) var<uniform> camera: CameraUniform;               // 80 B
+@group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
+@group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;    // visible-indices o transparent-order
+@group(0) @binding(3) var<storage, read> texLayerIndices: array<u32>;   // tier|layer impacchettati
+@group(0) @binding(4) var<storage, read> renderMeta: array<u32>;        // 2 u32 per entita
+@group(0) @binding(5) var<storage, read> primParams: array<f32>;        // 8 f32 per entita
+// Bind Group 1: tier0-3 + texSampler + ovf0-3 (fragment). Bind Group 2: light buffer (fragment).
 
-// Bind Group 1 (Fragment stage) — Multi-tier Texture2DArrays
-@group(1) @binding(0) var tier0Tex: texture_2d_array<f32>;   // 64×64
-@group(1) @binding(1) var tier1Tex: texture_2d_array<f32>;   // 128×128
-@group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;   // 256×256
-@group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;   // 512×512
-@group(1) @binding(4) var texSampler: sampler;
-
-@vertex fn vs_main(@builtin(instance_index) instIdx: u32, ...) -> VertexOutput {
-    let entityIdx = visibleIndices[instIdx];           // indirection
-    let model = transforms[entityIdx];                  // SoA: direct mat4x4f
-    let packed = texLayerIndices[entityIdx];             // texture index
-    let tier = packed >> 16u;
-    let layer = packed & 0xFFFFu;
-    // transform position, compute UV, pass tier+layer as flat
+// Modulo per tipo (schematico): wrapper generati attorno alla libreria <p>_
+@vertex fn vs_main(@location(0) position: vec3f, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
+    let entityIdx = visibleIndices[instanceIdx];                          // indirection
+    if (OCCLUDER_PASS && !castsInto(renderMeta[entityIdx * 2u + 1u], camera.occluderLayers)) { return culledVertex(); }
+    var out = quad_vs(position, entityIdx);
+    out.primType = 0u;
+    return out;
 }
+@fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f { return quad_fs(in); }
+@fragment fn fs_occluder(in: VertexOutput) -> @location(0) vec4f { return quad_occluder(in); }
 
-@fragment fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    switch(in.texTier) {                                // WGSL non supporta dynamic indexing
-        case 0u: { return textureSample(tier0Tex, texSampler, in.uv, in.texLayer); }
-        case 1u: { return textureSample(tier1Tex, texSampler, in.uv, in.texLayer); }
-        case 2u: { return textureSample(tier2Tex, texSampler, in.uv, in.texLayer); }
-        case 3u: { return textureSample(tier3Tex, texSampler, in.uv, in.texLayer); }
-        default: { return vec4f(1.0, 0.0, 1.0, 1.0); } // magenta = errore
-    }
-}
+// Modulo uber (schematico): stessa indirection, poi uno switch sul tipo dell'istanza
+//   vs_main: t = min(renderMeta[e * 2u + 1u] & 0xFFu, 6u); case 0-5 → <p>_vs, default (6) → culledVertex()
+//   fs_main: switch in.primType { ... case 5u, default: { return boxshadow_fs(in); } }
 ```
 
-Il `drawIndexedIndirect` legge `instanceCount` dal buffer indirect — gia scritto dal compute shader. Solo le entita che hanno passato il frustum culling vengono renderizzate. Il vertex shader risolve l'indice reale tramite `visibleIndices[instance_index]`.
+Lo switch a 8 vie sui tier sta in `sampleTier(in)` nel preludio (WGSL non indicizza dinamicamente i binding di texture); `sampleTierOrWhite(in)` risponde bianco all'indice impacchettato 0. Il `drawIndexedIndirect` legge `instanceCount` da un buffer indiretto scritto dalla GPU: `indirect-args` (il cull) per gli opachi, `transparent-args` (il sort) per il draw uber.
 
-**ForwardPass lifecycle**: `setup()` crea **multiple render pipeline** (una per tipo primitivo registrato in `SHADER_SOURCES: Record<number, string>`), vertex/index buffer (unit quad), camera buffer, e bind groups condivisi. `prepare()` uploada `frame.cameraViewProjection` nel camera buffer. `execute()` assicura la depth texture via `ensureDepthTexture()`, poi per ogni tipo primitivo registrato: seleziona il pipeline corrispondente e chiama `drawIndexedIndirect(indirectBuffer, primType * 20)`. Scrive su `scene-hdr` (non direttamente su swapchain).
+**ForwardPass lifecycle**: `setup()` crea una pipeline opaca per ogni modulo per tipo di `SHADER_SOURCES` e una sola pipeline uber da `UBER_SOURCE`, il vertex/index buffer (unit quad), il camera buffer e due bind group del gruppo 0 (`bindGroup0` con `visible-indices`, `bindGroup0Sorted` con `transparent-order`). `prepare()` scrive la camera e l'uniform delle luci. `execute()`: per ogni tipo opaco due `drawIndexedIndirect(indirect-args, slot * 20)`, poi, se `transparentCount > 0`, il draw uber `drawIndexedIndirect(transparent-args, 0)`. Scrive su `scene-hdr` (non direttamente su swapchain).
 
 ### TextureManager: Multi-Tier Texture2DArray
 
@@ -1328,7 +1348,7 @@ pub struct RenderState {
     gpu_render_meta: Vec<u32>,         // SoA: 2 u32/entity (mesh_handle + primitive)
     gpu_tex_indices: Vec<u32>,         // SoA: 1 u32/entity (packed tier|layer)
     gpu_prim_params: Vec<f32>,         // SoA: 8 f32/entity (shader params)
-    gpu_entity_ids: Vec<u32>,          // SoA: 1 u32/entity (external ID, CPU-only)
+    gpu_entity_ids: Vec<u32>,          // SoA: 1 u32/entity (external ID; caricato come 'entity-ids' al cambio di generazione)
     gpu_count: u32,                    // Numero entita nei buffer GPU
     pub dirty_tracker: DirtyTracker,   // BitSet per partial upload optimization
 }
@@ -1341,7 +1361,7 @@ pub struct RenderState {
 - **gpu_render_meta**: 2 u32 per entita (mesh_handle packed con primitive type)
 - **gpu_tex_indices**: 1 u32 per entita, packed `(tier << 16) | layer`
 - **gpu_prim_params**: 8 f32 per entita (parametri shader per linee/gradienti/box shadow/MSDF)
-- **gpu_entity_ids**: 1 u32 per entita (external ID per picking e immediate-mode, CPU-only)
+- **gpu_entity_ids**: 1 u32 per entita (external ID per picking e immediate-mode; dalla fase 5b anche sulla GPU, buffer `entity-ids`, caricato solo quando cambia `entityIdsGeneration`: e la seconda chiave del sort dei trasparenti)
 
 Tutti i buffer sono indicizzati con lo stesso ordine — l'entita all'indice N in `gpu_transforms` corrisponde all'indice N in tutti gli altri buffer.
 
@@ -1816,7 +1836,7 @@ Se servisse un tier 4 (es. 1024×1024):
 
 **TypeScript** (`renderer.ts`): Registrare `tier4` view nel `ResourcePool` del coordinator. Aggiungere binding per `tier4Tex` nel bind group layout di `ForwardPass.setup()`. Aggiungere `resources.getTextureView('tier4')` alla creazione del bind group 1.
 
-**WGSL** (`basic.wgsl`): Aggiungere `@group(1) @binding(5) var tier4Tex: texture_2d_array<f32>;`. Aggiungere `case 4u:` nel `switch(in.texTier)` del fragment shader.
+**WGSL** (`shaders/primitives/prelude.wgsl`, dalla fase 5b): Aggiungere `@group(1) @binding(5) var tier4Tex: texture_2d_array<f32>;` e il `case 4u:` nello switch di `sampleTier` — l'UNICO switch sui tier delle primitive, condiviso da tutti i moduli composti.
 
 **Attenzione**: WGSL non supporta dynamic indexing su texture bindings. Ogni nuovo tier richiede un case esplicito nello switch. Il costo GPU e minimo (branch prediction uniforme per-quad), ma la manutenzione e manuale.
 
@@ -2060,8 +2080,11 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **RawAPI** | Interfaccia numerica diretta per entity management senza overhead di oggetti. Per scenari ad alte prestazioni (100k+ entita) |
 | **Memory compaction** | Processo di rilascio della capacita in eccesso nelle strutture dati interne (`EntityMap.shrink_to_fit`, `RenderState.shrink_to_fit`) dopo molti spawn/despawn |
 | **PrimitiveParams** | `[f32; 8]` per-entity component per parametri specifici del tipo di primitiva. Split in due ring buffer commands (`SetPrimParams0` + `SetPrimParams1`) per il limite di 16 byte payload |
-| **RenderPrimitiveType** | Enum che identifica il tipo di primitiva: Quad=0, Line=1, SDFGlyph=2, BezierPath=3, Gradient=4, BoxShadow=5. Usato dal CullPass per raggruppare le entita e dal ForwardPass per selezionare la pipeline |
-| **Multi-pipeline ForwardPass** | Architettura dove ogni tipo di primitiva ha la propria `GPURenderPipeline` con shader dedicato, ma tutte condividono lo stesso bind group layout. `drawIndexedIndirect` per tipo a offset `type * 20` bytes |
+| **RenderPrimitiveType** | Enum che identifica il tipo di primitiva: Quad=0, Line=1, SDFGlyph=2, BezierPath=3, Gradient=4, BoxShadow=5, Light2D=6. Usato dal CullPass per raggruppare le entita, dal ForwardPass per scegliere la pipeline opaca, e dallo switch per istanza del modulo uber (dove 6 finisce in `culledVertex`) |
+| **Multi-pipeline ForwardPass** | Dalla fase 5b: una `GPURenderPipeline` per tipo di primitiva per gli OPACHI (moduli composti preludio + libreria, stesso layout a tre gruppi, `drawIndexedIndirect` per bucket a offset `slot * 20`), e UNA pipeline uber per tutti i trasparenti, con un solo `drawIndexedIndirect(transparent-args, 0)` nell'ordine del sort |
+| **Preludio / libreria** | Dalla fase 5b gli shader delle primitive sono pezzi in `ts/src/shaders/primitives/`: il preludio dichiara binding, `CameraUniform`, `VertexOutput` e helper; ogni libreria contiene solo funzioni con il suo prefisso (`quad_`, `line_`, …). Il compositore TS (`render/primitive-shaders.ts`) ne ricava i moduli per tipo e il modulo uber. Un pezzo non compila da solo |
+| **Modulo uber** | Il modulo con tutte e sei le librerie e un `vs_main`/`fs_main` che fanno uno switch sul tipo di primitiva dell'istanza. Disegna tutti i trasparenti in un solo draw. Prima riga: `diagnostic(off, derivative_uniformity);`, e solo lui ce l'ha |
+| **TransparentSortPass** | Pass compute (fase 5b) che raccoglie i trasparenti visibili dei tipi 0-5 e li ordina dal fondo al davanti per (z di mondo, id esterno) con un radix sort stabile a 7 passate; scrive `transparent-order` e gli argomenti del draw in `transparent-args` |
 | **JFA (Jump Flood Algorithm)** | Algoritmo GPU per calcolare distance field in O(log₂ N) pass. Usato per outline di selezione. Ping-pong tra due texture, ogni pass dimezza il step size |
 | **MSDF (Multi-channel Signed Distance Field)** | Tecnica di rendering testo che codifica la distanza dal bordo del glifo in 3 canali (RGB). `median(r,g,b)` produce un SDF pulito per anti-aliasing indipendente dalla scala |
 | **SelectionManager** | Classe CPU-side che traccia entita selezionate (`Set<number>`) con dirty tracking e upload maschera GPU. Interfaccia per `SelectionSeedPass` |
@@ -2098,22 +2121,26 @@ Il CullPass ora raggruppa le entita visibili per tipo di primitiva. Il compute s
 2. Incrementa atomicamente `drawArgs[primType].instanceCount`
 3. Scrive l'indice entita nella regione per-tipo: `visibleIndices[primType * maxEntitiesPerType + slot]`
 
-Il buffer `indirect-args` contiene 6 × `DrawIndirectArgs` (5 u32 ciascuno = 120 bytes totali). Il `prepare()` resetta tutti gli `instanceCount` a zero ogni frame.
+Il buffer `indirect-args` contiene 28 × `DrawIndirectArgs` (7 tipi × 2 bucket di materiale × 2 blend, 5 u32 ciascuno = 560 bytes). Il `prepare()` resetta tutti gli `instanceCount` a zero ogni frame.
 
 ### 20.3 Multi-Pipeline ForwardPass
 
-`ForwardPass.SHADER_SOURCES: Record<number, string>` mappa tipo di primitiva → codice WGSL. Al `setup()`, viene creata una `GPURenderPipeline` per ogni tipo registrato, tutte con lo stesso `pipelineLayout` (stessi bind group layout).
-
-Nell'`execute()`, il pass itera su ogni pipeline registrata:
+(Riscritto nella fase 5b.) `ForwardPass.SHADER_SOURCES: Record<number, string>` mappa tipo di primitiva → modulo WGSL COMPOSTO (preludio + libreria + `vs_main`/`fs_main`/`fs_occluder` generati), prodotto da `composeTypeModules` in `render/primitive-shaders.ts`; `ForwardPass.UBER_SOURCE` contiene il modulo uber. Al `setup()` si creano una pipeline opaca per ogni tipo registrato e una sola pipeline uber trasparente, tutte con lo stesso `pipelineLayout` a tre gruppi.
 
 ```typescript
-for (const [primType, pipeline] of this.pipelines) {
+for (const [primType, pipeline] of this.opaquePipelines) {
     renderPass.setPipeline(pipeline);
-    renderPass.drawIndexedIndirect(indirectBuffer, primType * 20);
+    for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++)
+        renderPass.drawIndexedIndirect(indirectBuffer, (primType * BUCKETS_PER_TYPE + bucket) * 20);
+}
+if (frame.transparentCount !== 0) {
+    renderPass.setPipeline(uberPipeline);
+    renderPass.setBindGroup(0, bindGroup0Sorted);   // binding 2 = transparent-order
+    renderPass.drawIndexedIndirect(transparentArgs, 0);
 }
 ```
 
-Questo permette di aggiungere nuovi tipi di primitiva senza toccare il codice del pass — basta registrare un nuovo shader.
+Aggiungere un tipo vuol dire aggiungere una libreria e una riga di `PRIMITIVE_LIBRARIES`: il modulo per tipo e il caso dell'uber si generano (skill `/new-primitive`).
 
 ### 20.4 Post-Processing: FXAA + Tonemapping
 
@@ -2164,7 +2191,7 @@ CommandType::SpawnEntity => {
 }
 ```
 
-`collect_gpu()` include `ExternalId` nella query hecs e popola un buffer `gpu_entity_ids: Vec<u32>` parallel-indexed con gli altri buffer SoA. Esposto via WASM tramite `engine_gpu_entity_ids_ptr()`/`engine_gpu_entity_ids_len()`. Il buffer `entityIds` e CPU-only — non viene uploadato alla GPU.
+`collect_gpu()` include `ExternalId` nella query hecs e popola un buffer `gpu_entity_ids: Vec<u32>` parallel-indexed con gli altri buffer SoA. Esposto via WASM tramite `engine_gpu_entity_ids_ptr()`/`engine_gpu_entity_ids_len()`. Dalla fase 5b il buffer `entityIds` arriva anche sulla GPU (`entity-ids`, posseduto dal renderer), ma solo nei frame in cui `entityIdsGeneration` cambia: il sort dei trasparenti lo usa come seconda chiave.
 
 ### 21.2 InputManager
 
@@ -2439,24 +2466,24 @@ L'`EventBus` e condiviso tra tutti i `PluginContext` tramite la `PluginEventAPI`
 
 ### 24.1 Meccanismo
 
-**File**: `ts/src/renderer.ts` — `recompileShader(passName, shaderCode)`
+**File**: `ts/src/renderer.ts` — `recompileShader(passName, shaderCode)` — e `ts/src/render/graph-requests.ts`
 
 Il flusso di hot-reload:
 
-1. L'utente (o Vite HMR) chiama `recompileShader(passName, newWgslSource)`
-2. Il renderer aggiorna la sorgente statica nello store interno (es. `ForwardPass.SHADER_SOURCES[type] = newSource`)
-3. Chiama `rebuildGraph()` che distrugge tutti i pass esistenti e li ricrea con le nuove sorgenti
-4. Il frame successivo usa le pipeline ricompilate
+1. Vite HMR (o l'utente) chiama `recompileShader(passName, newWgslSource)`. Per le primitive il nome indica un PEZZO (`prelude`, `quad` con alias `basic`, `line`, `msdf-text`, `bezier`, `gradient`, `box-shadow`) e il testo e il pezzo, non un modulo completo.
+2. `GraphRequests.reloadShader` scrive la sorgente nuova nello slot solo per la durata sincrona del `setup()` di un pass di prova usa e getta, dentro gli error scope della GPU, poi rimette quella vecchia. Lo `write()` di uno slot di pezzo ricompone sul posto i 6 moduli per tipo e il modulo uber.
+3. Solo se la GPU non segnala errori la sorgente resta; se il modo richiesto la usa, `RenderGraphHost` costruisce un grafo nuovo e lo mette live solo dopo la validazione GPU.
+4. Gli `accept` dei pezzi passano da `PieceReloadCollector` (debounce di 50 ms): `reloadShaders` prova l'unione del lotto e ogni voce da sola, e non costruisce mai un grafo da un insieme respinto o mai provato insieme.
 
-**Non incrementale**: `rebuildGraph()` distrugge e ricrea l'intero grafo di rendering. Questo e accettabile per uno strumento di sviluppo (la ricompilazione avviene solo durante l'editing), ma non per modifiche runtime in produzione.
+**Non incrementale**: ogni grafo nuovo ricrea tutti i pass. Una libreria ricompila il suo modulo per tipo, il suo occluder e l'uber; il preludio tutti e sette i moduli. Accettabile per uno strumento di sviluppo, non per modifiche runtime in produzione.
 
 ### 24.2 Vite HMR Integration
 
-Tutti i 10 file WGSL in `ts/src/shaders/` hanno handler `import.meta.hot.accept()` che:
+I 20 file WGSL ricaricabili a caldo (i 7 pezzi delle primitive compresi) hanno un `import.meta.hot.accept()` in `ts/src/renderer.ts`, il modulo che li importa: un pezzo senza il suo `accept` farebbe ricaricare l'intera pagina. L'handler:
 
-1. Ricevono il nuovo modulo quando Vite rileva una modifica al file
-2. Chiamano `renderer.recompileShader(passName, newSource)` con il nome del pass corrispondente
-3. Il rendering si aggiorna istantaneamente senza refresh della pagina
+1. riceve il nuovo testo quando Vite rileva una modifica al file;
+2. lo passa a `renderer.recompileShader(passName, newSource)`, o, per un pezzo, al `PieceReloadCollector`;
+3. il rendering si aggiorna senza refresh della pagina, dopo la validazione GPU.
 
 Esposto sulla facade `Hyperion` come `recompileShader(passName, shaderCode)` che delega al renderer.
 

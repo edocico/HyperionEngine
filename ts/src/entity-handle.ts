@@ -274,9 +274,10 @@ export class EntityHandle implements Disposable {
    * to 1000. A child's depth is relative to its parent's, like its position
    * (a physics body's pose is world: its depth too). Two overlapping sprites at
    * the SAME depth are drawn in no defined order: give them different depths.
-   * It orders a sprite against OPAQUE ones only: between two `.transparent()`
-   * sprites the draw order decides (primitive type, then cull order) until
-   * transparent entities are sorted by depth. On a 3D entity, which takes its
+   * It orders transparent sprites too: they are drawn back to front by world z,
+   * and at equal z the entity with the higher id is in front (the newest one
+   * only while ids are fresh: give sprites different depths to order them).
+   * On a 3D entity, which takes its
    * z from `position()`, it is ignored (a warning in dev builds). Returns `this`.
    */
   depth(d: number): this {
@@ -288,8 +289,8 @@ export class EntityHandle implements Disposable {
 
   /**
    * Mark entity as transparent: alpha-blended, drawn after the opaque ones,
-   * with no depth write. Transparent entities are not sorted yet, so two that
-   * overlap compose in draw order, whatever their depth. Returns `this`.
+   * with no depth write, back to front by world z (at equal z the higher id
+   * is in front). Returns `this`.
    */
   transparent(): this {
     this.check();

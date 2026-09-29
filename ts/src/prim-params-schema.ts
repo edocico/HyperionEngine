@@ -5,7 +5,7 @@
  * This module provides a canonical mapping from human-readable parameter names
  * (e.g., "rectW", "blur", "width") to their slot index in the f32[8] array.
  *
- * The mappings match the WGSL shader layouts (ts/src/shaders/*.wgsl) and the
+ * The mappings match the primitive libraries (ts/src/shaders/primitives/*.wgsl) and the
  * Rust PrimitiveParams documentation (crates/hyperion-core/src/components.rs).
  *
  * NOTE: RenderPrimitiveType is re-declared here (not imported from entity-handle.ts)
