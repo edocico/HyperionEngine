@@ -63,14 +63,14 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1860 tests + 7 skipped, 108 files)
+cd ts && npm test                            # All vitest tests (1878 tests + 7 skipped, 109 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
 cd ts && npm run dev                         # Vite dev server with COOP/COEP headers
 
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
-# 108 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
+# 109 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (95 tests)
 cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (101 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (87 tests)
@@ -342,7 +342,7 @@ Commands flow through a lock-free SPSC ring buffer on SharedArrayBuffer. The rin
 | `demo/audio.ts` | Load, play, spatial, suspend/resume (4 checks) |
 | `demo/particles.ts` | Create, multiple, destroy, entity tracking (4 checks) |
 | `demo/rendering-fx.ts` | Bloom, outlines, tonemap, resize (4 checks). Swapchain probes: a glow outside a white quad only with bloom, an orange ring only around the selected quad (ids differ from slots here), `scene-hdr` sized like the canvas after `resize`. Tonemap is an honest skip: `enablePostProcessing` is a stub |
-| `demo/debug-tools.ts` | Profiler, bounds, inspector, debug-cam, time-travel (5 checks) |
+| `demo/debug-tools.ts` | Profiler, bounds, inspector, debug-cam, time-travel, physics debug render (F3 plugin), determinism hash (skipped without a dev-tools WASM build) (7 checks) |
 | `demo/lifecycle.ts` | Spawn/destroy, batch, compact, immediate, data, prefabs (6 checks). Before/after pixel checks: drawn then cleared, the survivors of `compact` still drawn, the quad at its immediate position, a prefab and its children moved then gone |
 | `demo/lighting.ts` | Frames the scene for any canvas aspect (zoom ≤ 1). Backend `lit`: moving point + sweeping layer-0 spot with shadows, off-screen global light, walls, lit vs unlit gradient, a tall layer-1 sprite lit by a layer-1 blue light through two symmetric pillars, one shadowing layer 0 only and one both layers, so the sprite shows ONE shadow band (measured: the two sides match until the band, then 2.3x darker on the `0b11` pillar's side); shadow slider + lit toggle panel (incl. light layers: 2 groups, 2 SDF sets). Pixel checks: lit gradient = unlit x light buffer at its point; the layer-1 band in the light buffer (the old unconditional 'Scene' check is gone) (6 checks) |
 | `demo/twin-2d.ts` | Tab "2D Twins": nine cells (rotated/scaled quads, gradient, a moving 2D parent + its child, line, box shadow) spawned 2D and again 3D a whole number of pixels to the right. Pixel check: 81-point lattice + texel rows and columns through each centre and through the child (each must cross both of its edges), snapped to texel centres, twins equal texel for texel (half a pixel of offset fails it, the child's alone included). Row check: `readEntityTransforms` GPU rows = CPU rows for the 2D entities over 12 frames; in Mode C it requires scatter frames, where the moving parent travels as format 0 and its child as format 1. Depth check: green/blue gradients show which overlapping 2D sprite is in front — a pair, and a parent with a child at relative depth -1 and a sibling between them — stable over 10 frames, then again after the depths change at runtime. Phase 5b: 'Transparent sort matches the oracle' (`readTransparentSort()` on dedicated scenes filling all 12 gather regions, the committed 128×128 PNG included, checked by `verifySortReadback`), 'Transparent sort under churn' (Mode C only: spawns and despawns every frame at equal z, and needs a frame with `usedScatter && idsUploaded`; skipped elsewhere) and 'Depth orders transparent sprites' (overlapping `.transparent()` gradients, box shadows and the textured quad, far off at (-80, -60) and destroyed afterwards: z order, the higher id in front at equal z, flipped at runtime; expected values from `demo/blend-expect.ts`, the texel's colour and alpha measured over the clear and over an opaque white quad). A test texture that fails to load is a `skip` only without a main-thread renderer, a `fail` otherwise (`reportTextureLoadFailure`); the churn check stays a `skip` outside Mode C whatever the texture does (6 checks) |
@@ -762,7 +762,7 @@ Regression coverage: 98 tests in `crates/hyperion-core/tests/verify_*.rs` (verif
 | 10a-DX | DX Foundations | SystemViews, debug camera, ECS inspector (TLV + panel), WASM debug exports (`dev-tools` feature) |
 | 10b-DX | DX Features | Prefabs (PrefabRegistry/Instance), build-time Asset Pipeline (Vite plugin), bounds visualizer, PRIM_PARAMS_SCHEMA |
 | 10c-DX | Time-Travel Debug | CommandTapeRecorder, ReplayPlayer, SnapshotManager (`engine_reset/snapshot_create/snapshot_restore`), `createHotSystem` HMR helper, `Hyperion.debug` API |
-| — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export (today 10 tabs, 52 checks) |
+| — | Verification Harness | 8-tab demo covering 40+ checks across all engine features, JSON report export (today 10 tabs, 54 checks) |
 | 11 | Optimization Tier 1 | SIMD128 activation, wasm-opt build pipeline, SpatialGrid broadphase, ring buffer profiling, WebGPU subgroup compute path |
 | 12 | Optimization Tier 2 | GPU scatter upload (DirtyTracker + stable slots + swap-remove), compressed 2D transforms, 2-bucket material sort, batch spawn, texture priority queue |
 | 13 | Optimization Tier 3 | Command coalescing, Transform2D (20B 2D archetype), GPU radix sort (transparency — dead in the graph, removed in phase 5b and replaced by `TransparentSortPass`), temporal culling (skip-bounds — removed 2026-09-26: invalid pipeline until then, 0 µs measured benefit, see `docs/plans/2026-09-26-cull-temporal-firstinstance-brief.md`), sized binding array stub, KTX2 streaming (Range requests + mipmap), `__DEV__` debug elimination |
