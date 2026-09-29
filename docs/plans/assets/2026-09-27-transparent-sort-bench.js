@@ -1,6 +1,7 @@
 async () => {
   // Phase 5b benchmark scenario (spec §7.3.6): the body of ONE chrome-devtools
-  // `evaluate_script` call, used UNCHANGED at steps 0, 1, 3 and 4.
+  // `evaluate_script` call. Format /1 ran unchanged at steps 0, 1, 3 and 4 on the
+  // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
   //
   // Page: the dev harness with ?bench (no section: an otherwise empty world),
   // http://localhost:5173/?mode=B&bench, on the AMD low-power adapter.
@@ -12,10 +13,15 @@ async () => {
   // Measure: GPU profiler on, the 120-frame rolling mean (averageMs) of every
   // pass, in frames without any readback (nothing here probes). "sort" = the
   // sum of transparent-sort/{gather,upsweep,scan,scatter}: null until step 3.
-  // `total` is the sum of every pass: the profiler brackets graph passes with
-  // empty compute passes, and part of a render pass's fragment work can land
-  // in the NEXT bracket (a trial at 100 000 on the iGPU read forward 0.28 ms,
-  // fxaa-tonemap 6.9 ms), so compare forward AND total between steps.
+  // `total` is the GPU frame span (engine.getGpuFrameTiming(): first pass
+  // beginning to last pass end). With the marker profiler of steps 0-4 the sum
+  // of every pass telescoped to that same span, so `total` stays comparable
+  // across machines. `passSum` is the sum of every pass: since 2026-09-29 each
+  // entry is its own pass's duration (timestampWrites), and on a GPU that
+  // overlaps passes (the Apple M2) passSum exceeds total. With the markers, part
+  // of a render pass's fragment work could land in the NEXT bracket (a trial at
+  // 100 000 on the AMD iGPU read forward 0.28 ms, fxaa-tonemap 6.9 ms); with
+  // pairs it stays in `forward`. Compare `total` between steps and machines.
   // Each batch is destroyed, and gone from the GPU rows, before the next one.
   //
   // Optional, set by an earlier evaluate_script:
@@ -35,6 +41,9 @@ async () => {
     throw new Error('run the benchmark on a ?bench page: a harness tab adds entities, and a swapchain probe reconfigures the canvas');
   }
   if (!engine.gpuProfilingSupported) throw new Error('no timestamp-query on this device: no GPU timings');
+  if (typeof engine.getGpuFrameTiming !== 'function') {
+    throw new Error('engine.getGpuFrameTiming() is missing: this build has the marker profiler, apply the timestampWrites profiler first');
+  }
   const opts = window.__benchOpts ?? {};
   const sizes = opts.sizes ?? [1000, 10000, 100000];
   const zModes = opts.zModes ?? ['same', 'distinct'];
@@ -118,6 +127,7 @@ async () => {
       const forwardSamples = () => engine.getGpuTimings().find((t) => t.name === 'forward')?.sampleCount ?? 0;
       await until(`the ${WINDOW}-frame window`, async () => forwardSamples() >= WINDOW);
       const passes = Object.fromEntries(engine.getGpuTimings().map((t) => [t.name, t.averageMs]));
+      const frameTiming = engine.getGpuFrameTiming();
       const stages = Object.fromEntries(STAGES.map((s) => [s, passes[`transparent-sort/${s}`] ?? null]));
       const sort = STAGES.every((s) => stages[s] !== null) ? STAGES.reduce((sum, s) => sum + stages[s], 0) : null;
       results.push({
@@ -128,7 +138,8 @@ async () => {
         stages,
         sort,
         forward: passes.forward,
-        total: Object.values(passes).reduce((sum, ms) => sum + ms, 0),
+        total: frameTiming?.averageMs ?? null,
+        passSum: Object.values(passes).reduce((sum, ms) => sum + ms, 0),
         passes,
         fps: engine.stats.fps,
       });
@@ -140,7 +151,7 @@ async () => {
   }
 
   return {
-    format: 'hyperion-5b-bench/1',
+    format: 'hyperion-5b-bench/2',
     label: opts.label ?? null,
     mode: engine.mode,
     search: location.search,
