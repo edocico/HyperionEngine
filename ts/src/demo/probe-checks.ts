@@ -73,6 +73,21 @@ export async function pixelCheck(
   }
 }
 
+/** What `Hyperion.loadTexture` throws without a main-thread renderer (Mode A). */
+const NO_RENDERER = /no renderer available/;
+
+/**
+ * Reports check `name` after its test texture `url` failed to load. Only a
+ * missing main-thread renderer (Mode A) is an environment limit, a skip; any
+ * other error (a missing or undecodable file, a full tier) is a broken build:
+ * a failure with the error text.
+ */
+export function reportTextureLoadFailure(reporter: TestReporter, name: string, url: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (NO_RENDERER.test(msg)) reporter.skip(name, `no main-thread renderer: ${msg}`);
+  else reporter.check(name, false, `cannot load ${url}: ${msg}`);
+}
+
 export function near(value: number, want: number, tolerance: number): boolean {
   return Math.abs(value - want) <= tolerance;
 }

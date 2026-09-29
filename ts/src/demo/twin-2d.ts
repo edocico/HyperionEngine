@@ -21,7 +21,7 @@ import type { TextureHandle } from '../types';
 import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 import { worldToUv } from '../render/debug-probe';
 import { nextFrameStamp } from '../render/frame-inputs';
-import { pixelCheck, fmt, frames, fitView, PROBE_TIMEOUT_MS, type Rgba } from './probe-checks';
+import { pixelCheck, fmt, frames, fitView, reportTextureLoadFailure, PROBE_TIMEOUT_MS, type Rgba } from './probe-checks';
 import { verifySortReadback, sameIdOrder, readSortFrame } from './transparent-sort-checks';
 import { straight, composite, measuredLayer, backToFront, expectedOverlap, maxChannelDiff, type Layer, type Rgb } from './blend-expect';
 
@@ -163,7 +163,7 @@ const TINT: Record<'green' | 'red' | 'teal' | 'blue' | 'yellow' | 'magenta' | 'c
  * behind their partner, and cell 5's cyan behind the magenta (a depth beats
  * an id). Expected values: blend-expect.ts. The scene is destroyed afterwards.
  */
-async function checkTransparentDepth(engine: Hyperion, reporter: TestReporter): Promise<void> {
+export async function checkTransparentDepth(engine: Hyperion, reporter: TestReporter): Promise<void> {
   const name = 'Depth orders transparent sprites';
   if (!engine.debug) {
     reporter.skip(name, 'pixel probe unavailable: production build');
@@ -173,8 +173,9 @@ async function checkTransparentDepth(engine: Hyperion, reporter: TestReporter): 
   try {
     texture = await engine.loadTexture(ORDER_TEXTURE_URL);
   } catch (err) {
-    // No main-thread renderer (Mode A): the probe does not exist there either.
-    reporter.skip(name, `test texture unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    // A skip only without a main-thread renderer (Mode A, where the probe does
+    // not exist either); a missing or broken texture fails.
+    reportTextureLoadFailure(reporter, name, ORDER_TEXTURE_URL, err);
     return;
   }
 
@@ -324,19 +325,21 @@ const SORT_TYPES: ReadonlyArray<(h: EntityHandle) => EntityHandle> = [
  * positionImmediate anywhere: a scatter frame never uploads patched bounds.
  * The scene is gone when this returns; the caller restores the camera.
  */
-async function checkTransparentSort(engine: Hyperion, reporter: TestReporter): Promise<void> {
+export async function checkTransparentSort(engine: Hyperion, reporter: TestReporter): Promise<void> {
   const ORACLE = 'Transparent sort matches the oracle';
   const CHURN = 'Transparent sort under churn';
+  // Decided before any texture outcome: outside Mode C the churn check is a
+  // skip, whatever the texture does.
+  const churnSkip = engine.mode === 'C'
+    ? null
+    : `Mode ${engine.mode}: only Mode C uploads through the scatter pass, which this checks (?mode=C)`;
   let png: TextureHandle;
   try {
     png = await engine.loadTexture(SORT_TEXTURE);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    for (const name of [ORACLE, CHURN]) {
-      // Mode A has no renderer on this thread: nothing to read back there.
-      if (/no renderer/.test(msg)) reporter.skip(name, `no main-thread renderer: ${msg}`);
-      else reporter.check(name, false, `cannot load ${SORT_TEXTURE}: ${msg}`);
-    }
+    reportTextureLoadFailure(reporter, ORACLE, SORT_TEXTURE, err);
+    if (churnSkip) reporter.skip(CHURN, churnSkip);
+    else reportTextureLoadFailure(reporter, CHURN, SORT_TEXTURE, err);
     return;
   }
 
@@ -394,8 +397,8 @@ async function checkTransparentSort(engine: Hyperion, reporter: TestReporter): P
     };
   });
 
-  if (engine.mode !== 'C') {
-    reporter.skip(CHURN, `Mode ${engine.mode}: only Mode C uploads through the scatter pass, which this checks (?mode=C)`);
+  if (churnSkip) {
+    reporter.skip(CHURN, churnSkip);
   } else {
     await pixelCheck(reporter, CHURN, engine, async (_probe, _rows, readSort) => {
       // One quad in and the oldest out on every frame: the slot → id mapping

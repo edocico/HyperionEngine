@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS } from './probe-checks';
+import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure } from './probe-checks';
 import { createTestReporter } from './types';
 import type { Hyperion } from '../hyperion';
 
@@ -148,5 +148,31 @@ describe('pixelCheck readSort', () => {
     await done;
     vi.useRealTimers();
     expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no frame served/) });
+  });
+});
+
+describe('reportTextureLoadFailure', () => {
+  it('skips only when there is no main-thread renderer (Mode A)', () => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', new Error('Cannot load textures: no renderer available'));
+    expect(reporter.results()).toEqual([
+      { name: 'tex', status: 'skip', detail: 'no main-thread renderer: Cannot load textures: no renderer available' },
+    ]);
+  });
+
+  it.each([
+    'Failed to fetch /t.png: 404',
+    'The source image could not be decoded.',
+    'Tier 0 (64px) is full: 256 layers',
+  ])('fails, with the url and the error, on anything else: %s', (message) => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', new Error(message));
+    expect(reporter.results()).toEqual([{ name: 'tex', status: 'fail', detail: `cannot load /t.png: ${message}` }]);
+  });
+
+  it('takes a thrown non-Error too', () => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', 'boom');
+    expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: 'cannot load /t.png: boom' });
   });
 });
