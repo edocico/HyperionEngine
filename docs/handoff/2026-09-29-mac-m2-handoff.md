@@ -483,7 +483,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
   - i check sui pixel vanno in skip.
 
   Sono lacune note del motore, non bug di Metal.
-- **Timestamp.** Con il Chrome stock su Metal tutti i timestamp valgono 0 (`CLAUDE.md:450`, verificato il 2026-08-04). `GpuProfiler` scarta quei frame e dopo 120 avvisa con "frames of zeroed timestamps". `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, ma che basti con i marker a compute pass vuoti sulle GPU Apple è da verificare (M7). Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
+- **Timestamp.** Senza flag Chrome quantizza a 65 536 ns su Metal; gli zeri di M7 venivano dai marker vuoti del profiler vecchio (spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`). `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, ma che basti con i marker a compute pass vuoti sulle GPU Apple è da verificare (M7). Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
 - **Due server Chrome, due ruoli.** `chrome-devtools` (da `.mcp.json`, senza flag) è "il Chrome di un utente": serve per i verdetti pass/fail. `chrome-devtools-gpu` serve per i timing. rAF si ferma comunque con la finestra minimizzata, con lo schermo in stop o bloccato. Per le sessioni lunghe tieni la finestra visibile e lancia `caffeinate -dimsu` in background (`kill` alla fine).
 - **Retina, dpr 2.** Leggilo a ogni sessione: su Linux era 1.25, poi 1.667. Vale `px screenshot = px CSS × dpr`, e `pixels.py` legge il dpr da `map.json`. Il backing store del canvas è `clientWidth × dpr` (`main.ts:82-85`), quindi a finestra piena ci sono circa 2,5 volte i pixel di Linux a dpr 1.25 e i timing a finestra piena non si confrontano. Per ogni misura fissa la dimensione con `window.__hyperion.resize(1920, 1080)`, come fa il bench.
 - **`{ unit: 'px' }` vuol dire pixel del device.** Lo shader della linea riceve la dimensione piena del canvas. A dpr 2 una linea da 3 px è larga 1,5 px CSS e negli screenshot sembra più sottile che sulla Fedora. Il check di Primitives conta texel e passa comunque. Non "correggerlo": è una domanda per l'utente (sezione 5).
@@ -757,15 +757,15 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M7 — `timestamp-query` (importante, prerequisito di M8 e M9)
 
-- **Perché qui.** Su Metal il Chrome stock dà zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag.
+- **Perché qui.** Su Metal il Chrome stock dà zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
 - **Procedura.** Con `chrome-devtools-gpu`, prima di qualsiasi probe della swapchain (il primo probe riconfigura il canvas):
   1. `?mode=B`, tab Lighting.
   2. `window.__hyperion.enableGpuProfiling()`, circa 4 s di attesa (almeno 130 frame), poi `window.__hyperion.getGpuTimings()`.
   3. Lo stesso una volta con il server stock `chrome-devtools`.
 - **Atteso.**
-  - Con il flag: voci (`cull`, `forward`, `light-groups/seed|sdf|accum`, `fxaa-tonemap`) con `averageMs > 0`, `sampleCount` che sale fino a 120, e nessun avviso "frames of zeroed timestamps".
-  - Con il server stock: l'avviso deve comparire. Questo verifica il gotcha di `CLAUDE.md:450`.
-- **Se fallisce.** Zeri anche con il flag: **fermati**, non lanciare il bench (aspetterebbe 180 s per ogni caso della griglia, circa 18 minuti, prima di lanciare l'errore) e riferisci. Le strade possibili sono dare ai marker un dispatch da 1 workgroup, oppure spostare `timestampWrites` sui pass veri. È una scelta di design: chiedila.
+  - Con il flag: voci (`cull`, `forward`, `light-groups/seed|sdf|accum`, `fxaa-tonemap`) con `averageMs > 0`, `sampleCount` che sale fino a 120, e `getGpuFrameTiming()` non nullo.
+  - Con il server stock: le stesse voci, con valori multipli di 65 536 ns (0 o 0,0655 ms sui pass brevi) e medie stabili, e nessun avviso del profiler. Fino al profiler nuovo qui compariva l'avviso: gli zeri venivano dai marker vuoti (M7 del 2026-09-29, spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`).
+- **Se fallisce.** Voci vuote dopo 4 s: **fermati**, non lanciare il bench, e riferisci l'avviso del profiler, che dice il motivo e il pass.
 
 ### M8 — Bench 5b sull'M2 (importante)
 
@@ -774,7 +774,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 - **Procedura.**
   1. HEAD: `http://localhost:5173/?mode=B&bench`, senza probe prima.
   2. `evaluate_script` con `() => { window.__benchOpts = { label: 'm2 HEAD <sha>' }; }`, poi il corpo di `docs/plans/assets/2026-09-27-transparent-sort-bench.js` con `filePath: docs/plans/assets/2026-09-29-mac-m2/bench-head.json`. Se la chiamata MCP va in timeout, dividi per `sizes` (`window.__benchOpts.sizes = [100000]`).
-  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`.
+  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`. Subito dopo `git worktree add`, prima di `npm ci`, fai il `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2): senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`.
 
      ```
      git worktree add ../hyperion-5b-step3 6ff494f
@@ -783,7 +783,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
      npm --prefix ../hyperion-5b-step3/ts run dev -- --strictPort --port 5174
      ```
 
-     Il dev server va in background. Poi lancia lo **stesso** `bench.js` di master su `http://localhost:5174/?mode=B&bench` → `bench-step3.json`. Se serve, anche il passo 4, il cui label è `step4 608a113`. Alla fine: `git worktree remove ../hyperion-5b-step3`.
+     Il dev server va in background. Poi lancia lo **stesso** `bench.js` di HEAD (formato `/2`) su `http://localhost:5174/?mode=B&bench` → `bench-step3.json`. Se serve, anche il passo 4, il cui label è `step4 608a113`. Alla fine: `git worktree remove ../hyperion-5b-step3`.
 - **Atteso.** Sort < 1 ms a 100 000 (D3). Riferimento AMD: 0,787 ms con depth uguali, 0,869 con depth distinte.
 - **Come leggerlo.**
   - Se sull'M2 total(distinte) ≈ total(uguali) a HEAD, il +1 ms di AMD è un costo di località delle GPU immediate-mode.
@@ -798,7 +798,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
   1. `?mode=B&bench`, poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione.
   2. `document.querySelectorAll('.tab')[6].click()` (Lighting), 7 s di attesa, `enableGpuProfiling()`.
   3. Interroga `getGpuTimings()` finché `light-groups/sdf` non ha `sampleCount >= 120`.
-  4. Registra seed, sdf, accum, `forward`, il totale e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set, quindi si confronta con la riga "2 set, 2 gruppi".
+  4. Registra seed, sdf, accum, `forward`, lo span (`getGpuFrameTiming().averageMs`) e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set, quindi si confronta con la riga "2 set, 2 gruppi".
   5. Ripeti con `lighting.setQuality({ shadowSteps: 24 })` per ricontrollare il "+2% tra 48 e 24".
   6. Salva tutto in `lighting-cost.json`.
 - **Atteso.** Numeri e basta. Vanno in una riga M2 separata nel §13.2, senza sovrascrivere quella AMD.
@@ -859,7 +859,7 @@ Atteso: nessun errore, e colori entro l'errore di ASTC.
   - Nessun errore di compilazione e tutti gli scope `null`.
   - Gli stessi verdetti di Chrome in B e C, tranne Audio: l'AudioContext vuole un gesto vero e sotto automazione può restare in attesa.
   - `window.__hyperion.mode` uguale all'URL.
-  - Nessun timing: il profiling si fa solo in Chrome.
+  - Il profiler in Safari: `enableGpuProfiling()` su `?mode=B`, poi `getGpuTimings()` e `getGpuFrameTiming()` dopo circa 4 s. Voci non vuote e nessun errore di validazione in console: verifica il meccanismo della spec del profiler (override come proprietà proprie, membri ereditati del descrittore). Se Safari rifiuta i membri ereditati, il ripiego è nella spec, §8.2.
 - **Se fallisce.**
   - `diagnostic` rifiutato: il piano B è nel design 5b §10, prima riga dei rischi (portare `fwidth(uv.y)`/`dpdx`/`dpdy` fuori dallo `switch` e riscrivere il `fwidth` della bezier con la regola della catena). È una modifica di design: chiedila.
   - `?mode=A` forzato con canvas bianco dopo `[Hyperion] Mode A failed, trying next fallback`: è il difetto di fallback descritto in 3.2, non un guasto della GPU. Annotalo e segnalalo come domanda.
