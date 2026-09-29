@@ -84,8 +84,8 @@ const DISABLING: Record<Feature, string> = {
  * validated together, and alone as a fallback. It never requests a graph
  * from a set a probe rejected, or from one no probe tried together over the
  * sources current when it commits: if another reload committed while it
- * waited for the GPU, it probes its set again. (`reloadShader`, one shader,
- * commits on the verdict of its own probe.) With independent files, a broken
+ * waited for the GPU, it probes its set again. `reloadShader`, one shader, is
+ * a window of one entry and follows the same rule. With independent files, a broken
  * one in a batch (Save All, a checkout) cannot take a valid one down with it.
  * Two declared limits, both fixed by saving the pieces again: a coupled edit
  * saved together with an unrelated broken piece is rejected whole, and so is
@@ -189,52 +189,16 @@ export class GraphRequests<O, B> {
    * stays), 'validated' (kept; the requested mode does not use it), a graph
    * outcome when it triggered a rebuild, or 'superseded' by a newer reload of
    * the same shader.
+   *
+   * A window of one entry (`reloadShaders`): probed synchronously, and probed
+   * again over the current sources when another reload committed, or a
+   * rejected graph reverted, while it waited for the GPU. It used to commit on
+   * its own probe's verdict, so an `engine.recompileShader` of a piece racing
+   * an HMR window could request a graph from a set no probe tried (review
+   * wf_61c6a580-afa #17).
    */
   reloadShader(name: string, code: string): Promise<ReloadOutcome> {
-    const slot = this.deps.slots[name];
-    if (!slot) {
-      this.deps.log.warn(`[Hyperion] Unknown shader pass: ${name}`);
-      return Promise.resolve('unknown');
-    }
-    const source = slot.prepare ? slot.prepare(code) : code;
-
-    let verdict: Promise<string[]>;
-    const current = slot.read();
-    slot.write(source);
-    try {
-      verdict = this.deps.validation.run(() => slot.probe());
-    } catch (err) {
-      this.deps.log.error(`[Hyperion] Shader "${name}" did not compile — keeping the previous source:`, err);
-      return Promise.resolve('rejected');
-    } finally {
-      // Synchronous: nothing else can have observed the unvalidated source.
-      slot.write(current);
-    }
-    // Only a reload whose probe started supersedes earlier ones: an empty file
-    // (editors truncate before writing) must not cancel the edit in flight.
-    const version = (this.versions.get(name) ?? 0) + 1;
-    this.versions.set(name, version);
-
-    return verdict.then(async (messages): Promise<ReloadOutcome> => {
-      if (this.versions.get(name) !== version) return 'superseded';
-      if (messages.length > 0) {
-        this.deps.log.error(
-          `[Hyperion] Shader "${name}" rejected by the GPU — keeping the previous source:\n${messages.join('\n')}`,
-        );
-        return 'rejected';
-      }
-      this.commits++;
-      slot.write(source);
-      if (!slot.usedBy(this.wanted.mode)) {
-        this.goodSources.set(name, source);
-        if (slot.usedBy(this.deps.host.mode)) this.liveStale = true;
-        this.deps.log.log(`[Hyperion] Shader "${name}" validated — takes effect when a mode that uses it is on`);
-        return 'validated';
-      }
-      const result = await this.requestGraph(this.wanted, `Shader "${name}"`);
-      if (result.outcome === 'swapped') this.deps.log.log(`[Hyperion] Shader "${name}" hot-reloaded`);
-      return result.outcome;
-    });
+    return this.reloadShaders([{ name, code }]).then((outcomes) => outcomes.get(name)!);
   }
 
   /**

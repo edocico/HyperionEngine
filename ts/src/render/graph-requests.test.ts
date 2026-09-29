@@ -862,6 +862,48 @@ describe('GraphRequests — reloadShaders over sources committed meanwhile', () 
     expectEveryGraphProbed(env);
   });
 
+  // Review wf_61c6a580-afa #17: the single-slot path (engine.recompileShader of
+  // a piece) re-probes over the current sources like a window.
+  it('a direct reloadShader probed before a window committed is probed again: no graph from an untried set, the window stays', async () => {
+    const P = 'def:camera def:X def:lineHelper';
+    const P2 = 'def:camera def:lineHelper'; // drops X, which the current line does not use
+    const env = grouped({ prelude: P, quad: 'use:camera def:quad_fs', line: 'use:camera use:lineHelper def:line_fs' }, true);
+    const w = env.graph.reloadShaders([{ name: 'prelude', code: P2 }]);
+    // Probed over the OLD prelude, which still has X: passes.
+    const d = env.graph.reloadShader('line', 'use:camera use:lineHelper use:X def:line_fs');
+    await settleAll(env); // verdicts oldest first, like popErrorScope
+
+    expectEveryGraphProbed(env);
+    expect(env.host.request).toHaveBeenCalledTimes(1);
+    env.requests[0].settle('swapped');
+    expect(await d).toBe('rejected');
+    expect(await outcomesOf(w)).toEqual({ prelude: 'swapped' });
+    expect(env.sources.prelude).toBe(P2);
+    expect(env.log.error).toHaveBeenCalledWith(expect.stringMatching(
+      /Shader "line" rejected over the sources another reload committed meanwhile.*line: unresolved identifier X/s,
+    ));
+  });
+
+  it('a direct reloadShader probed before an independent window committed is probed again over it, and goes live', async () => {
+    const env = grouped(PIECES, true);
+    const P2 = 'def:camera def:quadHelper def:lineHelper def:p2';
+    const L2 = 'use:camera use:lineHelper def:line_fs def:l2';
+    const w = env.graph.reloadShaders([{ name: 'prelude', code: P2 }]);
+    const d = env.graph.reloadShader('line', L2);
+    await settleAll(env);
+
+    // w's probe, d's probe, then d once more over w's commit.
+    expect(env.compiled).toHaveLength(3);
+    expect(env.compiled[2]).toEqual({ ...PIECES, prelude: P2, line: L2 });
+    expect(env.host.request).toHaveBeenCalledTimes(2);
+    env.requests[0].settle('swapped');
+    env.requests[1].settle('swapped');
+    expect(await outcomesOf(w)).toEqual({ prelude: 'swapped' });
+    expect(await d).toBe('swapped');
+    expect(env.sources).toEqual({ ...PIECES, prelude: P2, line: L2 });
+    expectEveryGraphProbed(env);
+  });
+
   it('a coupled window whose quad is saved again before the verdict: both windows rejected (the declared limit)', async () => {
     const env = grouped(BEFORE_RENAME, true);
     const a = renameWindow(env);
