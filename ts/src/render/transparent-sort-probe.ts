@@ -125,13 +125,19 @@ export class TransparentSortProbe {
    * Called by the renderer right after the graph's submit, every frame. A
    * taken request: snapshot `source` now, then map. Nothing taken while
    * requests wait (the sort did not run): the HEAD is rejected, the others
-   * wait for the next frames.
+   * wait for the next frames. A rejection that does not report the frame's GPU
+   * errors itself (nothing taken, a missing or mismatched snapshot) carries
+   * them appended, and logs them once (`rejectWithFrameErrors`).
    */
   finish(source: SortProbeSource | null, frameErrors: Promise<string[]> | null): void {
     const taken = this.taken;
     this.taken = null;
     if (!taken) {
-      this.queue.shift()?.reject(new Error('no transparent entities this frame: the sort did not run, there is nothing to read'));
+      // Shifted now, so the next frame serves the next request.
+      const head = this.queue.shift();
+      if (head || frameErrors) {
+        rejectWithFrameErrors(head, 'no transparent entities this frame: the sort did not run, there is nothing to read', frameErrors);
+      }
       return;
     }
     const { pending, target } = taken;
@@ -139,9 +145,9 @@ export class TransparentSortProbe {
     const free = (): void => { for (const b of buffers) b.destroy(); };
     if (!source || source.stamp !== target.stamp) {
       free();
-      pending.reject(new Error(source
+      rejectWithFrameErrors(pending, source
         ? `The frame snapshot has stamp ${source.stamp}, the sort was read at ${target.stamp}`
-        : 'No frame snapshot came with the frame that took the readback'));
+        : 'No frame snapshot came with the frame that took the readback', frameErrors);
       return;
     }
     const frame = snapshot(source);
@@ -191,6 +197,33 @@ export class TransparentSortProbe {
     }
     this.mapping.clear();
   }
+}
+
+/**
+ * Rejects `pending` (if any) with `message`, once the frame's GPU errors are
+ * known, with those errors appended; and logs them once with console.error.
+ * The renderer scopes every frame while a request waits, and an error caught
+ * by a scope never reaches the console as an uncaptured error: a frame that
+ * reads nothing must not make them vanish. A `message` about an empty frame
+ * keeps its prefix, which `readSortFrame` retries on.
+ */
+function rejectWithFrameErrors(pending: Pending | undefined, message: string, frameErrors: Promise<string[]> | null): void {
+  if (!frameErrors) {
+    pending?.reject(new Error(message));
+    return;
+  }
+  frameErrors.then(
+    (errors) => {
+      if (errors.length === 0) {
+        pending?.reject(new Error(message));
+        return;
+      }
+      const text = errors.join('; ');
+      console.error(`[Hyperion] A frame of the transparent-sort readback failed GPU validation (${message}): ${text}`);
+      pending?.reject(new Error(`${message}; the frame also failed GPU validation: ${text}`));
+    },
+    (err: unknown) => pending?.reject(new Error(`${message}; the frame's GPU error scopes failed: ${toError(err).message}`)),
+  );
 }
 
 function snapshot(s: SortProbeSource): SortProbeSource {

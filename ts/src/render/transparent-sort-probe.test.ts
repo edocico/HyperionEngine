@@ -233,6 +233,45 @@ describe('TransparentSortProbe', () => {
     probe.finish(makeSource(3), null); // an empty queue: nothing to reject
   });
 
+  // The renderer scopes every frame while a request waits, not knowing whether
+  // the sort will take one. Errors caught by a scope never reach the console as
+  // uncaptured errors, so a frame that reads nothing must not drop them.
+  it("a frame whose sort did not run keeps that frame's GPU errors: in the head's rejection and on the console, once", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { device } = mockDevice();
+      const probe = new TransparentSortProbe(device);
+      const head = probe.request();
+      const next = probe.request();
+      probe.finish(makeSource(1), Promise.resolve(['Destroyed buffer used in a submit']));
+      // The head leaves the queue at once: the next frame serves the next request.
+      expect(probe.hasPending).toBe(true);
+      await expect(head).rejects.toThrow(/no transparent entities this frame.*Destroyed buffer used in a submit/);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(String(error.mock.calls[0][0])).toContain('Destroyed buffer used in a submit');
+      probe.finish(makeSource(2), Promise.resolve([]));
+      await expect(next).rejects.toThrow(/^no transparent entities this frame: the sort did not run, there is nothing to read$/);
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("a taken request whose snapshot is of another frame keeps that frame's GPU errors too", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { device } = mockDevice();
+      const probe = new TransparentSortProbe(device);
+      const pending = probe.request();
+      probe.take(4);
+      probe.finish(makeSource(5), Promise.resolve(['Destroyed buffer used in a submit']));
+      await expect(pending).rejects.toThrow(/snapshot has stamp 5, the sort was read at 4.*Destroyed buffer used in a submit/);
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('a frame whose render threw rejects the taken request and every queued one, and frees the taken buffers', async () => {
     const { device, buffers } = mockDevice();
     const probe = new TransparentSortProbe(device);
