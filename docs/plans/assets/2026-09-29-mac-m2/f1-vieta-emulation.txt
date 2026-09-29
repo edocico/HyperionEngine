@@ -1,3 +1,4 @@
+=== pow model: rounded
 curved @1024, 625 px around the crossing {
  "old": "worst 1.75e-3, >1e-3: 5, nan 0",
  "oldNewton": "worst 1.31e-3, >1e-3: 4, nan 0",
@@ -39,4 +40,143 @@ band 144.74 0.005 {
  "oldNewton": "worst 2.86e-8, >1e-3: 0, nan 0",
  "vieta": "worst 3.37e-8, >1e-3: 0, nan 0",
  "vietaNewton": "worst 2.86e-8, >1e-3: 0, nan 0"
+}
+angle 60 0.0001 {
+ "old": "worst 3.28e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 1.63e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 6.33e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 1.63e-8, >1e-3: 0, nan 0"
+}
+angle 75 0.0001 {
+ "old": "worst 2.09e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.80e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 6.97e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.80e-8, >1e-3: 0, nan 0"
+}
+angle 89 0.0001 {
+ "old": "worst 1.07e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 3.05e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 7.57e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 3.05e-8, >1e-3: 0, nan 0"
+}
+angle 90 0.0001 {
+ "old": "worst 6.71e-5, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.30e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 6.48e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.30e-8, >1e-3: 0, nan 0"
+}
+angle 105 0.0001 {
+ "old": "worst 1.84e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.80e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 7.01e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.80e-8, >1e-3: 0, nan 0"
+}
+angle 120 0.0001 {
+ "old": "worst 3.40e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 1.63e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 6.38e-4, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 1.63e-8, >1e-3: 0, nan 0"
+}
+perpendicular 0.000016 {
+ "old": "worst 7.79e-4, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.96e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 5.47e-3, >1e-3: 701, nan 0",
+ "vietaNewton": "worst 2.96e-8, >1e-3: 0, nan 0"
+}
+perpendicular 0.001 {
+ "old": "worst 3.57e-7, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.31e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.17e-5, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.31e-8, >1e-3: 0, nan 0"
+}
+=== pow model: exp2log2
+curved @1024, 625 px around the crossing {
+ "old": "worst 1.75e-3, >1e-3: 5, nan 0",
+ "oldNewton": "worst 1.31e-3, >1e-3: 4, nan 0",
+ "vieta": "worst 5.02e-8, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 5.02e-8, >1e-3: 0, nan 0"
+}
+band 35.26 0.0001 {
+ "old": "worst 4.71e-1, >1e-3: 1396, nan 0",
+ "oldNewton": "worst 2.88e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.10e-3, >1e-3: 10, nan 0",
+ "vietaNewton": "worst 2.88e-8, >1e-3: 0, nan 0"
+}
+band 35.26 0.001 {
+ "old": "worst 2.49e-1, >1e-3: 1381, nan 0",
+ "oldNewton": "worst 2.49e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.70e-5, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.49e-8, >1e-3: 0, nan 0"
+}
+band 35.26 0.005 {
+ "old": "worst 8.70e-2, >1e-3: 856, nan 0",
+ "oldNewton": "worst 2.86e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.19e-7, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.86e-8, >1e-3: 0, nan 0"
+}
+band 144.74 0.0001 {
+ "old": "worst 4.71e-1, >1e-3: 1398, nan 0",
+ "oldNewton": "worst 2.88e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.16e-3, >1e-3: 6, nan 0",
+ "vietaNewton": "worst 2.88e-8, >1e-3: 0, nan 0"
+}
+band 144.74 0.001 {
+ "old": "worst 2.52e-1, >1e-3: 1380, nan 0",
+ "oldNewton": "worst 2.49e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.18e-5, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.49e-8, >1e-3: 0, nan 0"
+}
+band 144.74 0.005 {
+ "old": "worst 8.55e-2, >1e-3: 856, nan 0",
+ "oldNewton": "worst 2.86e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 8.35e-8, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.86e-8, >1e-3: 0, nan 0"
+}
+angle 60 0.0001 {
+ "old": "worst 1.32e-3, >1e-3: 14, nan 0",
+ "oldNewton": "worst 1.63e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.95e-3, >1e-3: 64, nan 0",
+ "vietaNewton": "worst 1.63e-8, >1e-3: 0, nan 0"
+}
+angle 75 0.0001 {
+ "old": "worst 1.30e-3, >1e-3: 13, nan 0",
+ "oldNewton": "worst 2.80e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 2.18e-3, >1e-3: 84, nan 0",
+ "vietaNewton": "worst 2.80e-8, >1e-3: 0, nan 0"
+}
+angle 89 0.0001 {
+ "old": "worst 1.22e-3, >1e-3: 7, nan 0",
+ "oldNewton": "worst 3.05e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 2.29e-3, >1e-3: 93, nan 0",
+ "vietaNewton": "worst 3.05e-8, >1e-3: 0, nan 0"
+}
+angle 90 0.0001 {
+ "old": "worst 1.21e-3, >1e-3: 18, nan 0",
+ "oldNewton": "worst 2.30e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 2.11e-3, >1e-3: 82, nan 0",
+ "vietaNewton": "worst 2.30e-8, >1e-3: 0, nan 0"
+}
+angle 105 0.0001 {
+ "old": "worst 1.43e-3, >1e-3: 13, nan 0",
+ "oldNewton": "worst 2.80e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 2.22e-3, >1e-3: 81, nan 0",
+ "vietaNewton": "worst 2.80e-8, >1e-3: 0, nan 0"
+}
+angle 120 0.0001 {
+ "old": "worst 1.33e-3, >1e-3: 18, nan 0",
+ "oldNewton": "worst 1.63e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.92e-3, >1e-3: 68, nan 0",
+ "vietaNewton": "worst 1.63e-8, >1e-3: 0, nan 0"
+}
+perpendicular 0.000016 {
+ "old": "worst 6.40e-3, >1e-3: 458, nan 0",
+ "oldNewton": "worst 2.96e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 1.51e-2, >1e-3: 781, nan 0",
+ "vietaNewton": "worst 2.96e-8, >1e-3: 0, nan 0"
+}
+perpendicular 0.001 {
+ "old": "worst 1.17e-5, >1e-3: 0, nan 0",
+ "oldNewton": "worst 2.31e-8, >1e-3: 0, nan 0",
+ "vieta": "worst 2.92e-5, >1e-3: 0, nan 0",
+ "vietaNewton": "worst 2.31e-8, >1e-3: 0, nan 0"
 }

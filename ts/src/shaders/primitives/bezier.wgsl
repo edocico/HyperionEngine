@@ -84,14 +84,19 @@ fn bezier_sd(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
             res = min(dx, dy);
         }
 
-        // A second candidate, for near-straight curves: there kx ~ 1 / |B| is
-        // large, and t = u + v - kx keeps only the absolute precision of
-        // u + v (in an f32 emulation, 4e-4 uv at |B| = 2e-4 without this
-        // candidate, 3e-8 with it). The projection on the chord, polished by
-        // two Newton steps on g(t) = (P(t) - pos).P'(t), is exact for such
-        // curves. Any t in [0, 1] is a point of the curve, so the smaller
-        // distance is never below the true one, and a NaN from the roots (the
-        // comparison fails) always loses to this candidate.
+        // A second candidate, for near-straight curves at any angle. There both
+        // cube roots are ~|A| / |B| (u ~ kx + t when kx is large, as at 35.26
+        // degrees; u ~ -v ~ sqrt(p) when A is perpendicular to B, where
+        // kx = -1/2), and t = u + v - kx keeps only their absolute precision;
+        // when u ~ -v, v = -p / u also doubles the error of pow. In an f32
+        // emulation (docs/plans/assets/2026-09-29-mac-m2/f1-vieta-emulation.mjs)
+        // the roots alone miss by 6e-4 to 2e-3 uv at |B| = 2e-4, by up to
+        // 1.5e-2 just above the 1e-9 threshold; with this candidate, by 3e-8.
+        // The projection on the chord, polished by two Newton steps on
+        // g(t) = (P(t) - pos).P'(t), is exact for such curves. Any t in [0, 1]
+        // is a point of the curve, so the smaller distance is never below the
+        // true one, and a NaN from the roots (the comparison fails) always
+        // loses to this candidate.
         let ba = c - a;
         var tn = clamp(dot(-D, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
         for (var i = 0; i < 2; i = i + 1) {
