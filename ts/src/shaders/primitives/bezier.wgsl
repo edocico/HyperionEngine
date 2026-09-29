@@ -59,7 +59,8 @@ fn bezier_sd(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
         } else {
             // Three real roots — use trigonometric solution
             let z = sqrt(-p);
-            let v = acos(q / (p * z * 2.0)) / 3.0;
+            // Rounding can push the cosine past ±1, and acos is NaN there.
+            let v = acos(clamp(q / (p * z * 2.0), -1.0, 1.0)) / 3.0;
             let m = cos(v);
             let n = sin(v) * 1.732050808; // sqrt(3)
             let t0 = clamp(vec3f(m + m, -n - m, n - m) * z - kx, vec3f(0.0), vec3f(1.0));
@@ -72,6 +73,25 @@ fn bezier_sd(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
             let dy = bezier_dot2(qy);
             res = min(dx, dy);
         }
+
+        // A second candidate, sound where the roots above are not. p is the
+        // difference of two terms ~1/|B|^2 that cancel when the angle between
+        // A and B has cos^2 = 2/3 (35.26 or 144.74 degrees): there f32 leaves
+        // only rounding error, and a near-straight curve drew noise on Metal
+        // (holes in the stroke, NaN pixels lit around it). The projection on
+        // the chord, polished by two Newton steps on g(t) = (P(t) - pos).P'(t),
+        // is exact for such curves. Any t in [0, 1] is a point of the curve,
+        // so the smaller distance is never below the true one, and a NaN from
+        // the roots (the comparison fails) always loses to this candidate.
+        let ba = c - a;
+        var tn = clamp(dot(-D, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
+        for (var i = 0; i < 2; i = i + 1) {
+            let toCurve = D + (C + B * tn) * tn;  // P(t) - pos
+            let tangent = C + 2.0 * B * tn;       // P'(t)
+            let slope = dot(tangent, tangent) + 2.0 * dot(toCurve, B);
+            tn = clamp(tn - dot(toCurve, tangent) / max(slope, 1e-12), 0.0, 1.0);
+        }
+        res = min(select(1e30, res, res < 1e30), bezier_dot2(D + (C + B * tn) * tn));
     }
 
     return sqrt(res);

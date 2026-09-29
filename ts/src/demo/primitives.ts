@@ -192,6 +192,45 @@ const section: DemoSection = {
       return { ok, detail: parts.join('; ') };
     });
 
+    await pixelCheck(reporter, 'Near-straight bezier (35.26°)', engine, async (probe) => {
+      // bezier_sd's cubic coefficient p = ky - kx^2 is the difference of two
+      // terms ~1/|B|^2 that cancel when the control point's offset from the
+      // chord's middle makes 35.26° (cos^2 = 2/3) or 144.74° with the chord:
+      // there f32 left only rounding error, and on the Mac M2 (2026-09-29) a
+      // near-straight curve drew noise (70% of the stroke missing and pixels
+      // lit around it at an offset of 1e-4, holes up to 2e-2). Same method as
+      // 'Straight bezier': the wave is reshaped and restored, nothing spawned.
+      // The curve stays within |B|/4 = offset/2 of its chord.
+      const inside: [number, number][] = [];
+      const outside: [number, number][] = [];
+      for (let u = 0.15; u <= 0.8501; u += 0.05) {
+        for (const dv of [0, 0.008, -0.008]) inside.push([BEZIER_X + (u - 0.5) * 4, -4 + dv * 4]);
+      }
+      for (let u = 0.2; u <= 0.8001; u += 0.1) {
+        for (const dv of [0.05, -0.05, 0.1, -0.1]) outside.push([BEZIER_X + (u - 0.5) * 4, -4 + dv * 4]);
+      }
+      const parts: string[] = [];
+      let ok = true;
+      try {
+        for (const deg of [35.26, 144.74]) {
+          for (const offset of [1e-4, 1e-3, 5e-3]) {
+            const a = (deg * Math.PI) / 180;
+            wave.bezier(0.1, 0.5, 0.5 + offset * Math.cos(a), 0.5 + offset * Math.sin(a), 0.9, 0.5, BEZIER_WIDTH);
+            await frames(4);
+            const values = await probe('scene-hdr', [...inside, ...outside]);
+            const holes = values.slice(0, inside.length).filter((p) => p[0] <= 0.5).length;
+            const ghosts = values.slice(inside.length).filter((p) => !near(p[0], BACKGROUND, 0.01)).length;
+            ok = ok && holes === 0 && ghosts === 0;
+            parts.push(`${deg}° ${offset}: ${holes}/${inside.length} holes, ${ghosts}/${outside.length} lit outside`);
+          }
+        }
+      } finally {
+        wave.bezier(...WAVE, BEZIER_WIDTH);
+        await frames(4);
+      }
+      return { ok, detail: parts.join('; ') };
+    });
+
     // ── 6. MSDF text — skip (no font atlas in demo assets) ────────────
     reporter.skip('MSDF text', 'no font atlas in demo assets');
   },
