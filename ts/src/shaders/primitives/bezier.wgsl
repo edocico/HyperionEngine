@@ -49,11 +49,21 @@ fn bezier_sd(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
         var h: f32 = q2 + 4.0 * p3;
 
         if (h >= 0.0) {
-            // One real root
+            // One real root, t = u + v - kx, where u^3 and v^3 are (h - q) / 2
+            // and (-h - q) / 2, and u v = -p. The one whose two terms have
+            // opposite signs is a difference of terms ~|q|: where |p|^3 << q^2
+            // only its rounding error is left, and the cube root magnifies it
+            // (1e-8 becomes 2e-3). A strongly curved curve lost pixels of a
+            // thin stroke where p crosses 0, and a near-straight one most of
+            // its stroke at 35.26 or 144.74 degrees between A and B, where p's
+            // leading terms cancel all along it (Mac M2, 2026-09-29). So only
+            // the other one is rooted, and v follows from u v = -p; u = 0 only
+            // when q = h = 0, and then p = 0 too.
             h = sqrt(h);
-            let x = (vec2f(h, -h) - q) / 2.0;
-            let uv2 = sign(x) * pow(abs(x), vec2f(1.0 / 3.0));
-            let t = clamp(uv2.x + uv2.y - kx, 0.0, 1.0);
+            let w = -0.5 * (q + select(-h, h, q >= 0.0));
+            let u = sign(w) * pow(abs(w), 1.0 / 3.0);
+            let v = select(0.0, -p / u, u != 0.0);
+            let t = clamp(u + v - kx, 0.0, 1.0);
             let qp = D + (C + B * t) * t;
             res = bezier_dot2(qp);
         } else {
@@ -74,15 +84,14 @@ fn bezier_sd(pos: vec2f, a: vec2f, b: vec2f, c: vec2f) -> f32 {
             res = min(dx, dy);
         }
 
-        // A second candidate, sound where the roots above are not. p is the
-        // difference of two terms ~1/|B|^2 that cancel when the angle between
-        // A and B has cos^2 = 2/3 (35.26 or 144.74 degrees): there f32 leaves
-        // only rounding error, and a near-straight curve drew noise on Metal
-        // (holes in the stroke, NaN pixels lit around it). The projection on
-        // the chord, polished by two Newton steps on g(t) = (P(t) - pos).P'(t),
-        // is exact for such curves. Any t in [0, 1] is a point of the curve,
-        // so the smaller distance is never below the true one, and a NaN from
-        // the roots (the comparison fails) always loses to this candidate.
+        // A second candidate, for near-straight curves: there kx ~ 1 / |B| is
+        // large, and t = u + v - kx keeps only the absolute precision of
+        // u + v (in an f32 emulation, 4e-4 uv at |B| = 2e-4 without this
+        // candidate, 3e-8 with it). The projection on the chord, polished by
+        // two Newton steps on g(t) = (P(t) - pos).P'(t), is exact for such
+        // curves. Any t in [0, 1] is a point of the curve, so the smaller
+        // distance is never below the true one, and a NaN from the roots (the
+        // comparison fails) always loses to this candidate.
         let ba = c - a;
         var tn = clamp(dot(-D, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
         for (var i = 0; i < 2; i = i + 1) {
