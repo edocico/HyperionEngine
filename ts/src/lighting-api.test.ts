@@ -3,26 +3,9 @@ import { LightingAPI, DEFAULT_LIGHTING_QUALITY } from './lighting-api';
 import { BackpressuredProducer } from './backpressure';
 import { RingBufferProducer, extractUnread, CommandType } from './ring-buffer';
 import type { EngineBridge, GPURenderState } from './worker-bridge';
+import { makeRenderState as emptyRenderState } from './render-state.fixture';
 
 const HEADER = 32;
-
-function emptyRenderState(overrides: Partial<GPURenderState> = {}): GPURenderState {
-  return {
-    entityCount: 0,
-    transforms: new Float32Array(0),
-    bounds: new Float32Array(0),
-    renderMeta: new Uint32Array(0),
-    texIndices: new Uint32Array(0),
-    primParams: new Float32Array(0),
-    entityIds: new Uint32Array(0),
-    listenerX: 0, listenerY: 0, listenerZ: 0,
-    tickCount: 0,
-    dirtyCount: 0, dirtyRatio: 0,
-    stagingData: null, dirtyIndices: null,
-    ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
-    ...overrides,
-  };
-}
 
 function setup() {
   // Not `createRingBuffer()`: it reads `crossOriginIsolated`, which the node

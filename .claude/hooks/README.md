@@ -15,7 +15,7 @@ resolves the repo root from `$CLAUDE_PROJECT_DIR`, falling back to `.cwd` from t
 | `post-edit-rust.sh` | PostToolUse | `*.rs` | Runs `cargo clippy -p hyperion-core`; warns when `cfg(feature = ...)` code was touched. |
 | `guard-stale-wasm.sh` | PreToolUse | chrome-devtools `navigate_page` | **Advisory.** Adds context when `ts/wasm/hyperion_core_bg.wasm` is older than `crates/hyperion-core/src` (by mtime, as cargo decides — a checkout also trips it). |
 | `post-edit-ts.sh` | PostToolUse | `ts/src/**/*.ts` | Runs the colocated `*.test.ts` via vitest. A failure after editing the test file itself is returned as context (exit 0, the expected TDD RED); after a source edit it is an error (exit 2). |
-| `post-edit-notices.sh` | PostToolUse | various | Surfaces cross-cutting invariants no compiler checks (WGSL bind groups, protocol files, physics, structural files). |
+| `post-edit-notices.sh` | PostToolUse | various | Surfaces cross-cutting invariants no compiler checks: WGSL by path (the primitive prelude — the only bindings, composed into 7 modules; a primitive library — prefixes, no bindings or entry points; any other shader — its pass's layout), protocol files, physics, structural files. |
 | `guard-doc-shrink.sh` | PostToolUse | `Bash`/`Edit`/`Write` | Warns when a `*.md` lost ≥ `DOC_SHRINK_MIN` (40) lines and more than twice what it gained — in the working tree, and in the commit just made when the command was `git commit`/`git merge`. Each distinct finding is reported once (state in `.git/claude-doc-shrink-seen`). |
 
 ## Exit-code contract

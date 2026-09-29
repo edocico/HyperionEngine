@@ -1,36 +1,61 @@
 import type { RenderPass, FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
-import { BUCKETS_PER_TYPE, OPAQUE_DRAW_BUCKETS } from './cull-pass';
+import { BUCKETS_PER_TYPE } from './cull-pass';
+import { H_DRAW } from './transparent-sort-constants';
 import { SCENE_HDR_FORMAT } from '../formats';
 import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 
 /**
- * Forward rendering pass with multi-pipeline per-type dispatch, 2-bucket material sort,
- * and separate opaque/transparent sub-passes.
+ * Size of `LightingUniform` (prelude.wgsl): enabled, the layer→group table
+ * (2 × u32), pad. It is the buffer's size AND the group-2 layout's
+ * `minBindingSize`, so a prelude edit that grows the struct fails at bind-group
+ * creation, inside the probe's error scope, not at draw time.
+ */
+const LIGHTING_UNIFORM_BYTES = 16;
+
+/**
+ * Forward rendering pass to the scene-hdr intermediate texture. Opaque entities
+ * are drawn PER TYPE: one pipeline per primitive type (its own composed
+ * per-type module), over 2 material buckets. Every transparent entity, of
+ * whatever type, is drawn by ONE uber draw over the GPU-sorted order
+ * (`transparent-order`, `transparent-args`) — never per type.
  *
  * Reads entity transforms, visible indices (from CullPass), texture layer
- * indices, render metadata, and primitive parameters, then issues per-type
- * indirect indexed draws to the scene-hdr intermediate texture.
+ * indices, render metadata, and primitive parameters.
  *
- * Each registered primitive type (via SHADER_SOURCES) gets TWO pipelines:
- * one opaque (depth-write enabled, no blend) and one transparent (depth-write
- * disabled, alpha blend enabled).
+ * Each registered primitive type (via SHADER_SOURCES, the COMPOSED per-type
+ * modules) gets ONE opaque pipeline (depth write, no blend), drawn from the
+ * material buckets 0-13 of `indirect-args`.
+ *
+ * Every transparent primitive is drawn by ONE uber pipeline, from UBER_SOURCE
+ * (no depth write, straight alpha blend), back to front (design 5b §6.2).
+ * TransparentSortPass gathers the visible transparents of types 0-5 (buckets
+ * 14-25), sorts them by (world z, external id), and writes the slots into
+ * `transparent-order` and the draw arguments {6, n, 0, 0, 0} at byte 0 of
+ * `transparent-args`. The uber draw binds `bindGroup0Sorted`, a second group 0
+ * whose binding 2 (`visibleIndices` in the shaders) is `transparent-order`, so
+ * instance i is the i-th sprite back to front: drawIndexedIndirect(transparent-args, 0).
+ * firstInstance is 0: this draw needs no `indirect-first-instance`. It is
+ * skipped when `FrameState.transparentCount` is 0. Here `transparent-args` is an
+ * INDIRECT buffer only, never bound: in a render pass the usage scope is the
+ * whole pass.
  *
  * CullPass produces 28 DrawIndirectArgs (14 opaque + 14 transparent, each set
  * being 7 prim types x 2 material buckets) at sequential 20-byte offsets.
  *
  * Sub-pass 1: Opaque entities (buckets 0-13) with depth write.
- * Sub-pass 2: Transparent entities (buckets 14-27) with alpha blend, no depth write.
+ * Sub-pass 2: every transparent entity, in the ONE uber draw above.
  *
  * Type 6 (Light2D) has buckets here but no pipeline: `SHADER_SOURCES` registers
  * nothing for it, so the per-type loop below never finds it. Its buckets are
  * read directly by the light accumulation pass.
  *
  * Group 2 is the light buffer (Phase 17): texture, sampler, lighting uniform.
- * Every pipeline shares the three-group layout, but only the shaders that apply
- * lighting (basic.wgsl, gradient.wgsl) declare group 2; a layout may hold groups
- * a shader never uses. It is bound for every pipeline all the same, or the draw
- * fails validation. Constructed `lit`, the pass reads `light-buffer` (written by
+ * Every pipeline shares the three-group layout, and every composed module
+ * declares group 2 (the prelude does), but only the lit types' fs_main reaches
+ * it: `applyLighting`, called by `quad_fs` and `gradient_fs`. It is bound for
+ * every pipeline all the same, or the draw fails validation. Constructed `lit`,
+ * the pass reads `light-buffer` (written by
  * LightGroupsPass, one layer per light group) and the uniform says enabled,
  * with the layer→group table; otherwise group 2 binds a 1×1
  * white placeholder, and a stale `light-buffer` left in the pool by a retired
@@ -38,15 +63,25 @@ import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntr
  */
 export class ForwardPass implements RenderPass {
   readonly name = 'forward';
-  readonly reads = ['visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params'];
+  // transparent-order / transparent-args (TransparentSortPass, Phase 5b) are
+  // read in lit and unlit graphs alike: that read orders the sort before this
+  // pass and keeps it alive. It is optional, and RadixSortPass was culled
+  // because nothing read its output.
+  readonly reads = [
+    'visible-indices', 'entity-transforms', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params',
+    'transparent-order', 'transparent-args',
+  ];
   readonly writes = ['scene-hdr'];
   readonly optional = false;
   /** Whether this graph has a light buffer to read (lighting backend `lit`). */
   readonly lit: boolean;
 
   private opaquePipelines = new Map<number, GPURenderPipeline>();
-  private transparentPipelines = new Map<number, GPURenderPipeline>();
+  /** ONE pipeline for every transparent primitive (UBER_SOURCE), transparent descriptor: the uber draw. */
+  private uberPipeline: GPURenderPipeline | null = null;
   private bindGroup0: GPUBindGroup | null = null;
+  /** `bindGroup0` with binding 2 = `transparent-order`: the uber draw's instance i is the i-th slot back to front. */
+  private bindGroup0Sorted: GPUBindGroup | null = null;
   private bindGroup1: GPUBindGroup | null = null;
   private tierBinding: TextureTierBinding | null = null;
   private vertexBuffer: GPUBuffer | null = null;
@@ -56,6 +91,8 @@ export class ForwardPass implements RenderPass {
   private readonly cameraData = new ArrayBuffer(80);
   private depthTexture: GPUTexture | null = null;
   private indirectBuffer: GPUBuffer | null = null;
+  /** The sort's header (renderer-owned): DrawIndexedIndirect {6, n, 0, 0, 0} at word H_DRAW. */
+  private transparentArgsBuffer: GPUBuffer | null = null;
   private device: GPUDevice | null = null;
   private depthWidth = 0;
   private depthHeight = 0;
@@ -74,12 +111,12 @@ export class ForwardPass implements RenderPass {
   }
 
   /**
-   * Per-primitive-type WGSL shader sources.
-   * Keys are numeric primitive type IDs (e.g. 0 = quad).
-   * Set this before calling `setup()`:
-   *
-   *   import shaderSrc from '../../shaders/basic.wgsl?raw';
-   *   ForwardPass.SHADER_SOURCES = { 0: shaderSrc };
+   * Per-primitive-type WGSL modules. Keys are numeric primitive type IDs
+   * (0 = quad … 5 = box shadow; 6, Light2D, has none).
+   * `publishPrimitiveShaders()` in renderer.ts fills it with the composed
+   * modules (render/primitive-shaders.ts: prelude + library + wrappers) and
+   * recomposes it IN PLACE on a shader hot-reload, so LightGroupsPass, which
+   * holds this object, sees the new text. Set before calling `setup()`.
    *
    * For backward compatibility, SHADER_SOURCE is also supported
    * (registers as type 0).
@@ -92,6 +129,13 @@ export class ForwardPass implements RenderPass {
    */
   static SHADER_SOURCE = '';
 
+  /**
+   * The uber module (`composeUberModule`): the prelude, every library and
+   * wrappers that switch on the primitive type. Required: `setup()` builds one
+   * pipeline from it, with the transparent descriptor.
+   */
+  static UBER_SOURCE = '';
+
   setup(device: GPUDevice, resources: ResourcePool): void {
     this.device = device;
 
@@ -102,6 +146,9 @@ export class ForwardPass implements RenderPass {
 
     if (Object.keys(sources).length === 0) {
       throw new Error('ForwardPass: no shader sources set. Set SHADER_SOURCES or SHADER_SOURCE before calling setup()');
+    }
+    if (!ForwardPass.UBER_SOURCE) {
+      throw new Error('ForwardPass: no uber source set. Set UBER_SOURCE (renderer.ts: publishPrimitiveShaders) before calling setup()');
     }
 
     // --- Vertex + Index buffers (unit quad) ---
@@ -142,6 +189,13 @@ export class ForwardPass implements RenderPass {
     if (!renderMetaBuffer) throw new Error("ForwardPass.setup: missing 'render-meta' in ResourcePool");
     const primParamsBuffer = resources.getBuffer('prim-params');
     if (!primParamsBuffer) throw new Error("ForwardPass.setup: missing 'prim-params' in ResourcePool");
+    // The sort's outputs belong to the renderer (createRenderer), never to a
+    // pass: an HMR probe runs setup() then destroy() against the LIVE pool.
+    const transparentOrderBuffer = resources.getBuffer('transparent-order');
+    if (!transparentOrderBuffer) throw new Error("ForwardPass.setup: missing 'transparent-order' in ResourcePool");
+    const transparentArgsBuffer = resources.getBuffer('transparent-args');
+    if (!transparentArgsBuffer) throw new Error("ForwardPass.setup: missing 'transparent-args' in ResourcePool");
+    this.transparentArgsBuffer = transparentArgsBuffer;
 
     // --- Group 0: vertex-stage data + storage buffers ---
     const bindGroupLayout0 = device.createBindGroupLayout({ entries: primitiveGroup0LayoutEntries() });
@@ -156,7 +210,7 @@ export class ForwardPass implements RenderPass {
         // One layer per light group (LightGroupsPass).
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: LIGHTING_UNIFORM_BYTES } },
       ],
     });
     // Half-resolution buffer, full-resolution draw: bilinear upsampling.
@@ -169,7 +223,7 @@ export class ForwardPass implements RenderPass {
     // LightingUniform: enabled, the layer→group table (2 × u32), pad = 16
     // bytes. `enabled` is fixed for the lifetime of the pass (a graph is lit or
     // not); the table is rewritten every frame in prepare().
-    this.lightingBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.lightingBuffer = device.createBuffer({ size: LIGHTING_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, 0, 0, 0]));
     this.placeholderTexture = device.createTexture({
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
@@ -198,7 +252,25 @@ export class ForwardPass implements RenderPass {
       attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }],
     };
 
-    // --- Create opaque and transparent pipelines per primitive type ---
+    // Transparent: depth write disabled, straight-alpha blend. Only the uber
+    // pipeline uses it (design 5b §6.2): there are no per-type transparent
+    // pipelines any more.
+    const blendedTarget: GPUColorTargetState = {
+      format,
+      blend: {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      },
+    };
+    const transparentPipeline = (module: GPUShaderModule): GPURenderPipeline => device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: { module, entryPoint: 'vs_main', buffers: [vertexBufferLayout] },
+      fragment: { module, entryPoint: 'fs_main', targets: [blendedTarget] },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+      primitive: { topology: 'triangle-list', cullMode: 'back' },
+    });
+
+    // --- Opaque: one pipeline per primitive type (depth write, no blend) ---
     for (const [typeStr, source] of Object.entries(sources)) {
       const type = Number(typeStr);
       const module = device.createShaderModule({ code: source });
@@ -212,54 +284,35 @@ export class ForwardPass implements RenderPass {
         primitive: { topology: 'triangle-list', cullMode: 'back' },
       });
       this.opaquePipelines.set(type, opaquePipeline);
-
-      // Transparent pipeline: depth write disabled, alpha blend
-      const transparentPipeline = device.createRenderPipeline({
-        layout: pipelineLayout,
-        vertex: { module, entryPoint: 'vs_main', buffers: [vertexBufferLayout] },
-        fragment: {
-          module,
-          entryPoint: 'fs_main',
-          targets: [{
-            format,
-            blend: {
-              color: {
-                srcFactor: 'src-alpha' as GPUBlendFactor,
-                dstFactor: 'one-minus-src-alpha' as GPUBlendFactor,
-                operation: 'add' as GPUBlendOperation,
-              },
-              alpha: {
-                srcFactor: 'one' as GPUBlendFactor,
-                dstFactor: 'one-minus-src-alpha' as GPUBlendFactor,
-                operation: 'add' as GPUBlendOperation,
-              },
-            },
-          }],
-        },
-        depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
-        primitive: { topology: 'triangle-list', cullMode: 'back' },
-      });
-      this.transparentPipelines.set(type, transparentPipeline);
     }
 
-    this.bindGroup0 = device.createBindGroup({
-      layout: bindGroupLayout0,
-      entries: [
-        { binding: 0, resource: { buffer: this.cameraBuffer } },
-        { binding: 1, resource: { buffer: transformBuffer } },
-        { binding: 2, resource: { buffer: visibleIndicesBuffer } },
-        { binding: 3, resource: { buffer: texIndexBuffer } },
-        { binding: 4, resource: { buffer: renderMetaBuffer } },
-        { binding: 5, resource: { buffer: primParamsBuffer } },
-      ],
-    });
+    // --- Transparent: ONE uber pipeline for every primitive type (design 5b §6.2) ---
+    // It draws every visible transparent of types 0-5, back to front, in the
+    // one draw of execute().
+    this.uberPipeline = transparentPipeline(device.createShaderModule({ code: ForwardPass.UBER_SOURCE }));
+
+    // Two group 0s, identical but for binding 2: the cull's visible indices
+    // for the opaque draws, the sorted order for the uber draw. The shaders
+    // read `visibleIndices[instance_index]` either way. Both buffers are
+    // created once by the renderer at a fixed size, so neither group is rebuilt.
+    const cameraBuffer = this.cameraBuffer;
+    const group0Entries = (visible: GPUBuffer): GPUBindGroupEntry[] => [
+      { binding: 0, resource: { buffer: cameraBuffer } },
+      { binding: 1, resource: { buffer: transformBuffer } },
+      { binding: 2, resource: { buffer: visible } },
+      { binding: 3, resource: { buffer: texIndexBuffer } },
+      { binding: 4, resource: { buffer: renderMetaBuffer } },
+      { binding: 5, resource: { buffer: primParamsBuffer } },
+    ];
+    this.bindGroup0 = device.createBindGroup({ layout: bindGroupLayout0, entries: group0Entries(visibleIndicesBuffer) });
+    this.bindGroup0Sorted = device.createBindGroup({ layout: bindGroupLayout0, entries: group0Entries(transparentOrderBuffer) });
 
     this.bindGroup1 = this.tierBinding.current(device, resources);
   }
 
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.cameraBuffer) return;
-    // The matrix and the canvas size (line.wgsl turns pixel widths into NDC
+    // The matrix and the canvas size (line_vs turns pixel widths into NDC
     // with it); occluderLayers stays 0.
     new Float32Array(this.cameraData, 0, 16).set(frame.cameraViewProjection);
     new Float32Array(this.cameraData, 68, 2).set([frame.canvasWidth, frame.canvasHeight]);
@@ -273,7 +326,9 @@ export class ForwardPass implements RenderPass {
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool): void {
     if (this.device && this.tierBinding) this.bindGroup1 = this.tierBinding.current(this.device, resources);
     const bindGroup2 = this.lightBindGroup(resources);
-    if (this.opaquePipelines.size === 0 || !this.vertexBuffer || !this.indexBuffer || !this.bindGroup0 || !this.bindGroup1 || !bindGroup2 || !this.indirectBuffer) return;
+    if (this.opaquePipelines.size === 0 || !this.uberPipeline || !this.vertexBuffer || !this.indexBuffer
+      || !this.bindGroup0 || !this.bindGroup0Sorted || !this.bindGroup1 || !bindGroup2
+      || !this.indirectBuffer || !this.transparentArgsBuffer) return;
 
     // Get render target view (scene-hdr intermediate for post-processing)
     const targetView = resources.getTextureView('scene-hdr');
@@ -313,19 +368,19 @@ export class ForwardPass implements RenderPass {
       }
     }
 
-    // --- Sub-pass 2: Transparent entities (buckets 14-27) ---
-    // Depth write disabled, alpha blend enabled. Drawn after opaque.
-    for (const [primType, pipeline] of this.transparentPipelines) {
-      renderPass.setPipeline(pipeline);
+    // --- Sub-pass 2: every transparent primitive, back to front, in ONE draw ---
+    // TransparentSortPass wrote the visible transparents of types 0-5 into
+    // `transparent-order`, sorted by (world z, external id), and the draw
+    // arguments at word H_DRAW of `transparent-args`. With nothing transparent
+    // the sort encodes nothing: skip the draw too (prepare() has also reset n).
+    if (frame.transparentCount !== 0) {
+      renderPass.setPipeline(this.uberPipeline);
       renderPass.setVertexBuffer(0, this.vertexBuffer);
       renderPass.setIndexBuffer(this.indexBuffer, 'uint16');
-      renderPass.setBindGroup(0, this.bindGroup0);
+      renderPass.setBindGroup(0, this.bindGroup0Sorted);
       renderPass.setBindGroup(1, this.bindGroup1);
       renderPass.setBindGroup(2, bindGroup2);
-      for (let bucket = 0; bucket < BUCKETS_PER_TYPE; bucket++) {
-        const argSlot = OPAQUE_DRAW_BUCKETS + primType * BUCKETS_PER_TYPE + bucket;
-        renderPass.drawIndexedIndirect(this.indirectBuffer, argSlot * 20);
-      }
+      renderPass.drawIndexedIndirect(this.transparentArgsBuffer, H_DRAW * 4);
     }
 
     renderPass.end();
@@ -395,11 +450,14 @@ export class ForwardPass implements RenderPass {
     this.cameraBuffer = null;
     this.depthTexture = null;
     this.opaquePipelines.clear();
-    this.transparentPipelines.clear();
+    this.uberPipeline = null;
     this.bindGroup0 = null;
+    this.bindGroup0Sorted = null;
     this.bindGroup1 = null;
     this.tierBinding = null;
+    // Pool buffers: owned by the renderer, never destroyed here.
     this.indirectBuffer = null;
+    this.transparentArgsBuffer = null;
     this.device = null;
   }
 }

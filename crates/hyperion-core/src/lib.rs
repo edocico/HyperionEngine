@@ -301,7 +301,34 @@ pub fn engine_gpu_entity_ids_len() -> u32 {
     }
 }
 
-/// Pointer to the depth buffer (1 f32 per entity, for back-to-front sorting).
+/// Live rows whose render meta carries the Transparent bit (bit 8),
+/// recounted every frame (phase 5b). It sizes the transparent sort's gather:
+/// an upper bound, since transparent Light2D rows count too.
+#[wasm_bindgen]
+pub fn engine_gpu_transparent_count() -> u32 {
+    // SAFETY: wasm32 is single-threaded; nothing else holds a reference to ENGINE.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.render_state.transparent_count())
+    }
+}
+
+/// Generation of the slot -> external id mapping (phase 5b): it changes in
+/// every frame whose entity-ids column changed, so TS uploads the column only
+/// when it moves. Compare it for equality, never for order: it wraps.
+#[wasm_bindgen]
+pub fn engine_gpu_entity_ids_generation() -> u32 {
+    // SAFETY: wasm32 is single-threaded; nothing else holds a reference to ENGINE.
+    unsafe {
+        (*addr_of_mut!(ENGINE))
+            .as_ref()
+            .map_or(0, |e| e.ids_generation())
+    }
+}
+
+/// Pointer to the depth buffer (1 f32 per entity: `Depth`, else `Position.z`).
+/// No TS consumer: the transparent sort keys on the world z in `entity-bounds`.
 #[wasm_bindgen]
 pub fn engine_gpu_depths_ptr() -> *const f32 {
     // SAFETY: wasm32 is single-threaded.

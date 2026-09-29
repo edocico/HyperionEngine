@@ -180,7 +180,7 @@ pub struct RenderState {
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_prim_params: Vec<f32>,   // 8 f32/entity (primitive-specific parameters)
     gpu_entity_ids: Vec<u32>,    // 1 u32/entity (external entity ID for picking)
-    gpu_depths: Vec<f32>,        // 1 f32/entity (depth for back-to-front sorting)
+    gpu_depths: Vec<f32>,        // 1 f32/entity (Depth, else Position.z; read by nothing on the TS side)
     gpu_count: u32,
 
     /// Per-buffer dirty tracking for partial upload optimization.
@@ -204,6 +204,15 @@ pub struct RenderState {
     staging_indices_cache: Vec<u32>,
     staging_dirty_count: u32,
     staging_dirty_ratio: f32,
+
+    /// Raised when the slot -> entity mapping (so the entity-ids column)
+    /// changed: `assign_slot`, a flush that removed a row, `collect_gpu`.
+    /// `Engine::update` consumes it with `take_ids_changed` and bumps its
+    /// ids generation at most once per frame (phase 5b §4.1).
+    ids_changed: bool,
+    /// Live rows whose render-meta word 1 has the Transparent bit (bit 8).
+    /// Recounted by `recount_transparent`, never maintained incrementally.
+    transparent_count: u32,
 }
 
 /// Result of collect_dirty_staging: compact staging buffer + indices for GPU scatter.
@@ -239,6 +248,8 @@ impl RenderState {
             staging_indices_cache: Vec::new(),
             staging_dirty_count: 0,
             staging_dirty_ratio: 0.0,
+            ids_changed: false,
+            transparent_count: 0,
         }
     }
 
@@ -284,6 +295,8 @@ impl RenderState {
     /// index they were holding as invalid afterwards.
     pub fn collect_gpu(&mut self, world: &World) {
         self.dirty_tracker.clear();
+        // Every slot is re-packed in archetype order: the id column changes.
+        self.ids_changed = true;
         // The slot mapping describes the OLD packing; leaving it in place made
         // every later `get_slot` lookup wrong (audit 2026-07, P3-1).
         self.slot_to_entity.clear();
@@ -381,6 +394,7 @@ impl RenderState {
         debug_assert_eq!(self.gpu_count as usize * 8, self.gpu_prim_params.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_entity_ids.len());
         debug_assert_eq!(self.gpu_count as usize, self.gpu_depths.len());
+        self.recount_transparent();
     }
 
     /// Number of entities in the GPU buffer.
@@ -517,8 +531,10 @@ impl RenderState {
 
     // --- SoA buffer accessors: depths ---
 
-    /// Depth values, one f32 per GPU entity (parallel to other SoA buffers).
-    /// Used for back-to-front transparent sorting via GPU radix sort.
+    /// Depth values, one f32 per GPU entity (parallel to other SoA buffers):
+    /// a 2D entity's `Depth` (+depth, not composed with its parent's), else
+    /// `Position.z`, else 0. Exported, but read by nothing on the TS side: the
+    /// transparent sort keys on the world z in `entity-bounds` (phase 5b).
     pub fn gpu_depths(&self) -> &[f32] {
         &self.gpu_depths
     }
@@ -550,6 +566,8 @@ impl RenderState {
 
         let slot = self.gpu_count;
         self.gpu_count += 1;
+        // A new row: the id column gains an entry (phase 5b §4.1).
+        self.ids_changed = true;
 
         // Grow slot_to_entity
         if slot as usize >= self.slot_to_entity.len() {
@@ -790,6 +808,9 @@ impl RenderState {
                 continue;
             }
             let last = self.gpu_count - 1;
+            // A row leaves: the id at `slot` becomes the moved entity's, or the
+            // column just shrinks (phase 5b §4.1).
+            self.ids_changed = true;
 
             // Clear the dead entity's mapping FIRST. If the entity that gets
             // swapped into this slot shares `entity.id()` with the dead one
@@ -1015,6 +1036,38 @@ impl RenderState {
         self.staging_indices_cache = result.dirty_indices;
         self.staging_dirty_count = result.dirty_count;
         self.staging_dirty_ratio = result.dirty_ratio;
+        // After the dirty rows are rewritten: word 1 is current for every row.
+        self.recount_transparent();
+    }
+
+    /// Recount the live rows whose render-meta word 1 has bit 8
+    /// (`RENDER_META_TRANSPARENT_BIT`) set (phase 5b §4.1, D9).
+    ///
+    /// A recount, not a running counter: `clear_slot` runs after
+    /// `gpu_count += 1` on a row that can still hold a stale bit 8 from an
+    /// earlier swap-remove, and the `Transparent` component is one frame ahead
+    /// of the row, so a counter would carry two invariants. Bounded by
+    /// `gpu_count`: the rows past it keep the data of despawned entities (the
+    /// `gpu_render_meta()` accessor returns them too). Transparent Light2D rows
+    /// count as well, so this is an upper bound of what the transparent sort
+    /// gathers — which is all it has to be: it only sizes the gather.
+    pub fn recount_transparent(&mut self) {
+        let n = self.gpu_count as usize;
+        self.transparent_count = self.gpu_render_meta[..n * 2]
+            .chunks_exact(2)
+            .filter(|row| row[1] & RENDER_META_TRANSPARENT_BIT != 0)
+            .count() as u32;
+    }
+
+    /// Live rows with the Transparent bit, as of the last `recount_transparent`.
+    pub fn transparent_count(&self) -> u32 {
+        self.transparent_count
+    }
+
+    /// Whether the slot -> entity mapping changed since the last call, and
+    /// reset the flag. `Engine::update` calls it once per frame.
+    pub fn take_ids_changed(&mut self) -> bool {
+        std::mem::take(&mut self.ids_changed)
     }
 
     /// Pointer to the staging cache buffer for WASM export.
@@ -2340,5 +2393,196 @@ mod tests {
         let _ = rs.collect_dirty_staging(&world);
         assert!(!rs.dirty_tracker.is_transform_dirty(0));
         assert!(!rs.dirty_tracker.is_transform_dirty(5));
+    }
+
+    // --- Phase 5b: ids-changed flag and transparent recount (design §4.1) ---
+
+    /// A 3D quad with an external id, transparent or not, ready for `write_slot`.
+    fn quad_5b(world: &mut World, ext: u32, transparent: bool) -> hecs::Entity {
+        let e = world.spawn((
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Scale(Vec3::ONE),
+            ModelMatrix([0.0; 16]),
+            BoundingRadius(1.0),
+            RenderPrimitive(0),
+            Active,
+            ExternalId(ext),
+        ));
+        if transparent {
+            world.insert_one(e, Transparent(1)).unwrap();
+        }
+        e
+    }
+
+    /// Assign a slot and write the row, as the spawn path does.
+    fn place_5b(rs: &mut RenderState, world: &World, e: hecs::Entity) -> u32 {
+        let slot = rs.assign_slot(e);
+        rs.write_slot(slot, world, e);
+        slot
+    }
+
+    /// Brute force over the live rows only.
+    fn brute_transparent_5b(rs: &RenderState) -> u32 {
+        let n = rs.gpu_entity_count() as usize;
+        (0..n)
+            .filter(|&i| rs.gpu_render_meta[i * 2 + 1] & RENDER_META_TRANSPARENT_BIT != 0)
+            .count() as u32
+    }
+
+    #[test]
+    fn ids_changed_is_raised_by_assign_slot_but_not_by_an_idempotent_one() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        assert!(!rs.take_ids_changed(), "a new RenderState has nothing to report");
+        let e = quad_5b(&mut world, 1, false);
+        rs.assign_slot(e);
+        assert!(rs.take_ids_changed());
+        assert!(!rs.take_ids_changed(), "take resets the flag");
+        rs.assign_slot(e); // idempotent: same slot back, mapping unchanged
+        assert!(!rs.take_ids_changed());
+    }
+
+    #[test]
+    fn ids_changed_is_raised_by_a_flush_that_removes_a_row_only() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let a = quad_5b(&mut world, 1, false);
+        let b = quad_5b(&mut world, 2, false);
+        place_5b(&mut rs, &world, a);
+        place_5b(&mut rs, &world, b);
+        let _ = rs.take_ids_changed();
+
+        rs.flush_pending_despawns(); // nothing queued
+        assert!(!rs.take_ids_changed(), "an empty flush changes nothing");
+
+        // A queued slot the count has already shrunk past is skipped.
+        rs.pending_despawns.push((a, 7));
+        rs.flush_pending_despawns();
+        assert!(!rs.take_ids_changed(), "a skipped slot removes no row");
+
+        rs.queue_despawn(a);
+        rs.flush_pending_despawns();
+        assert!(rs.take_ids_changed());
+        assert_eq!(rs.gpu_entity_ids[0], 2, "the last row moved into slot 0");
+    }
+
+    #[test]
+    fn ids_changed_ignores_row_rewrites_staging_and_shrink() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let a = quad_5b(&mut world, 1, false);
+        let b = quad_5b(&mut world, 2, true);
+        let sa = place_5b(&mut rs, &world, a);
+        place_5b(&mut rs, &world, b);
+        rs.queue_despawn(b);
+        rs.flush_pending_despawns();
+        let _ = rs.take_ids_changed();
+
+        rs.write_slot(sa, &world, a); // the owner rewrites its own row
+        assert!(!rs.take_ids_changed(), "write_slot of the owner");
+        rs.dirty_tracker.mark_meta_dirty(sa as usize);
+        let _ = rs.collect_dirty_staging(&world);
+        assert!(!rs.take_ids_changed(), "collect_dirty_staging without a mapping change");
+        rs.shrink_to_fit();
+        assert!(!rs.take_ids_changed(), "shrink_to_fit drops only the dead tail");
+    }
+
+    #[test]
+    fn ids_changed_is_raised_by_collect_gpu() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        quad_5b(&mut world, 1, false);
+        rs.collect_gpu(&world);
+        assert!(rs.take_ids_changed());
+    }
+
+    #[test]
+    fn recount_sees_a_transparent_last_row_moved_into_an_opaque_dead_slot() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let a = quad_5b(&mut world, 1, false);
+        let dead = quad_5b(&mut world, 2, false);
+        let last = quad_5b(&mut world, 3, true);
+        for e in [a, dead, last] {
+            place_5b(&mut rs, &world, e);
+        }
+        rs.recount_transparent();
+        assert_eq!(rs.transparent_count(), 1);
+
+        rs.queue_despawn(dead);
+        world.despawn(dead).unwrap();
+        rs.collect_and_cache_dirty(&world);
+        assert_eq!(rs.get_slot(last), Some(1), "the transparent last row moved into slot 1");
+        assert_eq!(rs.transparent_count(), 1);
+        assert_eq!(rs.transparent_count(), brute_transparent_5b(&rs));
+    }
+
+    #[test]
+    fn recount_drops_a_transparent_dead_slot_filled_by_an_opaque_last_row() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let a = quad_5b(&mut world, 1, false);
+        let dead = quad_5b(&mut world, 2, true);
+        let last = quad_5b(&mut world, 3, false);
+        for e in [a, dead, last] {
+            place_5b(&mut rs, &world, e);
+        }
+        rs.queue_despawn(dead);
+        world.despawn(dead).unwrap();
+        rs.collect_and_cache_dirty(&world);
+        assert_eq!(rs.get_slot(last), Some(1));
+        assert_eq!(rs.transparent_count(), 0);
+        assert_eq!(rs.transparent_count(), brute_transparent_5b(&rs));
+    }
+
+    #[test]
+    fn recount_ignores_the_stale_tail_past_gpu_count() {
+        let mut rs = RenderState::new();
+        let mut world = World::new();
+        let a = quad_5b(&mut world, 1, false);
+        let b = quad_5b(&mut world, 2, true);
+        place_5b(&mut rs, &world, a);
+        place_5b(&mut rs, &world, b);
+        rs.queue_despawn(b);
+        world.despawn(b).unwrap();
+        rs.collect_and_cache_dirty(&world);
+
+        assert_eq!(rs.gpu_entity_count(), 1);
+        // The dead row is still in the Vec, bit 8 included: the case under test.
+        assert_ne!(rs.gpu_render_meta()[3] & RENDER_META_TRANSPARENT_BIT, 0);
+        assert_eq!(rs.transparent_count(), 0);
+
+        // An opaque entity re-entering that row zeroes it first (clear_slot).
+        let c = quad_5b(&mut world, 3, false);
+        rs.assign_slot(c);
+        rs.collect_and_cache_dirty(&world);
+        assert_eq!(rs.transparent_count(), 0);
+        assert_eq!(rs.gpu_render_meta()[3] & RENDER_META_TRANSPARENT_BIT, 0);
+    }
+
+    #[test]
+    fn collect_gpu_counts_like_the_retained_path() {
+        let mut world = World::new();
+        let mut ents = Vec::new();
+        for i in 0..6u32 {
+            // collect_gpu queries these too.
+            let e = quad_5b(&mut world, i, i.is_multiple_of(3));
+            world
+                .insert(e, (TextureLayerIndex(0), MeshHandle(0), PrimitiveParams([0.0; 8])))
+                .unwrap();
+            ents.push(e);
+        }
+        let mut legacy = RenderState::new();
+        legacy.collect_gpu(&world);
+
+        let mut retained = RenderState::new();
+        for &e in &ents {
+            place_5b(&mut retained, &world, e);
+        }
+        retained.recount_transparent();
+
+        assert_eq!(legacy.transparent_count(), 2);
+        assert_eq!(retained.transparent_count(), legacy.transparent_count());
     }
 }

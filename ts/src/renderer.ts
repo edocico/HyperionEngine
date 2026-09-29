@@ -1,9 +1,10 @@
-import shaderCode from './shaders/basic.wgsl?raw';
-import lineShaderCode from './shaders/line.wgsl?raw';
-import msdfShaderCode from './shaders/msdf-text.wgsl?raw';
-import gradientShaderCode from './shaders/gradient.wgsl?raw';
-import boxShadowShaderCode from './shaders/box-shadow.wgsl?raw';
-import bezierShaderCode from './shaders/bezier.wgsl?raw';
+import preludeShaderCode from './shaders/primitives/prelude.wgsl?raw';
+import quadShaderCode from './shaders/primitives/quad.wgsl?raw';
+import lineShaderCode from './shaders/primitives/line.wgsl?raw';
+import msdfShaderCode from './shaders/primitives/msdf-text.wgsl?raw';
+import bezierShaderCode from './shaders/primitives/bezier.wgsl?raw';
+import gradientShaderCode from './shaders/primitives/gradient.wgsl?raw';
+import boxShadowShaderCode from './shaders/primitives/box-shadow.wgsl?raw';
 import cullShaderCode from './shaders/cull.wgsl?raw';
 import fxaaShaderCode from './shaders/fxaa-tonemap.wgsl?raw';
 import selectionSeedShaderCode from './shaders/selection-seed.wgsl?raw';
@@ -14,7 +15,8 @@ import bloomShaderCode from './shaders/bloom.wgsl?raw';
 import particleSimulateCode from './shaders/particle-simulate.wgsl?raw';
 import particleRenderCode from './shaders/particle-render.wgsl?raw';
 import scatterShaderCode from './shaders/scatter.wgsl?raw';
-import radixSortShaderCode from './shaders/radix-sort.wgsl?raw';
+import transparentGatherShaderCode from './shaders/transparent-gather.wgsl?raw';
+import transparentSortShaderCode from './shaders/transparent-sort.wgsl?raw';
 import sdfJfaShaderCode from './shaders/sdf-jfa.wgsl?raw';
 import lightAccumShaderCode from './shaders/light-accum.wgsl?raw';
 import { TextureManager } from './texture-manager';
@@ -22,6 +24,8 @@ import { RenderGraph } from './render/render-graph';
 import { ResourcePool } from './render/resource-pool';
 import { CullPass, TOTAL_DRAW_BUCKETS, prepareShaderSource } from './render/passes/cull-pass';
 import { ForwardPass } from './render/passes/forward-pass';
+import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule, type PrimitivePieces } from './render/primitive-shaders';
+import { PieceReloadCollector, assertPiecesNotEmpty } from './render/piece-reload-collector';
 import { FXAATonemapPass } from './render/passes/fxaa-tonemap-pass';
 import { SelectionSeedPass } from './render/passes/selection-seed-pass';
 import { JFAPass } from './render/passes/jfa-pass';
@@ -30,7 +34,8 @@ import { LineBatchPass } from './render/passes/debug-line-pass';
 import { BloomPass } from './render/passes/bloom-pass';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { ScatterPass } from './render/passes/scatter-pass';
-import { RadixSortPass } from './render/passes/radix-sort-pass';
+import { TransparentSortPass } from './render/passes/transparent-sort-pass';
+import { CAP as SORT_CAPACITY, HEADER_BYTES as SORT_HEADER_BYTES } from './render/passes/transparent-sort-constants';
 import { LightGroupsPass } from './render/passes/light-groups-pass';
 import { SdfChainStage } from './render/passes/sdf-chain-stage';
 import { LightAccumStage } from './render/passes/light-accum-stage';
@@ -51,11 +56,44 @@ import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 import { DebugProbe } from './render/debug-probe';
+import { TransparentSortProbe } from './render/transparent-sort-probe';
+import {
+  normalizeTransparentCount, nextFrameStamp, uploadEntityIds, missingSortInputs, overCapacityWarning,
+} from './render/frame-inputs';
+import { MAX_GPU_ENTITIES } from './types';
 import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
 
-const MAX_ENTITIES = 100_000;
 // 28 draw entries (14 opaque + 14 transparent) x 5 u32 x 4 bytes = 560 bytes
 const INDIRECT_BUFFER_SIZE = TOTAL_DRAW_BUCKETS * 5 * 4;
+
+/**
+ * The primitive shader pieces (design 2026-09-27 §3): the prelude and one
+ * library per primitive type, keyed like PRIMITIVE_LIBRARIES. The GPU never
+ * compiles a piece alone, only what `publishPrimitiveShaders` composes. The
+ * hot-reload slots write into this object.
+ */
+const primitivePieces: PrimitivePieces = {
+  prelude: preludeShaderCode,
+  libraries: {
+    0: quadShaderCode,          // Quad
+    1: lineShaderCode,          // Line
+    2: msdfShaderCode,          // SDFGlyph (MSDF text)
+    3: bezierShaderCode,        // BezierPath
+    4: gradientShaderCode,      // Gradient
+    5: boxShadowShaderCode,     // BoxShadow
+  },
+};
+
+/**
+ * Compose the six per-type modules and the uber module from `primitivePieces`.
+ * `ForwardPass.SHADER_SOURCES` is updated IN PLACE: LightGroupsPass (the
+ * occluder pipelines) and the hot-reload probes hold that object. Pure
+ * concatenation: it cannot throw.
+ */
+function publishPrimitiveShaders(): void {
+  Object.assign(ForwardPass.SHADER_SOURCES, composeTypeModules(primitivePieces));
+  ForwardPass.UBER_SOURCE = composeUberModule(primitivePieces);
+}
 
 export interface OutlineOptions {
   color: [number, number, number, number];
@@ -120,6 +158,16 @@ export interface Renderer {
    * defaults for now; a different value is reported once.
    */
   setLightingQuality(quality: LightingQuality): void;
+  /**
+   * Hot-reload one shader from new WGSL (dev tool); the GPU validates it
+   * before any graph uses it. For the primitives the name is a PIECE —
+   * 'prelude', 'quad' (alias 'basic'), 'line', 'msdf-text', 'bezier',
+   * 'gradient', 'box-shadow' — and the code is that piece, not a complete
+   * module: the six per-type modules and the uber module are recomposed from
+   * the pieces. One piece per call, no debounce: an edit spanning two pieces
+   * (a prelude rename and its uses) goes live only through the grouped HMR
+   * reload, where the pieces are validated together.
+   */
   recompileShader(passName: string, shaderCode: string): void;
 
   /**
@@ -145,6 +193,12 @@ export interface Renderer {
    * rendered frame. Behind `engine.debug.probe()` / `readEntityTransforms()`.
    */
   readonly debugProbe: DebugProbe | null;
+  /**
+   * Dev builds only (null otherwise, like `debugProbe`): the requests of
+   * `engine.debug.readTransparentSort()`. It outlives graph swaps; the live
+   * TransparentSortPass takes one request per frame.
+   */
+  readonly sortProbe: TransparentSortProbe | null;
 
   destroy(): void;
 }
@@ -218,25 +272,28 @@ export async function createRenderer(
 
   // --- 2. Create TextureManager + SelectionManager ---
   const textureManager = new TextureManager(device, { compressedFormat });
-  const selectionManager = new SelectionManager(MAX_ENTITIES);
+  const selectionManager = new SelectionManager(MAX_GPU_ENTITIES);
 
   // --- 3. Create shared GPU buffers in ResourcePool ---
   const resources = new ResourcePool();
 
   resources.setBuffer('entity-transforms', device.createBuffer({
-    size: MAX_ENTITIES * 16 * 4,
+    size: MAX_GPU_ENTITIES * 16 * 4,
     // COPY_SRC in dev builds: engine.debug.readEntityTransforms reads it back.
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
   }));
   const debugProbe = dev ? new DebugProbe(device, pixelProbeShaderCode) : null;
+  // Built with the pixel probe, dev only. It must exist before the graph
+  // factories below: the scene factory hands it to every TransparentSortPass.
+  const sortProbe = debugProbe ? new TransparentSortProbe(device) : null;
 
   resources.setBuffer('entity-bounds', device.createBuffer({
-    size: MAX_ENTITIES * 4 * 4,
+    size: MAX_GPU_ENTITIES * 4 * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('visible-indices', device.createBuffer({
-    size: TOTAL_DRAW_BUCKETS * MAX_ENTITIES * 4,  // 28 regions x 100k x u32 = 11.2 MB
+    size: TOTAL_DRAW_BUCKETS * MAX_GPU_ENTITIES * 4,  // 28 regions x 100k x u32 = 11.2 MB
     usage: GPUBufferUsage.STORAGE,
   }));
 
@@ -246,26 +303,54 @@ export async function createRenderer(
   }));
 
   resources.setBuffer('tex-indices', device.createBuffer({
-    size: MAX_ENTITIES * 4,
+    size: MAX_GPU_ENTITIES * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('render-meta', device.createBuffer({
-    size: MAX_ENTITIES * 2 * 4,  // 2 u32/entity
+    size: MAX_GPU_ENTITIES * 2 * 4,  // 2 u32/entity
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   resources.setBuffer('prim-params', device.createBuffer({
-    size: MAX_ENTITIES * 8 * 4,  // 8 f32/entity
+    size: MAX_GPU_ENTITIES * 8 * 4,  // 8 f32/entity
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   }));
 
   // Selection mask buffer: 1 u32 per entity (0=unselected, 1=selected)
   const selectionMaskBuffer = device.createBuffer({
-    size: MAX_ENTITIES * 4,
+    size: MAX_GPU_ENTITIES * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   resources.setBuffer('selection-mask', selectionMaskBuffer);
+
+  // Slot -> external id (phase 5b §4.3): the transparent sort breaks z ties
+  // by id. Renderer-owned like every pool buffer: graph swaps and hot-reload
+  // probes re-run their passes' setup(), so a pass-owned buffer would come
+  // back empty while `uploadedIdsGeneration` still said "uploaded".
+  const entityIdsBuffer = device.createBuffer({
+    size: MAX_GPU_ENTITIES * 4,
+    // COPY_SRC in dev builds (design §4.3), like entity-transforms.
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
+    label: 'entity-ids',
+  });
+  resources.setBuffer('entity-ids', entityIdsBuffer);
+
+  // Transparent sort (Phase 5b). Renderer-owned on purpose: a hot-reload probe
+  // runs TransparentSortPass.setup() and then destroy() on this LIVE pool, so a
+  // pass that registered them would destroy the live graph's buffers. COPY_SRC
+  // in dev builds: engine.debug.readTransparentSort() copies them out.
+  resources.setBuffer('transparent-order', device.createBuffer({
+    label: 'transparent-order',
+    size: SORT_CAPACITY * 4,  // the sorted slots; the uber draw reads them (step 4)
+    usage: GPUBufferUsage.STORAGE | (dev ? GPUBufferUsage.COPY_SRC : 0),
+  }));
+  resources.setBuffer('transparent-args', device.createBuffer({
+    label: 'transparent-args',
+    size: SORT_HEADER_BYTES,  // draw args, dispatch args at 20 B, raw/limit/overflow/stamp
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
+      | (dev ? GPUBufferUsage.COPY_SRC : 0),
+  }));
 
   // --- 4. Populate texture views + sampler in ResourcePool ---
   // A tier that grows replaces its view and destroys the old texture, so the
@@ -297,14 +382,9 @@ export async function createRenderer(
     useSubgroups,
     useSubgroups && subgroupSupport.hasSubgroupId,
   );
-  ForwardPass.SHADER_SOURCES = {
-    0: shaderCode,              // Quad
-    1: lineShaderCode,          // Line
-    2: msdfShaderCode,          // SDFGlyph (MSDF text)
-    3: bezierShaderCode,        // BezierPath
-    4: gradientShaderCode,      // Gradient
-    5: boxShadowShaderCode,     // BoxShadow
-  };
+  // The six per-type modules and the uber, composed from the pieces, before
+  // RenderGraphHost builds the first graph: ForwardPass.setup needs both.
+  publishPrimitiveShaders();
   FXAATonemapPass.SHADER_SOURCE = fxaaShaderCode;
   SelectionSeedPass.SHADER_SOURCE = selectionSeedShaderCode;
   JFAPass.SHADER_SOURCE = jfaShaderCode;
@@ -324,8 +404,9 @@ export async function createRenderer(
   let scatterPass: ScatterPass | null = null;
   const resolvedScatterThreshold = scatterThreshold ?? 0.3;
 
-  // --- 6c. RadixSortPass for transparent entity ordering (created with the graph) ---
-  RadixSortPass.SHADER_SOURCE = radixSortShaderCode;
+  // --- 6c. TransparentSortPass: gather + GPU radix sort of the transparents (created with the graph) ---
+  TransparentSortPass.GATHER_SOURCE = transparentGatherShaderCode;
+  TransparentSortPass.SORT_SOURCE = transparentSortShaderCode;
 
   // --- 7. GPU profiler state ---
   // Constructed on the first enableGpuProfiling(), never here, so that the
@@ -449,6 +530,17 @@ export async function createRenderer(
   const reportedQuality = new Set<keyof LightingQuality>();
   let warnedMultiBitReceiver = false;
 
+  // --- 8b''. Transparent sort inputs (phase 5b §4.2-4.3) ---
+  // Closure locals, not pass state: they must survive graph swaps and the
+  // hot-reload probes. NaN never equals a generation, so the first frame
+  // uploads the entity ids; a renderer ever put back under a re-initialised
+  // engine (whose generation restarts at 0) must reset this marker to NaN.
+  let uploadedIdsGeneration = NaN;
+  let frameStamp = 0; // the first render() stamps 1
+  let warnedMissingSortInputs = false;
+  let warnedOverCapacity = false;
+  let warnedShortEntityIds = false;
+
   // --- 8c. RenderGraph ---
   // RenderGraphHost owns the graph: a new one goes live only once the GPU has
   // validated it, and plugin overlays are validated against every mode
@@ -463,7 +555,9 @@ export async function createRenderer(
 
   /** Constructs the passes of one graph. No GPU work: see GraphPassFactories. */
   const graphFactories: GraphPassFactories = {
-    scene: (mode) => [new ScatterPass(), new CullPass(), new RadixSortPass(), new ForwardPass({ lit: mode.lighting })],
+    // The sort sits between the cull (its input regions) and the forward pass
+    // (which reads its order, and so keeps it alive).
+    scene: (mode) => [new ScatterPass(), new CullPass(), new TransparentSortPass(sortProbe), new ForwardPass({ lit: mode.lighting })],
     outline() {
       const maxDim = Math.max(canvas.width, canvas.height);
       const n = JFAPass.iterationsForDimension(maxDim);
@@ -543,16 +637,42 @@ export async function createRenderer(
   const inOutlineMode = (m: GraphMode): boolean => m.outlines;
   const inBloomMode = (m: GraphMode): boolean => m.bloom && !m.outlines;
   const inLightingMode = (m: GraphMode): boolean => m.lighting;
-  // A primitive module has two users: ForwardPass (fs_main, three groups) and
-  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups). The
-  // probe compiles both, so an edit that breaks only the occluder entry point
-  // is caught here too.
-  const forwardSlot = (i: number): ShaderSlot => ({
-    read: () => ForwardPass.SHADER_SOURCES[i],
-    write: (src) => { ForwardPass.SHADER_SOURCES[i] = src; },
-    probe: probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]),
+  // The seven primitive pieces: the prelude and one library per type. A write
+  // recomposes the six per-type modules and the uber module in place
+  // (publishPrimitiveShaders: concatenation only, it cannot throw), so the
+  // factories and probes holding ForwardPass.SHADER_SOURCES see the new text.
+  // Every piece shares ONE probe, which compiles every module a piece is in:
+  // ForwardPass (six opaque pipelines + the uber: fs_main, three groups) and
+  // the occluder pipelines of LightGroupsPass (fs_occluder, two groups), so
+  // an edit that breaks only one entry point is caught too. Shared, a grouped
+  // reload (GraphRequests.reloadShaders) compiles it once per probe set.
+  const compilePrimitives = probe(() => [new ForwardPass(), new LightGroupsPass(ForwardPass.SHADER_SOURCES)]);
+  const primitiveProbe = (): void => {
+    // A composed module is never empty (prelude, markers, wrappers): only the
+    // RAW pieces show an editor's truncated save. The throw is synchronous,
+    // inside the validation window, so the reload is rejected without
+    // superseding the edit in flight.
+    assertPiecesNotEmpty(primitivePieces);
+    compilePrimitives();
+  };
+  const pieceSlot = (read: () => string, store: (src: string) => void): ShaderSlot => ({
+    read,
+    write: (src) => {
+      store(src);
+      publishPrimitiveShaders();
+    },
+    probe: primitiveProbe,
     usedBy: inEveryMode,
   });
+  const primitiveSlots: Record<string, ShaderSlot> = {
+    prelude: pieceSlot(() => primitivePieces.prelude, (src) => { primitivePieces.prelude = src; }),
+  };
+  for (const lib of PRIMITIVE_LIBRARIES) {
+    primitiveSlots[lib.name] = pieceSlot(
+      () => primitivePieces.libraries[lib.type],
+      (src) => { primitivePieces.libraries[lib.type] = src; },
+    );
+  }
   const shaderSlots: Record<string, ShaderSlot> = {
     cull: {
       read: () => CullPass.SHADER_SOURCE,
@@ -561,23 +681,25 @@ export async function createRenderer(
       probe: probe(() => new CullPass()),
       usedBy: inEveryMode,
     },
-    basic: forwardSlot(0),
-    quad: forwardSlot(0),
-    line: forwardSlot(1),
-    'msdf-text': forwardSlot(2),
-    bezier: forwardSlot(3),
-    gradient: forwardSlot(4),
-    'box-shadow': forwardSlot(5),
+    ...primitiveSlots,
     scatter: {
       read: () => ScatterPass.SHADER_SOURCE,
       write: (src) => { ScatterPass.SHADER_SOURCE = src; },
       probe: probe(() => new ScatterPass()),
       usedBy: inEveryMode,
     },
-    'radix-sort': {
-      read: () => RadixSortPass.SHADER_SOURCE,
-      write: (src) => { RadixSortPass.SHADER_SOURCE = src; },
-      probe: probe(() => new RadixSortPass()),
+    // A throwaway TransparentSortPass compiles both modules (4 pipelines) and
+    // binds the pool buffers, which already exist: it writes nothing there.
+    'transparent-gather': {
+      read: () => TransparentSortPass.GATHER_SOURCE,
+      write: (src) => { TransparentSortPass.GATHER_SOURCE = src; },
+      probe: probe(() => new TransparentSortPass()),
+      usedBy: inEveryMode,
+    },
+    'transparent-sort': {
+      read: () => TransparentSortPass.SORT_SOURCE,
+      write: (src) => { TransparentSortPass.SORT_SOURCE = src; },
+      probe: probe(() => new TransparentSortPass()),
       usedBy: inEveryMode,
     },
     'fxaa-tonemap': {
@@ -686,6 +808,10 @@ export async function createRenderer(
     });
   }
 
+  // Dev only: cancels the primitive pieces' pending HMR window. Set in the
+  // import.meta.hot block below; destroy() calls it first.
+  let cancelPieceReloads = (): void => {};
+
   // --- 9. Build the Renderer object ---
   const rendererObj: Renderer = {
     textureManager,
@@ -759,11 +885,28 @@ export async function createRenderer(
           reloadParticleShader('render', shaderCode);
           return;
       }
-      void requests.reloadShader(passName, shaderCode);
+      // 'basic' is the quad library's old file name (basic.wgsl): an alias, so
+      // both names share one slot, one good source and one reload version.
+      void requests.reloadShader(passName === 'basic' ? 'quad' : passName, shaderCode);
     },
 
     render(state: GPURenderState, camera: { viewProjection: Float32Array }, dt?: number) {
+      frameStamp = nextFrameStamp(frameStamp);
       followBackend(state.lightingBackend);
+      if (dev && !warnedMissingSortInputs) {
+        const missing = missingSortInputs(state);
+        if (missing.length > 0) {
+          warnedMissingSortInputs = true;
+          console.warn(`[Hyperion] The render state lacks ${missing.join(' and ')} (a WASM build older than phase 5b, or a transport site that drops it): the transparent sort is sized from entityCount and the entity ids are uploaded every frame.`);
+        }
+      }
+      if (!warnedOverCapacity) {
+        const overCapacity = overCapacityWarning(state.entityCount);
+        if (overCapacity) {
+          warnedOverCapacity = true;
+          console.warn(overCapacity);
+        }
+      }
       // No early return on an empty world: its frame is the clear (CullPass
       // skips its dispatch, the indirect draws count zero). Returning here left
       // the last image on screen after the last entity was destroyed.
@@ -830,6 +973,16 @@ export async function createRenderer(
         }
       }
 
+      // Entity ids: on EVERY frame kind, outside the if/else above — the
+      // scatter staging carries no id, and a swap-remove moves rows between
+      // slots. Only when the slot -> id mapping changed (its generation).
+      const idsUpload = uploadEntityIds(device.queue, entityIdsBuffer, state, uploadedIdsGeneration);
+      uploadedIdsGeneration = idsUpload.generation;
+      if (dev && idsUpload.warning && !warnedShortEntityIds) {
+        warnedShortEntityIds = true;
+        console.warn(idsUpload.warning);
+      }
+
       // Upload selection mask if dirty
       if (requests.requested.mode.outlines || host.mode.outlines) {
         selectionManager.uploadMask(device, selectionMaskBuffer, state.entityIds, state.entityCount);
@@ -884,6 +1037,8 @@ export async function createRenderer(
         physicsDebugLines: state.physicsDebugLines ?? undefined,
         ambient: [state.ambientR, state.ambientG, state.ambientB, state.ambientIntensity],
         shadowSteps: lightingQuality.shadowSteps,
+        transparentCount: normalizeTransparentCount(state.transparentCount, state.entityCount),
+        frameStamp,
       };
       // Light layers: which layers share a light buffer and an SDF, this frame.
       if (host.mode.lighting) {
@@ -894,7 +1049,38 @@ export async function createRenderer(
         }
       }
 
-      host.graph.render(device, frameState, resources);
+      // Dev readback (engine.debug.readTransparentSort, design §6.5). On a
+      // frame that may serve a request the graph runs inside GPU error scopes:
+      // a frame that failed validation rejects the request instead of
+      // answering zeros. A throw rejects the taken request and every queued
+      // one, then goes on up as before.
+      const sortReadback = sortProbe?.hasPending === true;
+      let frameErrors: Promise<string[]> | null = null;
+      try {
+        if (sortReadback) frameErrors = gpuValidation.run(() => host.graph.render(device, frameState, resources));
+        else host.graph.render(device, frameState, resources);
+      } catch (err) {
+        sortProbe?.failFrame(err instanceof Error ? err : new Error(String(err)));
+        throw err;
+      }
+      // First thing after the graph's submit, before anything else can throw:
+      // maps the buffers of the request the sort took (the snapshot is copied
+      // now, before latestRenderState moves on), or rejects the head of the
+      // queue when this frame's sort did not run.
+      sortProbe?.finish(sortReadback ? {
+        tickCount: state.tickCount,
+        stamp: frameState.frameStamp,
+        entityCount: state.entityCount,
+        transparentCount: frameState.transparentCount,
+        idsGeneration: idsUpload.generation,
+        idsUploaded: idsUpload.uploaded,
+        usedScatter: Boolean(useScatter),
+        viewProjection: camera.viewProjection,
+        bounds: state.bounds,
+        entityIds: state.entityIds,
+        renderMeta: state.renderMeta,
+        texIndices: state.texIndices,
+      } : null, frameErrors);
 
       // --- Particle system: simulate + render AFTER the scene graph ---
       if (particleSystem.emitterCount > 0) {
@@ -957,9 +1143,12 @@ export async function createRenderer(
     },
 
     debugProbe,
+    sortProbe,
 
     destroy() {
+      cancelPieceReloads();
       debugProbe?.destroy();
+      sortProbe?.destroy();
       gpuProfiler?.destroy();
       particleSystem.destroy();
       sceneHdrTexture.destroy();
@@ -978,23 +1167,32 @@ export async function createRenderer(
 
   // --- Shader Hot-Reload (dev only) ---
   if (import.meta.hot) {
-    import.meta.hot.accept('./shaders/basic.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('basic', mod.default);
+    // Primitive pieces wait for a quiet 50 ms window and reload as a group:
+    // a prelude rename and its uses in a library arrive as separate updates,
+    // and each alone would be probed against the other's old text.
+    const pieceReloads = new PieceReloadCollector((entries) => requests.reloadShaders(entries));
+    // The accepts outlive the renderer: after destroy() no window may reach its device.
+    cancelPieceReloads = () => pieceReloads.dispose();
+    import.meta.hot.accept('./shaders/primitives/prelude.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('prelude', mod.default);
     });
-    import.meta.hot.accept('./shaders/line.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('line', mod.default);
+    import.meta.hot.accept('./shaders/primitives/quad.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('quad', mod.default);
     });
-    import.meta.hot.accept('./shaders/msdf-text.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('msdf-text', mod.default);
+    import.meta.hot.accept('./shaders/primitives/line.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('line', mod.default);
     });
-    import.meta.hot.accept('./shaders/gradient.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('gradient', mod.default);
+    import.meta.hot.accept('./shaders/primitives/msdf-text.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('msdf-text', mod.default);
     });
-    import.meta.hot.accept('./shaders/box-shadow.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('box-shadow', mod.default);
+    import.meta.hot.accept('./shaders/primitives/bezier.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('bezier', mod.default);
     });
-    import.meta.hot.accept('./shaders/bezier.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('bezier', mod.default);
+    import.meta.hot.accept('./shaders/primitives/gradient.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('gradient', mod.default);
+    });
+    import.meta.hot.accept('./shaders/primitives/box-shadow.wgsl?raw', (mod) => {
+      if (mod) pieceReloads.offer('box-shadow', mod.default);
     });
     import.meta.hot.accept('./shaders/cull.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('cull', mod.default);
@@ -1017,8 +1215,11 @@ export async function createRenderer(
     import.meta.hot.accept('./shaders/scatter.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('scatter', mod.default);
     });
-    import.meta.hot.accept('./shaders/radix-sort.wgsl?raw', (mod) => {
-      if (mod) rendererObj.recompileShader('radix-sort', mod.default);
+    import.meta.hot.accept('./shaders/transparent-gather.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('transparent-gather', mod.default);
+    });
+    import.meta.hot.accept('./shaders/transparent-sort.wgsl?raw', (mod) => {
+      if (mod) rendererObj.recompileShader('transparent-sort', mod.default);
     });
     import.meta.hot.accept('./shaders/sdf-jfa.wgsl?raw', (mod) => {
       if (mod) rendererObj.recompileShader('sdf-jfa', mod.default);

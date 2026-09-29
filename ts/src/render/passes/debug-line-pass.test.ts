@@ -25,6 +25,8 @@ function makeFrame(lines?: Float32Array): FrameState {
     canvasHeight: 600,
     deltaTime: 1 / 60,
     physicsDebugLines: lines,
+    transparentCount: 0,
+    frameStamp: 1,
   };
 }
 

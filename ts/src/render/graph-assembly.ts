@@ -22,8 +22,8 @@ export interface GraphMode {
 export interface GraphPassFactories {
   /**
    * Scene passes, always present, in registration order: scatter, cull,
-   * radix-sort, forward. Given the mode, because ForwardPass reads the light
-   * buffer only in a lit graph.
+   * transparent-sort, forward. Given the mode, because ForwardPass reads the
+   * light buffer only in a lit graph.
    */
   scene(mode: GraphMode): RenderPass[];
   /** selection-seed → jfa-0..N → outline-composite. */

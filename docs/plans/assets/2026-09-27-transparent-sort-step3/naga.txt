@@ -1,0 +1,11 @@
+naga-cli v30.0.1:
+ok   transparent-gather.wgsl
+ok   transparent-sort.wgsl
+ok   type-0-quad.wgsl
+ok   type-1-line.wgsl
+ok   type-2-msdf-text.wgsl
+ok   type-3-bezier.wgsl
+ok   type-4-gradient.wgsl
+ok   type-5-box-shadow.wgsl
+ok   uber.wgsl
+9/9 valid (naga)

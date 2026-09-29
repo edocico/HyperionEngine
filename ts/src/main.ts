@@ -1,5 +1,6 @@
 import { Hyperion } from './hyperion';
 import { harnessMode } from './demo/preferred-mode';
+import { isBenchMode } from './demo/bench-flag';
 import { ReportBuilder } from './demo/report';
 import { createTestReporter } from './demo/types';
 import { SectionSwitcher } from './demo/section-switcher';
@@ -266,7 +267,14 @@ async function main() {
 
   // --- Start engine and auto-select first tab ---
   engine.start();
-  switcher.request('primitives');
+  // `?bench` opens no section: the world stays empty for the scripts that
+  // drive the engine through window.__hyperion (the Phase 5b benchmark and
+  // baseline capture, docs/plans/assets/2026-09-27-transparent-sort-*).
+  if (isBenchMode(location.search)) {
+    console.info('[Hyperion] ?bench: no section opened; window.__hyperion is the engine');
+  } else {
+    switcher.request('primitives');
+  }
 }
 
 main();

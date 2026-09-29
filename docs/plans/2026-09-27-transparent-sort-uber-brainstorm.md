@@ -3,6 +3,176 @@
 > **Stato al 2026-09-27, sessione chiusa qui su richiesta dell'utente.** Il brainstorming è a metà: la sezione 1 del design è approvata, la sezione 2 (il sort) ha un design candidato NON ancora presentato né approvato, e restano da presentare le sezioni 3-6. La spec vera si scrive solo dopo l'approvazione di tutte le sezioni, poi la rivede l'utente, poi il piano con writing-plans, poi l'esecuzione.
 >
 > Il JSON completo del workflow di design (vincitore, secondi, giudici, problemi) sta in `docs/plans/assets/2026-09-27-transparent-sort-design-workflow.json`. Il run del workflow è `wf_537ea535-af9`; lo script è salvato nella directory della sessione, ma il JSON basta per riprendere.
+>
+> **Aggiornamento, seconda sessione (2026-09-27 sera):** la sezione 2 è APPROVATA ("si ok") nella forma corretta qui sotto ("Sezione 2 — APPROVATA"). Il testo candidato più in basso resta come riferimento. Prima della presentazione, il workflow `wf_ad447cec-c9d` ha verificato i fatti sul codice e sulla spec WGSL, con shader di prova compilati su Chrome 154 e l'iGPU AMD.
+
+## Sezione 5 — APPROVATA ("ok mi torna", seconda sessione)
+
+- **Grafo.** Il factory `scene` diventa `[ScatterPass, CullPass, TransparentSortPass, ForwardPass]` in tutti e sei i grafi (3 composite × illuminazione accesa/spenta).
+  - `RadixSortPass` e `radix-sort.wgsl` si ELIMINANO, con il loro test, lo slot, l'accept HMR e il commento in `graph-assembly`. Oggi è morto e anche rotto: scatter con `atomicAdd` non stabile, parametri scritti 4 volte nello stesso buffer.
+  - `TransparentSortPass` legge `indirect-args`, `visible-indices`, `entity-bounds`, `entity-ids`; scrive `transparent-order` e `transparent-args`, ed è l'unico a scriverle. È `optional`.
+  - `ForwardPass` (lit e unlit) LEGGE `transparent-order` + `transparent-args`: è ciò che tiene vivo il sort e lo ordina prima del forward.
+  - Test di composizione: in tutti e 6 i grafi `transparent-sort` sta dopo `cull` e prima di `forward`.
+  - `entity-ids` lo scrive solo la CPU, come già `selection-mask`.
+- **Possesso dei buffer.** Del renderer, nel pool: `entity-ids`, `transparent-order`, `transparent-args`. Privati del pass: chiavi A/B, valori A, `sort-hist`, gli uniform. Motivo: i probe HMR fanno `setup()`+`destroy()` sul pool VIVO.
+  - Slot HMR `transparent-gather` e `transparent-sort`, con probe = un `TransparentSortPass` usa e getta.
+- **Draw uber in `ForwardPass`.**
+  - Una pipeline uber prende il posto delle 6 pipeline trasparenti, con lo stesso descrittore: blend src-alpha/one-minus-src-alpha, alfa one/one-minus-src-alpha, depth `less` senza scrittura, cull back, stesso vertex buffer.
+  - Un secondo bind group del gruppo 0 ha `transparent-order` al binding 2.
+  - Un solo `drawIndexedIndirect(transparent-args, 0)`: con `firstInstance` 0 non serve `indirect-first-instance`.
+  - Draw saltato con `transparentCount == 0`.
+  - Il test "6 pipeline per 3 tipi" diventa 3 opache + 1 uber.
+- **Casi limite:**
+  - count 0 o mondo vuoto: nulla viene codificato, `profileStages` restituisce `[]`, nessun draw;
+  - tutti i trasparenti fuori schermo: dispatch indiretti a 0, in silenzio;
+  - overflow (visibili > B): si limita a B, con flag nell'header;
+  - Light2D `.transparent()` escluso (i bucket 26/27 restano a `LightAccumStage`);
+  - trasparente e opaco alla stessa z: il trasparente resta nascosto (`less` stretto), invariato;
+  - i trasparenti non vengono contornati (`SelectionSeedPass` disegna solo i bucket 0/1), invariato e fuori scope;
+  - Mode A: non verificabile qui.
+- **Capacità.**
+  - Una costante esportata `MAX_GPU_ENTITIES = 100_000` al posto delle 3 copie.
+  - Warning una tantum nel renderer quando `entityCount > MAX_GPU_ENTITIES`.
+  - **Decisione dell'utente:** `validateConfig` RIFIUTA `maxEntities > MAX_GPU_ENTITIES`, con un errore chiaro. Gli spawn di `RawAPI` non vengono contati: per loro resta solo il warning.
+- **Profiler.**
+  - Un solo compute pass senza profiler.
+  - Con il profiler, un compute pass per stadio: 22 marker e 4 nomi (`transparent-sort/gather|upsweep|scan|scatter`).
+  - Test: `profileStages` corrisponde a `mark`, anche nel caso saltato.
+- **Readback di dev `engine.debug.readTransparentSort()`.**
+  - Nel frame successivo si copiano: l'uscita del gather (chiavi/valori A subito dopo il dispatch), l'header, `sort-hist` (i `digitBase` delle 7 passate + i diag) e l'ordine finale.
+  - `COPY_SRC` in dev solo sui buffer del sort: gli input (`bounds`, `entityIds`) la CPU li ha già in `state`.
+  - RIFIUTA quando l'header non contiene il `limit` atteso, nel Mode A, senza renderer, in pausa.
+  - Le chiavi si ricalcolano dai dati CPU contro l'oracolo: una colonna id vecchia qui si vede.
+  - Niente anello per frame (problema 11, superato).
+
+## Sezione 4 — APPROVATA ("si ok", seconda sessione)
+
+Fatti dal workflow `wf_7b307272-b6a` (siti di mutazione in Rust + trasporto TS).
+
+- **`transparentCount`: ricalcolo, non contatore.**
+  - Conta il bit 8 in `gpu_render_meta[..gpu_count*2]` alla fine di `collect_and_cache_dirty`, dopo la riscrittura delle righe sporche. Il conteggio va anche in `snapshot_restore`; `reset` lo porta a 0.
+  - Costo nativo: 7-17 µs a 100k.
+  - Perché non un contatore incrementale: `clear_slot` gira DOPO `gpu_count += 1` su una riga con un bit vecchio mai contato; il componente `Transparent` è in anticipo di un frame sulla riga; le righe oltre `gpu_count` contengono dati vecchi, quindi si conta sempre entro `gpu_count`.
+  - Include le Light2D trasparenti: è un limite superiore.
+- **`ids_generation: u32` in `Engine`, NON in `RenderState`.**
+  - `reset`, `snapshot_restore` e `engine_init` ricreano `RenderState` da zero.
+  - `RenderState` alza un flag interno in `assign_slot` (dopo l'early return), nel flush che rimuove righe e in `collect_gpu`. `Engine` lo raccoglie e incrementa (`wrapping_add`) al massimo una volta per frame.
+  - `reset` e `snapshot_restore` incrementano sempre.
+  - Raffina la decisione 6 dell'utente (flag → generazione): nei Mode A/B più `tick-done` si sovrascrivono tra due RAF.
+- **Esportazioni:** `engine_gpu_transparent_count()` e `engine_gpu_entity_ids_generation()`, `u32`, con commento SAFETY.
+- **Trasporto.** Entrambi i campi DENTRO `renderState`, non sul messaggio: per questo `tickCount` vale 0 nel render worker del Mode A. Siti da toccare:
+  - Mode C: il literal pieno e quello vuoto (`worker-bridge.ts` ~495-545) + l'interfaccia WASM;
+  - `engine-worker.ts`: due literal + il tipo inline;
+  - Mode B: ricostruzione (`worker-bridge.ts` ~133-155);
+  - Mode A: copia sul main thread (~267-289), più il tipo `RenderState` e la ricostruzione in `render-worker.ts`.
+  - `FrameState.transparentCount`. Una factory di test condivisa `makeRenderState(overrides)` al posto dei tre literal (`integration.test.ts:59`, `hyperion.test.ts:315`, `lighting-api.test.ts:9`); `debug-line-pass.test.ts:15` per `FrameState`.
+- **Normalizzazione nel renderer.** Conteggio mancante o non finito → `entityCount`. Generazione mancante → `NaN`, quindi upload a ogni frame: corretto e più lento. Warning una tantum in dev. MAI un default costante sulla generazione.
+- **Upload.**
+  - `entity-ids` è un buffer del pool creato in `createRenderer` accanto a `selection-mask`: `CAP×4`, `STORAGE | COPY_DST`, `+COPY_SRC` in dev.
+  - Il marcatore è una variabile locale della closure, inizializzata a `NaN`.
+  - Il `writeBuffer` di `entityCount` id sta tra la fine dell'if/else degli upload (`renderer.ts` ~831) e la selection mask (~833), così gira anche nei frame con lo scatter del Mode C.
+  - Buffer e marcatore MAI in un pass: gli swap del grafo e i probe rifanno il `setup()`.
+- **Test Rust.**
+  - Generazione: sale con `assign_slot` e con un flush non vuoto; non sale con l'assign idempotente, con `write_slot`, con `shrink_to_fit` né con `collect_dirty_staging` senza cambi; `reset` e `restore` la fanno salire.
+  - Conteggio: confronto con un ricalcolo a forza bruta su sequenze casuali con seed di spawn, despawn e toggle, inclusa la coda vecchia e i casi di swap trasparente↔opaco.
+- **Test TS.** Un test per bridge che il campo arrivi; l'upload scatta solo al cambio di generazione e anche nei frame con lo scatter.
+- **Mode A.** Funziona perché `rs` viene inoltrato intero, ma qui non si verifica sulla GPU (passo 10). Il problema del mondo vuoto resta com'è.
+- **Documentazione.** CLAUDE.md dice "device-lost recovery", ma il codice si limita a loggare (`renderer.ts:205-208`): va corretto.
+
+## Sezione 3 — APPROVATA ("si ok", seconda sessione)
+
+Fatti dal workflow `wf_5bce1f00-66e` (quattro inventari; le prove sono state compilate su Chrome 154 con l'iGPU AMD).
+
+- **Correzione alla sezione 1.** `@diagnostic(off, derivative_uniformity)` messo su `fs_main` o sullo `switch` NON spegne l'errore quando la derivata sta in una funzione chiamata (la severità si decide dove viene chiamata la builtin). Funzionano solo la direttiva globale e l'attributo sulla funzione chiamata.
+- **File.** `ts/src/shaders/primitives/`: `prelude.wgsl` + `quad.wgsl` (ex `basic`), `line`, `msdf-text`, `bezier`, `gradient`, `box-shadow`.
+- **Preludio.** Contiene:
+  - i gruppi 0/1/2;
+  - `CameraUniform` nella forma di `line` (`viewportWidth`/`viewportHeight` ai byte 68/72);
+  - `override OCCLUDER_PASS`, `CASTS_SHADOW_BIT`, `castsInto`;
+  - `RECEIVES_LIGHT_BIT`, `LightingUniform`, `lightGroupOf`, `applyLighting`;
+  - `VertexOutput` superinsieme: locazioni 0-5 come oggi, 6 `edgeScale` (prospettiva), 7 `transparent` flat, 8 `primType` flat;
+  - gli helper `culledVertex`, `finishVertex`, `unitQuadVertex`, `sampleTier` (crudo), `sampleTierOrWhite`, `occluderSeed`.
+- **Librerie.** Ognuna espone solo `<p>_vs(position, entityIdx)`, `<p>_fs(in)` e `<p>_occluder(in)`. Gli altri nomi di primo livello sono prefissati. Nessun binding, entry point o direttiva, e nessun riferimento a `lighting`/`lightBuffer`.
+- **Comportamento da preservare:**
+  - `msdf` usa `sampleTier` crudo, senza il bianco sull'indice 0;
+  - l'illuminazione sta solo in `quad_fs`/`gradient_fs`, mai dopo lo switch;
+  - `line` tiene i suoi `fs`/`occluder`, `transparent` calcolato dal bit 8 ed `edgeScale` interpolato con la prospettiva.
+- **Compositore TS puro e totale** (solo concatenazione, non lancia eccezioni).
+  - Tabella `PRIMITIVE_LIBRARIES` `{type, name, prefix, lit}`, da cui si ricava `LIT_PRIMITIVE_TYPES`.
+  - Modulo per tipo = preludio + libreria + wrapper `vs_main` (con il testo dell'early-out dell'occluder identico a oggi) / `fs_main` / `fs_occluder`.
+  - Modulo uber = `diagnostic(off, derivative_uniformity);` in PRIMA riga, poi preludio, sei librerie, `vs_main` con switch sul tipo clampato a 6 (6 → `culledVertex`) e `fs_main` con switch su `in.primType`. Niente `fs_occluder`, e l'uber non sta in `SHADER_SOURCES`.
+  - La direttiva va SOLO nell'uber: i moduli per tipo restano sotto l'analisi stretta, sullo stesso codice di libreria.
+  - Marcatori `// --- piece: X ---` per ricondurre le righe degli errori al pezzo.
+- **Hot-reload.** 7 slot di pezzo al posto dei 6 slot di modulo.
+  - `write()` ricompone sul posto `ForwardPass.SHADER_SOURCES` e `UBER_SOURCE`.
+  - Il probe è `ForwardPass` (6 pipeline opache + l'uber) più `LightGroupsPass` (gli occluder).
+  - Reload di più pezzi raggruppati con un debounce e validati insieme (`reloadShaders`); la guardia sul pezzo vuoto sta dentro il probe.
+  - `recompileShader('basic')` resta come alias di `'quad'`.
+  - Lo slot `radix-sort` va via; entrano due slot per il sort. Conti finali: 22 file importati, 20 ricaricabili a caldo.
+- **Test.** I 133 expect sul testo dei sei file (36 A / 74 B / 21 C / 2 D) si riscrivono sui MODULI COMPOSTI. Quelli uguali in tutti i moduli diventano controlli sul preludio più "ogni modulo contiene il preludio alla lettera". Test nuovi:
+  - prefissi e assenza di duplicati sull'uber;
+  - direttiva solo nell'uber, in prima riga;
+  - niente `fs_occluder` nell'uber;
+  - clamp del tipo e Light2D vuoto;
+  - `applyLighting` raggiungibile esattamente per i tipi `lit`;
+  - le librerie non contengono binding né la stringa `fn fs_occluder`;
+  - `uniform-layout` e `storage-budget` eseguiti anche sui moduli composti, uber compreso.
+- **Documentazione:** skill `new-primitive`, agent `wgsl-validator` e `webgpu-pass-reviewer`, CLAUDE.md, PROJECT_ARCHITECTURE.md, e il rischio "nessun preprocessore WGSL" nel masterplan, che risulta risolto.
+- **Rischi da misurare:**
+  - registri dell'uber e tempo del forward trasparente;
+  - direttiva su Firefox;
+  - il nuovo ordine dei trasparenti cambia i check pixel che contavano sui box shadow disegnati per ultimi.
+
+## Sezione 2 — APPROVATA ("si ok", seconda sessione)
+
+Correzioni rispetto al candidato: problemi 1, 2, 5, 9 e 14 risolti; gli innesti rischiosi sono rimandati.
+
+- **Chiave.** Due parole per elemento: `lo = id esterno` (20 bit usati) e `hi = zKey`. `zKey` si ricava dai bit di `entity-bounds.z`, la z di mondo: -0 diventa +0 con un confronto intero, poi si ribalta il segno.
+  - Ordine crescente per (z, id): dal fondo al davanti. A parità di z l'id più alto viene disegnato dopo, cioè davanti.
+  - 7 passate LSD da 8 bit: le passate 0-2 sui byte dell'id, le 3-6 sui byte della z.
+  - Chiavi in SoA in un buffer per lato del ping-pong: `lo[CAP]` poi `hi[CAP]`. Ogni passata legge solo la parola della sua cifra.
+  - Non usare la colonna `gpu_depths`: per il 2D contiene +depth senza la composizione del genitore, per il 3D la z locale.
+- **Kernel, 22 dispatch per frame.**
+  - **gather**: dispatch diretto, `ceil(B/256)`, con `B = min(transparentCount ?? entityCount, CAP)`.
+    - Legge i 12 conteggi (parola `b*5+1`) e le basi (`firstInstance`, parola `b*5+4`) dei bucket 14..25 da `indirect-args`. Niente 100_000 cablato.
+    - Compatta in ordine di regione.
+    - Il thread 0 del gruppo 0 scrive l'header `transparent-args`: draw `{6, n, 0, 0, 0}` alle parole 0-4, dispatch `{ceil(n/1024), 1, 1}` alle parole 5-7, conteggio grezzo, limite, overflow.
+  - **upsweep ×7**: indiretto dall'header, istogramma a 256 cifre per tile da 1024.
+  - **scan ×7**: 1 workgroup; scan per colonna sui tile, poi scan dei 256 totali. `digitBase` è tenuto per passata.
+  - **scatter ×7**: indiretto. Ranking stabile nel tile: maschere da 256 bit per cifra + popcount + cursore, 4 round da 256, 13 barriere.
+    - **L'ultima passata scrive solo gli slot, in OGNI build.** Niente override `WRITE_KEYS`: dev e produzione eseguono lo stesso codice.
+- **Perché upsweep e scatter indiretti.** Il costo segue gli `n` VISIBILI, non `B`, e nessun gruppo resta vuoto.
+  - `transparentCount` dimensiona solo il gather e, a 0, salta tutto. È una deviazione accettata dalla sezione 1.
+  - Fatti verificati su Chrome 154:
+    - `storage, read` + INDIRECT sullo stesso buffer nello stesso dispatch è valido;
+    - `{0,1,1}` indiretto è silenzioso, mentre `dispatchWorkgroups(0)` diretto dà un warning di Dawn;
+    - un X indiretto > 65535 viene saltato in silenzio (qui `numTiles` ≤ 98);
+    - una guardia su `workgroup_id` contro un `n` letto da binding read-only è valida prima delle barriere, una su `global_id` NO;
+    - un loop con trip count non uniforme e senza barriere dentro è seguito da flusso uniforme.
+- **Uniform.**
+  - 7 slice `PassParams` da 256 B, scritte una volta nel `setup()`. Il bind group di ogni passata fissa la sua slice e la direzione A→B / B→A.
+  - Per frame, in `prepare()`, si scrivono solo `{limit}` più i reset dell'header e dei diag. `execute()` non chiama `writeBuffer`.
+- **Buffer.**
+  - Fissi a `CAP = 100k`, con UNA costante esportata al posto delle tre copie di 100_000 (`renderer.ts:56`, `cull-pass.ts:215`, `cull-pass.ts:223`). Circa 2,5 MB in totale.
+  - `minBindingSize` su ogni voce.
+  - Storage per stadio: gather 7, sort 6 (limite 8).
+  - 8 bind group (1 per il gather + 7 per il sort).
+  - Nessun binding `read_write` e `read` sullo stesso buffer nello stesso dispatch.
+- **Encoding.**
+  - Senza profiler, un solo compute pass: i dispatch sono ordinati e visibili tra loro.
+  - Con il profiler, un compute pass per stadio, 22 marker e 4 nomi sommati (`gather`/`upsweep`/`scan`/`scatter`). Con `transparentCount == 0`, `profileStages` restituisce `[]` e non si codifica nulla.
+- **Costo stimato** 0,3-0,7 ms a 100k sull'iGPU, da misurare.
+- **Fuori dalla v1** (follow-up solo dopo le misure, con i vincoli del problema 13):
+  - salto delle passate banali;
+  - upsweep fuso, che richiede una tabella dei tile doppia;
+  - passata 0 fusa nel gather;
+  - istogrammi privatizzati per lane;
+  - tile più grandi.
+- **Scartati:**
+  - onesweep / decoupled look-back: nessuna garanzia di forward progress in WebGPU;
+  - scan del last-workgroup: WGSL non ha un fence di device;
+  - ranking con i subgroup: problema dei 32 lane su questa iGPU (32-64);
+  - bitonic.
 
 ## Perché
 

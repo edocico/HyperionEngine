@@ -82,11 +82,11 @@ Report **both** directions. Names in the doc that no longer exist are higher sev
 ### 8. WGSL shader counts
 Three distinct numbers exist and the doc conflates them. Compute all three and say which each claim means:
 ```bash
-ls -1 ts/src/shaders/*.wgsl | wc -l                                  # on disk
+find ts/src/shaders -name '*.wgsl' | wc -l                            # on disk (the primitive pieces in primitives/ included)
 grep -cE "^import .*\.wgsl\?raw" ts/src/renderer.ts                  # imported
 grep -cE "import\.meta\.hot\.accept\('\./shaders/" ts/src/renderer.ts # hot-reloadable
 ```
-A shader can exist on disk yet be a design artifact with no import (`basic-binding-array.wgsl`), or be imported yet not hot-reloadable (`debug-line.wgsl`).
+A shader can exist on disk yet be a design artifact with no import (`basic-binding-array.wgsl`), or be imported yet not hot-reloadable (`debug-line.wgsl`). The 7 primitive pieces are imported and hot-reloadable but are not standalone modules: they compile only once composed (6 per-type modules + the uber).
 
 ### 9. Struct sizes and buffer strides
 Prefer an in-repo assertion if one exists — `grep -rn 'size_of::<' crates/hyperion-core/src/` — those are CI-enforced and authoritative. Otherwise sum field widths and check the TS-side consuming `DataView` stride. Flag any case where the Rust size and the TS read stride disagree.

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, type LightGroupsInput } from './light-groups';
+import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
+import { loadPrimitivePieces } from './primitive-pieces.fixture';
+import { bindingDecls, reachableFrom, stripComments } from '../shaders/wgsl-analysis';
 
 // Light layers (design 2026-09-26): layers with the same lights and, where a
 // shadowed light reaches them, the same casters share a light buffer. Unity
@@ -162,17 +165,45 @@ describe('deriveLightGroups', () => {
     expect(lit.groups).toHaveLength(2);
   });
 
-  it('LIT_PRIMITIVE_TYPES are exactly the types whose registered shader declares @group(2)', () => {
+  it('LIT_PRIMITIVE_TYPES come from PRIMITIVE_LIBRARIES: quad and gradient', () => {
+    expect([...LIT_PRIMITIVE_TYPES]).toEqual(PRIMITIVE_LIBRARIES.filter((l) => l.lit).map((l) => l.type));
+    expect([...LIT_PRIMITIVE_TYPES]).toEqual([0, 4]);
+  });
+
+  it('LIT_PRIMITIVE_TYPES are exactly the types whose composed fs_main reaches the light buffer', () => {
+    // Every composed module DECLARES group 2 (the prelude does): what makes a
+    // type lit is that its fs_main reaches it. Names from the prelude's own
+    // group-2 declarations, plus the helper that reads the group table.
+    const pieces = loadPrimitivePieces();
+    const prelude = stripComments(pieces.prelude);
+    const light = [...bindingDecls(prelude).filter((b) => b.group === 2).map((b) => b.name), 'lightGroupOf'];
+    expect(light).toHaveLength(4);
+    const reaches = (src: string, entry: string): boolean => {
+      const reached = reachableFrom(src, entry);
+      return light.some((name) => reached.has(name));
+    };
+    const modules = composeTypeModules(pieces);
+    expect(PRIMITIVE_LIBRARIES.filter((l) => reaches(stripComments(modules[l.type]), 'fs_main')).map((l) => l.type))
+      .toEqual([...LIT_PRIMITIVE_TYPES]);
+    // The uber draws every type through its <prefix>_fs: the same rule per case.
+    const uber = stripComments(composeUberModule(pieces));
+    expect(PRIMITIVE_LIBRARIES.filter((l) => reaches(uber, `${l.prefix}fs`)).map((l) => l.type))
+      .toEqual([...LIT_PRIMITIVE_TYPES]);
+  });
+
+  it('renderer.ts registers each library piece under its own type, and composes in place', () => {
     const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
     const files = new Map<string, string>();
-    for (const m of renderer.matchAll(/import (\w+) from '\.\/shaders\/([\w-]+\.wgsl)\?raw'/g)) files.set(m[1], m[2]);
-    const block = /ForwardPass\.SHADER_SOURCES = \{([^}]*)\}/.exec(renderer)?.[1] ?? '';
-    const registered = [...block.matchAll(/(\d+):\s*(\w+)/g)].map((m) => [Number(m[1]), files.get(m[2])!] as const);
-    expect(registered).toHaveLength(6);
-    const declaresGroup2 = registered
-      .filter(([, file]) => /@group\(2\)/.test(readFileSync(new URL(`../shaders/${file}`, import.meta.url), 'utf8')))
-      .map(([type]) => type);
-    expect([...LIT_PRIMITIVE_TYPES].sort()).toEqual(declaresGroup2.sort());
+    for (const m of renderer.matchAll(/import (\w+) from '\.\/shaders\/primitives\/([\w-]+)\.wgsl\?raw'/g)) files.set(m[1], m[2]);
+    const block = /const primitivePieces: PrimitivePieces = \{\s*prelude: (\w+),\s*libraries: \{([^}]*)\}/.exec(renderer);
+    expect(block, 'the primitivePieces literal in renderer.ts').not.toBeNull();
+    expect(files.get(block![1])).toBe('prelude');
+    const registered = [...block![2].matchAll(/(\d+):\s*(\w+)/g)].map((m) => [Number(m[1]), files.get(m[2])] as const);
+    expect(registered).toEqual(PRIMITIVE_LIBRARIES.map((l) => [l.type, l.name] as const));
+    // In place, never reassigned: LightGroupsPass and the probes hold the object.
+    expect(renderer).toMatch(/Object\.assign\(ForwardPass\.SHADER_SOURCES, composeTypeModules\(primitivePieces\)\)/);
+    expect(renderer).toMatch(/ForwardPass\.UBER_SOURCE = composeUberModule\(primitivePieces\)/);
+    expect(renderer).not.toMatch(/ForwardPass\.SHADER_SOURCES\s*=(?!=)/);
   });
 
   it('classifies the primitive type exactly as cull.wgsl does: anything past Light2D is a light', () => {

@@ -1,9 +1,9 @@
 import type { ResourcePool } from './resource-pool';
 
 /**
- * Bind group layouts shared by every pipeline that runs a primitive shader:
- * the ForwardPass pipelines and the occluder pipelines (OccluderSeedStage). Both run the
- * same WGSL modules, so both must hand the device the same layouts.
+ * Bind group layouts the primitive prelude declares, shared by every pipeline that
+ * runs a composed primitive module: the ForwardPass opaque pipelines, its uber pipeline
+ * and the occluder pipelines (OccluderSeedStage, groups 0 and 1 only).
  */
 
 /** Group 0: camera, transforms, visible indices, then the per-entity columns the fragment stage may read too. */
@@ -11,8 +11,8 @@ export function primitiveGroup0LayoutEntries(): GPUBindGroupLayoutEntry[] {
   const vs = GPUShaderStage.VERTEX;
   const vsFs = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   return [
-    // CameraUniform is 80 bytes in every primitive shader (viewProjection +
-    // occluderLayers + the viewport size line.wgsl reads + a pad). Declared, so a smaller buffer fails when the bind
+    // CameraUniform is 80 bytes, declared once in the prelude (viewProjection +
+    // occluderLayers + the viewport size line_vs reads + a pad). Declared, so a smaller buffer fails when the bind
     // group is created instead of at draw time, where no test can see it.
     { binding: 0, visibility: vs, buffer: { type: 'uniform', minBindingSize: 80 } }, // camera
     { binding: 1, visibility: vs, buffer: { type: 'read-only-storage' } },     // transforms
@@ -26,11 +26,11 @@ export function primitiveGroup0LayoutEntries(): GPUBindGroupLayoutEntry[] {
 /** The pool buffers group 0 binds after the camera uniform, in binding order. */
 export const PRIMITIVE_GROUP0_BUFFERS = ['entity-transforms', 'visible-indices', 'tex-indices', 'render-meta', 'prim-params'] as const;
 
-/** Group-1 resources of every primitive shader, in binding order: tier0-3, the sampler, ovf0-3. */
+/** Group-1 resources the prelude declares, in binding order: tier0-3, the sampler, ovf0-3. */
 const GROUP1 = ['tier0', 'tier1', 'tier2', 'tier3', 'texSampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3'] as const;
 
 /**
- * The group-1 layout every primitive shader declares: four texture tiers, the
+ * The group-1 layout the prelude declares: four texture tiers, the
  * sampler, four overflow tiers. All primitive pipelines share it, whether or
  * not the shader samples a texture.
  */

@@ -24,6 +24,19 @@ export interface FrameState {
    * graph is lit.
    */
   lightGroups?: import('./light-groups').LightGroups;
+  /**
+   * Transparent sort (phase 5b): live rows with the Transparent bit, already
+   * normalised (`normalizeTransparentCount`: a missing count becomes
+   * `entityCount`). It bounds the sort's gather; 0 skips the sort.
+   */
+  transparentCount: number;
+  /**
+   * Phase 5b: this `render()`'s stamp, in [1, 0xFFFFFFFE] (`nextFrameStamp`,
+   * a counter of the renderer's closure, so it survives graph swaps). The
+   * sort's gather writes it into the `transparent-args` header, which proves
+   * the gather ran in this frame.
+   */
+  frameStamp: number;
 }
 
 export interface RenderPass {

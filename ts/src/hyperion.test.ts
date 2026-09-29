@@ -13,6 +13,7 @@ import { EntityIdAllocator } from './entity-id-allocator';
 import { BackpressuredProducer } from './backpressure';
 import { RingBufferProducer, extractUnread } from './ring-buffer';
 import { TickSequencer } from './tick-sequencer';
+import { makeRenderState } from './render-state.fixture';
 
 function mockBridge(): EngineBridge {
   let recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
@@ -83,6 +84,7 @@ function mockRenderer(): Renderer {
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,
+    sortProbe: null,
     destroy: vi.fn(),
   };
 }
@@ -312,14 +314,7 @@ describe('Hyperion', () => {
 
   it('stats.tickCount reads from render state', () => {
     const bridge = mockBridge();
-    bridge.latestRenderState = {
-      entityCount: 0, transforms: new Float32Array(0), bounds: new Float32Array(0),
-      renderMeta: new Uint32Array(0), texIndices: new Uint32Array(0),
-      primParams: new Float32Array(0), entityIds: new Uint32Array(0),
-      listenerX: 0, listenerY: 0, listenerZ: 0, tickCount: 42,
-      ambientR: 0, ambientG: 0, ambientB: 0, ambientIntensity: 1, lightingBackend: 0,
-      dirtyCount: 0, dirtyRatio: 0, stagingData: null, dirtyIndices: null,
-    };
+    bridge.latestRenderState = makeRenderState({ tickCount: 42 });
     const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
     expect(engine.stats.tickCount).toBe(42);
   });
@@ -910,6 +905,32 @@ describe('debug API', () => {
     expect(await engine.debug!.probe(request)).toBe(pixels);
     expect(renderer.debugProbe!.pixels).toHaveBeenCalledWith(request);
     expect(await engine.debug!.readEntityTransforms()).toBe(rows);
+  });
+
+  it('readTransparentSort rejects without a main-thread dev renderer (Mode A, headless, production renderer)', async () => {
+    const headless = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    await expect(headless.debug!.readTransparentSort()).rejects.toThrow(/renderer/);
+    // A renderer without the sort probe (a production build) answers the same.
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    await expect(engine.debug!.readTransparentSort()).rejects.toThrow(/renderer/);
+  });
+
+  it('readTransparentSort rejects while the engine is paused: no frame would serve it', async () => {
+    const renderer = mockRenderer();
+    const request = vi.fn();
+    (renderer as { sortProbe: unknown }).sortProbe = { request };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    engine.pause();
+    await expect(engine.debug!.readTransparentSort()).rejects.toThrow(/paused/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('readTransparentSort delegates to the renderer sort probe', async () => {
+    const renderer = mockRenderer();
+    const readback = { n: 3 };
+    (renderer as { sortProbe: unknown }).sortProbe = { request: vi.fn(async () => readback) };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    expect(await engine.debug!.readTransparentSort()).toBe(readback);
   });
 
   it('startRecording / stopRecording returns a CommandTape', () => {

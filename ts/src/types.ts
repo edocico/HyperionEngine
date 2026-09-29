@@ -67,6 +67,16 @@ export interface MemoryStats {
  */
 export const MAX_EXTERNAL_ID = 1_048_575;
 
+/**
+ * Rows the GPU buffers hold: every SoA column, the cull's per-bucket regions
+ * of `visible-indices`, `entity-ids` and the transparent sort are sized by it
+ * (phase 5b §6.4). The one copy of the number — `renderer.ts`, `cull-pass.ts`
+ * and the `maxEntities` default read it from here — and `validateConfig`
+ * refuses a `maxEntities` above it. `cull.wgsl` takes it from the cull
+ * uniform, not from a literal.
+ */
+export const MAX_GPU_ENTITIES = 100_000;
+
 /** Options of `engine.spawn()`, `engine.raw.spawn()` and a prefab template. */
 export interface SpawnOptions {
   /**
@@ -102,9 +112,12 @@ export function validateConfig(config: HyperionConfig): ResolvedConfig {
   if (!config.canvas) {
     throw new Error('canvas is required');
   }
-  const maxEntities = config.maxEntities ?? 100_000;
+  const maxEntities = config.maxEntities ?? MAX_GPU_ENTITIES;
   if (maxEntities <= 0) {
     throw new Error('maxEntities must be > 0');
+  }
+  if (maxEntities > MAX_GPU_ENTITIES) {
+    throw new Error(`maxEntities (${maxEntities}) exceeds MAX_GPU_ENTITIES (${MAX_GPU_ENTITIES}): the GPU buffers hold that many rows`);
   }
   return {
     canvas: config.canvas,

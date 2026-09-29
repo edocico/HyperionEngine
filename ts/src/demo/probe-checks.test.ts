@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS } from './probe-checks';
+import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure } from './probe-checks';
 import { createTestReporter } from './types';
 import type { Hyperion } from '../hyperion';
 
@@ -99,5 +99,80 @@ describe('pixelCheck readTransforms', () => {
     await done;
     vi.useRealTimers();
     expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no frame served/) });
+  });
+});
+
+describe('pixelCheck readSort', () => {
+  const sortEngine = (readTransparentSort: () => Promise<unknown>): Hyperion =>
+    ({ debug: { readTransparentSort } }) as unknown as Hyperion;
+
+  it('skips where the sort readback does not exist, like the pixel probe', async () => {
+    const reporter = createTestReporter();
+    const engine = sortEngine(() => Promise.reject(new Error('The debug probe needs the main-thread renderer of a dev build')));
+    await pixelCheck(reporter, 'sort', engine, async (_probe, _rows, readSort) => {
+      await readSort();
+      return { ok: true, detail: '' };
+    });
+    expect(reporter.results()[0].status).toBe('skip');
+  });
+
+  it('skips when the renderer went away with the request (the sort probe was destroyed)', async () => {
+    const reporter = createTestReporter();
+    const engine = sortEngine(() => Promise.reject(new Error('TransparentSortProbe destroyed before the request was served')));
+    await pixelCheck(reporter, 'sort', engine, async (_probe, _rows, readSort) => {
+      await readSort();
+      return { ok: true, detail: '' };
+    });
+    expect(reporter.results()[0]).toMatchObject({ status: 'skip', detail: expect.stringMatching(/TransparentSortProbe destroyed/) });
+  });
+
+  it('fails, with the reason, on any other rejection', async () => {
+    const reporter = createTestReporter();
+    const engine = sortEngine(() => Promise.reject(new Error('no transparent entities this frame: the sort did not run, there is nothing to read')));
+    await pixelCheck(reporter, 'sort', engine, async (_probe, _rows, readSort) => {
+      await readSort();
+      return { ok: true, detail: '' };
+    });
+    expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no transparent entities this frame/) });
+  });
+
+  it('fails after the timeout when no frame serves the readback', async () => {
+    vi.useFakeTimers();
+    const reporter = createTestReporter();
+    const engine = sortEngine(() => new Promise(() => {}));
+    const done = pixelCheck(reporter, 'sort', engine, async (_probe, _rows, readSort) => {
+      await readSort();
+      return { ok: true, detail: '' };
+    });
+    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1);
+    await done;
+    vi.useRealTimers();
+    expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no frame served/) });
+  });
+});
+
+describe('reportTextureLoadFailure', () => {
+  it('skips only when there is no main-thread renderer (Mode A)', () => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', new Error('Cannot load textures: no renderer available'));
+    expect(reporter.results()).toEqual([
+      { name: 'tex', status: 'skip', detail: 'no main-thread renderer: Cannot load textures: no renderer available' },
+    ]);
+  });
+
+  it.each([
+    'Failed to fetch /t.png: 404',
+    'The source image could not be decoded.',
+    'Tier 0 (64px) is full: 256 layers',
+  ])('fails, with the url and the error, on anything else: %s', (message) => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', new Error(message));
+    expect(reporter.results()).toEqual([{ name: 'tex', status: 'fail', detail: `cannot load /t.png: ${message}` }]);
+  });
+
+  it('takes a thrown non-Error too', () => {
+    const reporter = createTestReporter();
+    reportTextureLoadFailure(reporter, 'tex', '/t.png', 'boom');
+    expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: 'cannot load /t.png: boom' });
   });
 });

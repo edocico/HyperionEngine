@@ -993,8 +993,8 @@ Integrazioni con framework web (React, Svelte, Vue, Solid), template Electron/Ta
 |---------|------------|---------|-------------|
 | MSDF atlas troppo grande per mobile | Bassa | Medio | 1024×1024 default, 2048 opt-in, LRU eviction |
 | JFA performance insufficiente su GPU mobile | Media | Medio | Ridurre risoluzione JFA (quarter-res, bilinear upsample) |
-| WGSL branching divergente con mix di primitive | Media | Medio | Pipeline separate per tipo (zero branching) |
-| Mancanza preprocessore WGSL | Alta | Medio | `naga_oil` o template string TS |
+| WGSL branching divergente con mix di primitive | Media | Medio | Opachi: pipeline separate per tipo (zero branching). Trasparenti (fase 5b): una pipeline uber con uno switch per istanza sul tipo, uniforme sul quad 2×2 (le derivate sotto `diagnostic(off, derivative_uniformity)`, solo nel modulo uber); costo del `forward` misurato ai passi 3 e 4 (design 5b §11) |
+| Mancanza preprocessore WGSL | — | — | **Risolto (fase 5b)**: un compositore TS (`render/primitive-shaders.ts`) concatena un preludio e librerie con nomi prefissati in 6 moduli per tipo + 1 uber, senza preprocessore; i marcatori `// --- piece: X ---` riconducono gli errori ai pezzi |
 | `erf()` non built-in in WGSL | Media | Basso | Approssimazione Abramowitz-Stegun |
 
 ### Rischi Physics

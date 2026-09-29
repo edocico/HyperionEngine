@@ -72,6 +72,7 @@ function mockRenderer(): Renderer {
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,
+    sortProbe: null,
     destroy: vi.fn(),
   };
 }

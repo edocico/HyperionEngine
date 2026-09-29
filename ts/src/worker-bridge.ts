@@ -41,6 +41,14 @@ export interface GPURenderState {
   ambientB: number;
   ambientIntensity: number;
   lightingBackend: number;     // 0=off, 1=lit, 2=gi
+  // Transparent sort inputs (phase 5b §4.2). Carried INSIDE the render state,
+  // never on the message: Mode A forwards only `{ renderState }` to its render
+  // worker. NaN when a WASM build or a transport site lacks them — never 0;
+  // the renderer normalises (render/frame-inputs.ts).
+  /** Live rows with the Transparent bit (Rust recount): sizes the sort's gather. */
+  transparentCount: number;
+  /** Changes whenever the slot -> external id mapping changed: gates the entity-ids upload. */
+  entityIdsGeneration: number;
 }
 
 export interface EngineBridge {
@@ -146,6 +154,8 @@ export function createWorkerBridge(
         ambientB: rs.ambientB ?? 0,
         ambientIntensity: rs.ambientIntensity ?? 1,
         lightingBackend: rs.lightingBackend ?? 0,
+        transparentCount: rs.transparentCount ?? NaN,
+        entityIdsGeneration: rs.entityIdsGeneration ?? NaN,
         tickCount: msg.tickCount ?? 0,
         dirtyCount: rs.dirtyCount ?? 0,
         dirtyRatio: rs.dirtyRatio ?? 0,
@@ -280,6 +290,8 @@ export function createFullIsolationBridge(
         ambientB: rs.ambientB ?? 0,
         ambientIntensity: rs.ambientIntensity ?? 1,
         lightingBackend: rs.lightingBackend ?? 0,
+        transparentCount: rs.transparentCount ?? NaN,
+        entityIdsGeneration: rs.entityIdsGeneration ?? NaN,
         tickCount: msg.tickCount ?? 0,
         dirtyCount: rs.dirtyCount ?? 0,
         dirtyRatio: rs.dirtyRatio ?? 0,
@@ -367,12 +379,15 @@ export function createFullIsolationBridge(
 /**
  * Create the engine bridge for Mode C (single-thread, no Worker).
  */
-export async function createDirectBridge(): Promise<EngineBridge> {
+export async function createDirectBridge(
+  /** Loads the WASM module. A seam for tests, which cannot import the real one. */
+  loadWasm: () => Promise<unknown> = () => import("../wasm/hyperion_core.js"),
+): Promise<EngineBridge> {
   const buffer = createRingBuffer(RING_BUFFER_CAPACITY);
   const producer = new RingBufferProducer(buffer as SharedArrayBuffer);
   const commandBuffer = new BackpressuredProducer(producer);
 
-  const wasm = await import("../wasm/hyperion_core.js");
+  const wasm = (await loadWasm()) as { default(): Promise<unknown> };
   await wasm.default();
 
   const engine = wasm as unknown as {
@@ -415,6 +430,9 @@ export async function createDirectBridge(): Promise<EngineBridge> {
     engine_ambient_b?(): number;
     engine_ambient_intensity?(): number;
     engine_lighting_backend?(): number;
+    // Transparent sort inputs (phase 5b). Optional like the lighting ones.
+    engine_gpu_transparent_count?(): number;
+    engine_gpu_entity_ids_generation?(): number;
     engine_tick_count(): bigint;
     engine_memory(): WebAssembly.Memory;
     // Dirty staging exports
@@ -454,6 +472,10 @@ export async function createDirectBridge(): Promise<EngineBridge> {
       const tickCount = Number(engine.engine_tick_count());
       ticksC.ack(seq, tickCount); // push and update are synchronous here
       const count = engine.engine_gpu_entity_count();
+      // Read in both literals below, empty world included. NaN, never 0, when
+      // the build lacks the export (render/frame-inputs.ts).
+      const transparentCount = engine.engine_gpu_transparent_count?.() ?? NaN;
+      const entityIdsGeneration = engine.engine_gpu_entity_ids_generation?.() ?? NaN;
 
       // Read dirty staging data from WASM
       const dirtyCount = engine.engine_dirty_count();
@@ -508,6 +530,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           ambientB: engine.engine_ambient_b?.() ?? 0,
           ambientIntensity: engine.engine_ambient_intensity?.() ?? 1,
           lightingBackend: engine.engine_lighting_backend?.() ?? 0,
+          transparentCount,
+          entityIdsGeneration,
           tickCount,
           dirtyCount,
           dirtyRatio,
@@ -537,6 +561,8 @@ export async function createDirectBridge(): Promise<EngineBridge> {
           ambientB: engine.engine_ambient_b?.() ?? 0,
           ambientIntensity: engine.engine_ambient_intensity?.() ?? 1,
           lightingBackend: engine.engine_lighting_backend?.() ?? 0,
+          transparentCount,
+          entityIdsGeneration,
           tickCount,
           dirtyCount: 0,
           dirtyRatio: 0,
