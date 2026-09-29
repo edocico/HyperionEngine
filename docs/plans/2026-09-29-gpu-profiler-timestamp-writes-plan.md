@@ -29,7 +29,7 @@
   - i nomi dei nodi del grafo.
 - Dimensioni:
   - `new GpuProfiler(device, maxPairs = 512)`, con un query set di `2 * maxPairs` query;
-  - 3 readback di `2 * maxPairs * 8 + 8` byte;
+  - 3 readback di `2 * maxPairs * 8 + 8` byte, e un buffer `seal` di 4 byte (spec §4.6);
   - `WINDOW = 120`;
   - un avviso dopo 120 frame scartati di fila.
 - Motivi di scarto, in quest'ordine di precedenza: `unexecuted`, `truncated`, `zero`, `reversed`, `stale`, `empty`.
@@ -262,19 +262,19 @@ describe('work', () => {
     expect(dispatchDoesWork(...(args as [number, number?, number?]))).toBe(expected);
   });
 
-  const renderCases: Array<[string, (p: GPURenderPassEncoder) => void, boolean]> = [
-    ['draw(3)', (p) => p.draw(3), true],
-    ['draw(0)', (p) => p.draw(0), false],
-    ['draw(3, 0)', (p) => p.draw(3, 0), false],
-    ['drawIndexed(6)', (p) => p.drawIndexed(6), true],
-    ['drawIndexed(6, 0)', (p) => p.drawIndexed(6, 0), false],
-    ['drawIndirect', (p) => p.drawIndirect({} as GPUBuffer, 0), true],
-    ['drawIndexedIndirect', (p) => p.drawIndexedIndirect({} as GPUBuffer, 0), true],
-    ['executeBundles([])', (p) => p.executeBundles([]), false],
-    ['executeBundles([bundle])', (p) => p.executeBundles([{} as GPURenderBundle]), true],
-    ['a clear alone', () => {}, false],
+  const renderCases: Array<[string, boolean, (p: GPURenderPassEncoder) => void]> = [
+    ['draw(3)', true, (p) => p.draw(3)],
+    ['draw(0)', false, (p) => p.draw(0)],
+    ['draw(3, 0)', false, (p) => p.draw(3, 0)],
+    ['drawIndexed(6)', true, (p) => p.drawIndexed(6)],
+    ['drawIndexed(6, 0)', false, (p) => p.drawIndexed(6, 0)],
+    ['drawIndirect', true, (p) => p.drawIndirect({} as GPUBuffer, 0)],
+    ['drawIndexedIndirect', true, (p) => p.drawIndexedIndirect({} as GPUBuffer, 0)],
+    ['executeBundles([])', false, (p) => p.executeBundles([])],
+    ['executeBundles([bundle])', true, (p) => p.executeBundles([{} as GPURenderBundle])],
+    ['a clear alone', false, () => {}],
   ];
-  it.each(renderCases)('a render pass with %s: work %s', (_label, run, expected) => {
+  it.each(renderCases)('a render pass with %s: work %s', (_label, expected, run) => {
     const { encoder, recorder } = setUp();
     recorder.enterNode('n', true);
     const pass = encoder.beginRenderPass(colour());
@@ -283,14 +283,14 @@ describe('work', () => {
     expect(recorder.pairs[0].work).toBe(expected);
   });
 
-  const computeCases: Array<[string, (p: GPUComputePassEncoder) => void, boolean]> = [
-    ['dispatchWorkgroups(1)', (p) => p.dispatchWorkgroups(1), true],
-    ['dispatchWorkgroups(0)', (p) => p.dispatchWorkgroups(0), false],
-    ['dispatchWorkgroups(4, 0)', (p) => p.dispatchWorkgroups(4, 0), false],
-    ['dispatchWorkgroupsIndirect', (p) => p.dispatchWorkgroupsIndirect({} as GPUBuffer, 0), true],
-    ['no dispatch', () => {}, false],
+  const computeCases: Array<[string, boolean, (p: GPUComputePassEncoder) => void]> = [
+    ['dispatchWorkgroups(1)', true, (p) => p.dispatchWorkgroups(1)],
+    ['dispatchWorkgroups(0)', false, (p) => p.dispatchWorkgroups(0)],
+    ['dispatchWorkgroups(4, 0)', false, (p) => p.dispatchWorkgroups(4, 0)],
+    ['dispatchWorkgroupsIndirect', true, (p) => p.dispatchWorkgroupsIndirect({} as GPUBuffer, 0)],
+    ['no dispatch', false, () => {}],
   ];
-  it.each(computeCases)('a compute pass with %s: work %s', (_label, run, expected) => {
+  it.each(computeCases)('a compute pass with %s: work %s', (_label, expected, run) => {
     const { encoder, recorder } = setUp();
     recorder.enterNode('n', true);
     const pass = encoder.beginComputePass({});
@@ -322,7 +322,7 @@ describe('work', () => {
 - [ ] **Passo 2: verifica che fallisca**
 
 Esegui: `npx --prefix ts vitest run --root ts src/render/timestamp-intercept.test.ts`
-Atteso: FAIL, `Failed to resolve import "./timestamp-intercept"`.
+Atteso: FAIL, `Error: Cannot find module './timestamp-intercept' imported from …` (vitest 4.1).
 
 - [ ] **Passo 3: scrivi l'implementazione**
 
@@ -620,6 +620,19 @@ describe('evaluateFrame', () => {
     expect(evaluateFrame(frameOf([['overlay/x', true, 300n, 450n]]), history).ok).toBe(true);
   });
 
+  it('each stale check stands alone: a fresh begin with an old end is stale, an old begin with a fresh end too', () => {
+    // The first case is Metal's fresh begin and stale end after the timer's absolute
+    // values jumped between submits (M7): the old end is then not below the new begin.
+    const history = new StampHistory(2);
+    history.record(new BigUint64Array([100n, 200n]));
+    expect(evaluateFrame(frameOf([['p', true, 150n, 200n]]), history)).toEqual({ ok: false, reason: 'stale', pass: 'p' });
+    expect(evaluateFrame(frameOf([['p', true, 100n, 250n]]), history)).toEqual({ ok: false, reason: 'stale', pass: 'p' });
+  });
+
+  it('a zero end alone is zero, not reversed', () => {
+    expect(evaluateFrame(frameOf([['p', true, 5n, 0n]]), new StampHistory(2))).toEqual({ ok: false, reason: 'zero', pass: 'p' });
+  });
+
   it('the first reason in DISCARD_ORDER wins when several apply', () => {
     expect(DISCARD_ORDER).toEqual(['unexecuted', 'truncated', 'zero', 'reversed', 'stale', 'empty']);
     const history = new StampHistory(6);
@@ -737,7 +750,7 @@ describe('TimingWindow', () => {
 - [ ] **Passo 2: verifica che fallisca**
 
 Esegui: `npx --prefix ts vitest run --root ts src/render/timestamp-frames.test.ts`
-Atteso: FAIL, `Failed to resolve import "./timestamp-frames"`.
+Atteso: FAIL, `Error: Cannot find module './timestamp-frames' imported from …` (vitest 4.1).
 
 - [ ] **Passo 3: scrivi l'implementazione**
 
@@ -974,10 +987,12 @@ EOF
 **File:**
 - Riscrivi: `ts/src/render/gpu-profiler.ts`, `ts/src/render/gpu-profiler.test.ts`
 - Modifica:
-  - `ts/src/render/render-pass.ts:48-62`;
-  - `ts/src/render/render-graph.ts:200-245`, `ts/src/render/render-graph.test.ts:158-302`;
-  - `ts/src/render/passes/light-groups-pass.ts:44-45, 92-99, 108-128`, `ts/src/render/passes/light-groups-pass.test.ts:59-78, 193-201`;
-  - `ts/src/render/passes/transparent-sort-pass.ts:25-26, 88-96, 267-270, 290-330`, `ts/src/render/passes/transparent-sort-pass.test.ts` (i casi elencati al passo 7).
+  - `ts/src/render/render-pass.ts:49-61`;
+  - `ts/src/render/render-graph.ts:202-245`, `ts/src/render/render-graph.test.ts:158-302`;
+  - `ts/src/render/passes/light-groups-pass.ts:44-45, 92-98, 108-130`, `ts/src/render/passes/light-groups-pass.test.ts:59-78, 193-201`;
+  - `ts/src/render/passes/transparent-sort-pass.ts:25-26, 92-94, 267-270, 291-332`, `ts/src/render/passes/transparent-sort-pass.test.ts` (i casi elencati al passo 7).
+
+I numeri di riga sono quelli di HEAD `90d6fd2`: servono a trovare il punto. Ciò che vale è il testo citato; se i due non coincidono, segui il testo.
 
 **Interfacce:**
 - Usa: `FrameRecorder`, `instrumentEncoder`, `TimedPair` (Task 1); `StampHistory`, `TimingWindow`, `evaluateFrame`, `WINDOW`, `DISCARD_ORDER` e i tipi (Task 2).
@@ -1146,7 +1161,7 @@ describe('GpuProfiler', () => {
   });
 
   describe('resources', () => {
-    it('512 pairs by default: 1024 queries, three readbacks of 8 KB plus an 8-byte seal', () => {
+    it('512 pairs by default: 1024 queries, three readbacks of 8 KB plus 8 bytes, a 4-byte seal', () => {
       new GpuProfiler(gpu.device);
       const readbacks = gpu.buffers.filter((b) => b.label?.startsWith('gpu-profiler-readback'));
       expect(readbacks).toHaveLength(3);
@@ -1155,7 +1170,7 @@ describe('GpuProfiler', () => {
         expect(b.usage).toBe(GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
       }
       const seal = gpu.buffers.find((b) => b.label === 'gpu-profiler-seal')!;
-      expect(seal.size).toBe(8);
+      expect(seal.size).toBe(4);
       expect(seal.usage).toBe(GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
       const resolve = gpu.buffers.find((b) => b.label === 'gpu-profiler-resolve')!;
       expect(resolve.size).toBe(1024 * 8);
@@ -1216,7 +1231,23 @@ describe('GpuProfiler', () => {
       const tailWrite = (gpu.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.find(([buffer]) =>
         (buffer as FakeBuffer).label?.startsWith('gpu-profiler-readback'));
       expect(tailWrite?.[1]).toBe(2 * 8);
-      expect(Array.from(tailWrite?.[2] as Uint32Array)).toEqual([0, 0]);
+      expect(Array.from(tailWrite?.[2] as Uint32Array)).toEqual([0]);
+    });
+
+    it('two readbacks holding different frames, read with every submit rejected: nothing accepted, nothing in the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });   // readback X: frame 0
+      await measure(p, gpu, ['a'], stampsOf(1, 1), { poll: false });   // readback Y: frame 1
+      await p.poll();
+      // Two rejected frames reuse Y then X, which still hold frames 1 and 0.
+      await measure(p, gpu, ['a'], undefined, { reject: true, poll: false });
+      await measure(p, gpu, ['a'], undefined, { reject: true, poll: false });
+      await p.poll();
+      expect(p.discardReasons.unexecuted).toBe(2);
+      // The query set still holds frame 1, the last that ran: a pass that did not refresh it is stale.
+      await measure(p, gpu, ['a'], undefined);
+      expect(p.discardReasons.stale).toBe(1);
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
     });
 
     it('nextSeal counts 1..0xFFFFFFFF and never returns 0', () => {
@@ -1228,7 +1259,7 @@ describe('GpuProfiler', () => {
   });
 
   describe('the per-index history', () => {
-    it('an executed frame whose pass did not refresh its stamps is stale; a rejected one never enters the history', async () => {
+    it('an executed frame whose pass did not refresh its stamps is stale', async () => {
       const p = new GpuProfiler(gpu.device);
       const s = stampsOf(0, 1);
       await measure(p, gpu, ['overlay'], s);
@@ -1251,6 +1282,29 @@ describe('GpuProfiler', () => {
       await measure(p, gpu, ['new-pass'], s);
       expect(p.getTimingsByName().has('old-pass')).toBe(false);
       expect(p.getTimingsByName().get('new-pass')?.sampleCount).toBe(1);
+    });
+
+    it('a discarded frame still updates the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a', 'b'], stampsOf(0, 1, 1));
+      const s = stampsOf(1, 1, 1);
+      const reversed = [s[0], s[1], s[3], s[2]];                 // 'b' ends before it begins
+      await measure(p, gpu, ['a', 'b'], reversed);
+      expect(p.discardReasons.reversed).toBe(1);
+      const next = stampsOf(2, 1, 1);
+      await measure(p, gpu, ['a', 'b'], [reversed[0], reversed[1], next[2], next[3]]);   // 'a' keeps frame 1's stamps
+      expect(p.discardReasons.stale).toBe(1);
+    });
+
+    it('a frame of an old generation still updates the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+      const reading = p.poll();       // takes the frame now
+      p.reset();                      // which from here on belongs to an old generation
+      await reading;
+      expect(p.timings()).toEqual([]);
+      await measure(p, gpu, ['a'], undefined);   // the query set still holds that frame's stamps
+      expect(p.discardReasons.stale).toBe(1);
     });
 
     it('a lost readback (device loss) throws nothing, frees its buffer and forgets its indices', async () => {
@@ -1278,6 +1332,18 @@ describe('GpuProfiler', () => {
       for (let i = 0; i < 10; i++) await measure(p, gpu, ['a'], undefined, { reject: true });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(p.discardedFrames).toBe(130);
+    });
+
+    it('the warning names the pass behind the most frequent reason', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const first = stampsOf(0, 1, 1);
+      await measure(p, gpu, ['forward', 'overlay'], first);
+      for (let i = 1; i <= 120; i++) {
+        const s = stampsOf(i, 1, 1);
+        await measure(p, gpu, ['forward', 'overlay'], [s[0], s[1], first[2], first[3]]);   // overlay keeps frame 0's stamps
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/pass 'overlay' did work but its timestamps were not refreshed/);
     });
 
     it('a valid frame breaks the streak', async () => {
@@ -1377,8 +1443,10 @@ export type { DiscardReason, GpuFrameTiming, PassTiming } from './timestamp-fram
 const READBACK_SLOTS = 3;
 /** Bytes per timestamp (u64 nanoseconds). */
 const TIMESTAMP_SIZE = 8;
-/** The seal at a readback's tail: a u32 sequence number and 4 bytes of padding. */
-const SEAL_BYTES = 8;
+/** The seal: a u32 sequence number, copied to a readback's tail. */
+const SEAL_BYTES = 4;
+/** Room after the stamps in a readback: the seal, kept 8-byte aligned. */
+const READBACK_TAIL = 8;
 /** Discarded frames in a row before the one warning: two seconds at 60 fps. */
 const WARN_AFTER = WINDOW;
 
@@ -1469,7 +1537,7 @@ export class GpuProfiler {
     this.history = new StampHistory(queries);
     for (let i = 0; i < READBACK_SLOTS; i++) {
       const buffer = device.createBuffer({
-        size: stampBytes + SEAL_BYTES,
+        size: stampBytes + READBACK_TAIL,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         label: `gpu-profiler-readback-${i}`,
       });
@@ -1558,8 +1626,8 @@ export class GpuProfiler {
     // Queue writes run even when the frame's command buffer is rejected; the
     // copies below run only with it. A rejected frame reads 0 where its seal
     // should be, and an older frame's stamps before it (design §4.6).
-    this.device.queue.writeBuffer(buffer, stampBytes, new Uint32Array([0, 0]));
-    this.device.queue.writeBuffer(this.sealBuffer, 0, new Uint32Array([this.seal, 0]));
+    this.device.queue.writeBuffer(buffer, stampBytes, new Uint32Array([0]));
+    this.device.queue.writeBuffer(this.sealBuffer, 0, new Uint32Array([this.seal]));
     if (pairs > 0) {
       encoder.resolveQuerySet(this.querySet, 0, 2 * pairs, this.resolveBuffer, 0);
       encoder.copyBufferToBuffer(this.resolveBuffer, 0, buffer, 0, stampBytes);
@@ -1863,9 +1931,14 @@ In `ts/src/render/render-graph.test.ts` sostituisci tutto il blocco `describe('G
   });
 ```
 
+- [ ] **Passo 5b: verifica che falliscano**
+
+Esegui: `npx --prefix ts vitest run --root ts src/render/render-graph.test.ts`
+Atteso: FAIL. Il `render()` di oggi chiama `beginFrame(names)` e `mark`, quindi `instrument` ed `enterNode` non vengono mai chiamati (per esempio `expected "spy" to be called 1 times, but got 0 times`).
+
 - [ ] **Passo 6: aggiorna contratto e grafo**
 
-In `ts/src/render/render-pass.ts`, sostituisci il tratto da `execute(` a `profileStages?(frame: FrameState): readonly string[];` (righe 48-61) con:
+In `ts/src/render/render-pass.ts`, sostituisci il tratto dal commento `/**` che apre `@param mark` (riga 49, subito sotto `prepare(...)`, che resta) fino a `profileStages?(frame: FrameState): readonly string[];` (riga 61), cioè il vecchio JSDoc di `mark`, `execute`, il JSDoc di `profileStages` e `profileStages`, con:
 
 ```ts
   /**
@@ -1919,7 +1992,7 @@ Atteso: PASS.
 - [ ] **Passo 7: i due pass con stage — prima i test**
 
 In `ts/src/render/passes/light-groups-pass.test.ts`:
-- nella funzione `frame` (righe 59-78) sostituisci il parametro `withMark = false` con `withStage = false`;
+- nella funzione `frame` (righe 59-78) sostituisci il parametro `withMark = false` con `withStage = false`, e nel suo commento "or mark" con "or stage name";
 - il tipo degli eventi diventa `Array<{ kind: 'pass'; target: View; sdf?: View } | { kind: 'stage'; name: string }>`;
 - la chiamata diventa `pass.execute(encoder, f, pool, withStage ? (name: string) => { events.push({ kind: 'stage', name }); } : undefined);`;
 - la funzione `passes` filtra `e.kind === 'pass'` come oggi.
@@ -1960,7 +2033,7 @@ In `ts/src/render/passes/transparent-sort-pass.test.ts`:
     expect(cmds).toEqual([]);
   });
   ```
-- in `'never writes a buffer: ...'` (righe 410-420), `withMark`/`mark` diventano `withStage`/`stage`;
+- in `'never writes a buffer: ...'` (righe 411-422), `withMark`/`mark` diventano `withStage`/`stage`;
 - il test `it.each([0, Number.NaN])('count %s: encodes nothing and profileStages is empty', ...)` (righe 424-433) diventa:
 
   ```ts
@@ -1974,7 +2047,7 @@ In `ts/src/render/passes/transparent-sort-pass.test.ts`:
     expect(cmds).toEqual([]);
   });
   ```
-- il test `'with the profiler: 22 compute passes, ...'` (righe 435-446) diventa:
+- il test `'with the profiler: 22 compute passes, ...'` (righe 435-448, dal suo `it(` al suo `});`) diventa:
 
   ```ts
   it('with the profiler: 22 compute passes, each right after its stage name — gather, then upsweep/scan/scatter seven times', () => {
@@ -1991,19 +2064,19 @@ In `ts/src/render/passes/transparent-sort-pass.test.ts`:
     expect(dispatches(cmds).map((d) => d.entry)).toEqual(STAGES.map((s) => ENTRY[s]));
   });
   ```
-- in `'with a readback request and the profiler: ...'` (righe 470-482), `mark` diventa `stage`, e i due controlli sui marker diventano `expect(cmds.filter((c) => c.kind === 'stage')).toHaveLength(22);` e `expect(cmds[firstEnd + 3].kind).toBe('stage');`;
-- in `'in a production build (__DEV__ false) ...'` (righe 505-520), `withMark`/`mark` diventano `withStage`/`stage`;
+- in `'with a readback request and the profiler: ...'` (righe 475-488), `mark` diventa `stage`, e i due controlli sui marker diventano `expect(cmds.filter((c) => c.kind === 'stage')).toHaveLength(22);` e `expect(cmds[firstEnd + 3].kind).toBe('stage');`;
+- in `'in a production build (__DEV__ false) ...'` (righe 505-526), `withMark`/`mark` diventano `withStage`/`stage`;
 - in `'destroys its own buffers, ...'` (righe 536-546) togli la riga `expect(pass.profileStages(frameOf(10))).toEqual([]);`.
 
 Esegui: `npx --prefix ts vitest run --root ts src/render/passes/light-groups-pass.test.ts src/render/passes/transparent-sort-pass.test.ts`
-Atteso: FAIL. I pass chiamano ancora `mark(encoder)`, quindi i nomi degli stage non arrivano (gli eventi `stage` hanno `name` indefinito o mancano).
+Atteso: FAIL. I pass chiamano ancora `mark(encoder)`, quindi la funzione `stage` riceve l'encoder come nome: falliscono i due test che controllano i nomi degli stage (quello del sort e quello di light-groups); gli altri casi modificati passano già.
 
 - [ ] **Passo 8: i due pass con stage — il codice**
 
 In `ts/src/render/passes/light-groups-pass.ts`:
 - nel commento della classe (righe 44-45) sostituisci "For the GPU profiler the node names them per frame (`profileStages`) and marks each one, so their times stay visible as `light-groups/seed|sdf|accum`." con "While the GPU profiler measures, it names each stage just before it runs (`stage`), so their times stay visible as `light-groups/seed|sdf|accum`.";
 - togli il metodo `profileStages(frame)` (righe 92-98);
-- in `execute` (righe 108-128), sostituisci la firma e le quattro chiamate a `mark`:
+- sostituisci tutto il metodo `execute` (righe 108-130, dalla firma alla sua `}` di chiusura) con:
 
 ```ts
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool, stage?: (name: string) => void): void {
@@ -2035,7 +2108,7 @@ In `ts/src/render/passes/transparent-sort-pass.ts`:
 - togli `PROFILE_STAGES` e il suo commento (righe 25-26); `SORT_STAGES` resta;
 - nel commento della classe (righe 92-94) sostituisci "One pass per stage, 22 in all, while the GPU profiler measures, each after its own `mark`; `profileStages` lists the same 22, or `[]` when the sort is skipped." con "One pass per stage, 22 in all, while the GPU profiler measures (it passes `stage`), each named by its own `stage()` call.";
 - togli il metodo `profileStages(frame)` (righe 267-270);
-- in `execute` sostituisci il parametro `mark?: (encoder: GPUCommandEncoder) => void` con `stage?: (name: string) => void` e il ramo `if (mark) {` (righe 302-315) con:
+- in `execute` sostituisci il parametro `mark?: (encoder: GPUCommandEncoder) => void` con `stage?: (name: string) => void`, e il tratto da `if (mark) {` fino a `} else {` compreso (righe 303-317) con:
 
 ```ts
     if (stage) {
@@ -2054,6 +2127,8 @@ In `ts/src/render/passes/transparent-sort-pass.ts`:
       }
     } else {
 ```
+
+- nel ramo `else` che segue, rinomina la variabile del ciclo: `for (const stage of SORT_STAGES) this.encodeStage(pass, stage, p);` diventa `for (const s of SORT_STAGES) this.encodeStage(pass, s, p);`, altrimenti nasconderebbe il parametro `stage`.
 
 Esegui: `grep -rn "profileStages\|PROFILE_STAGES\|mark?:\|\.mark(" ts/src --include="*.ts"`
 Atteso: nessuna riga, ne `.ts` ne `.test.ts`.
@@ -2156,8 +2231,10 @@ Atteso: FAIL, `engine.getGpuFrameTiming is not a function`.
   ```ts
   /**
    * The GPU frame span, from the first measured pass beginning to the last
-   * end, over the same frames as {@link getGpuTimings}. Null when profiling is
-   * off, unsupported, without a local renderer, or before the first valid frame.
+   * end, over the same frames as {@link getGpuTimings}. Passes can overlap on
+   * the GPU, so the span can be less than the sum of the getGpuTimings()
+   * entries. Null when profiling is off, unsupported, without a local
+   * renderer, or before the first valid frame.
    */
   getGpuFrameTiming(): GpuFrameTiming | null {
     return this.renderer?.getGpuFrameTiming() ?? null;
@@ -2189,15 +2266,23 @@ EOF
 ### Task 5: il bench usa lo span
 
 **File:**
-- Modifica: `docs/plans/assets/2026-09-27-transparent-sort-bench.js:12-18, 118-133`
+- Modifica: `docs/plans/assets/2026-09-27-transparent-sort-bench.js:2-3, 15-18, 37, 120-134, 143`
 
 **Interfacce:**
 - Usa: `engine.getGpuFrameTiming()` (Task 4).
-- Produce: nel JSON dei risultati del bench, `total` diventa lo span del frame e compare il campo nuovo `passSum`.
+- Produce: nel JSON dei risultati del bench, `total` diventa lo span del frame, compare il campo nuovo `passSum`, e il formato diventa `hyperion-5b-bench/2`: i JSON AMD (`/1`) e quelli nuovi restano distinguibili.
 
 - [ ] **Passo 1: aggiorna il commento in testa**
 
-Sostituisci le righe 14-18 (da `// \`total\` is the sum of every pass:` a `// fxaa-tonemap 6.9 ms), so compare forward AND total between steps.`) con:
+Le righe 2-3 (da `// Phase 5b benchmark scenario (spec §7.3.6): the body of ONE chrome-devtools` a `` // `evaluate_script` call, used UNCHANGED at steps 0, 1, 3 and 4. ``) diventano:
+
+```js
+  // Phase 5b benchmark scenario (spec §7.3.6): the body of ONE chrome-devtools
+  // `evaluate_script` call. Format /1 ran unchanged at steps 0, 1, 3 and 4 on the
+  // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
+```
+
+Poi sostituisci le righe 15-18, da `// \`total\` is the sum of every pass:` a `// fxaa-tonemap 6.9 ms), so compare forward AND total between steps.` La riga 14 (`// sum of transparent-sort/{gather,upsweep,scan,scatter}: null until step 3.`) resta. Il testo nuovo è:
 
 ```js
   // `total` is the GPU frame span (engine.getGpuFrameTiming(): first pass
@@ -2213,14 +2298,22 @@ Sostituisci le righe 14-18 (da `// \`total\` is the sum of every pass:` a `// fx
 
 - [ ] **Passo 2: aggiorna il risultato**
 
-Nel `results.push({ ... })` (righe 123-133), sostituisci la riga `total: Object.values(passes).reduce((sum, ms) => sum + ms, 0),` con:
+Subito dopo la riga 120 (`const passes = Object.fromEntries(engine.getGpuTimings().map((t) => [t.name, t.averageMs]));`) aggiungi una riga: lo span si legge insieme alle voci, sugli stessi frame, prima dell'`await gpuCount()` che aspetta un frame in più.
 
 ```js
-        total: engine.getGpuFrameTiming()?.averageMs ?? null,
+      const frameTiming = engine.getGpuFrameTiming();
+```
+
+Nel `results.push({ ... })` (righe 123-134), sostituisci la riga `total: Object.values(passes).reduce((sum, ms) => sum + ms, 0),` con:
+
+```js
+        total: frameTiming?.averageMs ?? null,
         passSum: Object.values(passes).reduce((sum, ms) => sum + ms, 0),
 ```
 
-Dopo il controllo `if (!engine.gpuProfilingSupported) ...` (riga 38) aggiungi:
+Alla riga 143, `format: 'hyperion-5b-bench/1',` diventa `format: 'hyperion-5b-bench/2',`.
+
+Dopo il controllo `if (!engine.gpuProfilingSupported) ...` (riga 37) aggiungi:
 
 ```js
   if (typeof engine.getGpuFrameTiming !== 'function') {
@@ -2240,7 +2333,7 @@ git add docs/plans/assets/2026-09-27-transparent-sort-bench.js
 git commit -F - <<'EOF'
 test(bench): il total del bench è lo span del frame, passSum la somma delle voci
 
-Con il profiler dei marker la somma delle voci si incastrava da un capo all'altro del frame, quindi era già lo span; con le coppie di timestampWrites non più (sull'M2 i pass si sovrappongono). total legge ora getGpuFrameTiming(), e resta confrontabile con le misure AMD della 5b; passSum è la somma delle voci, nuova. Il bench si ferma con un errore chiaro su una build con il profiler vecchio.
+Con il profiler dei marker la somma delle voci si incastrava da un capo all'altro del frame, quindi era già lo span; con le coppie di timestampWrites non più (sull'M2 i pass si sovrappongono). total legge ora getGpuFrameTiming() sugli stessi frame delle voci, e resta confrontabile con le misure AMD della 5b; passSum è la somma delle voci, nuova. Il formato passa a hyperion-5b-bench/2, e il bench si ferma con un errore chiaro su una build con il profiler vecchio.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -2251,18 +2344,28 @@ EOF
 ### Task 6: documentazione
 
 **File:**
-- Modifica: `CLAUDE.md` (righe 186, 245, 247, 253, 260, 273, 440, 453), `.claude/agents/webgpu-pass-reviewer.md:53-55`, `docs/handoff/2026-09-29-mac-m2-handoff.md` (M7 righe 758-769, M12 riga 862)
+- Modifica:
+  - `CLAUDE.md`: righe 65, 72, 73, 186, 245, 247, 253 (più due righe nuove sotto), 260, 273, 440, 453;
+  - `.claude/agents/webgpu-pass-reviewer.md:53-55`;
+  - `docs/handoff/2026-09-29-mac-m2-handoff.md`: righe 486, 760, 766-768, M8 passo 3, M9 passo 4, 862.
 
 **Interfacce:** nessuna. Si descrivono i nomi dei Task 1-5.
 
 - [ ] **Passo 1: `CLAUDE.md`**
 
+- **Conteggi dei test (righe 65, 72, 73):** esegui `npm --prefix ts test` e `npx --prefix ts vitest run --root ts src/hyperion.test.ts`, e scrivi i totali che stampano al posto di "1883 tests + 7 skipped, 109 files" (riga 65), di "109 test files" (riga 72) e di "(95 tests)" di `hyperion.test.ts` (riga 73).
 - **Riga 186 (`hyperion.ts`):** `gpuProfilingSupported`/`enableGpuProfiling`/`disableGpuProfiling`/`getGpuTimings` diventa `gpuProfilingSupported`/`enableGpuProfiling`/`disableGpuProfiling`/`getGpuTimings`/`getGpuFrameTiming`.
 - **Riga 245 (`render/render-pass.ts`):** "A pass may expose `profileStages(frame)` and then receives `mark(encoder)` as the 4th `execute` argument (GPU profiler stages)." diventa "While the GPU profiler measures a frame, `execute` receives `stage(name)` as its 4th argument: the passes a node opens after `stage('x')` are timed as `node/x`; `profile: false` keeps a node out of the profiler."
 - **Riga 247 (`render/render-graph.ts`):** "optional `setProfiler()` GPU timing hook" diventa "optional `setProfiler()` GPU timing hook (in a measured frame: `instrument(encoder)`, `enterNode(name, pass.profile !== false)` per live node, a `stage` function to every pass)".
 - **Riga 253 (`render/gpu-profiler.ts`):** sostituisci tutta la cella del ruolo con:
 
   > `GpuProfiler` — per-pass GPU timing via `timestamp-query`, with `timestampWrites` on the real passes (design `2026-09-29-gpu-profiler-timestamp-writes-design.md`). In a measured frame `instrument(encoder)` overrides `beginRenderPass`/`beginComputePass` as OWN properties of that encoder (`render/timestamp-intercept.ts`): each pass gets a query pair named after its node (`node/stage` after `stage()`), the original descriptor is never written (`Object.create`), and the pass encoder's draw/dispatch calls record whether it did work. `render/timestamp-frames.ts` keeps a frame only if its seal came back (`unexecuted` otherwise: a rejected command buffer) and it is not truncated, and only if every pair with work has non-zero, ordered, refreshed stamps (`zero`/`reversed`/`stale`, then `empty`). Names repeated in a frame are SUMMED; a name missing from a frame counts 0 ms; every entry has the same `sampleCount`; a name missing for a whole window is forgotten. `frameTiming()` is the span from the first beginning to the last end (`getGpuFrameTiming`). 512 pairs by default (`maxPairs`), 3 rotating readbacks plus an 8-byte seal, `WINDOW`=120, one warning after 120 discarded frames in a row naming the reason and the pass; `reset()` bumps the generation and forgets the per-index history. Types `PassTiming`, `GpuFrameTiming`, `DiscardReason`.
+- **Due righe nuove, subito sotto quella di `render/gpu-profiler.ts`:**
+
+  ```markdown
+  | `render/timestamp-intercept.ts` | `instrumentEncoder(encoder, recorder)` — overrides `beginRenderPass`/`beginComputePass` as OWN properties of one encoder and wraps the work commands of the pass encoders they return; `FrameRecorder` (query pairs, node and `node/stage` names, `profile: false`, truncation, descriptors derived with `Object.create` and never written); `drawDoesWork`/`dispatchDoesWork` (counts read as WebIDL reads them, indirect commands always work) |
+  | `render/timestamp-frames.ts` | `evaluateFrame(frame, history)` — the validity rules and the discard reasons in `DISCARD_ORDER`; `StampHistory` (the last value read per query index, unknown after a lost readback or `reset()`); `TimingWindow` (the 120-frame window per name, the frame span series); types `PassTiming`, `GpuFrameTiming`, `DiscardReason` |
+  ```
 - **Riga 260 (`render/passes/light-groups-pass.ts`):** "Stages `seed`/`sdf`/`accum` for the profiler" diventa "Names its stages `seed`/`sdf`/`accum` with the profiler's `stage()`".
 - **Riga 273 (`render/passes/transparent-sort-pass.ts`):** "Nothing at count 0 (`profileStages` → `[]`)." diventa "Nothing at count 0."; "22 with the profiler: stages `gather`/`upsweep`/`scan`/`scatter`" diventa "22 when the profiler passes `stage`: stages `gather`/`upsweep`/`scan`/`scatter`".
 - **Riga 440 (gotcha degli stage):** sostituisci tutto il punto con:
@@ -2287,6 +2390,10 @@ In `.claude/agents/webgpu-pass-reviewer.md`, la regola 11 (righe 53-55) diventa:
 - [ ] **Passo 3: la handoff**
 
 In `docs/handoff/2026-09-29-mac-m2-handoff.md`:
+- **Riga 486:** la frase che dice che con il Chrome stock su Metal tutti i timestamp valgono 0 e che dopo 120 frame compare "frames of zeroed timestamps" diventa: "Timestamp: senza flag Chrome quantizza a 65 536 ns su Metal; gli zeri di M7 venivano dai marker vuoti del profiler vecchio (spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`)."
+- **Riga 760 (M7, "Perché qui"):** in fondo aggiungi "(Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)"
+- **M8, passo 3:** dopo `git worktree add ../hyperion-5b-step3 6ff494f` inserisci "poi `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2): senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`."
+- **M9, passo 4:** "il totale" diventa "lo span (`getGpuFrameTiming().averageMs`)".
 - **M7, "Atteso"** (righe 766-767): le due voci diventano:
 
   ```markdown
@@ -2305,7 +2412,7 @@ In `docs/handoff/2026-09-29-mac-m2-handoff.md`:
 Esegui:
 ```bash
 git diff --numstat CLAUDE.md .claude/agents/webgpu-pass-reviewer.md docs/handoff/2026-09-29-mac-m2-handoff.md
-git grep -nE "profileStages|totalAverageMs|mark\(\)" -- CLAUDE.md .claude
+git grep -nE "profileStages|totalAverageMs|mark\(encoder\)|mark\?\.\(" -- CLAUDE.md .claude
 ```
 Atteso: pochi cambi per file e nessuna cancellazione inattesa (vedi il gotcha "After a scripted edit to a long doc, check `git diff --numstat`"); il `git grep` non trova niente.
 
@@ -2347,7 +2454,7 @@ Lancia il workflow `adversarial-review` con:
   - l'ordine dei motivi;
   - le chiavi invariate del bench e di M9.
 
-Classifica i risultati. Correggi ogni Critical e Important con un test che fallisce prima, in commit separati (`fix(profiler): …`).
+Classifica i risultati. Correggi ogni Critical e Important con un test che fallisce prima, in commit separati (`fix(profiler): …`). Sono commit di codice: vanno anche sui worktree di M8 ("Dopo il piano", punto 2).
 
 - [ ] **Passo 3: webgpu-pass-reviewer**
 
@@ -2365,72 +2472,106 @@ git push
 
 **File:**
 - Modifica: `docs/plans/assets/2026-09-29-mac-m2/README.md` (sezione M7 e tabella degli esiti)
-- Crea: `docs/plans/assets/2026-09-29-mac-m2/m7-profiler-{gpu,stock}-{B,C}.json`
+- Crea, in `docs/plans/assets/2026-09-29-mac-m2/`:
+  - `m7-profiler-gpu-B.json`, `m7-profiler-stock-B.json`, `m7-profiler-gpu-C.json`;
+  - `m7-profiler-gpu-overlays-B.json`;
+  - `m7-profiler-gpu-bench.json`, `m7-profiler-stock-bench.json`.
 
-**Interfacce:** usa `window.__hyperion` (`enableGpuProfiling`, `getGpuTimings`, `getGpuFrameTiming`, `use`) nel harness.
+**Interfacce:**
+- Nel harness usa `window.__hyperion` (`enableGpuProfiling`, `getGpuTimings`, `getGpuFrameTiming`, `use`/`unuse`).
+- Per i contatori di scarto legge `engine.renderer.graph.profiler`: in una build di sviluppo i campi `private` di TypeScript sono proprietà normali a runtime, quindi non serve nessuna API nuova.
 
-- [ ] **Passo 1: dev server riavviato**
+**L'`initScript` da passare a ogni `navigate_page`.** Ferma i reload del client di Vite quando la WebSocket HMR si chiude. Il README delle prove Mac (sezione M6) lo descrive, ma il testo non è nel repo, quindi eccolo:
 
-Ferma il dev server se gira, poi `npm --prefix ts run dev -- --strictPort --port 5173` in background. Il riavvio evita la trasformazione vecchia di Vite (gotcha "Restart the dev server").
+```js
+(() => { const Native = window.WebSocket; window.__viteWsCloses = []; function Patched(url, protocols) { const ws = protocols === undefined ? new Native(url) : new Native(url, protocols); const proto = Array.isArray(protocols) ? protocols.join(',') : String(protocols ?? ''); if (proto.includes('vite-hmr')) { ws.addEventListener('close', (e) => { const rec = { t: new Date().toISOString(), perf: Math.round(performance.now()), code: e.code, reason: e.reason, wasClean: e.wasClean }; window.__viteWsCloses.push(rec); console.warn('[mac-m2 test] vite-hmr websocket closed, reload suppressed: ' + JSON.stringify(rec)); e.stopImmediatePropagation(); }); } return ws; } Patched.prototype = Native.prototype; Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 }); window.WebSocket = Patched; })()
+```
 
-- [ ] **Passo 2: server "gpu", Mode B, tab Lighting**
-
-Con `chrome-devtools-gpu`, `navigate_page` su `http://localhost:5173/?mode=B`, `ignoreCache: true`, con l'`initScript` anti-reload del README, sezione M6. Clicca la tab Lighting, aspetta che finisca, poi un `evaluate_script` con `filePath` = `docs/plans/assets/2026-09-29-mac-m2/m7-profiler-gpu-B.json`:
+**Lo snippet di misura, usato ai passi 2-4.** Si passa a `evaluate_script` con il `filePath` di ciascun passo:
 
 ```js
 async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const engine = window.__hyperion;
+  // Dev harness only: TypeScript-private fields are plain properties at runtime.
+  const profiler = () => engine.renderer?.graph?.profiler ?? null;
   const warnings = [];
   const warn = console.warn;
   console.warn = (...a) => { warnings.push(a.join(' ')); warn(...a); };
-  if (!engine.enableGpuProfiling()) return { error: 'enableGpuProfiling() returned false' };
-  const t0 = performance.now();
-  let rafs = 0;
-  const count = () => { rafs++; if (performance.now() - t0 < 5000) requestAnimationFrame(count); };
-  requestAnimationFrame(count);
-  await sleep(5200);
-  const timings = engine.getGpuTimings();
-  const frame = engine.getGpuFrameTiming();
-  engine.disableGpuProfiling();
-  console.warn = warn;
-  return { rafs, frame, timings, warnings: warnings.filter((w) => w.includes('GPU profiling')) };
+  try {
+    if (!engine.enableGpuProfiling()) return { error: 'enableGpuProfiling() returned false' };
+    const t0 = performance.now();
+    let rafs = 0;
+    let counting = true;
+    const count = () => { rafs++; if (counting) requestAnimationFrame(count); };
+    requestAnimationFrame(count);
+    await sleep(1000); // warm-up
+    const warm = { ...profiler().discardReasons };
+    while ((engine.getGpuFrameTiming()?.sampleCount ?? 0) < 120 && performance.now() - t0 < 15000) await sleep(100);
+    counting = false;
+    const elapsedMs = performance.now() - t0;
+    const timings = engine.getGpuTimings();
+    const frame = engine.getGpuFrameTiming();
+    await sleep(2000);
+    const again = engine.getGpuTimings();
+    const after = { ...profiler().discardReasons };
+    const skippedFrames = profiler().skippedFrames;
+    engine.disableGpuProfiling();
+    return {
+      fps: (rafs * 1000) / elapsedMs, elapsedMs, frame, timings, again, skippedFrames, discardReasons: after,
+      discardsAfterWarmUp: Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - warm[k]])),
+      warnings: warnings.filter((w) => w.includes('GPU profiling')),
+    };
+  } finally {
+    console.warn = warn;
+  }
 }
 ```
 
-**Criteri di accettazione:**
-- `rafs >= 250`;
-- `frame` non nullo, con `sampleCount === 120`;
-- ogni voce ha `sampleCount === 120`, cioè nessun frame scartato nella finestra;
-- le voci contengono `cull`, `forward`, `light-groups/seed`, `light-groups/sdf`, `light-groups/accum`, `fxaa-tonemap`, tutte con `averageMs > 0`;
+**Criteri di accettazione comuni ai passi 2-4:**
+- `frame.sampleCount === 120` con `elapsedMs < 15000`; annota `elapsedMs` e `skippedFrames`;
+- `fps >= 50`;
+- `discardsAfterWarmUp` vale 0 per tutti e sei i motivi. È questo il "nessun frame scartato", non il `sampleCount`, perché nella finestra entrano solo i frame validi;
+- le voci contengono `cull`, `forward`, `light-groups/seed`, `light-groups/sdf`, `light-groups/accum` e `fxaa-tonemap`, tutte con `averageMs > 0` e `sampleCount === 120`;
+- `cull`, `forward` e `fxaa-tonemap` aprono un solo pass ciascuna, quindi in ogni frame durano al più lo span: `averageMs <= frame.averageMs`;
+- per `forward`, fra `timings` e `again`, vale `|Δ averageMs| / averageMs <= 0.25` (medie stabili);
 - `warnings` vuoto.
+
+- [ ] **Passo 1: dev server riavviato**
+
+Ferma il dev server se gira, poi lancia `npm --prefix ts run dev -- --strictPort --port 5173` in background. Il riavvio evita la trasformazione vecchia di Vite (gotcha "Restart the dev server").
+
+- [ ] **Passo 2: server "gpu", Mode B, tab Lighting**
+
+Con `chrome-devtools-gpu`, `navigate_page` su `http://localhost:5173/?mode=B`, con `ignoreCache: true` e l'`initScript`. Clicca la tab Lighting e aspetta che i suoi check finiscano. Poi lo snippet, con `filePath` = `docs/plans/assets/2026-09-29-mac-m2/m7-profiler-gpu-B.json`.
+Criteri: quelli comuni.
 
 - [ ] **Passo 3: server "stock", stesso scenario**
 
-Stesso passo con il server `chrome-devtools`, nel file `m7-profiler-stock-B.json`.
+Stesso passo con `chrome-devtools`, nel file `m7-profiler-stock-B.json`.
+Criteri: quelli comuni, più uno: il `lastMs` di `forward` è un multiplo di 0,065536 ms (`Math.abs(lastMs / 0.065536 - Math.round(lastMs / 0.065536)) < 1e-6`).
 
-**Criteri:** gli stessi del passo 2, più uno: il `lastMs` di `forward` è un multiplo di 0,065536 ms (`Math.abs(lastMs / 0.065536 - Math.round(lastMs / 0.065536)) < 1e-6`).
+- [ ] **Passo 4: server "gpu", Mode C**
 
-- [ ] **Passo 4: Mode C**
-
-Ripeti il passo 2 con `?mode=C`, nel file `m7-profiler-gpu-C.json`. Sono i frame con lo scatter. Criteri come al passo 2, con in più la voce `scatter` quando compare.
+Ripeti il passo 2 con `?mode=C`, nel file `m7-profiler-gpu-C.json`. Sono i frame con lo scatter.
+Criteri: quelli comuni; la voce `scatter`, quando c'è, segue le stesse regole.
 
 - [ ] **Passo 5: pass esterni e opt-out**
 
-Sulla stessa pagina in Mode B, un `evaluate_script`:
+Server gpu: di nuovo `navigate_page` su `http://localhost:5173/?mode=B`, con lo stesso `initScript`, poi la tab Lighting. Poi un `evaluate_script` con `filePath` = `docs/plans/assets/2026-09-29-mac-m2/m7-profiler-gpu-overlays-B.json`:
 
 ```js
 async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const engine = window.__hyperion;
+  const { boundsVisualizerPlugin } = await import('/src/debug/bounds-visualizer.ts');
   const overlay = (name, profile) => ({
     name, reads: ['swapchain'], writes: ['swapchain'], optional: false, ...(profile === false ? { profile } : {}),
     setup() {}, prepare() {}, resize() {}, destroy() {},
     execute(encoder, _frame, resources) {
       const view = resources.getTextureView('swapchain');
       if (!view) return;
-      const pass = encoder.beginRenderPass({ colorAttachments: [{ view, loadOp: 'load', storeOp: 'store' }] });
-      pass.end();
+      encoder.beginRenderPass({ colorAttachments: [{ view, loadOp: 'load', storeOp: 'store' }] }).end();
     },
   });
   // The cleanup removes the pass: without it, unuse() would leave it in the graph.
@@ -2441,50 +2582,94 @@ async () => {
       return () => ctx.rendering?.removePass(name);
     },
   });
-  engine.use(plugin('probe-timed'));
+  const bounds = boundsVisualizerPlugin();  // starts enabled and draws the bounds: a plugin pass with work
+  engine.use(bounds);
+  engine.use(plugin('probe-timed'));         // no draw: a pair without work, 0 ms
   engine.use(plugin('probe-optout', false));
-  engine.enableGpuProfiling();
-  await sleep(3000);
-  const names = engine.getGpuTimings().map((t) => t.name);
-  engine.disableGpuProfiling();
-  engine.unuse('probe-timed');
-  engine.unuse('probe-optout');
-  return { timed: names.includes('probe-timed'), optedOut: !names.includes('probe-optout'), names };
+  try {
+    engine.enableGpuProfiling();
+    const discardedBefore = engine.renderer.graph.profiler.discardedFrames;
+    await sleep(3000);
+    const t = new Map(engine.getGpuTimings().map((e) => [e.name, e]));
+    const discarded = engine.renderer.graph.profiler.discardedFrames - discardedBefore;
+    engine.disableGpuProfiling();
+    return {
+      bounds: t.get('bounds-visualizer') ?? null, timed: t.get('probe-timed') ?? null,
+      optedOut: !t.has('probe-optout'), discarded, names: [...t.keys()],
+    };
+  } finally {
+    for (const name of [bounds.name, 'probe-timed', 'probe-optout']) engine.unuse(name);
+  }
 }
 ```
 
-**Criteri:** `timed === true`: il pass esterno viene misurato da solo, e senza lavoro conta 0 ms. `optedOut === true`: `profile: false` lo esclude.
+**Criteri:**
+- `bounds.averageMs > 0`: un pass di plugin con lavoro viene misurato da solo;
+- `timed.averageMs === 0`: un pass senza lavoro vale 0 ms e non invalida i frame;
+- `optedOut === true`;
+- `discarded === 0`.
 
-- [ ] **Passo 6: README e commit**
+- [ ] **Passo 6: la scena del bench (il sort misurato su GPU)**
 
-Nella sezione M7 del README aggiungi un punto "**Profiler nuovo (Task 8 del piano)**" con i quattro file e gli esiti. Nella tabella degli esiti, la riga M7 passa a **passa** citando i file nuovi, e la riga "M8, M9" passa a "pronti: aspettano l'alimentatore".
+La tab Lighting non ha entità trasparenti, quindi il sort non gira. Questo passo è l'unico in cui i suoi 22 pass misurati girano su una GPU vera prima di M8.
+
+Server gpu:
+1. `navigate_page` su `http://localhost:5173/?mode=B&bench`, con lo stesso `initScript`, senza aprire tab.
+2. Un `evaluate_script` con `() => { window.__benchOpts = { label: 'task8 smoke', sizes: [10000], zModes: ['same', 'distinct'] }; }`.
+3. Un secondo `evaluate_script` che passa come `function` il contenuto di `docs/plans/assets/2026-09-27-transparent-sort-bench.js`, con `filePath` = `docs/plans/assets/2026-09-29-mac-m2/m7-profiler-gpu-bench.json`.
+
+Ripeti sul server stock, nel file `m7-profiler-stock-bench.json`.
+
+**Criteri:** in ogni risultato:
+- `samples === 120`, `sort !== null`, `total > 0` e `passSum > 0`;
+- sul server gpu, ogni `stages[s] > 0`;
+- in console, nessun avviso `GPU profiling`.
+
+- [ ] **Passo 7: README e commit**
+
+Nella sezione M7 del README aggiungi un punto "**Profiler nuovo (Task 8 del piano)**". Riporta, dai sei file, gli esiti misurati:
+- voci e span;
+- scarti dopo il riscaldamento;
+- quantizzazione dello stock;
+- overlay e opt-out;
+- stage del sort.
+
+Nella tabella degli esiti:
+- la riga M7 passa a **passa** e cita i file nuovi;
+- la riga "M8, M9" passa a "pronti: aspettano l'alimentatore".
+
+Esegui `git diff --numstat docs/plans/assets/2026-09-29-mac-m2/README.md`. Non devono esserci cancellazioni inattese (gotcha "After a scripted edit to a long doc").
+
+Il messaggio di commit riporta solo ciò che i file dimostrano:
 
 ```bash
 git add docs/plans/assets/2026-09-29-mac-m2/README.md docs/plans/assets/2026-09-29-mac-m2/m7-profiler-*.json
 git commit -F - <<'EOF'
-test(mac): M7 rifatto con il profiler nuovo, verde sui server gpu e stock
+test(mac): M7 rifatto con il profiler nuovo
 
-Con i timestampWrites sui pass veri il profiler misura su Metal: in Mode B e C le voci di cull, forward, light-groups/seed|sdf|accum e fxaa-tonemap hanno averageMs > 0 e sampleCount 120 su 5 s senza frame scartati, lo span del frame c'è, e nessun avviso. Sul Chrome stock i valori sono multipli di 65 536 ns. Un pass esterno viene misurato da solo, e con profile: false resta fuori. M8 e M9 aspettano l'alimentatore.
+<Gli esiti, dai file m7-profiler-*.json: le voci con sampleCount 120 e averageMs > 0 in Mode B e C, lo span, gli scarti dopo il riscaldamento per motivo, la quantizzazione a 65 536 ns sullo stock, l'overlay dei bounds misurato e l'opt-out, gli stage del sort sulla scena del bench.>
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 git push
 ```
 
+Il paragrafo fra `< >` si scrive con i numeri veri dei file. Se un criterio fallisce, non si committa un "passa": si riferisce il fallimento con il file che lo mostra.
+
 ---
 
 ## Dopo il piano: M8 e M9
 
-Non sono task di codice ma la ripresa dei test sul Mac. Si seguono la handoff (M8, M9) e la spec (§11):
+Non sono task di codice, ma la ripresa dei test sul Mac: si seguono la handoff (M8, M9) e la spec (§11).
 
 1. **Condizioni:** alimentatore collegato, con i watt annotati, e `caffeinate -dimsu` per tutta la durata.
-2. **La patch sui commit di riferimento.**
-   - Per `6ff494f` e `608a113`: `git worktree add ../hyperion-5b-step3 6ff494f` (e `step4` per `608a113`), poi `git cherry-pick` dei soli commit di codice dei Task 1-5, in ordine.
-   - Prima di farlo, `git diff --stat <riferimento> HEAD --` sui file che quei commit toccano.
-   - Se `transparent-sort-pass.test.ts` va in conflitto, si risolve a mano: lì differisce di 16 righe.
-   - Il commit di documentazione (Task 6) non si porta.
-3. **Il bench:** `docs/plans/assets/2026-09-27-transparent-sort-bench.js` com'è a HEAD, su `?mode=B&bench` di ogni worktree.
-   - Si confrontano **`total`**, lo span, fra i passi, e con il `total` AMD.
+2. **La patch sui commit di riferimento** `6ff494f` e `608a113`. Chiamiamo `<base>` il commit prima del Task 1 (`90d6fd2`, o quello del piano rivisto).
+   - Elenca i commit di codice: `git log --reverse --format='%h %s' <base>..HEAD -- ts/src docs/plans/assets/2026-09-27-transparent-sort-bench.js`. Sono i Task 1-5 e ogni `fix(profiler)` del Task 7; non quelli di sola documentazione (Task 6 e 8).
+   - Controlla che i file toccati siano uguali ai riferimenti: `git diff --stat <riferimento> <base> -- $(git diff --name-only <base> HEAD -- ts/src)`. Oggi differiscono solo `renderer.ts` (5 righe) e `transparent-sort-pass.test.ts` (16).
+   - `git worktree add ../hyperion-5b-step3 6ff494f` (e `../hyperion-5b-step4 608a113`), poi `git cherry-pick` di quei commit, in ordine. Se `transparent-sort-pass.test.ts` va in conflitto, si risolve a mano.
+3. **Il bench**, alla versione di HEAD (formato `/2`), su `?mode=B&bench` di ogni worktree:
+   - si confronta **`total`**, cioè lo span, fra i passi e con il `total` AMD (formato `/1`);
    - `passSum` e le voci singole servono solo sull'M2.
-4. **M9:** il ciclo della handoff legge `light-groups/seed|sdf|accum`, con le stesse chiavi.
-5. **Alla fine dei test sul Mac:** la sezione 9 della handoff, "Esito sul Mac" (spec §7.4).
+4. **M9:** il ciclo della handoff legge `light-groups/seed|sdf|accum`, con le stesse chiavi, e "il totale" è lo span (handoff aggiornata nel Task 6).
+5. **Linux (Vulkan)**, al ritorno sulla macchina Fedora: i passi 2-6 del Task 8, con le avvertenze di CLAUDE.md sugli adapter.
+6. **Alla fine dei test sul Mac:** la sezione 9 della handoff, "Esito sul Mac" (spec §7.4).
