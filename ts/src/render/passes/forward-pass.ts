@@ -6,6 +6,14 @@ import { SCENE_HDR_FORMAT } from '../formats';
 import { TextureTierBinding, primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 
 /**
+ * Size of `LightingUniform` (prelude.wgsl): enabled, the layer→group table
+ * (2 × u32), pad. It is the buffer's size AND the group-2 layout's
+ * `minBindingSize`, so a prelude edit that grows the struct fails at bind-group
+ * creation, inside the probe's error scope, not at draw time.
+ */
+const LIGHTING_UNIFORM_BYTES = 16;
+
+/**
  * Forward rendering pass to the scene-hdr intermediate texture. Opaque entities
  * are drawn PER TYPE: one pipeline per primitive type (its own composed
  * per-type module), over 2 material buckets. Every transparent entity, of
@@ -202,7 +210,7 @@ export class ForwardPass implements RenderPass {
         // One layer per light group (LightGroupsPass).
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', minBindingSize: LIGHTING_UNIFORM_BYTES } },
       ],
     });
     // Half-resolution buffer, full-resolution draw: bilinear upsampling.
@@ -215,7 +223,7 @@ export class ForwardPass implements RenderPass {
     // LightingUniform: enabled, the layer→group table (2 × u32), pad = 16
     // bytes. `enabled` is fixed for the lifetime of the pass (a graph is lit or
     // not); the table is rewritten every frame in prepare().
-    this.lightingBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.lightingBuffer = device.createBuffer({ size: LIGHTING_UNIFORM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.lightingBuffer, 0, new Uint32Array([this.lit ? 1 : 0, 0, 0, 0]));
     this.placeholderTexture = device.createTexture({
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },

@@ -12,6 +12,7 @@ import {
 } from '../primitive-shaders';
 import { loadPrimitivePieces } from '../primitive-pieces.fixture';
 import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
+import { structSize } from '../../shaders/uniform-layout';
 
 // The WebGPU enums the fake devices and the shared layouts read (node has no WebGPU).
 const g = globalThis as Record<string, unknown>;
@@ -256,6 +257,19 @@ describe('ForwardPass @group(2): the light buffer', () => {
     const { buffers } = setUpForward();
     expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(80);
     expect(primitiveGroup0LayoutEntries()[0].buffer?.minBindingSize).toBe(80);
+  });
+
+  // LightingUniform is declared once, in the prelude piece, which hot-reloads.
+  // Without minBindingSize a prelude edit that grows the struct passes every
+  // setup-time check and invalidates every ForwardPass draw at DRAW time; with
+  // it, bind-group creation fails inside the probe's error scope instead.
+  it('the lighting uniform binding declares minBindingSize = sizeof(LightingUniform), and the buffer has that size', () => {
+    const size = structSize(loadPrimitivePieces().prelude, 'LightingUniform');
+    expect(size).toBe(16);
+    const { layouts, buffers } = setUpForward();
+    const group2 = layouts.find((l) => [...l.entries].length === 3)!;
+    expect([...group2.entries].find((e) => e.binding === 2)!.buffer?.minBindingSize).toBe(size);
+    expect(buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0).map((b) => b.size)).toContain(size);
   });
 
   it('sets group 2 for every pipeline it draws, including shaders that ignore it', () => {
