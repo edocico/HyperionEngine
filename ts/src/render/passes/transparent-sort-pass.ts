@@ -123,6 +123,12 @@ export class TransparentSortPass implements RenderPass {
   private readonly gatherData = new Uint32Array(PARAMS_BYTES / 4);
   private readonly headerData = new Uint32Array(HEADER_WORDS);
   private readonly diagZeros = new Uint32Array(DIAG_WORDS);
+  /**
+   * Set in setup() from `__DEV__`, like the COPY_SRC of the buffers the
+   * readback copies from: a production build never takes a request, so it can
+   * never encode a copy out of a buffer that lacks COPY_SRC.
+   */
+  private readbackEnabled = false;
 
   /**
    * @param probe the readback requests of `engine.debug.readTransparentSort()`
@@ -152,6 +158,7 @@ export class TransparentSortPass implements RenderPass {
     const dev = typeof __DEV__ !== 'undefined' && __DEV__;
     // COPY_SRC in dev builds: engine.debug.readTransparentSort() copies them out.
     const readback = dev ? GPUBufferUsage.COPY_SRC : 0;
+    this.readbackEnabled = dev;
     const keysA = device.createBuffer({ label: 'sort-keys-a', size: KEYS_BYTES, usage: GPUBufferUsage.STORAGE | readback });
     const keysB = device.createBuffer({ label: 'sort-keys-b', size: KEYS_BYTES, usage: GPUBufferUsage.STORAGE | readback });
     const valsA = device.createBuffer({ label: 'sort-vals-a', size: COLUMN_BYTES, usage: GPUBufferUsage.STORAGE | readback });
@@ -290,7 +297,8 @@ export class TransparentSortPass implements RenderPass {
     const bound = sortBound(frame);
     if (bound === 0 || !this.ready) return;
     // Only in a frame the sort runs: a request left in the queue waits for one.
-    const target = this.probe?.take(frame.frameStamp) ?? null;
+    // Only in a dev build: elsewhere the sources of the copies lack COPY_SRC.
+    const target = this.readbackEnabled ? this.probe?.take(frame.frameStamp) ?? null : null;
 
     if (mark) {
       mark(encoder);

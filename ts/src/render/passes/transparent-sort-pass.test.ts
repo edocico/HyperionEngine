@@ -502,6 +502,29 @@ describe('TransparentSortPass.execute', () => {
     expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(1);
   });
 
+  it('in a production build (__DEV__ false) never takes a request, even with a probe: its buffers lack COPY_SRC', () => {
+    vi.stubGlobal('__DEV__', false);
+    try {
+      const target = fakeTarget(4);
+      const probe = { take: vi.fn((_stamp: number): SortReadbackTarget | null => target) };
+      const { pass, device, pool, byLabel } = setUp(probe);
+      expect(byLabel('sort-keys-a').usage & USAGE.COPY_SRC).toBe(0);
+      const f = frameOf(3000, 4);
+      pass.prepare(device, f);
+      for (const withMark of [false, true]) {
+        const { encoder, cmds, mark } = record();
+        pass.execute(encoder, f, pool, withMark ? mark : undefined);
+        expect(cmds.filter((c) => c.kind === 'copy')).toEqual([]);
+        // The sort itself still runs: one pass, or one per stage with the profiler.
+        expect(dispatches(cmds)).toHaveLength(1 + 3 * PASSES);
+        expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(withMark ? 22 : 1);
+      }
+      expect(probe.take).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('copies diag + digitBase of sort-hist, never the tiles', () => {
     expect(SORT_READBACK_BYTES).toEqual({
       gatherKeys: 2 * CAP * 4, gatherVals: CAP * 4, header: HEADER_BYTES, hist: TILES_OFFSET * 4, order: CAP * 4,
