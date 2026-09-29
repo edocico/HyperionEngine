@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PRIMITIVE_LIBRARIES } from './primitive-shaders';
 import { composedPrimitiveModules } from './primitive-pieces.fixture';
+import transparentGatherSource from '../shaders/transparent-gather.wgsl?raw';
+import transparentSortSource from '../shaders/transparent-sort.wgsl?raw';
 
 // Dumps every WGSL module the engine composes, so a validator outside the
 // browser can read it: `scripts/validate-wgsl-naga.mjs` runs naga (Firefox's
@@ -41,5 +43,17 @@ describe('composed WGSL modules for external validators', () => {
     mkdirSync(dir, { recursive: true });
     for (const [file, code] of composedModules()) writeFileSync(join(dir, file), code);
     expect(composedModules()).toHaveLength(7);
+  });
+});
+
+// Passo 3: the two sort kernels, as the renderer loads them (no preprocessing), for `naga`.
+describe.skipIf(!process.env.DUMP_WGSL_DIR)('dump the transparent-sort kernels (naga)', () => {
+  it('writes transparent-gather.wgsl and transparent-sort.wgsl', () => {
+    const dir = process.env.DUMP_WGSL_DIR!;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'transparent-gather.wgsl'), transparentGatherSource);
+    writeFileSync(join(dir, 'transparent-sort.wgsl'), transparentSortSource);
+    expect(transparentGatherSource).toMatch(/fn gather_main\s*\(/);
+    expect(transparentSortSource).toMatch(/fn scatter_main\s*\(/);
   });
 });
