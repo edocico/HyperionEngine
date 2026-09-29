@@ -6,12 +6,20 @@
 // and its child move, so in Mode C most frames upload through the scatter
 // pass: the parent as a root 2D row (format 0, rebuilt on the GPU from 6
 // words), the child as a full matrix (format 1). A third check, off to the
-// right, orders overlapping 2D sprites by depth (z = -depth).
+// right, orders overlapping 2D sprites by depth (z = -depth). Further right
+// (x = 80) a scene of every primitive type, transparent, untextured and with
+// a PNG, reads the transparent sort back (engine.debug.readTransparentSort)
+// and checks it against the CPU oracle; in Mode C again under spawn/despawn
+// churn, on scatter frames that re-upload the id column.
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
+import type { TextureHandle } from '../types';
+import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 import { worldToUv } from '../render/debug-probe';
-import { pixelCheck, fmt, frames, fitView, type Rgba } from './probe-checks';
+import { nextFrameStamp } from '../render/frame-inputs';
+import { pixelCheck, fmt, frames, fitView, PROBE_TIMEOUT_MS, type Rgba } from './probe-checks';
+import { verifySortReadback, sameIdOrder, readSortFrame } from './transparent-sort-checks';
 
 const entities: EntityHandle[] = [];
 
@@ -114,6 +122,159 @@ async function checkDepth(engine: Hyperion, reporter: TestReporter): Promise<voi
       detail: `pair/child/sibling/parent: ${first.join(', ')}${stable ? ' (10 frames)' : ' (UNSTABLE)'}; after swapping depths: ${after.join(', ')}`,
     };
   });
+}
+
+/** Centre of the transparent-sort scene: far from the twins (x within ±18) and from the depth scene (x 22-58). */
+const SORT_X = 80;
+/** Half-width fitView frames around it: the widest sprite ends 7.1 units from the centre. */
+const SORT_HALF_WIDTH = 9;
+/** 128 × 128 RGBA (scripts/gen-sort-test-png.mjs): tier 1, or an overflow tier on a BC7/ASTC device. */
+const SORT_TEXTURE = '/textures/sort-test-128.png';
+/** Frames the churn scene spawns and despawns through (design §7.3.3 (h)). */
+const CHURN_FRAMES = 60;
+
+/**
+ * Each primitive type 0-5, built on a 2D handle. Transparent and untextured
+ * it fills the gather's region 14 + 2t; with the PNG, region 15 + 2t. The
+ * textured MSDF glyph samples the PNG as an MSDF and the textured gradient
+ * takes stop 1's G/B from the index: fine for the gather, never for a pixel check.
+ */
+const SORT_TYPES: ReadonlyArray<(h: EntityHandle) => EntityHandle> = [
+  (h) => h,                                                    // 0 quad
+  (h) => h.line(-0.5, 0, 0.5, 0, 0.2),                          // 1 line
+  (h) => h.primitive(2),                                        // 2 MSDF glyph
+  (h) => h.bezier(0, 0.5, 0.5, 1, 1, 0.5, 0.08),                // 3 quadratic bezier
+  (h) => h.gradient(0, 0, [0, 1, 0, 0, 1, 0]),                  // 4 gradient
+  (h) => h.boxShadow(0.8, 0.8, 0.1, 0.05, 0.9, 0.5, 0.2, 0.7),   // 5 box shadow
+];
+
+/**
+ * The transparent sort read back (engine.debug.readTransparentSort) and
+ * checked against the CPU oracle: every type, untextured and textured, plus
+ * many sprites at one depth; then, in Mode C, the same under churn. No
+ * positionImmediate anywhere: a scatter frame never uploads patched bounds.
+ * The scene is gone when this returns; the caller restores the camera.
+ */
+async function checkTransparentSort(engine: Hyperion, reporter: TestReporter): Promise<void> {
+  const ORACLE = 'Transparent sort matches the oracle';
+  const CHURN = 'Transparent sort under churn';
+  let png: TextureHandle;
+  try {
+    png = await engine.loadTexture(SORT_TEXTURE);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    for (const name of [ORACLE, CHURN]) {
+      // Mode A has no renderer on this thread: nothing to read back there.
+      if (/no renderer/.test(msg)) reporter.skip(name, `no main-thread renderer: ${msg}`);
+      else reporter.check(name, false, `cannot load ${SORT_TEXTURE}: ${msg}`);
+    }
+    return;
+  }
+
+  const scene: EntityHandle[] = [];
+  const textured = new Set<number>();
+  engine.batch(() => {
+    SORT_TYPES.forEach((build, t) => {
+      const x = SORT_X + (t - 2.5) * 2.4;
+      // Untextured, at depths 0 / 0.5 / 1 twice over: equal z across types.
+      scene.push(build(engine.spawn({ mode: '2d' }).position(x, 2).scale(1.5, 1.5).depth((t % 3) * 0.5)).transparent());
+      // With the PNG, all at one depth: the id orders them.
+      const h = build(engine.spawn({ mode: '2d' }).position(x, -2).scale(1.5, 1.5).depth(0.25)).texture(png).transparent();
+      textured.add(h.id);
+      scene.push(h);
+    });
+    // Many sprites at the same z, the common 2D case.
+    for (let k = 0; k < 24; k++) {
+      scene.push(engine.spawn({ mode: '2d' })
+        .position(SORT_X - 4.2 + (k % 8) * 1.2, 5 + Math.floor(k / 8) * 1.1)
+        .scale(0.5, 0.5)
+        .transparent());
+    }
+  });
+  entities.push(...scene);
+  const sceneIds = new Set(scene.map((h) => h.id));
+  fitView(engine, SORT_X, 0, SORT_HALF_WIDTH);
+  await frames(4);
+
+  /** The frame holds the whole scene: every row present, transparent, the textured ones with their index. */
+  const holdsScene = (r: TransparentSortReadback): boolean => {
+    let found = 0;
+    for (let s = 0; s < r.frame.entityCount; s++) {
+      const id = r.frame.entityIds[s];
+      if (!sceneIds.has(id)) continue;
+      if ((r.frame.renderMeta[s * 2 + 1] & 0x100) === 0) return false;
+      if (textured.has(id) && r.frame.texIndices[s] === 0) return false;
+      found++;
+    }
+    return found === sceneIds.size;
+  };
+
+  await pixelCheck(reporter, ORACLE, engine, async (_probe, _rows, readSort) => {
+    const r = await readSortFrame(readSort, holdsScene, PROBE_TIMEOUT_MS);
+    const failures = verifySortReadback(r, { exactSet: true, requireAllRegions: true });
+    // (g) Two requests issued together: consecutive frames, the same ids in the same order.
+    const [a, b] = await Promise.all([readSort(), readSort()]);
+    const consecutive = b.frame.stamp === nextFrameStamp(a.frame.stamp);
+    const same = sameIdOrder(a, b);
+    return {
+      ok: failures.length === 0 && consecutive && same,
+      detail: `frame ${r.frame.stamp}: ${r.n} sorted of ${r.frame.transparentCount} transparent rows`
+        + (failures.length === 0 ? ', (a)-(f) and (i) hold' : `; ${failures.join(' | ')}`)
+        + `; two requests together: stamps ${a.frame.stamp} → ${b.frame.stamp}${consecutive ? '' : ' (NOT consecutive)'}`
+        + `, id order ${same ? 'identical' : 'DIFFERENT'}`,
+    };
+  });
+
+  if (engine.mode !== 'C') {
+    reporter.skip(CHURN, `Mode ${engine.mode}: only Mode C uploads through the scatter pass, which this checks (?mode=C)`);
+  } else {
+    await pixelCheck(reporter, CHURN, engine, async (_probe, _rows, readSort) => {
+      // One quad in and the oldest out on every frame: the slot → id mapping
+      // changes each frame while few rows are dirty, so Mode C uploads through
+      // the scatter pass AND re-uploads the id column. All at depth 0.
+      const churn: EntityHandle[] = [];
+      let spawned = 0;
+      const spawnOne = (): void => {
+        const h = engine.spawn({ mode: '2d' })
+          .position(SORT_X - 4.2 + (spawned % 8) * 1.2, -5 - (Math.floor(spawned / 8) % 3) * 1.1)
+          .scale(0.5, 0.5)
+          .transparent();
+        spawned++;
+        churn.push(h);
+        entities.push(h);
+      };
+      for (let k = 0; k < 24; k++) spawnOne();
+      let churned = 0;
+      const step = (): void => {
+        churn.shift()?.destroy();
+        spawnOne();
+        churned++;
+      };
+      engine.addHook('preTick', step);
+      const failures: string[] = [];
+      let read = 0;
+      let scatterAndIds = 0;
+      try {
+        while (churned < CHURN_FRAMES) {
+          const r = await readSort();
+          read++;
+          if (r.frame.usedScatter && r.frame.idsUploaded) scatterAndIds++;
+          for (const msg of verifySortReadback(r)) failures.push(`frame ${r.frame.stamp}: ${msg}`);
+        }
+      } finally {
+        engine.removeHook('preTick', step);
+        for (const h of churn) if (h.alive) h.destroy();
+      }
+      const listed = failures.slice(0, 3).join(' | ') + (failures.length > 3 ? ` (+${failures.length - 3} more)` : '');
+      return {
+        ok: scatterAndIds > 0 && failures.length === 0,
+        detail: `${churned} frames of churn, ${read} read back, ${scatterAndIds} with a scatter upload AND a new id column`
+          + (failures.length === 0 ? '; every one passes (a)-(f)' : `; ${listed}`),
+      };
+    });
+  }
+
+  for (const h of scene) if (h.alive) h.destroy();
 }
 
 const section: DemoSection = {
@@ -256,6 +417,8 @@ const section: DemoSection = {
 
     // ── 3. Depth: overlapping 2D sprites in depth order ────────────────
     await checkDepth(engine, reporter);
+    // ── 4. The transparent sort, read back (its scene is gone after) ──
+    await checkTransparentSort(engine, reporter);
     fitView(engine, BLOCK_X + GAP / 2, 0, GAP / 2 + CELL * 1.5 + 1.5);
   },
 
