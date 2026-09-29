@@ -157,10 +157,11 @@ describe('RenderGraph', () => {
 
   describe('GPU profiler hook', () => {
     function mockDevice() {
+      const encoder = { finish: () => ({}) };
       return {
-        createCommandEncoder: () => ({ finish: () => ({}) }),
-        queue: { submit: vi.fn() },
-      } as unknown as GPUDevice;
+        encoder,
+        device: { createCommandEncoder: () => encoder, queue: { submit: vi.fn() } } as unknown as GPUDevice,
+      };
     }
 
     const frame = {} as never;
@@ -169,82 +170,80 @@ describe('RenderGraph', () => {
     function fakeProfiler(measuring: boolean) {
       return {
         beginFrame: vi.fn(() => measuring),
-        mark: vi.fn(),
+        instrument: vi.fn(),
+        enterNode: vi.fn(),
+        enterStage: vi.fn(),
         endFrame: vi.fn(),
         abortFrame: vi.fn(),
         poll: vi.fn(async () => {}),
       };
     }
 
-    it('encodes no markers when no profiler is attached', () => {
+    it('renders and submits with no profiler attached', () => {
       const graph = new RenderGraph();
       graph.addPass(mockPass('cull', [], ['visible-indices']));
       graph.addPass(mockPass('forward', ['visible-indices'], ['swapchain']));
-      // No profiler set — must not throw and must still submit.
-      const device = mockDevice();
+      const { device } = mockDevice();
       expect(() => graph.render(device, frame, resources)).not.toThrow();
       expect(device.queue.submit).toHaveBeenCalledTimes(1);
     });
 
-    it('marks once per pass and closes the frame when measuring', () => {
+    it('instruments the frame encoder once, enters every live node, and closes the frame', () => {
       const graph = new RenderGraph();
       graph.addPass(mockPass('cull', [], ['visible-indices']));
       graph.addPass(mockPass('forward', ['visible-indices'], ['swapchain']));
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
+      const { device, encoder } = mockDevice();
 
-      graph.render(mockDevice(), frame, resources);
+      graph.render(device, frame, resources);
 
-      expect(profiler.beginFrame).toHaveBeenCalledWith(['cull', 'forward']);
-      expect(profiler.mark).toHaveBeenCalledTimes(2);
-      expect(profiler.endFrame).toHaveBeenCalledTimes(1);
+      expect(profiler.beginFrame).toHaveBeenCalledWith();
+      expect(profiler.instrument).toHaveBeenCalledTimes(1);
+      expect(profiler.instrument).toHaveBeenCalledWith(encoder);
+      expect(profiler.enterNode.mock.calls).toEqual([['cull', true], ['forward', true]]);
+      expect(profiler.endFrame).toHaveBeenCalledWith(encoder);
       expect(profiler.poll).toHaveBeenCalledTimes(1);
     });
 
-    // A pass that runs several stages of its own (LightGroupsPass: seed, sdf,
-    // accum per SDF set) names them for the frame and marks them itself, so the
-    // profiler reports each stage instead of one lump.
-    it('a staged pass marks its own stages, named pass/stage', () => {
+    it('a node with profile: false is entered as unmeasured', () => {
       const graph = new RenderGraph();
-      graph.addPass(mockPass('p0', [], ['a']));
-      const staged = mockPass('staged', ['a'], ['b']);
-      const execute = vi.fn((encoder: GPUCommandEncoder, _f: unknown, _r: unknown, mark?: (e: GPUCommandEncoder) => void) => {
-        mark?.(encoder); mark?.(encoder); mark?.(encoder);
-      });
-      Object.assign(staged, { profileStages: () => ['a', 'b', 'a'], execute });
-      graph.addPass(staged);
-      graph.addPass(mockPass('p2', ['b'], ['swapchain']));
+      const overlay = { ...mockPass('overlay', ['swapchain'], ['swapchain']), profile: false };
+      graph.addPass(mockPass('forward', [], ['swapchain']));
+      graph.addPass(overlay);
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
-
-      graph.render(mockDevice(), frame, resources);
-
-      expect(profiler.beginFrame).toHaveBeenCalledWith(['p0', 'staged/a', 'staged/b', 'staged/a', 'p2']);
-      // p0 and p2 by the graph, three stages by the pass itself: not one before it.
-      expect(profiler.mark).toHaveBeenCalledTimes(5);
-      expect(execute.mock.calls[0][3]).toBeTypeOf('function');
+      graph.render(mockDevice().device, frame, resources);
+      expect(profiler.enterNode.mock.calls).toEqual([['forward', true], ['overlay', false]]);
     });
 
-    it('a staged pass gets no mark function when the frame is not measured', () => {
+    it('hands every pass a stage function that names the profiler stages', () => {
       const graph = new RenderGraph();
       const staged = mockPass('staged', [], ['swapchain']);
-      const execute = vi.fn();
-      Object.assign(staged, { profileStages: () => ['a'], execute });
+      const execute = vi.fn((_e: GPUCommandEncoder, _f: unknown, _r: unknown, stage?: (name: string) => void) => {
+        stage?.('a');
+        stage?.('b');
+      });
+      Object.assign(staged, { execute });
       graph.addPass(staged);
-      graph.setProfiler(fakeProfiler(false) as never);
-      graph.render(mockDevice(), frame, resources);
-      expect(execute.mock.calls[0][3]).toBeUndefined();
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+      graph.render(mockDevice().device, frame, resources);
+      expect(profiler.enterStage.mock.calls).toEqual([['a'], ['b']]);
     });
 
-    it('skips marking entirely when beginFrame declines the frame', () => {
+    it('no stage function, and no profiler call, when the frame is not measured', () => {
       const graph = new RenderGraph();
-      graph.addPass(mockPass('forward', [], ['swapchain']));
+      const pass = mockPass('forward', [], ['swapchain']);
+      const execute = vi.fn();
+      Object.assign(pass, { execute });
+      graph.addPass(pass);
       const profiler = fakeProfiler(false);
       graph.setProfiler(profiler as never);
-
-      graph.render(mockDevice(), frame, resources);
-
-      expect(profiler.mark).not.toHaveBeenCalled();
+      graph.render(mockDevice().device, frame, resources);
+      expect(execute.mock.calls[0][3]).toBeUndefined();
+      expect(profiler.instrument).not.toHaveBeenCalled();
+      expect(profiler.enterNode).not.toHaveBeenCalled();
       expect(profiler.endFrame).not.toHaveBeenCalled();
       expect(profiler.poll).not.toHaveBeenCalled();
     });
@@ -255,8 +254,7 @@ describe('RenderGraph', () => {
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
       graph.setProfiler(null);
-
-      graph.render(mockDevice(), frame, resources);
+      graph.render(mockDevice().device, frame, resources);
       expect(profiler.beginFrame).not.toHaveBeenCalled();
     });
 
@@ -267,10 +265,9 @@ describe('RenderGraph', () => {
       graph.addPass(boom);
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
-
       // Without abortFrame() the profiler's frame stays open and every later
-      // beginFrame() returns false — it would go silently dead.
-      expect(() => graph.render(mockDevice(), frame, resources)).toThrow('pass exploded');
+      // beginFrame() returns false: it would go silently dead.
+      expect(() => graph.render(mockDevice().device, frame, resources)).toThrow('pass exploded');
       expect(profiler.abortFrame).toHaveBeenCalledTimes(1);
       expect(profiler.endFrame).not.toHaveBeenCalled();
       expect(profiler.poll).not.toHaveBeenCalled();
@@ -281,23 +278,19 @@ describe('RenderGraph', () => {
       graph.addPass(mockPass('forward', [], ['swapchain']));
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
-
-      graph.render(mockDevice(), frame, resources);
+      graph.render(mockDevice().device, frame, resources);
       expect(profiler.abortFrame).not.toHaveBeenCalled();
       expect(profiler.endFrame).toHaveBeenCalledTimes(1);
     });
 
-    it('marks only live passes, not dead-culled ones', () => {
+    it('enters only live nodes, not dead-culled ones', () => {
       const graph = new RenderGraph();
       graph.addPass(mockPass('forward', [], ['swapchain']));
       graph.addPass(mockPass('orphan', [], ['nobody-reads-this'], true));
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
-
-      graph.render(mockDevice(), frame, resources);
-
-      expect(profiler.beginFrame).toHaveBeenCalledWith(['forward']);
-      expect(profiler.mark).toHaveBeenCalledTimes(1);
+      graph.render(mockDevice().device, frame, resources);
+      expect(profiler.enterNode.mock.calls).toEqual([['forward', true]]);
     });
   });
 });

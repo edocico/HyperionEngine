@@ -47,18 +47,15 @@ export interface RenderPass {
   setup(device: GPUDevice, resources: import('./resource-pool').ResourcePool): void;
   prepare(device: GPUDevice, frame: FrameState): void;
   /**
-   * @param mark Only for a pass with {@link profileStages}, and only while the
-   *   frame is measured: call it once before each stage the pass named.
+   * @param stage Only while the GPU profiler measures this frame: the passes
+   *   this pass opens after `stage('x')` are timed as `name/x`. A pass must
+   *   work the same without it.
    */
   execute(encoder: GPUCommandEncoder, frame: FrameState,
           resources: import('./resource-pool').ResourcePool,
-          mark?: (encoder: GPUCommandEncoder) => void): void;
-  /**
-   * The stages this pass will run this frame, in order, for the GPU profiler.
-   * A pass that has them marks each stage itself (see `mark`), and they are
-   * reported as `name/stage`, summed when a name repeats in a frame.
-   */
-  profileStages?(frame: FrameState): readonly string[];
+          stage?: (name: string) => void): void;
+  /** False keeps every pass this node opens out of the GPU profiler. */
+  readonly profile?: boolean;
   resize(width: number, height: number): void;
   destroy(): void;
 }

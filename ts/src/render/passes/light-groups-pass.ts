@@ -41,8 +41,8 @@ const EVERYTHING: LightGroups = {
  * count.
  *
  * The three stages are OccluderSeedStage, SdfChainStage and LightAccumStage.
- * For the GPU profiler the node names them per frame (`profileStages`) and
- * marks each one, so their times stay visible as `light-groups/seed|sdf|accum`.
+ * While the GPU profiler measures, it names each stage just before it runs
+ * (`stage`), so their times stay visible as `light-groups/seed|sdf|accum`.
  */
 export class LightGroupsPass implements RenderPass {
   readonly name = 'light-groups';
@@ -89,14 +89,6 @@ export class LightGroupsPass implements RenderPass {
     this.noOccluderView = this.noOccluder.createView();
   }
 
-  profileStages(frame: FrameState): readonly string[] {
-    const lg = frame.lightGroups ?? EVERYTHING;
-    const stages: string[] = [];
-    for (let s = 0; s < lg.sdfSets.length; s++) stages.push('seed', 'sdf', 'accum');
-    if (lg.groups.some((g) => g.sdfSet < 0)) stages.push('accum');
-    return stages;
-  }
-
   prepare(device: GPUDevice, frame: FrameState): void {
     const lg = frame.lightGroups ?? EVERYTHING;
     const [width, height] = halfResolution(frame.canvasWidth, frame.canvasHeight);
@@ -105,24 +97,24 @@ export class LightGroupsPass implements RenderPass {
     this.accum.prepare(device, frame, lg.groups);
   }
 
-  execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool, mark?: (encoder: GPUCommandEncoder) => void): void {
+  execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool, stage?: (name: string) => void): void {
     const lg = frame.lightGroups ?? EVERYTHING;
     this.ensureTargets(frame, resources, lg.groups.length);
     if (!this.seedView || !this.aView || !this.bView || !this.noOccluderView) return;
 
     for (let s = 0; s < lg.sdfSets.length; s++) {
-      mark?.(encoder);
+      stage?.('seed');
       this.seed.encode(encoder, s, this.seedView, resources);
-      mark?.(encoder);
+      stage?.('sdf');
       const sdf = this.chain.encode(encoder, this.seedView, this.aView, this.bView);
-      mark?.(encoder);
+      stage?.('accum');
       // Before the next set's seed overwrites the shared textures.
       lg.groups.forEach((group, g) => {
         if (group.sdfSet === s) this.accum.encode(encoder, g, this.layerViews[g], sdf, frame);
       });
     }
     if (lg.groups.some((group) => group.sdfSet < 0)) {
-      mark?.(encoder);
+      stage?.('accum');
       lg.groups.forEach((group, g) => {
         if (group.sdfSet < 0) this.accum.encode(encoder, g, this.layerViews[g], this.noOccluderView!, frame);
       });

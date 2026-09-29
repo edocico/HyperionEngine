@@ -22,8 +22,6 @@ const QUAD_INDEX_COUNT = 6;
 
 type SortStage = 'upsweep' | 'scan' | 'scatter';
 const SORT_STAGES: readonly SortStage[] = ['upsweep', 'scan', 'scatter'];
-/** What profileStages names when the sort runs: 22, in encoding order. */
-const PROFILE_STAGES: readonly string[] = ['gather', ...Array.from({ length: PASSES }, () => SORT_STAGES).flat()];
 
 /**
  * The staging buffers of one `engine.debug.readTransparentSort()` request
@@ -90,10 +88,10 @@ function sortBound(frame: FrameState): number {
  * Encoding: one compute pass, in which each dispatch is its own usage scope and
  * sees the writes of the one before. Two passes when a readback takes this
  * frame: the gather's output is copied before pass 1 overwrites it. One pass per
- * stage, 22 in all, while the GPU profiler measures, each after its own `mark`;
- * `profileStages` lists the same 22, or `[]` when the sort is skipped. With a
- * bound of 0 nothing is encoded (a direct `dispatchWorkgroups(0)` is a Dawn
- * warning), and the header written by prepare() already draws 0 instances.
+ * stage, 22 in all, while the GPU profiler measures (it passes `stage`), each
+ * named by its own `stage()` call. With a bound of 0 nothing is encoded (a
+ * direct `dispatchWorkgroups(0)` is a Dawn warning), and the header written by
+ * prepare() already draws 0 instances.
  */
 export class TransparentSortPass implements RenderPass {
   readonly name = 'transparent-sort';
@@ -264,11 +262,6 @@ export class TransparentSortPass implements RenderPass {
     });
   }
 
-  profileStages(frame: FrameState): readonly string[] {
-    // Must match execute()'s mark calls one for one, or GpuProfiler drops the frame.
-    return sortBound(frame) > 0 && this.ready ? PROFILE_STAGES : [];
-  }
-
   prepare(device: GPUDevice, frame: FrameState): void {
     if (!this.gatherParams || !this.args || !this.hist) return;
     const bound = sortBound(frame);
@@ -292,7 +285,7 @@ export class TransparentSortPass implements RenderPass {
     encoder: GPUCommandEncoder,
     frame: FrameState,
     _resources: ResourcePool,
-    mark?: (encoder: GPUCommandEncoder) => void,
+    stage?: (name: string) => void,
   ): void {
     const bound = sortBound(frame);
     if (bound === 0 || !this.ready) return;
@@ -300,17 +293,17 @@ export class TransparentSortPass implements RenderPass {
     // Only in a dev build: elsewhere the sources of the copies lack COPY_SRC.
     const target = this.readbackEnabled ? this.probe?.take(frame.frameStamp) ?? null : null;
 
-    if (mark) {
-      mark(encoder);
+    if (stage) {
+      stage('gather');
       const gather = encoder.beginComputePass({ label: 'transparent-sort/gather' });
       this.encodeGather(gather, bound);
       gather.end();
       if (target) this.copyGathered(encoder, target);
       for (let p = 0; p < PASSES; p++) {
-        for (const stage of SORT_STAGES) {
-          mark(encoder);
-          const pass = encoder.beginComputePass({ label: `transparent-sort/${stage}` });
-          this.encodeStage(pass, stage, p);
+        for (const s of SORT_STAGES) {
+          stage(s);
+          const pass = encoder.beginComputePass({ label: `transparent-sort/${s}` });
+          this.encodeStage(pass, s, p);
           pass.end();
         }
       }
@@ -324,7 +317,7 @@ export class TransparentSortPass implements RenderPass {
         pass = encoder.beginComputePass({ label: 'transparent-sort' });
       }
       for (let p = 0; p < PASSES; p++) {
-        for (const stage of SORT_STAGES) this.encodeStage(pass, stage, p);
+        for (const s of SORT_STAGES) this.encodeStage(pass, s, p);
       }
       pass.end();
     }

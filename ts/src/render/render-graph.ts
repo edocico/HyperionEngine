@@ -199,50 +199,34 @@ export class RenderGraph {
 
     const encoder = device.createCommandEncoder();
 
-    // `beginFrame` returns false when profiling is off, when every readback
-    // buffer is still in flight, or when the graph outgrew the profiler's
-    // query set. In all three cases we fall through to the unmeasured path
-    // and encode no marker passes at all.
-    // A staged pass reports its stages (`pass/stage`) instead of itself, and
-    // marks them on its own: the graph marks only before unstaged passes.
-    let names: string[] = this.executionOrder;
-    const stagesOf = new Map<string, readonly string[]>();
-    if (this.profiler) {
-      names = [];
-      for (const name of this.executionOrder) {
-        const stages = this.passes.get(name)!.profileStages?.(frame);
-        if (stages) {
-          stagesOf.set(name, stages);
-          for (const stage of stages) names.push(`${name}/${stage}`);
-        } else {
-          names.push(name);
-        }
-      }
-    }
-    const measuring = this.profiler?.beginFrame(names) ?? false;
-    const mark = measuring ? (e: GPUCommandEncoder) => this.profiler!.mark(e) : undefined;
+    // `beginFrame` returns false when profiling is off or every readback
+    // buffer is still in flight: then nothing below touches the encoder.
+    const profiler = this.profiler;
+    const measuring = profiler?.beginFrame() ?? false;
+    if (measuring) profiler!.instrument(encoder);
+    const stage = measuring ? (name: string) => profiler!.enterStage(name) : undefined;
 
     try {
       for (const name of this.executionOrder) {
-        const staged = stagesOf.has(name);
-        if (measuring && !staged) this.profiler!.mark(encoder);
-        this.passes.get(name)!.execute(encoder, frame, resources, staged ? mark : undefined);
+        const pass = this.passes.get(name)!;
+        if (measuring) profiler!.enterNode(name, pass.profile !== false);
+        pass.execute(encoder, frame, resources, stage);
       }
     } catch (err) {
       // The encoder is abandoned unfinished, so the frame the profiler opened
       // will never resolve. Closing it here keeps a single throwing pass from
       // wedging `beginFrame()` shut for every frame that follows.
-      if (measuring) this.profiler!.abortFrame();
+      if (measuring) profiler!.abortFrame();
       throw err;
     }
 
-    if (measuring) this.profiler!.endFrame(encoder);
+    if (measuring) profiler!.endFrame(encoder);
 
     device.queue.submit([encoder.finish()]);
 
     // Fire and forget: reads the frames that finished on the GPU a few frames
     // ago. Never awaited, so it cannot stall the render loop.
-    if (measuring) void this.profiler!.poll();
+    if (measuring) void profiler!.poll();
   }
 
   destroy(): void {
