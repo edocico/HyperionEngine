@@ -81,6 +81,7 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    getGpuFrameTiming: vi.fn(() => null),
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,
@@ -997,6 +998,20 @@ describe('debug API', () => {
       const b = Hyperion.fromParts(defaultConfig(), mockBridge(), supported);
       expect(b.gpuProfilingSupported).toBe(true);
       b.destroy();
+    });
+
+    it('reports the GPU frame span from the renderer', () => {
+      const renderer = mockRenderer();
+      renderer.getGpuFrameTiming = vi.fn(() => ({ averageMs: 3.2, lastMs: 3.1, sampleCount: 120 }));
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+      expect(engine.getGpuFrameTiming()).toEqual({ averageMs: 3.2, lastMs: 3.1, sampleCount: 120 });
+      engine.destroy();
+    });
+
+    it('has no frame span without a renderer (headless, or Mode A main thread)', () => {
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+      expect(engine.getGpuFrameTiming()).toBeNull();
+      engine.destroy();
     });
   });
 });

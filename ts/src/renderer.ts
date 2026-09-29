@@ -54,7 +54,7 @@ import { RenderGraphHost, createGpuValidation } from './render/graph-host';
 import { GraphRequests, type ShaderSlot } from './render/graph-requests';
 import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
-import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
+import { GpuProfiler, type GpuFrameTiming, type PassTiming } from './render/gpu-profiler';
 import { DebugProbe } from './render/debug-probe';
 import { TransparentSortProbe } from './render/transparent-sort-probe';
 import {
@@ -178,7 +178,7 @@ export interface Renderer {
   /**
    * Start measuring per-pass GPU time. Returns false when unsupported.
    * Read the numbers with {@link getGpuTimings}; quote `averageMs`, not
-   * `lastMs`: Chrome may quantize timestamps (see render/gpu-profiler.ts).
+   * `lastMs`: Chrome quantizes timestamps without --enable-webgpu-developer-features (see render/gpu-profiler.ts).
    */
   enableGpuProfiling(): boolean;
   disableGpuProfiling(): void;
@@ -187,6 +187,13 @@ export interface Renderer {
    * Empty when profiling is off or still warming up.
    */
   getGpuTimings(): PassTiming[];
+  /**
+   * The GPU frame span (first pass beginning to last pass end) over the same
+   * frames as getGpuTimings(). Passes can overlap on the GPU, so the entries of
+   * getGpuTimings() can add up to more. Null when profiling is off or before
+   * the first valid frame.
+   */
+  getGpuFrameTiming(): GpuFrameTiming | null;
   /**
    * Dev builds only (null otherwise): reads pixels of scene-hdr, the swapchain
    * or a light-buffer layer, and the entity-transforms rows, at the next
@@ -1140,6 +1147,10 @@ export async function createRenderer(
       // The profiler keeps its history after a disable; what it holds then is
       // frozen, and quoting it as current would mislead.
       return gpuProfilingEnabled ? gpuProfiler?.timings() ?? [] : [];
+    },
+
+    getGpuFrameTiming() {
+      return gpuProfilingEnabled ? gpuProfiler?.frameTiming() ?? null : null;
     },
 
     debugProbe,

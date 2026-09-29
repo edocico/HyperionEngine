@@ -10,7 +10,7 @@ import {
   createFullIsolationBridge,
 } from './worker-bridge';
 import type { Renderer, OutlineOptions } from './renderer';
-import type { PassTiming } from './render/gpu-profiler';
+import type { GpuFrameTiming, PassTiming } from './render/gpu-profiler';
 import type { PixelProbeRequest, PixelProbeResult, TransformsProbeResult } from './render/debug-probe';
 import type { TransparentSortReadback } from './render/transparent-sort-probe';
 import type { BloomConfig } from './render/passes/bloom-pass';
@@ -677,8 +677,7 @@ export class Hyperion implements Disposable {
    * main thread in Mode A, where rendering happens in the Render Worker.
    *
    * Read the numbers back with {@link getGpuTimings}, and quote `averageMs`
-   * rather than `lastMs`: Chrome quantizes GPU timestamps to 100us by default,
-   * so only the rolling mean carries usable resolution.
+   * rather than `lastMs`: Chrome quantizes GPU timestamps unless started with --enable-webgpu-developer-features (65.5 us on macOS/Metal, about 1 us on Linux/Vulkan), so only the rolling mean carries usable resolution.
    */
   enableGpuProfiling(): boolean {
     this.checkDestroyed();
@@ -696,10 +695,21 @@ export class Hyperion implements Disposable {
    * it counts as 0 ms, so every `averageMs` is a mean per frame and every
    * entry has the same `sampleCount`. Empty when profiling is off,
    * unsupported, or still warming up — treat a `sampleCount` below ~30 as not
-   * yet meaningful.
+   * yet meaningful. Passes can overlap on the GPU, so the entries can add up to more than the frame: the frame is {@link getGpuFrameTiming}.
    */
   getGpuTimings(): PassTiming[] {
     return this.renderer?.getGpuTimings() ?? [];
+  }
+
+  /**
+   * The GPU frame span, from the first measured pass beginning to the last
+   * end, over the same frames as {@link getGpuTimings}. Passes can overlap on
+   * the GPU, so the span can be less than the sum of the getGpuTimings()
+   * entries. Null when profiling is off, unsupported, without a local
+   * renderer, or before the first valid frame.
+   */
+  getGpuFrameTiming(): GpuFrameTiming | null {
+    return this.renderer?.getGpuFrameTiming() ?? null;
   }
 
   /**
