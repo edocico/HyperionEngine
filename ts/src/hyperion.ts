@@ -12,6 +12,7 @@ import {
 import type { Renderer, OutlineOptions } from './renderer';
 import type { PassTiming } from './render/gpu-profiler';
 import type { PixelProbeRequest, PixelProbeResult, TransformsProbeResult } from './render/debug-probe';
+import type { TransparentSortReadback } from './render/transparent-sort-probe';
 import type { BloomConfig } from './render/passes/bloom-pass';
 import { createRenderer } from './renderer';
 import type { SelectionManager } from './selection';
@@ -317,6 +318,21 @@ export class Hyperion implements Disposable {
         if (!probe) return Promise.reject(new Error(NO_DEBUG_PROBE));
         if (self.loop.paused) return Promise.reject(new Error(PROBE_PAUSED));
         return probe.transforms();
+      },
+      /**
+       * Reads the transparent sort of the NEXT rendered frame (design
+       * 2026-09-27 §6.5): the gathered keys and slots, `digitBase`, the header
+       * counts and the sorted order, next to a copy of that frame's CPU rows.
+       * Rejects when that frame's sort did not run (no transparent entity), on
+       * a GPU error in the frame, and, like `probe`, without the main-thread
+       * renderer of a dev build or while paused. N calls read N consecutive
+       * frames.
+       */
+      readTransparentSort(): Promise<TransparentSortReadback> {
+        const probe = self.renderer?.sortProbe;
+        if (!probe) return Promise.reject(new Error(NO_DEBUG_PROBE));
+        if (self.loop.paused) return Promise.reject(new Error(PROBE_PAUSED));
+        return probe.request();
       },
       /**
        * Toggle physics debug rendering (Phase 16). Sends CommandType 47;

@@ -84,6 +84,7 @@ function mockRenderer(): Renderer {
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,
+    sortProbe: null,
     destroy: vi.fn(),
   };
 }
@@ -904,6 +905,32 @@ describe('debug API', () => {
     expect(await engine.debug!.probe(request)).toBe(pixels);
     expect(renderer.debugProbe!.pixels).toHaveBeenCalledWith(request);
     expect(await engine.debug!.readEntityTransforms()).toBe(rows);
+  });
+
+  it('readTransparentSort rejects without a main-thread dev renderer (Mode A, headless, production renderer)', async () => {
+    const headless = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+    await expect(headless.debug!.readTransparentSort()).rejects.toThrow(/renderer/);
+    // A renderer without the sort probe (a production build) answers the same.
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    await expect(engine.debug!.readTransparentSort()).rejects.toThrow(/renderer/);
+  });
+
+  it('readTransparentSort rejects while the engine is paused: no frame would serve it', async () => {
+    const renderer = mockRenderer();
+    const request = vi.fn();
+    (renderer as { sortProbe: unknown }).sortProbe = { request };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    engine.pause();
+    await expect(engine.debug!.readTransparentSort()).rejects.toThrow(/paused/);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('readTransparentSort delegates to the renderer sort probe', async () => {
+    const renderer = mockRenderer();
+    const readback = { n: 3 };
+    (renderer as { sortProbe: unknown }).sortProbe = { request: vi.fn(async () => readback) };
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    expect(await engine.debug!.readTransparentSort()).toBe(readback);
   });
 
   it('startRecording / stopRecording returns a CommandTape', () => {

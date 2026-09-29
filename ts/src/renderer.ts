@@ -56,6 +56,7 @@ import type { GPURenderState } from './worker-bridge';
 import { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 import { GpuProfiler, type PassTiming } from './render/gpu-profiler';
 import { DebugProbe } from './render/debug-probe';
+import { TransparentSortProbe } from './render/transparent-sort-probe';
 import {
   normalizeTransparentCount, nextFrameStamp, uploadEntityIds, missingSortInputs, overCapacityWarning,
 } from './render/frame-inputs';
@@ -192,6 +193,12 @@ export interface Renderer {
    * rendered frame. Behind `engine.debug.probe()` / `readEntityTransforms()`.
    */
   readonly debugProbe: DebugProbe | null;
+  /**
+   * Dev builds only (null otherwise, like `debugProbe`): the requests of
+   * `engine.debug.readTransparentSort()`. It outlives graph swaps; the live
+   * TransparentSortPass takes one request per frame.
+   */
+  readonly sortProbe: TransparentSortProbe | null;
 
   destroy(): void;
 }
@@ -276,6 +283,9 @@ export async function createRenderer(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (dev ? GPUBufferUsage.COPY_SRC : 0),
   }));
   const debugProbe = dev ? new DebugProbe(device, pixelProbeShaderCode) : null;
+  // Built with the pixel probe, dev only. It must exist before the graph
+  // factories below: the scene factory hands it to every TransparentSortPass.
+  const sortProbe = debugProbe ? new TransparentSortProbe(device) : null;
 
   resources.setBuffer('entity-bounds', device.createBuffer({
     size: MAX_GPU_ENTITIES * 4 * 4,
@@ -546,7 +556,7 @@ export async function createRenderer(
   const graphFactories: GraphPassFactories = {
     // The sort sits between the cull (its input regions) and the forward pass
     // (which reads its order, and so keeps it alive).
-    scene: (mode) => [new ScatterPass(), new CullPass(), new TransparentSortPass(), new ForwardPass({ lit: mode.lighting })],
+    scene: (mode) => [new ScatterPass(), new CullPass(), new TransparentSortPass(sortProbe), new ForwardPass({ lit: mode.lighting })],
     outline() {
       const maxDim = Math.max(canvas.width, canvas.height);
       const n = JFAPass.iterationsForDimension(maxDim);
@@ -1034,7 +1044,38 @@ export async function createRenderer(
         }
       }
 
-      host.graph.render(device, frameState, resources);
+      // Dev readback (engine.debug.readTransparentSort, design §6.5). On a
+      // frame that may serve a request the graph runs inside GPU error scopes:
+      // a frame that failed validation rejects the request instead of
+      // answering zeros. A throw rejects the taken request and every queued
+      // one, then goes on up as before.
+      const sortReadback = sortProbe?.hasPending === true;
+      let frameErrors: Promise<string[]> | null = null;
+      try {
+        if (sortReadback) frameErrors = gpuValidation.run(() => host.graph.render(device, frameState, resources));
+        else host.graph.render(device, frameState, resources);
+      } catch (err) {
+        sortProbe?.failFrame(err instanceof Error ? err : new Error(String(err)));
+        throw err;
+      }
+      // First thing after the graph's submit, before anything else can throw:
+      // maps the buffers of the request the sort took (the snapshot is copied
+      // now, before latestRenderState moves on), or rejects the head of the
+      // queue when this frame's sort did not run.
+      sortProbe?.finish(sortReadback ? {
+        tickCount: state.tickCount,
+        stamp: frameState.frameStamp,
+        entityCount: state.entityCount,
+        transparentCount: frameState.transparentCount,
+        idsGeneration: idsUpload.generation,
+        idsUploaded: idsUpload.uploaded,
+        usedScatter: Boolean(useScatter),
+        viewProjection: camera.viewProjection,
+        bounds: state.bounds,
+        entityIds: state.entityIds,
+        renderMeta: state.renderMeta,
+        texIndices: state.texIndices,
+      } : null, frameErrors);
 
       // --- Particle system: simulate + render AFTER the scene graph ---
       if (particleSystem.emitterCount > 0) {
@@ -1097,10 +1138,12 @@ export async function createRenderer(
     },
 
     debugProbe,
+    sortProbe,
 
     destroy() {
       cancelPieceReloads();
       debugProbe?.destroy();
+      sortProbe?.destroy();
       gpuProfiler?.destroy();
       particleSystem.destroy();
       sceneHdrTexture.destroy();
