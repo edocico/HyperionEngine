@@ -20,12 +20,16 @@ const GRADIENT_X = -12.5;
 const SHADOW_X = -8;
 const LINE_X0 = 8;
 const BEZIER_X = 21;
+/** The wave's control points (uv) and every curve's width; 'Straight bezier' restores the wave from these. */
+const WAVE: readonly [number, number, number, number, number, number] = [0, 0.5, 0.5, 0, 1, 0.5];
+const BEZIER_WIDTH = 0.04;
 
 const section: DemoSection = {
   name: 'primitives',
   label: 'Primitives (Quad / Line / Gradient / BoxShadow / Bezier)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
+    let wave!: EntityHandle;
     engine.batch(() => {
       // ── 1. Quad grid (5x5), 1x1 white quads 2.5 apart ─────────────────
       for (let row = 0; row < 5; row++) {
@@ -65,9 +69,10 @@ const section: DemoSection = {
 
       // ── 5. Bezier curves: the arch and the S pass through their quad's
       // centre at t = 0.5 ─────────────────────────────────────────────────
-      entities.push(engine.spawn().position(BEZIER_X, 4, 0).scale(4, 4, 1).bezier(0, 0, 0.5, 1, 1, 0, 0.04));   // arch
-      entities.push(engine.spawn().position(BEZIER_X, 0, 0).scale(4, 4, 1).bezier(0, 0, 1, 0.5, 0, 1, 0.04));   // S
-      entities.push(engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(0, 0.5, 0.5, 0, 1, 0.5, 0.04)); // wave
+      entities.push(engine.spawn().position(BEZIER_X, 4, 0).scale(4, 4, 1).bezier(0, 0, 0.5, 1, 1, 0, BEZIER_WIDTH));   // arch
+      entities.push(engine.spawn().position(BEZIER_X, 0, 0).scale(4, 4, 1).bezier(0, 0, 1, 0.5, 0, 1, BEZIER_WIDTH));   // S
+      wave = engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(...WAVE, BEZIER_WIDTH);
+      entities.push(wave);
     });
 
     fitView(engine, SCENE_CENTER_X, 0, SCENE_HALF_WIDTH);
@@ -155,6 +160,36 @@ const section: DemoSection = {
       const wave = near(waveMid[0], BACKGROUND, 0.01) && ((waveUp[0] > 0.5) !== (waveDown[0] > 0.5));
       const ok = archC[0] > 0.5 && near(archOff1[0], BACKGROUND, 0.01) && near(archOff2[0], BACKGROUND, 0.01) && sC[0] > 0.5 && wave;
       return { ok, detail: `arch centre ${fmt([archC[0]])}, off-curve ${fmt([archOff1[0], archOff2[0]])}; S centre ${fmt([sC[0]])}; wave centre ${fmt([waveMid[0]])}, one unit off ${fmt([waveUp[0], waveDown[0]])}` };
+    });
+
+    await pixelCheck(reporter, 'Straight bezier', engine, async (probe) => {
+      // A quadratic whose control point is the middle of its chord IS that
+      // chord, and bezier_sd's cubic loses its leading term there
+      // (B = p0 - 2 p1 + p2 = 0, which it divided by). On Metal (Mac M2,
+      // 2026-09-29) such a curve drew a dot around p0 instead of the segment.
+      // The wave is made straight, then nearly straight, for this check only
+      // and restored after it: no entity is spawned, so ids stay those of the
+      // M4 baseline. The line runs along v = 0.5, the quad's middle row,
+      // whichever way its v runs; world x = BEZIER_X + (u - 0.5) * 4.
+      const onLine: [number, number][] = [[BEZIER_X, -4], [BEZIER_X - 0.8, -4]];                    // u = 0.5, 0.3
+      const offLine: [number, number][] = [[BEZIER_X, -3.6], [BEZIER_X, -4.4], [BEZIER_X + 1.8, -4]]; // v ± 0.1, u = 0.95 (past p2)
+      const parts: string[] = [];
+      let ok = true;
+      try {
+        for (const [label, dv] of [['straight', 0], ['1e-5 off', 1e-5], ['1e-4 off', 1e-4], ['1e-3 off', 1e-3], ['1e-2 off', 1e-2]] as const) {
+          wave.bezier(0.1, 0.5, 0.5, 0.5 + dv, 0.9, 0.5, BEZIER_WIDTH);
+          await frames(4);
+          const values = await probe('scene-hdr', [...onLine, ...offLine]);
+          const on = values.slice(0, onLine.length).map((p) => p[0]);
+          const off = values.slice(onLine.length).map((p) => p[0]);
+          ok = ok && on.every((v) => v > 0.5) && off.every((v) => near(v, BACKGROUND, 0.01));
+          parts.push(`${label}: on ${fmt(on)}, off ${fmt(off)}`);
+        }
+      } finally {
+        wave.bezier(...WAVE, BEZIER_WIDTH);
+        await frames(4);
+      }
+      return { ok, detail: parts.join('; ') };
     });
 
     // ── 6. MSDF text — skip (no font atlas in demo assets) ────────────
