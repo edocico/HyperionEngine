@@ -217,19 +217,44 @@ describe('RenderGraph', () => {
       expect(profiler.enterNode.mock.calls).toEqual([['forward', true], ['overlay', false]]);
     });
 
+    it('enters each node before running it', () => {
+      const log: string[] = [];
+      const graph = new RenderGraph();
+      const cull = mockPass('cull', [], ['visible-indices']);
+      const forward = mockPass('forward', ['visible-indices'], ['swapchain']);
+      cull.execute = () => { log.push('exec:cull'); };
+      forward.execute = () => { log.push('exec:forward'); };
+      graph.addPass(cull);
+      graph.addPass(forward);
+      const profiler = fakeProfiler(true);
+      profiler.enterNode.mockImplementation((name: string) => { log.push(`enter:${name}`); });
+      graph.setProfiler(profiler as never);
+      graph.render(mockDevice().device, frame, resources);
+      expect(log).toEqual(['enter:cull', 'exec:cull', 'enter:forward', 'exec:forward']);
+    });
+
     it('hands every pass a stage function that names the profiler stages', () => {
       const graph = new RenderGraph();
-      const staged = mockPass('staged', [], ['swapchain']);
-      const execute = vi.fn((_e: GPUCommandEncoder, _f: unknown, _r: unknown, stage?: (name: string) => void) => {
+      const first = mockPass('first', [], ['first-out']);
+      const second = mockPass('second', ['first-out'], ['swapchain']);
+      const firstExecute = vi.fn((_e: GPUCommandEncoder, _f: unknown, _r: unknown, stage?: (name: string) => void) => {
         stage?.('a');
         stage?.('b');
       });
-      Object.assign(staged, { execute });
-      graph.addPass(staged);
+      const secondExecute = vi.fn((_e: GPUCommandEncoder, _f: unknown, _r: unknown, stage?: (name: string) => void) => {
+        stage?.('c');
+      });
+      Object.assign(first, { execute: firstExecute });
+      Object.assign(second, { execute: secondExecute });
+      graph.addPass(first);
+      graph.addPass(second);
       const profiler = fakeProfiler(true);
       graph.setProfiler(profiler as never);
       graph.render(mockDevice().device, frame, resources);
-      expect(profiler.enterStage.mock.calls).toEqual([['a'], ['b']]);
+      expect(firstExecute.mock.calls[0][3]).toBeTypeOf('function');
+      expect(secondExecute.mock.calls[0][3]).toBeTypeOf('function');
+      // Both passes' stage calls reach the profiler, in execution order.
+      expect(profiler.enterStage.mock.calls).toEqual([['a'], ['b'], ['c']]);
     });
 
     it('no stage function, and no profiler call, when the frame is not measured', () => {

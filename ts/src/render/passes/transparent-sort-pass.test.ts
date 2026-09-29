@@ -198,6 +198,7 @@ describe('TransparentSortPass as a graph node', () => {
     const { encoder, cmds, stage } = record();
     pass.prepare(device, frameOf(10));
     pass.execute(encoder, frameOf(10), new ResourcePool(), stage);
+    pass.execute(encoder, frameOf(10), new ResourcePool());
     expect(writes).toEqual([]);
     expect(cmds).toEqual([]);
   });

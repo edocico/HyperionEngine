@@ -22,6 +22,7 @@ interface FakeBuffer {
   destroyed: boolean;
   mapped: boolean;
   failMap: boolean;
+  failRange: boolean;
   mapAsync(mode: number): Promise<void>;
   getMappedRange(offset?: number, size?: number): ArrayBuffer;
   unmap(): void;
@@ -44,14 +45,16 @@ function makeGpu() {
     }),
     createBuffer: vi.fn(({ size, usage, label }: GPUBufferDescriptor) => {
       const b: FakeBuffer = {
-        label, size, usage, bytes: new Uint8Array(size), destroyed: false, mapped: false, failMap: false,
+        label, size, usage, bytes: new Uint8Array(size), destroyed: false, mapped: false, failMap: false, failRange: false,
         async mapAsync() {
           if (b.failMap) throw new Error('OperationError: device lost');
           if (b.mapped) throw new Error('OperationError: buffer already mapped');
           b.mapped = true;
         },
-        getMappedRange: (offset = 0, size2?: number) =>
-          b.bytes.slice(offset, size2 === undefined ? undefined : offset + size2).buffer,
+        getMappedRange: (offset = 0, size2?: number) => {
+          if (b.failRange) throw new Error('OperationError: mapped range unavailable');
+          return b.bytes.slice(offset, size2 === undefined ? undefined : offset + size2).buffer;
+        },
         unmap() { b.mapped = false; },
         destroy() { b.destroyed = true; },
       };
@@ -93,7 +96,10 @@ function makeGpu() {
     for (const op of ops) op();
   }
 
-  return { device: device as unknown as GPUDevice, buffers, encoder, submit, createBuffer: device.createBuffer, writeBuffer: device.queue.writeBuffer };
+  return {
+    device: device as unknown as GPUDevice, buffers, encoder, submit,
+    createQuerySet: device.createQuerySet, createBuffer: device.createBuffer, writeBuffer: device.queue.writeBuffer,
+  };
 }
 
 type Gpu = ReturnType<typeof makeGpu>;
@@ -109,10 +115,13 @@ function stampsOf(frame: number, ...durationsMs: number[]): bigint[] {
   return out;
 }
 
-/** One measured frame: a compute pass with work per node, then submitted (or rejected) and, by default, polled. */
+/**
+ * One measured frame: a compute pass with work per node, then submitted (or rejected) and, by default, polled.
+ * A node listed in `idle` opens and ends its pass without dispatching: a pass without work.
+ */
 async function measure(
   p: GpuProfiler, gpu: Gpu, nodes: string[], stamps: bigint[] | undefined,
-  opts: { reject?: boolean; poll?: boolean; profiled?: boolean } = {},
+  opts: { reject?: boolean; poll?: boolean; profiled?: boolean; idle?: string[] } = {},
 ): Promise<boolean> {
   if (!p.beginFrame()) return false;
   const enc = gpu.encoder();
@@ -120,7 +129,7 @@ async function measure(
   for (const node of nodes) {
     p.enterNode(node, opts.profiled ?? true);
     const pass = enc.beginComputePass({ label: node });
-    pass.dispatchWorkgroups(1);
+    if (!opts.idle?.includes(node)) pass.dispatchWorkgroups(1);
     pass.end();
   }
   p.endFrame(enc);
@@ -148,6 +157,7 @@ describe('GpuProfiler', () => {
   describe('resources', () => {
     it('512 pairs by default: 1024 queries, three readbacks of 8 KB plus 8 bytes, a 4-byte seal', () => {
       new GpuProfiler(gpu.device);
+      expect(gpu.createQuerySet).toHaveBeenCalledWith(expect.objectContaining({ type: 'timestamp', count: 1024 }));
       const readbacks = gpu.buffers.filter((b) => b.label?.startsWith('gpu-profiler-readback'));
       expect(readbacks).toHaveLength(3);
       for (const b of readbacks) {
@@ -217,6 +227,11 @@ describe('GpuProfiler', () => {
         (buffer as FakeBuffer).label?.startsWith('gpu-profiler-readback'));
       expect(tailWrite?.[1]).toBe(2 * 8);
       expect(Array.from(tailWrite?.[2] as Uint32Array)).toEqual([0]);
+      // The frame is accepted, and its readback holds the first seal at the tail: the queue wrote 0
+      // there, so only the copy encoded in the command buffer can have put 1 in its place.
+      await p.poll();
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(1);
+      expect(new Uint32Array((tailWrite![0] as FakeBuffer).bytes.buffer, 16, 1)[0]).toBe(1);
     });
 
     it('two readbacks holding different frames, read with every submit rejected: nothing accepted, nothing in the history', async () => {
@@ -253,6 +268,20 @@ describe('GpuProfiler', () => {
       await measure(p, gpu, ['overlay'], undefined, { reject: true });
       await measure(p, gpu, ['overlay'], stampsOf(1, 1));
       expect(p.getTimingsByName().get('overlay')?.sampleCount).toBe(2);
+    });
+
+    it('a pass without work whose stamps equal the recorded history does not discard the frame (the Metal case)', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const s0 = stampsOf(0, 1, 2);
+      const s1 = stampsOf(1, 1, 2);
+      await measure(p, gpu, ['forward', 'idle'], s0, { idle: ['idle'] });
+      // 'idle' opened a pass and dispatched nothing: the query set keeps its indices' previous stamps.
+      await measure(p, gpu, ['forward', 'idle'], [s1[0], s1[1], s0[2], s0[3]], { idle: ['idle'] });
+      expect(Object.values(p.discardReasons).every((n) => n === 0), JSON.stringify(p.discardReasons)).toBe(true);
+      const t = p.getTimingsByName();
+      expect(t.get('forward')?.sampleCount).toBe(2);
+      expect(t.get('idle')?.lastMs).toBe(0);
+      expect(t.get('idle')?.averageMs).toBe(0);
     });
 
     it('reset with frames in flight: their samples are dropped, their buffers recycled, and the history forgotten', async () => {
@@ -292,17 +321,24 @@ describe('GpuProfiler', () => {
       expect(p.discardReasons.stale).toBe(1);
     });
 
-    it('a lost readback (device loss) throws nothing, frees its buffer and forgets its indices', async () => {
-      const p = new GpuProfiler(gpu.device);
-      const s = stampsOf(0, 1);
-      await measure(p, gpu, ['a'], s);
-      for (const b of gpu.buffers) b.failMap = true;
-      await expect(measure(p, gpu, ['a'], stampsOf(1, 1))).resolves.toBe(true);
-      for (const b of gpu.buffers) b.failMap = false;
-      // Were the history kept, a frame repeating s would be stale.
-      await measure(p, gpu, ['a'], s);
-      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
-      expect(p.skippedFrames).toBe(0);
+    it('a lost readback (device loss) throws nothing, logs nothing, frees its buffer and forgets its indices', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        const s = stampsOf(0, 1);
+        await measure(p, gpu, ['a'], s);
+        for (const b of gpu.buffers) b.failMap = true;
+        await expect(measure(p, gpu, ['a'], stampsOf(1, 1))).resolves.toBe(true);
+        for (const b of gpu.buffers) b.failMap = false;
+        // Were the history kept, a frame repeating s would be stale.
+        await measure(p, gpu, ['a'], s);
+        expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
+        expect(p.skippedFrames).toBe(0);
+        // A lost device is expected, not a bug: only a failure AFTER the map is reported (see diagnostics).
+        expect(error).not.toHaveBeenCalled();
+      } finally {
+        error.mockRestore();
+      }
     });
   });
 
@@ -354,6 +390,30 @@ describe('GpuProfiler', () => {
       p.reset();
       expect(p.discardedFrames).toBe(1);
     });
+
+    it('a failure while reading a mapped frame is reported once, and the buffer comes back: the profiler keeps working', async () => {
+      // Not a lost device (that is a failing map, above): a bug in the reading itself, which would
+      // otherwise stop all reporting with no discard counted and no warning.
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        await measure(p, gpu, ['forward'], stampsOf(0, 1));
+        expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(1);
+        for (const b of gpu.buffers) b.failRange = true;
+        await measure(p, gpu, ['forward'], stampsOf(1, 1));
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(String(error.mock.calls[0][0])).toContain('GPU profiler');
+        for (const b of gpu.buffers) b.failRange = false;
+        await measure(p, gpu, ['forward'], stampsOf(2, 1));
+        await measure(p, gpu, ['forward'], stampsOf(3, 1));
+        expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(3);
+        for (const b of gpu.buffers) b.failRange = true;
+        await measure(p, gpu, ['forward'], stampsOf(4, 1));
+        expect(error).toHaveBeenCalledTimes(1);
+      } finally {
+        error.mockRestore();
+      }
+    });
   });
 
   describe('destroy', () => {
@@ -361,8 +421,11 @@ describe('GpuProfiler', () => {
       const p = new GpuProfiler(gpu.device);
       p.destroy();
       expect(gpu.buffers.every((b) => b.destroyed)).toBe(true);
+      const querySet = gpu.createQuerySet.mock.results[0].value;
+      expect(querySet.destroy).toHaveBeenCalledTimes(1);
       expect(p.beginFrame()).toBe(false);
       expect(() => p.destroy()).not.toThrow();
+      expect(querySet.destroy).toHaveBeenCalledTimes(1);
     });
   });
 });

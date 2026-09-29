@@ -77,7 +77,12 @@ interface PendingReadback {
   pairs: readonly TimedPair[];
   truncated: boolean;
   seal: number;
-  /** Value of {@link GpuProfiler.generation} when the frame was opened. */
+  /**
+   * Value of {@link GpuProfiler.generation} when the frame was queued
+   * (`endFrame`). `beginFrame()` and `endFrame()` run inside one synchronous
+   * `RenderGraph.render()`, and `reset()` is never called during it, so it is
+   * also the generation the frame was opened under.
+   */
   generation: number;
 }
 
@@ -118,6 +123,8 @@ export class GpuProfiler {
   private readonly streakReasons = new Map<DiscardReason, { count: number; pass?: string }>();
   private warned = false;
   private warnedTruncation = false;
+  /** A failure while reading a mapped frame was already reported: once per profiler. */
+  private reportedReadFailure = false;
 
   /**
    * @param maxPairs timestamp pairs per frame, one per measured pass. 512:
@@ -255,8 +262,10 @@ export class GpuProfiler {
     try {
       for (const entry of batch) {
         if (this.destroyed) return;
+        let mapped = false;
         try {
           await entry.buffer.mapAsync(GPUMapMode.READ);
+          mapped = true;
           // Unmapped whatever consume() does: a buffer back in the pool
           // still mapped would fail every later copy into it.
           try {
@@ -264,10 +273,18 @@ export class GpuProfiler {
           } finally {
             entry.buffer.unmap();
           }
-        } catch {
-          // Device lost, or the buffer destroyed mid-flight: the frame is
-          // gone, and with it what its queries held (design §6.3).
+        } catch (err) {
+          // Two different failures land here, and the frame is gone in both,
+          // with what its queries held (design §6.3). Before the map: the
+          // device was lost, or the buffer destroyed mid-flight; expected,
+          // and silent. After it: reading the mapped range failed, which is
+          // a bug and not a lost device, and it would stop all reporting
+          // with no discard counted and no warning: reported, once.
           this.history.forget(2 * entry.pairs.length);
+          if (mapped && !this.reportedReadFailure) {
+            this.reportedReadFailure = true;
+            console.error('[Hyperion] GPU profiler: reading a resolved frame failed; its timings are dropped.', err);
+          }
         } finally {
           if (!this.destroyed) this.freeReadbacks.push(entry.buffer);
         }
