@@ -42,6 +42,8 @@ Decisioni rimandate, da prendere **prima del passo indicato**:
 - **Passo 7:** l'ordine dei `mix` sovrapposti (non definito e documentato, oppure deterministico per id).
 - **Passo 8:** l'estensione della luce sprite (quadrato di lato = range con raggio `range·√2`, scala del transform, oppure disco), la sorgente della texture, e se la luce sprite proietta ombre.
 
+**In pausa dal 2026-09-29, prima del passo 6.** Lo sviluppo passa su un MacBook Apple M2 per i test della GPU su Metal (`docs/handoff/2026-09-29-mac-m2-handoff.md`). Le decisioni rimandate dei passi 6-8 (sopra), la domanda se il passo 10 serve ancora e la misura del +1,137 ms del passo 5b si riprendono quando i test sul Mac sono finiti (`docs/handoff/claude-memory/round-pending-decisions.md`).
+
 ## 3. Ordine e criteri di uscita
 
 | # | Passo | Criterio di uscita |

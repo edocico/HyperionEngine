@@ -1,0 +1,8 @@
+- [Linux WebGPU Chrome flags](linux-webgpu-chrome-flags.md) — three flags for hardware WebGPU; NVIDIA adapter cannot present to a canvas (compositor on AMD iGPU) → use low-power initScript for visual checks, re-navigate after every TS edit
+- [Project moved macOS → Linux](project-moved-macos-to-linux.md) — old memory is still on the Mac; close-phase skill points at the macOS path
+- [Phase 17 progress 2026-09-26](cull-fix-decision-pending.md) — Phase 17 + rotation + queue-fairness fixes on master (1c2bf6f, pushed); automations committed (1f04d40); leftovers moved to the 09-27 round; Mode A not GPU-checkable here
+- [Open-items round 2026-09-27](open-items-round-2026-09-27.md) — H→S→L order, user decisions, progress: steps 1-5 and 5b merged (b2ccd0c); next = step 6 (L-c directional shadows)
+- [Autonomy for the H/S/L round](feedback-autonomous-round.md) — commit/merge/push per step without asking; still ask plan §2 design decisions
+- [Mac M2 GPU tests — handoff 2026-09-29](mac-m2-gpu-tests.md) — dev moved to the Mac (canonical); plan in docs/handoff/2026-09-29-mac-m2-handoff.md; work on a branch, ask before merging; refresh docs/handoff/claude-memory/ at the end
+- [Round PAUSED for Mac M2 tests — open decisions](round-pending-decisions.md) — steps 6/7/8 design decisions (+8b, 10) to ask AFTER the user finishes the Mac GPU tests; master b2ccd0c
+- [Phase 5b transparent sort — DONE](transparent-sort-phase.md) — GPU sort + uber pipeline merged (b2ccd0c); measurements in the design §11

@@ -730,6 +730,8 @@ All agent files require YAML frontmatter (`name`, `description`) to be registere
 
 ## Implementation Status
 
+**Machine handoff (2026-09-29): development moved from the Fedora Linux box to a MacBook with an Apple M2, to test the GPU on Metal (Mode A, Safari, the subgroup cull path, ASTC, real timings). Read `docs/handoff/2026-09-29-mac-m2-handoff.md` FIRST: setup, the memory to restore from `docs/handoff/claude-memory/`, the test plan, and the work rules (branch `test/mac-m2-gpu`, ask before merging). The open-items round is PAUSED at step 6 until the Mac tests are done; its open decisions are in `docs/handoff/claude-memory/round-pending-decisions.md`. Many gotchas below describe the Linux machine (AMD/NVIDIA adapters, the low-power initScript, Vulkan flags, `/tmp/claude-1000`): the handoff doc lists which ones change on the Mac.**
+
 **Current: Phase 17 complete and merged to master (2026-09-26), light layers included — lights render: occluder seeds from each primitive's exact shape, signed SDF (1+JFA, power-of-two steps), light accumulation with soft shadows, lit sprites and gradients, backend `'lit'` as graph mode `lighting` in ONE node (`LightGroupsPass`), light layers as automatic per-group light buffers (Unity-style), a Lighting tab in the harness, GPU cost measured (design §13.2). Open: `sprite` lights, the `mix` blend, shadows from global/directional lights. Phase 16 + Audit 2026-07 are on master. Round 2026-09-27 step 5b (GPU transparent sort + uber pipeline) is done: see the 5b row.**
 
 ### Audit 2026-07 — remediation summary
