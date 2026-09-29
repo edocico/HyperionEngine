@@ -272,12 +272,12 @@ export class EntityHandle implements Disposable {
    * a distance into the screen, drawn at z = -depth, so a larger depth is
    * behind. With the default camera (near -1, far 1000) it is visible from -1
    * to 1000. A child's depth is relative to its parent's, like its position
-   * (a physics body's pose is world: its depth too). Two overlapping sprites at
-   * the SAME depth are drawn in no defined order: give them different depths.
-   * It orders transparent sprites too: they are drawn back to front by world z,
-   * and at equal z the entity with the higher id is in front (the newest one
-   * only while ids are fresh: give sprites different depths to order them).
-   * On a 3D entity, which takes its
+   * (a physics body's pose is world: its depth too). It orders opaque sprites
+   * through the depth test, and transparent ones by a GPU sort, back to front
+   * by world z. At the SAME depth, two overlapping OPAQUE sprites are drawn in
+   * no defined order; two transparent ones by id, the higher id in front (the
+   * newest entity only while ids are fresh); an opaque one hides a transparent
+   * one. Give sprites different depths to order them. On a 3D entity, which takes its
    * z from `position()`, it is ignored (a warning in dev builds). Returns `this`.
    */
   depth(d: number): this {

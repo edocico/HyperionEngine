@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import {
   TransparentSortPass, SORT_READBACK_BYTES, type SortReadbackTaker, type SortReadbackTarget,
 } from './transparent-sort-pass';
@@ -593,5 +593,19 @@ describe('renderer wiring', () => {
 
   it('keeps no trace of RadixSortPass', () => {
     expect(renderer).not.toMatch(/RadixSort|radix-sort|radixSort/);
+  });
+
+  // Review wf_61c6a580-afa #4/#7/#8: the Rust docs described the transparents
+  // as unsorted, a RadixSortPass, and gpu_depths feeding the sort. The sort
+  // reads entity-bounds.z (TransparentSortPass); gpu_depths feeds nothing.
+  it('the Rust sources name no RadixSortPass or radix sort, and never call transparents unsorted', () => {
+    const dir = new URL('../../../../crates/hyperion-core/src/', import.meta.url);
+    const files = readdirSync(dir).filter((f) => f.endsWith('.rs'));
+    expect(files).toContain('components.rs');
+    for (const file of files) {
+      const src = readFileSync(new URL(file, dir), 'utf8');
+      expect(src, file).not.toMatch(/RadixSortPass|radix[- ]sort/i);
+      expect(src, file).not.toMatch(/NOT sorted/);
+    }
   });
 });

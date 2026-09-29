@@ -9,8 +9,8 @@ use crate::ring_buffer::{Command, CommandType};
 /// Read three consecutive little-endian f32s, rejecting non-finite input.
 ///
 /// NaN and infinity used to flow straight from the wire into components and from
-/// there into `ModelMatrix`, `gpu_bounds`, `gpu_depths` (which feeds the GPU
-/// radix sort — a NaN key corrupts the whole back-to-front order) and, through
+/// there into `ModelMatrix`, `gpu_bounds` (whose z is the transparent sort's
+/// key and whose sphere the cull tests), `gpu_depths` and, through
 /// `propagate_transforms`, into every descendant's matrix
 /// (audit 2026-07, P2-3).
 fn read_vec3(payload: &[u8; 16]) -> Option<(f32, f32, f32)> {
@@ -931,8 +931,8 @@ fn process_single_command(
                 if !entity_map.is_entity_2d(cmd.entity_id) {
                     return;
                 }
-                // A NaN depth is a poisoned GPU radix-sort key: it corrupts the
-                // whole back-to-front transparency order, not just this entity.
+                // A non-finite depth would reach the row's z, its culling
+                // sphere (the transparent sort's key) and every descendant.
                 let Some(z) = read_f32(&cmd.payload) else { return };
                 let _ = world.insert_one(entity, Depth(z));
                 // It moves the row (z = -depth): re-stage the transform and the

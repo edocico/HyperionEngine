@@ -1172,7 +1172,7 @@ Il renderer usa un pattern **RenderGraph coordinator** con compute culling e ind
 | Selection mask | `selection-mask` | `STORAGE \| COPY_DST` | `[u32]` × ceil(N/32) (bitfield) | Su dirty flag via `SelectionManager.uploadMask()` |
 | Cull uniforms | (CullPass internal) | `UNIFORM \| COPY_DST` | 6 × vec4 frustum planes + u32 count | Ogni frame in `CullPass.prepare()` |
 | Camera uniform | (ForwardPass internal) | `UNIFORM \| COPY_DST` | `CameraUniform` 80 B (viewProjection, occluderLayers, viewport) | Ogni frame in `ForwardPass.prepare()` |
-| Visible indices | `visible-indices` | `STORAGE` | `[u32]` × MAX_ENTITIES | Scritto dal compute shader |
+| Visible indices | `visible-indices` | `STORAGE` | `[u32]` × 28 × MAX_GPU_ENTITIES (una regione per bucket, `TOTAL_DRAW_BUCKETS`: 11,2 MB) | Scritto dal compute shader |
 | Indirect draw args | `indirect-args` | `STORAGE \| INDIRECT \| COPY_DST` | 28 × 5 × u32 (560 bytes) | Reset in `CullPass.prepare()` + atomicAdd dal compute |
 | Entity ids | `entity-ids` | `STORAGE \| COPY_DST` | `[u32]` × MAX_GPU_ENTITIES (id esterno per slot) | Tutta la colonna, solo quando cambia `entityIdsGeneration` (anche nei frame di scatter) |
 | Ordine dei trasparenti | `transparent-order` | `STORAGE` | `[u32]` × MAX_GPU_ENTITIES (slot dal fondo al davanti) | Scritto dall'ultima passata di `TransparentSortPass`, letto dal draw uber come group 0 binding 2 |
@@ -1834,9 +1834,11 @@ Se servisse un tier 4 (es. 1024×1024):
 
 **TypeScript** (`texture-manager.ts`): Aggiungere `1024` a `TIER_SIZES`: `[64, 128, 256, 512, 1024]`. `NUM_TIERS` si aggiorna automaticamente (`TIER_SIZES.length`). Il costruttore `TextureManager` crea automaticamente il nuovo tier array.
 
-**TypeScript** (`renderer.ts`): Registrare `tier4` view nel `ResourcePool` del coordinator. Aggiungere binding per `tier4Tex` nel bind group layout di `ForwardPass.setup()`. Aggiungere `resources.getTextureView('tier4')` alla creazione del bind group 1.
+**TypeScript** (`renderer.ts`): `registerTextureViews` registra nel `ResourcePool` le view `tier<N>` e `ovf<N>` (il `TextureManager` crea un tier di overflow per ogni tier) con un ciclo che oggi si ferma a 4: portarlo a `NUM_TIERS`. La funzione gira anche a ogni crescita di un tier (`TextureManager.onViewsChanged`).
 
-**WGSL** (`shaders/primitives/prelude.wgsl`, dalla fase 5b): Aggiungere `@group(1) @binding(5) var tier4Tex: texture_2d_array<f32>;` e il `case 4u:` nello switch di `sampleTier` — l'UNICO switch sui tier delle primitive, condiviso da tutti i moduli composti.
+**TypeScript** (`render/primitive-bindings.ts`): Aggiungere `'tier4'` e `'ovf4'` IN CODA a `GROUP1`, cioè ai binding 9 e 10: i binding 0-8 del gruppo 1 sono già presi (tier0-3, `texSampler`, ovf0-3). Da quella lista nascono sia il layout del gruppo 1 (`textureTierLayoutEntries()`, usato da `ForwardPass` E da `OccluderSeedStage`) sia il bind group (`TextureTierBinding`), che quindi non richiedono altro. Un binding aggiunto solo nel layout di `ForwardPass` lascerebbe le pipeline occluder con un binding che il loro layout non ha: ogni grafo illuminato verrebbe respinto e l'illuminazione resterebbe spenta senza messaggi.
+
+**WGSL** (`shaders/primitives/prelude.wgsl`, dalla fase 5b): Aggiungere `@group(1) @binding(9) var tier4Tex: texture_2d_array<f32>;` e `@group(1) @binding(10) var ovf4Tex: texture_2d_array<f32>;`, e un `case 4u:` in ciascuno dei due switch di `sampleTier` (primario e overflow) — gli UNICI switch sui tier delle primitive, condivisi da tutti i moduli composti. Non il binding 5, che è `ovf0Tex`: due variabili sullo stesso binding, raggiunte dallo stesso entry point attraverso `sampleTier`, rendono invalide le pipeline di ogni modulo che campiona i tier, uber compreso.
 
 **Attenzione**: WGSL non supporta dynamic indexing su texture bindings. Ogni nuovo tier richiede un case esplicito nello switch. Il costo GPU e minimo (branch prediction uniforme per-quad), ma la manutenzione e manuale.
 
@@ -2175,7 +2177,7 @@ Il subsistema di testo MSDF:
 1. **FontAtlas** (`text/font-atlas.ts`): Parser per JSON di `msdf-atlas-gen`. Contiene metriche per glifo (unicode, advance, planeBounds, atlasBounds) + `glyphMap` per lookup O(1).
 2. **Text Layout** (`text/text-layout.ts`): `layoutText(text, atlas, fontSize, startX, startY)` posiziona i glifi usando le metriche dell'atlas. Ritorna `LayoutGlyph[]`.
 3. **TextManager** (`text/text-manager.ts`): Cache per font atlas caricati.
-4. **Shader** (`shaders/msdf-text.wgsl`): Vertex shader mappa UV del quad alla regione dell'atlas via PrimitiveParams. Fragment shader campiona la texture MSDF, calcola `median(r,g,b)`, e applica anti-aliasing basato su screen-pixel-range (`dpdx`/`dpdy`).
+4. **Shader** (`shaders/primitives/msdf-text.wgsl`, la libreria `msdf_` che dalla fase 5b il compositore unisce al preludio `shaders/primitives/prelude.wgsl`): Vertex shader mappa UV del quad alla regione dell'atlas via PrimitiveParams. Fragment shader campiona la texture MSDF, calcola `median(r,g,b)`, e applica anti-aliasing basato su screen-pixel-range (`dpdx`/`dpdy`).
 
 ---
 
@@ -2526,7 +2528,7 @@ Phase 9 aggiunge tre feature avanzate di rendering: curve Bezier SDF, bloom post
 
 ### 26.1 Quadratic Bezier SDF (Track A)
 
-**File**: `ts/src/shaders/bezier.wgsl`, `ts/src/entity-handle.ts`
+**File**: `ts/src/shaders/primitives/bezier.wgsl` (la libreria `bezier_`, composta col preludio `primitives/prelude.wgsl` dalla fase 5b; fino ad allora `shaders/bezier.wgsl`), `ts/src/entity-handle.ts`
 
 #### Algoritmo (Inigo Quilez)
 
@@ -2720,6 +2722,8 @@ Phase 9 aggiunge 4 nuovi file WGSL e 5 nuovi handler `import.meta.hot.accept()`:
 
 Total WGSL files with HMR: 14 (up from 10 in Phase 8). `prefix-sum.wgsl` is excluded (CPU reference only).
 
+(Storico, come la tabella: dalla fase 5b `bezier.wgsl` è il pezzo `shaders/primitives/bezier.wgsl`, sempre sullo slot HMR `bezier`, ricaricato insieme agli altri pezzi da `PieceReloadCollector`; §24.)
+
 ## 27. Phase 10: Asset Pipeline (KTX2/Basis Universal)
 
 Phase 10 aggiunge il supporto per texture GPU-compresse tramite KTX2/Basis Universal, riducendo la memoria GPU di 4-5x (BC7/ASTC) mantenendo la compatibilita con PNG/JPEG.
@@ -2770,7 +2774,7 @@ loadTexture(url) →
 @group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 ```
 
-Tutti i 6 shader dichiarano lo stesso layout identico. `texture_2d_array<f32>` funziona per tutti i formati (rgba8unorm, bc7-rgba-unorm, astc-4x4-unorm) — la GPU gestisce la decompressione trasparentemente nel sample.
+Dalla fase 5b questo layout lo dichiara una sola volta il preludio (`shaders/primitives/prelude.wgsl`), che il compositore mette in testa a ogni modulo composto (i 6 per tipo e l'uber); nessuna libreria dichiara binding. Il lato TypeScript è `textureTierLayoutEntries()` in `render/primitive-bindings.ts`, condiviso da `ForwardPass` e `OccluderSeedStage` (fino alla fase 5b lo dichiaravano, identico, tutti e 6 gli shader per tipo). `texture_2d_array<f32>` funziona per tutti i formati (rgba8unorm, bc7-rgba-unorm, astc-4x4-unorm) — la GPU gestisce la decompressione trasparentemente nel sample.
 
 ### 27.4 Scenario Matrix
 

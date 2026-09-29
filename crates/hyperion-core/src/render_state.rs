@@ -180,7 +180,7 @@ pub struct RenderState {
     gpu_tex_indices: Vec<u32>,   // 1 u32/entity (texture layer index)
     gpu_prim_params: Vec<f32>,   // 8 f32/entity (primitive-specific parameters)
     gpu_entity_ids: Vec<u32>,    // 1 u32/entity (external entity ID for picking)
-    gpu_depths: Vec<f32>,        // 1 f32/entity (depth for back-to-front sorting)
+    gpu_depths: Vec<f32>,        // 1 f32/entity (Depth, else Position.z; read by nothing on the TS side)
     gpu_count: u32,
 
     /// Per-buffer dirty tracking for partial upload optimization.
@@ -531,8 +531,10 @@ impl RenderState {
 
     // --- SoA buffer accessors: depths ---
 
-    /// Depth values, one f32 per GPU entity (parallel to other SoA buffers).
-    /// Used for back-to-front transparent sorting via GPU radix sort.
+    /// Depth values, one f32 per GPU entity (parallel to other SoA buffers):
+    /// a 2D entity's `Depth` (+depth, not composed with its parent's), else
+    /// `Position.z`, else 0. Exported, but read by nothing on the TS side: the
+    /// transparent sort keys on the world z in `entity-bounds` (phase 5b).
     pub fn gpu_depths(&self) -> &[f32] {
         &self.gpu_depths
     }

@@ -327,7 +327,8 @@ pub fn engine_gpu_entity_ids_generation() -> u32 {
     }
 }
 
-/// Pointer to the depth buffer (1 f32 per entity, for back-to-front sorting).
+/// Pointer to the depth buffer (1 f32 per entity: `Depth`, else `Position.z`).
+/// No TS consumer: the transparent sort keys on the world z in `entity-bounds`.
 #[wasm_bindgen]
 pub fn engine_gpu_depths_ptr() -> *const f32 {
     // SAFETY: wasm32 is single-threaded.
