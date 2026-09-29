@@ -40,20 +40,38 @@ export function nextFrameStamp(prev: number): number {
  * holds and whether this frame wrote. The renderer calls it on EVERY frame
  * kind, scatter frames included: the 32-word scatter staging has no room for
  * the id, and a swap-remove moves rows between slots.
+ *
+ * A column shorter than `entityCount` (or missing) is uploaded as far as it
+ * goes: asking `writeBuffer` for more elements than the array holds throws
+ * synchronously inside render(), and that stops the frame loop. The generation
+ * is then NOT recorded (the returned one is `uploadedGeneration`), so the next
+ * full column is uploaded, and `warning` names both lengths for the renderer's
+ * one-time dev warning.
  */
 export function uploadEntityIds(
   queue: Pick<GPUQueue, 'writeBuffer'>,
   buffer: GPUBuffer,
   state: Pick<GPURenderState, 'entityIds' | 'entityCount' | 'entityIdsGeneration'>,
   uploadedGeneration: number,
-): { generation: number; uploaded: boolean } {
+): { generation: number; uploaded: boolean; warning?: string } {
   const generation = normalizeIdsGeneration(state.entityIdsGeneration);
   // NaN never equals the marker: a missing generation uploads every frame.
   if (generation === uploadedGeneration || state.entityCount === 0) {
     return { generation, uploaded: false };
   }
-  queue.writeBuffer(buffer, 0, state.entityIds as Uint32Array<ArrayBuffer>, 0, state.entityCount);
-  return { generation, uploaded: true };
+  const length = state.entityIds?.length ?? 0;
+  if (length >= state.entityCount) {
+    queue.writeBuffer(buffer, 0, state.entityIds as Uint32Array<ArrayBuffer>, 0, state.entityCount);
+    return { generation, uploaded: true };
+  }
+  if (length > 0) queue.writeBuffer(buffer, 0, state.entityIds as Uint32Array<ArrayBuffer>, 0, length);
+  return {
+    generation: uploadedGeneration,
+    uploaded: length > 0,
+    warning: `[Hyperion] entityIds holds ${length} ids but entityCount is ${state.entityCount}: `
+      + 'only those were uploaded, and the column is uploaded again on the next frame. '
+      + 'A transport site trims or drops GPURenderState.entityIds.',
+  };
 }
 
 /**

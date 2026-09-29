@@ -103,6 +103,34 @@ describe('uploadEntityIds', () => {
     expect(r).toEqual({ generation: 8, uploaded: false });
     expect(writes).toHaveLength(0);
   });
+
+  // A column shorter than entityCount (an untyped transport site that trims or
+  // drops it) must not reach writeBuffer with entityCount elements: that throws
+  // OperationError synchronously inside render(), which stops the RAF loop.
+  it('clamps a short column to its length, keeps the marker, and uploads the next full column', () => {
+    const { queue, writes } = recordingQueue();
+    const marker = NaN;
+    const short = new Uint32Array([4, 9]);
+    const r = uploadEntityIds(queue, buffer, { entityIds: short, entityCount: 3, entityIdsGeneration: 5 }, marker);
+    expect(writes).toEqual([{ offset: 0, data: short, dataOffset: 0, size: 2 }]);
+    expect(r.uploaded).toBe(true);
+    // Not recorded as uploaded: the GPU holds a partial column.
+    expect(Number.isNaN(r.generation)).toBe(true);
+    expect(r.warning).toMatch(/entityIds holds 2 .*entityCount is 3/);
+    // Same generation, full column: uploaded, and now recorded.
+    const full = uploadEntityIds(queue, buffer, { entityIds: ids, entityCount: 3, entityIdsGeneration: 5 }, r.generation);
+    expect(full).toEqual({ generation: 5, uploaded: true });
+    expect(writes.at(-1)).toEqual({ offset: 0, data: ids, dataOffset: 0, size: 3 });
+  });
+
+  it('writes nothing for a missing column, and keeps the marker', () => {
+    const { queue, writes } = recordingQueue();
+    const r = uploadEntityIds(queue, buffer, { entityIds: undefined as unknown as Uint32Array, entityCount: 3, entityIdsGeneration: 5 }, 4);
+    expect(writes).toHaveLength(0);
+    expect(r.generation).toBe(4);
+    expect(r.uploaded).toBe(false);
+    expect(r.warning).toMatch(/entityIds holds 0 .*entityCount is 3/);
+  });
 });
 
 describe('renderer.ts uploads the entity ids on every frame kind', () => {

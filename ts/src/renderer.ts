@@ -539,6 +539,7 @@ export async function createRenderer(
   let frameStamp = 0; // the first render() stamps 1
   let warnedMissingSortInputs = false;
   let warnedOverCapacity = false;
+  let warnedShortEntityIds = false;
 
   // --- 8c. RenderGraph ---
   // RenderGraphHost owns the graph: a new one goes live only once the GPU has
@@ -977,6 +978,10 @@ export async function createRenderer(
       // slots. Only when the slot -> id mapping changed (its generation).
       const idsUpload = uploadEntityIds(device.queue, entityIdsBuffer, state, uploadedIdsGeneration);
       uploadedIdsGeneration = idsUpload.generation;
+      if (dev && idsUpload.warning && !warnedShortEntityIds) {
+        warnedShortEntityIds = true;
+        console.warn(idsUpload.warning);
+      }
 
       // Upload selection mask if dirty
       if (requests.requested.mode.outlines || host.mode.outlines) {
