@@ -194,6 +194,21 @@ describe('verifySortReadback', () => {
     const ids = Array.from(r.order, (s) => r.frame.entityIds[s]);
     expect(ids.indexOf(0x00345)).toBeLessThan(ids.indexOf(0x02345));
     expect(ids.indexOf(0x02345)).toBeLessThan(ids.indexOf(0x12345));
+    // The above is the reference model's own tie rule (id ascending on equal
+    // z), computed independently of the module under test. Exercise
+    // `verifySortReadback` itself on that same tie: it passes a correctly-tied
+    // answer, and it catches an order that breaks the tie (the higher id
+    // placed BEFORE the lower one, i.e. earlier / further back) with the
+    // specific oracle-mismatch message.
+    expect(verifySortReadback(r)).toEqual([]);
+    const iA = r.order.indexOf(slotOf(0x00345));
+    const iB = r.order.indexOf(slotOf(0x02345));
+    expect(iB).toBe(iA + 1); // adjacent: the two are tied with nothing else at zKey 0 between them
+    const broken = makeReadback(SCENE);
+    [broken.order[iA], broken.order[iB]] = [broken.order[iB], broken.order[iA]];
+    expect(verifySortReadback(broken)).toEqual([
+      `(f) order differs from the oracle at ${iA}: slot ${slotOf(0x02345)}, the oracle has slot ${slotOf(0x00345)}`,
+    ]);
   });
 });
 
