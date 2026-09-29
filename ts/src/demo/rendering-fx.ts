@@ -38,15 +38,23 @@ const section: DemoSection = {
     // ── 1. Bloom: a glow outside a white quad, where there was none ─────
     try {
       await pixelCheck(reporter, 'Bloom', engine, async (probe) => {
+        // The glow alone: the same bloom composite at intensity 0 and 0.5. The
+        // graph without bloom is no reference: FXAATonemapPass applies no
+        // tonemap by default and the bloom composite PBR Neutral, whose toe
+        // takes the 0.067 background to 0.028 (since bloom.wgsl got the real
+        // Khronos curve, 2026-09-29). The same curve maps the white quad's 1.0
+        // to 0.869, hence the 0.8 bar for "the quad is drawn".
+        engine.enableBloom({ threshold: 0.8, intensity: 0 });
+        await frames(8); // the bloom graph goes live once the GPU validated it
         const [before] = await probe('swapchain', [outside(6)]);
         engine.enableBloom({ threshold: 0.8, intensity: 0.5 });
-        await frames(8); // the bloom graph goes live once the GPU validated it
+        await frames(4);
         const [after, centre] = await probe('swapchain', [outside(6), [qx, qy]]);
         engine.disableBloom();
         await frames(4);
         return {
-          ok: after[0] > before[0] + 0.01 && centre[0] > 0.9,
-          detail: `6 px outside a white quad: ${fmt([before[0]])} without bloom, ${fmt([after[0]])} with it`,
+          ok: after[0] > before[0] + 0.01 && centre[0] > 0.8,
+          detail: `6 px outside a white quad, bloom on: ${fmt([before[0]])} at intensity 0, ${fmt([after[0]])} at 0.5; quad centre ${fmt([centre[0]])}`,
         };
       });
     } catch (err) {
