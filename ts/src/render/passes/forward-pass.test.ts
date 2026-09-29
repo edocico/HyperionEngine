@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { ForwardPass } from './forward-pass';
+import { BUCKETS_PER_TYPE, OPAQUE_DRAW_BUCKETS } from './cull-pass';
 import { primitiveGroup0LayoutEntries, textureTierLayoutEntries } from '../primitive-bindings';
 import { ResourcePool } from '../resource-pool';
 import type { FrameState } from '../render-pass';
@@ -27,12 +28,17 @@ const UBER_STUB = 'uber stub';
  * sampler), and `pass` set up on `device` over it with `sources` as
  * SHADER_SOURCES and `uber` as UBER_SOURCE. SHADER_SOURCES is filled in place,
  * as the renderer does (LightGroupsPass and the probes hold the object); both
- * statics are restored afterwards, also when setup() throws.
+ * statics are restored afterwards, also when setup() throws. Each pool buffer
+ * is a distinct object carrying its name (`pool.getBuffer(name)` gives it
+ * back, for identity checks); `omit` leaves the named ones out of the pool.
  */
-function setUpOnPool(pass: ForwardPass, device: GPUDevice, sources: Record<number, string>, uber = UBER_STUB): ResourcePool {
+function setUpOnPool(
+  pass: ForwardPass, device: GPUDevice, sources: Record<number, string>, uber = UBER_STUB,
+  { omit = [] }: { omit?: string[] } = {},
+): ResourcePool {
   const pool = new ResourcePool();
-  for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params']) {
-    pool.setBuffer(name, {} as GPUBuffer);
+  for (const name of ['entity-transforms', 'visible-indices', 'tex-indices', 'indirect-args', 'render-meta', 'prim-params', 'transparent-order', 'transparent-args']) {
+    if (!omit.includes(name)) pool.setBuffer(name, { name } as unknown as GPUBuffer);
   }
   for (const name of ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3', 'scene-hdr']) {
     pool.setTextureView(name, { name } as unknown as GPUTextureView);
@@ -177,7 +183,7 @@ function setUpForward(options?: { lit?: boolean }, uberSource = UBER_STUB) {
   const pool = setUpOnPool(pass, device, { 0: 'stub', 1: 'stub', 4: 'stub' }, uberSource);
 
   type Call = { op: string; index?: number; group?: { entries: GPUBindGroupEntry[] }; pipeline?: GPURenderPipelineDescriptor };
-  const frame = { canvasWidth: 64, canvasHeight: 64 } as FrameState;
+  const frame = { canvasWidth: 64, canvasHeight: 64, transparentCount: 1 } as FrameState;
   const draw = (): Call[] => {
     const calls: Call[] = [];
     const encoder = {
@@ -256,7 +262,8 @@ describe('ForwardPass @group(2): the light buffer', () => {
     const { draw } = setUpForward();
     const calls = draw();
     const pipelines = calls.filter((c) => c.op === 'pipeline').length;
-    expect(pipelines).toBe(6); // 3 types, opaque + transparent (the uber is built, not drawn)
+    // 3 types opaque + ONE uber pipeline for every transparent (design 5b §6.2).
+    expect(pipelines).toBe(4);
     expect(calls.filter((c) => c.op === 'group' && c.index === 2)).toHaveLength(pipelines);
   });
 
@@ -294,53 +301,9 @@ describe('ForwardPass @group(2): the light buffer', () => {
 });
 
 // The uber module (design 2026-09-27 §3.2): every primitive type behind one
-// pipeline, for the sorted transparent draw. setup() builds it with exactly the
-// descriptor of today's transparent pipelines, so every graph and every
-// hot-reload probe validates it; the transparent sub-pass does not use it yet.
-describe('ForwardPass builds the uber pipeline, not drawn yet', () => {
-  const codeOf = (p: GPURenderPipelineDescriptor): string => (p.vertex.module as unknown as { code: string }).code;
-
-  it('builds it once, from UBER_SOURCE, with exactly the transparent descriptor', () => {
-    const { pipelines } = setUpForward();
-    // 3 stub types × (opaque + transparent), and the uber.
-    expect(pipelines).toHaveLength(7);
-    const ubers = pipelines.filter((p) => codeOf(p) === UBER_STUB);
-    expect(ubers).toHaveLength(1);
-    const uberPipeline = ubers[0];
-    expect(uberPipeline.fragment?.module).toBe(uberPipeline.vertex.module);
-    expect(uberPipeline.vertex.entryPoint).toBe('vs_main');
-    expect(uberPipeline.fragment?.entryPoint).toBe('fs_main');
-    expect([...(uberPipeline.vertex.buffers ?? [])]).toEqual([
-      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-    ]);
-    expect([...(uberPipeline.fragment?.targets ?? [])]).toEqual([{
-      format: SCENE_HDR_FORMAT,
-      blend: {
-        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-      },
-    }]);
-    expect(uberPipeline.depthStencil).toEqual({ format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' });
-    expect(uberPipeline.primitive).toEqual({ topology: 'triangle-list', cullMode: 'back' });
-    // Module aside, the same descriptor as every per-type transparent
-    // pipeline, the three-group layout included.
-    const withoutModule = (p: GPURenderPipelineDescriptor) => ({
-      ...p, vertex: { ...p.vertex, module: null }, fragment: { ...p.fragment, module: null },
-    });
-    const transparent = pipelines.filter((p) => p !== uberPipeline && p.depthStencil?.depthWriteEnabled === false);
-    expect(transparent).toHaveLength(3);
-    for (const p of transparent) expect(withoutModule(p)).toEqual(withoutModule(uberPipeline));
-  });
-
-  it('does not draw it yet: the transparent sub-pass still draws each type with its own pipeline', () => {
-    const { pipelines, draw } = setUpForward();
-    const uberPipeline = pipelines.find((p) => codeOf(p) === UBER_STUB);
-    expect(uberPipeline).toBeDefined();
-    const drawn = draw().filter((c) => c.op === 'pipeline').map((c) => c.pipeline);
-    expect(drawn).toHaveLength(6);
-    expect(drawn).not.toContain(uberPipeline);
-  });
-
+// pipeline, which draws every transparent (design 5b §6.2). setup() refuses
+// to run without it, before it looks at the pool.
+describe('ForwardPass requires the uber module', () => {
   it('refuses to set up without an uber module: publishPrimitiveShaders() runs first', () => {
     expect(() => setUpForward({}, '')).toThrow(/UBER_SOURCE/);
   });
@@ -695,5 +658,132 @@ describe('ForwardPass reads the transparent sort outputs', () => {
   it.each([false, true])('lit=%s: transparent-order and transparent-args are reads', (lit) => {
     const pass = new ForwardPass({ lit });
     expect(pass.reads).toEqual(expect.arrayContaining(['transparent-order', 'transparent-args']));
+  });
+});
+
+// Design 5b §6.2: the transparent sub-pass is ONE draw. TransparentSortPass
+// writes the visible transparents of types 0-5, back to front, into
+// `transparent-order` and the draw arguments at byte 0 of `transparent-args`;
+// ForwardPass draws them through the uber pipeline, with a second group 0
+// whose binding 2 (visibleIndices in the shaders) is the sorted order.
+describe('ForwardPass: the uber draw of the sorted transparents', () => {
+  interface FakePipeline { desc: GPURenderPipelineDescriptor }
+  interface FakeGroup { layout: unknown; entries: GPUBindGroupEntry[] }
+  interface Call { op: 'pipeline' | 'group' | 'draw'; pipeline?: FakePipeline; index?: number; group?: FakeGroup; buffer?: unknown; offset?: number }
+
+  /** ForwardPass on a device recording its pipelines and bind groups (setUpOnPool), `omit` left out of the pool. */
+  function setUp(omit: string[] = []) {
+    const pipelines: FakePipeline[] = [];
+    const groups: FakeGroup[] = [];
+    const device = {
+      createBuffer: () => ({ destroy() {} }),
+      createShaderModule: (d: GPUShaderModuleDescriptor) => ({ code: d.code }),
+      createSampler: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: (d: GPUPipelineLayoutDescriptor) => ({ groups: [...d.bindGroupLayouts] }),
+      createRenderPipeline: (desc: GPURenderPipelineDescriptor) => { const p = { desc }; pipelines.push(p); return p; },
+      createBindGroup: (d: GPUBindGroupDescriptor) => { const bg = { layout: d.layout, entries: [...d.entries] }; groups.push(bg); return bg; },
+      createTexture: () => ({ createView: () => ({}), destroy() {} }),
+      queue: { writeBuffer() {}, writeTexture() {} },
+    } as unknown as GPUDevice;
+
+    const pass = new ForwardPass();
+    const pool = setUpOnPool(pass, device, { 0: 'quad module', 1: 'line module', 4: 'gradient module' }, 'uber module', { omit });
+    const buffer = (name: string): GPUBuffer => pool.getBuffer(name)!;
+
+    const draw = (transparentCount: number): Call[] => {
+      const calls: Call[] = [];
+      const encoder = {
+        beginRenderPass: () => ({
+          setVertexBuffer() {}, setIndexBuffer() {}, end() {},
+          setPipeline: (pipeline: FakePipeline) => { calls.push({ op: 'pipeline', pipeline }); },
+          setBindGroup: (index: number, group: FakeGroup) => { calls.push({ op: 'group', index, group }); },
+          drawIndexedIndirect: (buf: unknown, offset: number) => { calls.push({ op: 'draw', buffer: buf, offset }); },
+        }),
+      } as unknown as GPUCommandEncoder;
+      pass.execute(encoder, { canvasWidth: 64, canvasHeight: 64, transparentCount } as FrameState, pool);
+      return calls;
+    };
+    const uber = () => pipelines.find((p) => (p.desc.vertex.module as unknown as { code: string }).code === 'uber module');
+    const binding = (group: FakeGroup, b: number) => (group.entries.find((e) => e.binding === b)!.resource as GPUBufferBinding).buffer;
+    return { pipelines, groups, buffer, draw, uber, binding };
+  }
+
+  it('builds one opaque pipeline per type and ONE uber pipeline, with the transparent descriptor', () => {
+    const { pipelines, uber } = setUp();
+    expect(pipelines).toHaveLength(4); // 3 types opaque + the uber
+    const u = uber();
+    expect(u, 'a pipeline built from UBER_SOURCE').toBeDefined();
+    const blended = pipelines.filter((p) => [...p.desc.fragment!.targets][0]!.blend);
+    expect(blended).toEqual([u]);
+    const d = u!.desc;
+    expect(d.vertex.entryPoint).toBe('vs_main');
+    expect(d.fragment!.entryPoint).toBe('fs_main');
+    expect([...d.fragment!.targets][0]!.format).toBe(SCENE_HDR_FORMAT);
+    expect([...d.fragment!.targets][0]!.blend).toEqual({
+      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    });
+    expect(d.depthStencil).toEqual({ format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' });
+    expect(d.primitive).toEqual({ topology: 'triangle-list', cullMode: 'back' });
+    expect([...d.vertex.buffers!][0]).toEqual({ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] });
+    // The same three-group layout as every opaque pipeline.
+    for (const p of pipelines) expect(p.desc.layout).toBe(d.layout);
+    expect((d.layout as unknown as { groups: unknown[] }).groups).toHaveLength(3);
+  });
+
+  it('builds a second group 0: bindGroup0 with binding 2 = transparent-order', () => {
+    const { groups, buffer, binding } = setUp();
+    const group0s = groups.filter((g) => g.entries.length === 6);
+    expect(group0s).toHaveLength(2);
+    const plain = group0s.find((g) => binding(g, 2) === buffer('visible-indices'));
+    const sorted = group0s.find((g) => binding(g, 2) === buffer('transparent-order'));
+    expect(plain, 'group 0 on visible-indices').toBeDefined();
+    expect(sorted, 'group 0 on transparent-order').toBeDefined();
+    expect(sorted!.layout).toBe(plain!.layout);
+    for (const b of [0, 1, 3, 4, 5]) expect(binding(sorted!, b)).toBe(binding(plain!, b));
+  });
+
+  it('draws every transparent with ONE drawIndexedIndirect(transparent-args, 0), after the opaque draws', () => {
+    const { draw, buffer, uber, binding } = setUp();
+    const calls = draw(5);
+    const draws = calls.filter((c) => c.op === 'draw');
+    // Opaque: 3 types x 2 material buckets, from buckets 0-13 of indirect-args.
+    const opaque = draws.filter((c) => c.buffer === buffer('indirect-args'));
+    expect(opaque).toHaveLength(3 * BUCKETS_PER_TYPE);
+    for (const c of opaque) expect(c.offset!).toBeLessThan(OPAQUE_DRAW_BUCKETS * 20);
+    const transparent = draws.filter((c) => c.buffer === buffer('transparent-args'));
+    expect(transparent).toEqual([{ op: 'draw', buffer: buffer('transparent-args'), offset: 0 }]);
+    expect(draws.at(-1)).toBe(transparent[0]);
+    // Its state: the uber pipeline, the sorted group 0, groups 1 and 2.
+    const at = calls.indexOf(transparent[0]);
+    const lastPipeline = calls.slice(0, at).filter((c) => c.op === 'pipeline').at(-1)!;
+    expect(lastPipeline.pipeline).toBe(uber());
+    const since = calls.slice(calls.indexOf(lastPipeline), at);
+    const group = (n: number) => since.filter((c) => c.op === 'group' && c.index === n).at(-1)?.group;
+    expect(binding(group(0)!, 2)).toBe(buffer('transparent-order'));
+    expect(group(1), 'group 1 set for the uber draw').toBeDefined();
+    expect(group(2), 'group 2 set for the uber draw').toBeDefined();
+  });
+
+  it('skips the uber draw when nothing is transparent (FrameState.transparentCount 0)', () => {
+    const { draw, buffer, uber } = setUp();
+    const calls = draw(0);
+    expect(calls.filter((c) => c.op === 'draw' && c.buffer === buffer('transparent-args'))).toHaveLength(0);
+    expect(calls.some((c) => c.op === 'pipeline' && c.pipeline === uber())).toBe(false);
+    expect(calls.filter((c) => c.op === 'draw' && c.buffer === buffer('indirect-args'))).toHaveLength(3 * BUCKETS_PER_TYPE);
+  });
+
+  it('never binds transparent-args: in a render pass it is an INDIRECT buffer only', () => {
+    const { groups, buffer, draw } = setUp();
+    draw(3);
+    for (const g of groups) for (const e of g.entries) {
+      expect((e.resource as GPUBufferBinding).buffer).not.toBe(buffer('transparent-args'));
+    }
+  });
+
+  it('fails loudly in setup without the renderer-owned sort buffers', () => {
+    expect(() => setUp(['transparent-order'])).toThrow(/transparent-order/);
+    expect(() => setUp(['transparent-args'])).toThrow(/transparent-args/);
   });
 });
