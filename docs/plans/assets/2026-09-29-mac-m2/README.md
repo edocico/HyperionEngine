@@ -36,7 +36,7 @@ Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`,
 | M7 | **fallisce**: zeri anche con il flag, perché i marker del profiler sono pass vuoti | `m7-timestamps-{gpu,stock}.json`, `m7-timestamp-probe-{gpu,stock}.json` |
 | M8, M9 | **fermi**: dipendono da M7, aspettano la scelta sui timestamp | — |
 | M10 | **bug confermato** (BC7 e ASTC); fix test-first da fare | `m10-tier-growth.json` |
-| M5 | _in preparazione_ (lo script è in revisione avversaria) | — |
+| M5 | **passa**: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto; i controlli negativi hanno i denti | `cull-subgroup-check.js`, `cull-subgroup-check.json` |
 
 ### M0 — Adapter, feature, limiti
 
@@ -147,6 +147,18 @@ Lo script dell'handoff, invariato (`m10-tier-growth.json`), su un device fresco 
 - `astc-4x4-unorm` e `bc7-rgba-unorm`: `copySize.width (2) is not a multiple of compressed texture format block width (4)`, in `CopyTextureToTexture` durante la crescita.
 
 L'analisi dell'handoff regge. `texture-manager.ts:505-516` copia ogni mip con `Math.max(1, size >> mip)`, e i mip 2×2 e 1×1 non sono multipli del blocco 4×4. L'encoder diventa invalido, e subito dopo la vecchia texture viene distrutta con tutti i layer caricati. Il bug è portabile (BC7 anche su Linux e Windows) e non si è mai visto perché non esiste un asset KTX2 e, su un device BC, i PNG finiscono nel tier di overflow rgba8. Gli upload (KTX2 diretto e transcodificato, `texture-manager.ts:779` e `:823`) scrivono solo il mip 0, la cui dimensione è sempre multipla di 4, quindi non hanno lo stesso problema; la copia del tier di overflow (`:409`) è rgba8. Il fix è quello prescritto dall'handoff (vitest con device finto, poi la copia sulla dimensione fisica arrotondata al blocco): da fare test-first sul branch.
+
+### M5 — Cull a subgroup a 32 lane: insiemi di indici
+
+- **Lo script** (`cull-subgroup-check.js`, 759 righe) lo ha scritto un workflow (`wf_99092386-7be`): un autore, che l'ha provato in node su un WebGPU finto che emula `cull.wgsl`; tre revisori avversari (semantica dello shader, API WebGPU, comparatore e controlli), con 6 punti minori; un fixer che li ha applicati tutti. Ho riletto io l'intero file prima di eseguirlo.
+- **Esecuzione.** È il file committato, identico: la pagina lo ha caricato da una copia temporanea in `ts/public/__m5-tmp/`, poi cancellata, e lo SHA-256 del testo eseguito (`bc99d913…875a`) è quello del file. Server "gpu", `?mode=B&bench`, device fresco con `subgroups`. Uscita in `cull-subgroup-check.json`. **`ok: true`** in 3,9 s: 600 dispatch, 3,6 ms di media ciascuno.
+- **Sonde delle lane**: 8 subgroup da 32 invocazioni **contigue** per workgroup (`o[l] = (l & ~31)·1000 + (l | 31)` per ogni l). `subgroupElect()` sceglie l'invocazione più bassa di ciascuno (0, 32, …, 224). `liveConfig`, ricavato con i predicati del renderer (`detectSubgroupSupport`, `subgroupCullSupported`), conferma che il renderer vivo usa proprio la pipeline `live`.
+- **Pipeline positive**: `live` (il testo e le costanti del renderer vivo: `enable subgroups;` + `requires subgroup_id;`, `{1, 32, 1}`), `handoff` (`{1, 32, 0}`) e `atomic`. **120 casi su 120** ciascuna: N ∈ {1000, 99937, 100000} × 10 seed × 4 scenari (misto ~31 % visibile, metà ~52 %, tutto visibile, sequenze che attraversano i confini di subgroup e workgroup). Per ogni slot sono giusti il conteggio e l'insieme esatto degli indici (niente duplicati né buchi), la coda della regione è intatta e gli args non toccati sono intatti. Coordinate multiple di 1/64, quindi valori esatti in f32; 187 928 casi a filo di piano e 149 957 appena fuori.
+- **Controlli negativi**:
+  - `wrongWidth` (`SUBGROUP_SIZE` 16 su hardware a 32 lane): fallisce 120/120.
+  - `wrongWidthMax16` (lo stesso con `MAX_SUBGROUPS` 16, così nessun array sfora): fallisce 120/120 **con tutti i conteggi giusti e gli insiemi sbagliati**. È la classe di guasto vista sull'AMD (32-64 lane), riprodotta qui: il check la vede.
+  - L'auto-test del comparatore coglie tutte e 6 le iniezioni: duplicato + buco, indice spostato, scambio, conteggio +1, indice oltre la finestra, `firstInstance` +1.
+- **Esito.** Sull'M2 il percorso cull a subgroup, che il renderer usa davvero, è corretto indice per indice. Il cancello `subgroupCullSupported` (esattamente 32-32) è giusto così com'è per Apple: nessuna domanda da fare. `CLAUDE.md:487` va aggiornato con questo esito (task 6.8).
 
 ## Domande aperte per l'utente
 
