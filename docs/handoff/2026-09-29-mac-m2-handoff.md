@@ -281,7 +281,7 @@ claude mcp list
 Se il primo `claude mcp list` mostra già un `chrome-devtools-gpu` di agosto, rimuovilo prima con `claude mcp remove -s local chrome-devtools-gpu`. Perché proprio così:
 - **Il nome resta `chrome-devtools-gpu`**: lo usano la skill `/gpu-check` e il matcher dell'hook stale-wasm (`.claude/settings.json:25`).
 - **Niente `--enable-unsafe-webgpu`, `--enable-features=Vulkan` o `--use-angle=vulkan`.** Su macOS Chrome ha WebGPU su Metal di default. `unsafe-webgpu` toglierebbe la blocklist ed esporrebbe feature sperimentali, e allora non sarebbe più il Chrome di un utente.
-- **`--enable-webgpu-developer-features`** serve per avere `timestamp-query` diversi da zero su Metal. Senza, il 2026-08-04 davano tutti 0. Con il flag, se funziona sull'M2 è da verificare (test M7).
+- **`--enable-webgpu-developer-features`** toglie la quantizzazione di `timestamp-query`: senza, Chrome dà multipli di 65 536 ns su Metal. Gli zeri del 2026-08-04 venivano dai marker vuoti del profiler vecchio (M7 del 2026-09-29, spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`).
 - **Nessun altro flag.** chrome-devtools-mcp (verificato sulla 1.10.1) avvia Chrome tramite puppeteer, i cui argomenti di default includono già `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`, `--disable-background-timer-throttling` e `--force-color-profile=srgb`.
 - **La `userDataDir` deve essere diversa da quella del server stock** (`~/.cache/chrome-devtools-mcp/chrome-profile`), altrimenti il secondo avvio fallisce con "The browser is already running". Essendo persistente, conserva anche la cache degli shader tra una sessione e l'altra.
 
@@ -483,7 +483,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
   - i check sui pixel vanno in skip.
 
   Sono lacune note del motore, non bug di Metal.
-- **Timestamp.** Senza flag Chrome quantizza a 65 536 ns su Metal; gli zeri di M7 venivano dai marker vuoti del profiler vecchio (spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`). `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, ma che basti con i marker a compute pass vuoti sulle GPU Apple è da verificare (M7). Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
+- **Timestamp.** Senza flag Chrome quantizza a 65 536 ns su Metal; gli zeri di M7 venivano dai marker vuoti del profiler vecchio (spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`). `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, che toglie la quantizzazione. Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
 - **Due server Chrome, due ruoli.** `chrome-devtools` (da `.mcp.json`, senza flag) è "il Chrome di un utente": serve per i verdetti pass/fail. `chrome-devtools-gpu` serve per i timing. rAF si ferma comunque con la finestra minimizzata, con lo schermo in stop o bloccato. Per le sessioni lunghe tieni la finestra visibile e lancia `caffeinate -dimsu` in background (`kill` alla fine).
 - **Retina, dpr 2.** Leggilo a ogni sessione: su Linux era 1.25, poi 1.667. Vale `px screenshot = px CSS × dpr`, e `pixels.py` legge il dpr da `map.json`. Il backing store del canvas è `clientWidth × dpr` (`main.ts:82-85`), quindi a finestra piena ci sono circa 2,5 volte i pixel di Linux a dpr 1.25 e i timing a finestra piena non si confrontano. Per ogni misura fissa la dimensione con `window.__hyperion.resize(1920, 1080)`, come fa il bench.
 - **`{ unit: 'px' }` vuol dire pixel del device.** Lo shader della linea riceve la dimensione piena del canvas. A dpr 2 una linea da 3 px è larga 1,5 px CSS e negli screenshot sembra più sottile che sulla Fedora. Il check di Primitives conta texel e passa comunque. Non "correggerlo": è una domanda per l'utente (sezione 5).
@@ -757,7 +757,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M7 — `timestamp-query` (importante, prerequisito di M8 e M9)
 
-- **Perché qui.** Su Metal il Chrome stock dà zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
+- **Perché qui.** Su Metal il profiler vecchio leggeva solo zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
 - **Procedura.** Con `chrome-devtools-gpu`, prima di qualsiasi probe della swapchain (il primo probe riconfigura il canvas):
   1. `?mode=B`, tab Lighting.
   2. `window.__hyperion.enableGpuProfiling()`, circa 4 s di attesa (almeno 130 frame), poi `window.__hyperion.getGpuTimings()`.
@@ -765,7 +765,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 - **Atteso.**
   - Con il flag: voci (`cull`, `forward`, `light-groups/seed|sdf|accum`, `fxaa-tonemap`) con `averageMs > 0`, `sampleCount` che sale fino a 120, e `getGpuFrameTiming()` non nullo.
   - Con il server stock: le stesse voci, con valori multipli di 65 536 ns (0 o 0,0655 ms sui pass brevi) e medie stabili, e nessun avviso del profiler. Fino al profiler nuovo qui compariva l'avviso: gli zeri venivano dai marker vuoti (M7 del 2026-09-29, spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`).
-- **Se fallisce.** Voci vuote dopo 4 s: **fermati**, non lanciare il bench, e riferisci l'avviso del profiler, che dice il motivo e il pass.
+- **Se fallisce.** Voci vuote dopo 4 s: **fermati**, non lanciare il bench, e riferisci l'avviso del profiler, che dice il motivo (e, per `zero`/`reversed`/`stale`, il pass).
 
 ### M8 — Bench 5b sull'M2 (importante)
 
@@ -774,7 +774,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 - **Procedura.**
   1. HEAD: `http://localhost:5173/?mode=B&bench`, senza probe prima.
   2. `evaluate_script` con `() => { window.__benchOpts = { label: 'm2 HEAD <sha>' }; }`, poi il corpo di `docs/plans/assets/2026-09-27-transparent-sort-bench.js` con `filePath: docs/plans/assets/2026-09-29-mac-m2/bench-head.json`. Se la chiamata MCP va in timeout, dividi per `sizes` (`window.__benchOpts.sizes = [100000]`).
-  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`. Subito dopo `git worktree add`, prima di `npm ci`, fai il `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2): senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`.
+  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`. Subito dopo `git worktree add`, prima di `npm ci`, fai il `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2), e lo stesso nel worktree del passo 4: senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`.
 
      ```
      git worktree add ../hyperion-5b-step3 6ff494f
