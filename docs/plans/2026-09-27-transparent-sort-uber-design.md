@@ -749,3 +749,22 @@ Si verifica sull'iGPU AMD (adapter low-power), con la skill `/gpu-check`, in Mod
 | La composizione (passo 1) cambia gli ultimi bit dei vertici (contrazione FMA, inlining) | C identico al bit al passo 1 è bloccante: una differenza si spiega prima di andare avanti |
 | Le righe degli errori di compilazione non corrispondono ai file | Marcatori `// --- piece: X ---` |
 | Il budget del profiler (256 marker) è condiviso | 22 marker più quelli di `LightGroupsPass` per set. Oltre il budget `beginFrame` lascia il frame non misurato; nessun effetto sul rendering |
+
+## 11. Misure (passi 0-4)
+
+Scenario committato `assets/2026-09-27-transparent-sort-bench.js`, iGPU AMD (adapter low-power: `amd / rdna-3, subgroups 32-64`), canvas 1920×1080, illuminazione spenta, profiler acceso, media della finestra da 120 frame senza readback. Valori in ms; i JSON sono `assets/2026-09-27-transparent-sort-bench-step{0,1,3,4}.json`.
+
+| Quad trasparenti | Depth | forward p.0 | forward p.1 | forward p.3 | forward p.4 | 1−0 (composizione) | 4−3 (draw uber) | total 1−0 | total 4−3 | sort p.3 | sort p.4 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 000 | tutte a 0 | 0.162 | 0.161 | 0.170 | 0.177 | -0.001 | 0.006 | -0.002 | 0.016 | 0.248 | 0.249 |
+| 1 000 | distinte | 0.163 | 0.162 | 0.169 | 0.176 | -0.001 | 0.007 | -0.003 | 0.015 | 0.248 | 0.248 |
+| 10 000 | tutte a 0 | 0.192 | 0.189 | 0.185 | 0.183 | -0.003 | -0.002 | 0.002 | 0.011 | 0.328 | 0.314 |
+| 10 000 | distinte | 0.191 | 0.188 | 0.182 | 0.186 | -0.003 | 0.004 | 0.002 | 0.055 | 0.336 | 0.343 |
+| 100 000 | tutte a 0 | 0.262 | 0.265 | 0.235 | 0.214 | 0.003 | -0.021 | -0.129 | 0.251 | 0.813 | 0.787 |
+| 100 000 | distinte | 0.264 | 0.265 | 0.229 | 0.211 | 0.001 | -0.018 | -0.043 | 1.137 | 0.867 | 0.869 |
+
+- 1−0 è il costo della composizione (moduli composti, `VertexOutput` più largo).
+- 4−3 è il costo del passaggio al draw uber nel suo insieme: la pipeline uber, l'ordine ordinato, un draw al posto di 12. Non va attribuito alla sola pressione sui registri.
+- Il profiler separa i pass con compute pass vuoti e parte dei frammenti del forward può cadere nel pass successivo: i delta del `forward` vanno letti insieme a quelli di `total` (somma di tutti i pass).
+- "sort" è la somma delle medie di `transparent-sort/{gather,upsweep,scan,scatter}`. Con il profiler sono 22 compute pass più i marker contro 1, quindi è un limite superiore del costo in produzione. Soglia (D3): < 1 ms a 100 000.
+- Cancello del passo 4: `assets/2026-09-27-transparent-sort-step4-compare-{B,C}.txt` (C \ T identici al bit, C ∩ T entro 1/255, stati uguali alla baseline).

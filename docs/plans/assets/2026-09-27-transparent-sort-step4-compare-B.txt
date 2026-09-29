@@ -1,0 +1,12 @@
+B primitives    OK   C=2364 (grid 2304/2304) C\T=2233 C∩T=131 movers 0/0
+B scene-graph   OK   C=2299 (grid 2282/2304) C\T=2299 C∩T=0 movers 1/1
+B input         OK   C=2304 (grid 2304/2304) C\T=2304 C∩T=0 movers 0/0
+B audio         OK   C=2304 (grid 2304/2304) C\T=2304 C∩T=0 movers 0/0
+B particles     OK   C=2304 (grid 2304/2304) C\T=2304 C∩T=0 movers 0/0
+B rendering-fx  OK   C=2309 (grid 2304/2304) C\T=2309 C∩T=0 movers 0/0
+B lighting      OK   excluded (Lighting: statuses only)
+B debug-tools   OK   C=2304 (grid 2304/2304) C\T=2304 C∩T=0 movers 0/0
+B lifecycle     OK   C=2351 (grid 2304/2304) C\T=2351 C∩T=0 movers 0/0
+B twin-2d       OK   C=3609 (grid 2265/2304) C\T=3407 C∩T=202 movers 4/4
+B statuses      OK
+PASS
