@@ -9,6 +9,7 @@ Branch `test/mac-m2-gpu`, HEAD `930936c`, 2026-09-29, sessione dei test sul MacB
 | Probe 3, `m7-probe3-own-property-override-gpu.json` | `beginRenderPass`/`beginComputePass` sovrascritti come proprietà proprie di un encoder vero: funziona, niente errori, prototipo e altri encoder intatti, descrittore originale intatto |
 | Probe 4, `m7-probe4-work-sampling-gpu.json` | Quali comandi fanno campionare un pass: la tabella della §2 |
 | `wf_37fbd118-55f` | Valutazione pro e contro, meccanismo automatico o su adesione per i pass dei plugin: due analisti e un critico, che ha letto la spec WebGPU, la spec WebIDL e i sorgenti di Dawn |
+| `wf_3b0e89ce-7e0` | Review avversaria di questa spec (fatti sul codice, meccanismo, omissioni, coerenza): 19 risultati confermati, tutti minori, corretti in questa versione. I principali: il sigillo contro i command buffer rifiutati (§4.6), `passSum` che non continua le misure AMD (§7.3), la catena SDF di 11 pass e non 13, i conteggi letti come WebIDL (§4.4), i test e i documenti che la spec non nominava (§7.4, §8.1), il backport su `6ff494f`/`608a113` (§11) |
 
 Le decisioni della §0 sono dell'utente.
 
@@ -133,34 +134,41 @@ Il descrittore originale non viene mai scritto (probe 3), e i suoi membri si leg
 
 ### 4.4 Il lavoro del pass
 
-Il pass encoder che il metodo nativo restituisce riceve a sua volta proprietà proprie per i comandi di lavoro. Ognuna segna `lavoro: true` sulla coppia del pass quando il comando rispetta la regola, poi chiama il metodo nativo:
+Il pass encoder che il metodo nativo restituisce riceve a sua volta proprietà proprie per i comandi di lavoro. Ognuna segna `lavoro: true` sulla coppia del pass quando il comando rispetta la regola, poi chiama il metodo nativo. I conteggi si leggono come li legge WebIDL (`GPUSize32` è un `[EnforceRange] unsigned long`): conta la parte intera, quindi `draw(0.5)` vale `draw(0)`. Un valore che WebIDL rifiuta (`NaN`, infinito, fuori intervallo) fa lanciare il metodo nativo, come senza profiler.
 
 | Comando | Conta come lavoro se |
 |---|---|
-| `draw(v, i = 1)` | `v > 0` e `i > 0` |
-| `drawIndexed(c, i = 1)` | `c > 0` e `i > 0` |
+| `draw(v, i = 1)` | parte intera di `v` > 0 e di `i` > 0 |
+| `drawIndexed(c, i = 1)` | parte intera di `c` > 0 e di `i` > 0 |
 | `drawIndirect`, `drawIndexedIndirect` | sempre (si campionano anche a 0, probe 2) |
-| `dispatchWorkgroups(x, y = 1, z = 1)` | `x`, `y` e `z` > 0 |
+| `dispatchWorkgroups(x, y = 1, z = 1)` | parte intera di `x`, `y` e `z` > 0 |
 | `dispatchWorkgroupsIndirect` | sempre (probe 2) |
 | `executeBundles(bundles)` | almeno un bundle. Il contenuto non si vede: un bundle vuoto lascia la fine vecchia, e i controlli della §6 lo prendono |
 
 La regola sbaglia solo da un lato. `draw(0)` si campiona (probe 4) ma non fa nulla, e contarlo come "senza lavoro" non costa niente. `executeBundles` viene prima convertito in array, perché un iterabile generico si consuma una volta sola.
 
-**Nel motore di oggi ogni pass che si apre ha lavoro.** Cull, scatter e overlay escono prima di aprire il pass quando non hanno niente da fare (`cull-pass.ts:238`, `scatter-pass.ts:188`, `debug-line-pass.ts:158`). Tutti gli altri pass del grafo contengono un draw a schermo intero oppure un draw o un dispatch indiretto. La regola serve per i plugin e per i pass futuri.
+**Nel motore di oggi ogni pass che si apre ha lavoro.** Cull, scatter e overlay escono prima di aprire il pass quando non hanno niente da fare (`cull-pass.ts:238`, `scatter-pass.ts:188`, `debug-line-pass.ts:158`). Ogni pass del grafo che si apre contiene un draw o un dispatch con conteggi maggiori di zero oppure un draw o un dispatch indiretto: cull, scatter, il gather e lo scan del sort sono dispatch diretti, i composti e la catena SDF draw diretti a schermo intero, il resto indiretti. La regola serve per i plugin e per i pass futuri.
 
 ### 4.5 Capacità
 
 - Un query set di **1024 query** (512 coppie, 8 KB), creato con il profiler da `enableGpuProfiling()` e mai ingrandito. Il costruttore diventa `new GpuProfiler(device, maxPairs = 512)`.
-- Il caso peggiore stimato sta intorno alle 300 coppie:
+- Il caso peggiore stimato sta intorno alle 250 coppie:
   - sort 22;
-  - per ogni set SDF: seed 1, catena circa 13 alla mezza risoluzione di 1080p, accumulo 1 per gruppo, con fino a 16 set;
-  - JFA circa 12 più seed e composito;
-  - bloom 6, poi i pass della scena e gli overlay.
+  - per ogni set SDF, con fino a 16 set: seed 1 e catena 11 (`1 + ceil(log2 960)` alla mezza risoluzione di 1080p, lo stesso sul canvas dell'M2), più un accumulo per gruppo, fino a 16 gruppi;
+  - contorni: seed 1, JFA 11 a 1080p e composito 1; oppure bloom 6;
+  - scatter, cull e forward, e gli overlay.
 - Un frame che supera la capacità smette di iniettare, si scarta intero con motivo "troncato", e al primo caso compare un avviso con il nome del parametro.
 
 ### 4.6 Chiusura
 
-`endFrame(encoder)` risolve le `2n` query usate nel resolve buffer e le copia in uno dei 3 buffer di readback a rotazione, come oggi. Il frame in attesa porta le coppie (nome e lavoro), `n` e la generazione. `abortFrame()` resta com'è: un pass che lancia fa abbandonare l'encoder senza submit, quindi la GPU non scrive niente.
+`endFrame(encoder)` risolve le `2n` query usate nel resolve buffer e le copia in uno dei 3 buffer di readback a rotazione, come oggi. Il frame in attesa porta le coppie (nome e lavoro), `n`, la generazione e il sigillo. `abortFrame()` resta com'è: un pass che lancia fa abbandonare l'encoder senza submit, quindi la GPU non scrive niente.
+
+**Il sigillo del frame.** Un command buffer che fallisce la validazione non esegue niente, né le query né il resolve né la copia. Il buffer di readback conserva allora gli stamp di un frame vecchio, che passano tutti e quattro i controlli della §6.2. Succede, per esempio, dopo un hot-reload che supera il probe e poi invalida ogni frame (CLAUDE.md, "Validation cannot see draw-time errors"): il profiler continuerebbe a riportare i tempi di prima. Per riconoscerlo:
+- ogni frame misurato ha un numero di sequenza u32, mai 0;
+- prima del submit, `endFrame` scrive con `queue.writeBuffer` 0 in coda al buffer di readback del frame (che è `COPY_DST`) e il numero del frame in un buffer `seal` di 4 byte;
+- nello stesso command buffer, dopo la copia degli stamp, copia `seal` in coda al readback.
+
+Le scritture della coda avvengono anche se il command buffer viene rifiutato; la copia no. Quindi dopo il mapping, se la coda non contiene il numero del frame, il frame si scarta con il motivo `unexecuted`. I buffer di readback crescono di 8 byte.
 
 ## 5. Nomi e stage
 
@@ -169,19 +177,19 @@ La regola sbaglia solo da un lato. `draw(0)` si campiona (probe 4) ma non fa nul
 - **I nomi ripetuti in un frame si sommano**, come oggi (`gpu-profiler.ts:316-324`).
 - **`profileStages` sparisce.** Oggi un pass con stage deve elencarli in anticipo, e un elenco che non corrisponde alle chiamate di `mark` fa scartare il frame (`gpu-profiler.ts:239-242`). Con i nomi attaccati ai pass nel momento in cui si aprono, non c'è più niente da allineare.
 - **Qualunque pass può chiamare `stage`**, anche quelli dei plugin.
-- **`LightGroupsPass`** (`light-groups-pass.ts:108-128`): le quattro chiamate `mark?.(encoder)` diventano `stage?.('seed')`, `stage?.('sdf')`, `stage?.('accum')` e, per i gruppi senza set, `stage?.('accum')`, negli stessi punti. Le chiavi `light-groups/seed|sdf|accum`, che M9 legge, restano identiche. Ognuna è ora la somma dei pass dello stage: seed 1 per set, catena SDF circa 13 per set, accumulo 1 per gruppo.
+- **`LightGroupsPass`** (`light-groups-pass.ts:108-128`): le quattro chiamate `mark?.(encoder)` diventano `stage?.('seed')`, `stage?.('sdf')`, `stage?.('accum')` e, per i gruppi senza set, `stage?.('accum')`, negli stessi punti. Le chiavi `light-groups/seed|sdf|accum`, che M9 legge, restano identiche. Ognuna è ora la somma dei pass dello stage: seed 1 per set, catena SDF 11 per set a 1080p, accumulo 1 per gruppo.
 - **`TransparentSortPass`** (`transparent-sort-pass.ts:291-332`) capisce di essere misurato da `stage !== undefined` (D5). In quel caso si divide in 22 compute pass come oggi, e chiama `stage('gather')` e poi `stage('upsweep' | 'scan' | 'scatter')` prima di ciascuno. Le chiavi del bench (`transparent-sort/{gather,upsweep,scan,scatter}`) restano identiche. Le copie della readback di dev tra gather e upsweep non sono pass e non cambiano. Da non misurato resta un solo pass, due con una readback.
-- **Effetto della misura.** Misurato, il sort ha 22 confini di pass invece di uno. È una scelta dell'utente: dà gli stage e permette di confrontare M8 voce per voce con le misure AMD della 5b. Lo span del frame mostra l'effetto complessivo.
+- **Effetto della misura.** Misurato, il sort ha 22 confini di pass invece di uno. È una scelta dell'utente (D5), per due ragioni: dà gli stage, cioè dove va il tempo del sort; e tiene la stessa struttura misurata dei run AMD della 5b, così i confronti fra i passi del bench avvengono nelle stesse condizioni. I valori delle singole voci, invece, non si confrontano fra AMD e M2 (§11). Lo span del frame mostra l'effetto complessivo della divisione.
 
 ## 6. Validità e aggregazione
 
 ### 6.1 Coppie senza lavoro
 
-Si ignorano. Il loro pass non ha fatto niente, quindi contribuiscono 0 ms al loro nome, e il nome compare nel frame.
+Si ignorano, perché su Metal non si possono misurare: un pass senza draw non riceve lo stamp di fine (probe 2 e 4). Il loro nome vale 0 ms in quel frame e compare nel frame. Un pass con solo il clear fa comunque lavoro sulla GPU, il clear, che nessuna voce misura; nello span entra solo se sta fra due pass misurati. Nel motore nessun pass del grafo è solo clear: `LightAccumStage` pulisce e poi disegna in indiretto.
 
 ### 6.2 Coppie con lavoro
 
-Una coppia con lavoro è valida solo se passa quattro controlli, tutti su valori dello stesso resolve:
+Prima delle coppie si controlla il frame: se il sigillo (§4.6) non è il suo, si scarta con il motivo `unexecuted`, e nessuno dei suoi valori entra nella storia (§6.3). Poi una coppia con lavoro è valida solo se passa quattro controlli, tutti su valori dello stesso resolve:
 
 | # | Controllo | Motivo dello scarto |
 |---|---|---|
@@ -194,14 +202,15 @@ I controlli 3 e 4 sono una rete di sicurezza per comportamenti non visti: un'alt
 
 ### 6.3 La storia per indice
 
-Il profiler conserva, per ogni indice, l'ultimo valore letto. La aggiorna con **ogni** frame letto, anche quando lo scarta, per qualunque motivo, generazione compresa, e la aggiorna nell'ordine dei submit (`poll()` consuma già in ordine). Tre casi:
+Il profiler conserva, per ogni indice, l'ultimo valore letto. La aggiorna con ogni frame letto **ed eseguito** (sigillo giusto), anche quando lo scarta per un altro motivo, generazione compresa, e la aggiorna nell'ordine dei submit (`poll()` consuma già in ordine). I casi:
 - se un readback non si riesce a leggere, i suoi indici diventano "sconosciuti", e per quegli indici i controlli 3-4 saltano un frame;
 - `reset()` segna tutta la storia sconosciuta;
-- i frame saltati (nessun buffer libero) e quelli abortiti non scrivono query, e la storia resta esatta.
+- i frame saltati (nessun buffer libero) e quelli abortiti non scrivono query, e la storia resta esatta;
+- un frame con il command buffer rifiutato (`unexecuted`) non ha scritto query, e i valori del suo readback sono di un frame vecchio: la storia non li prende, e resta esatta.
 
 ### 6.4 Il frame
 
-**Un frame conta solo se tutte le sue coppie con lavoro sono valide (D6).** Si scarta intero se una coppia non lo è, se il frame è troncato, o se non ha nessuna coppia con lavoro (motivo `empty`). Così restano vere le proprietà che `getGpuTimings()` promette oggi: ogni voce ha lo stesso `sampleCount`, un nome assente in un frame vale 0 ms in quel frame, e ogni media è per frame.
+**Un frame conta solo se tutte le sue coppie con lavoro sono valide (D6).** Si scarta intero se non è stato eseguito (`unexecuted`), se una coppia non è valida, se è troncato, o se non ha nessuna coppia con lavoro (motivo `empty`). Un frame scartato per più motivi conta sotto il primo, in quest'ordine: `unexecuted`, `truncated`, `zero`, `reversed`, `stale`, `empty`. Così restano vere le proprietà che `getGpuTimings()` promette oggi: ogni voce ha lo stesso `sampleCount`, un nome assente in un frame vale 0 ms in quel frame, e ogni media è per frame.
 
 ### 6.5 Aggregazione e span
 
@@ -213,7 +222,7 @@ Il profiler conserva, per ogni indice, l'ultimo valore letto. La aggiorna con **
 
 - **Contatori:**
   - `discardedFrames`, il totale che esiste già;
-  - i frame scartati per motivo: `zero`, `stale`, `reversed`, `truncated`, `empty`;
+  - i frame scartati per motivo: `unexecuted`, `truncated`, `zero`, `reversed`, `stale`, `empty`;
   - `skippedFrames`, invariato.
 - **Un solo avviso**, dopo 120 frame scartati di fila, con il motivo più frequente e il nome del pass colpevole. Per esempio: "pass 'overlay/x' did work but its end timestamp was not refreshed".
 - L'avviso di oggi su `--enable-webgpu-developer-features` (`gpu-profiler.ts:370-386`) sparisce. Il commento del modulo spiega invece la quantizzazione a 65,5 µs di Chrome su Metal senza flag, da citare con `averageMs`.
@@ -244,8 +253,8 @@ Lo span è un valore separato, e non una voce in più di `getGpuTimings()`, per 
 
 `docs/plans/assets/2026-09-27-transparent-sort-bench.js`:
 - `total` diventa `engine.getGpuFrameTiming()?.averageMs`;
-- nuovo campo `passSum`, la somma delle voci, per continuità con le misure AMD (`bench.js:131`, dove oggi è `total`);
-- il commento in testa (`bench.js:12-18`) spiega il cambio: con i marker il bracket di un pass conteneva anche il lavoro che lo precedeva, con le coppie no.
+- nuovo campo `passSum`, la somma delle voci. È una grandezza nuova: sull'M2 supera lo span per la sovrapposizione, e la differenza mostra quanta ce n'è. **Non continua le misure AMD.** Oggi il `total` del bench (`bench.js:131`) somma i bracket fra marker consecutivi, che si incastrano da un capo all'altro del frame, quindi è già lo span (review della spec: su 200 frame simulati coincidono a 7e-15 ms). La continuità con AMD la dà `total`;
+- il commento in testa (`bench.js:12-18`) spiega il cambio: con i marker il bracket di un pass conteneva anche il lavoro che lo precedeva, con le coppie no; e `total` resta lo span del frame, come prima.
 
 L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage non cambiano.
 
@@ -257,6 +266,11 @@ L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage n
   - il gotcha "A graph pass can time its own stages", da riscrivere per `stage`;
   - il gotcha "`timestamp-query` on a stock Chrome is platform-dependent": su Metal gli zeri venivano dai marker vuoti, e Chrome senza flag quantizza a 65,5 µs;
   - la riga di `hyperion.ts`, che guadagna `getGpuFrameTiming`.
+- **`.claude/agents/webgpu-pass-reviewer.md`**, regola 11: oggi controlla che `profileStages` corrisponda alle chiamate di `mark()`, cioè il contratto che D4 rimuove, e §9 passo 8 si affida proprio a questo agente. La regola nuova: `stage` esiste solo nei frame misurati e un pass non ne dipende per funzionare; `profile: false` esclude un pass; un pass che apre pass su un encoder suo, o chiama il metodo del prototipo, non viene misurato.
+- **La handoff** (`docs/handoff/2026-09-29-mac-m2-handoff.md`):
+  - M7: "con il server stock l'avviso deve comparire" non vale più, perché lo stock dà valori quantizzati a 65,5 µs e frame validi;
+  - M12: oggi dice "nessun timing"; va aggiunta la verifica del meccanismo in Safari (override, membri ereditati, timestamp), che è un rischio della §10;
+  - alla fine, la sezione 9 prevista dalla handoff.
 - **README delle prove Mac**: la sezione M7 con l'esito del profiler nuovo.
 
 ## 8. Test e verifica
@@ -276,10 +290,11 @@ L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage n
   - **nomi e stage**:
     - il nodo, `nodo/stage`, un pass prima del primo `stage()`;
     - l'opt-out con `profile: false`;
-  - **lavoro**: ogni riga della tabella della §4.4, compresi `draw(0)`, `draw(3, 0)`, un bundle vuoto e un iterabile di bundle;
+  - **lavoro**: ogni riga della tabella della §4.4, compresi `draw(0)`, `draw(3, 0)`, `draw(0.5)`, un bundle vuoto e un iterabile di bundle;
   - **capacità**: frame troncato, scartato e contato, con l'avviso una volta sola;
+  - **sigillo**: su un device finto il cui `submit` può rifiutare il command buffer (niente resolve né copia, ma le `writeBuffer` avvengono), un frame rifiutato si scarta come `unexecuted` e non entra nella storia; variante con due readback che contengono frame validi diversi, letti alternati con ogni submit rifiutato: nessun frame accettato;
   - **validità**:
-    - i quattro controlli, ciascuno con il suo motivo;
+    - i quattro controlli, ciascuno con il suo motivo, e l'ordine dei motivi quando sono più d'uno;
     - una coppia senza lavoro e con stamp vecchi non fa scartare il frame;
     - una coppia con lavoro e fine vecchia sì;
   - **storia**:
@@ -293,13 +308,14 @@ L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage n
     - lo span con coppie sovrapposte, minore della somma;
   - **avviso** dopo 120 frame scartati di fila, con motivo e pass;
   - **ciclo di vita**: `abortFrame`, `destroy`.
-- **`render-graph.test.ts`**:
+- **`render-graph.test.ts`**: i casi di oggi su `profiler.mark` e `profileStages` (`render-graph.test.ts:199-300`) diventano:
   - in un frame misurato, `instrument` una volta, `enterNode` per ogni nodo con il flag di `profile`, e `stage` passato a ogni pass;
   - in un frame non misurato nessuna chiamata e `stage` indefinito;
   - un pass che lancia porta ad `abortFrame`.
-- **`transparent-sort-pass.test.ts`**: 22 compute pass se e solo se `stage` è presente, con la sequenza `gather` e poi `upsweep`, `scan`, `scatter` sette volte. Sostituisce il test del contratto di `mark` (`transparent-sort-pass.test.ts:435-446`).
-- **`light-groups-pass.test.ts`**: `seed`, `sdf` e `accum` per set, più `accum` per i gruppi senza set. Sostituisce `light-groups-pass.test.ts:193-200`.
-- **`renderer` e `hyperion`**: `getGpuFrameTiming()` arriva fino alla facade, e vale `null` a profiling spento o senza renderer.
+- **`transparent-sort-pass.test.ts`**: 22 compute pass se e solo se `stage` è presente, con la sequenza `gather` e poi `upsweep`, `scan`, `scatter` sette volte. Cambia il registratore di `mark` (`:38`, `:134-135`) e ogni caso che lo passa o chiama `profileStages`: `:195-204`, `:418-431`, `:435-446`, `:480-481`, `:515`, `:545`.
+- **`light-groups-pass.test.ts`**: `seed`, `sdf` e `accum` per set, più `accum` per i gruppi senza set. Cambiano il registratore (`:63-78`) e il caso `:193-201`.
+- **Mock del `Renderer`**: `hyperion.test.ts:83` e `prefab/integration.test.ts:71` guadagnano `getGpuFrameTiming`; senza, `tsc --noEmit` fallisce (TS2741) per l'interfaccia nuova.
+- **`hyperion`**: `getGpuFrameTiming()` arriva fino alla facade, e vale `null` senza renderer; il renderer vero non ha test unitari (serve la GPU), e il suo `getGpuFrameTiming()` si verifica nella §8.2.
 
 ### 8.2 GPU (M7 rifatto, sull'M2)
 
@@ -332,6 +348,7 @@ L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage n
 | Una versione futura di Dawn cambia quando un pass si campiona | stamp vecchi su pass con lavoro | i controlli 3-4, lo scarto del frame, l'avviso con il nome del pass |
 | Un plugin esegue ogni frame un bundle vuoto | il profiler non misura più nulla | l'avviso nomina il pass; `profile: false` lo esclude |
 | Più di 512 coppie in un frame | frame troncati | contatore, avviso, parametro `maxPairs` |
+| Un command buffer rifiutato dalla validazione | il readback conserva un frame vecchio, che sembra valido | il sigillo della §4.6 (`unexecuted`) |
 | Somme lette come tempo del frame | conclusioni sbagliate su GPU che sovrappongono i pass | lo span separato; JSDoc; il `total` del bench è lo span |
 | Il sort misurato ha 22 pass | i tempi del sort sono un po' più alti di quelli di produzione | scelta esplicita (D5), documentata |
 | Un pass apre pass su un encoder suo, o chiama il metodo del prototipo direttamente | quel pass non viene misurato | come le particelle: fuori perimetro, documentato |
@@ -339,7 +356,10 @@ L'attesa della finestra (`forwardSamples() >= WINDOW`) e le chiavi degli stage n
 
 ## 11. Dopo: M8 e M9
 
-- **La patch sui commit di riferimento.** `render-graph.ts`, `gpu-profiler.ts`, `render-pass.ts`, `light-groups-pass.ts`, `transparent-sort-pass.ts` e i loro test sono identici a `6ff494f` (passo 3) e a `608a113` (passo 4), mentre `renderer.ts` differisce di 5 righe e `hyperion.ts` e `index.ts` sono identici. I commit del profiler si portano con `cherry-pick` sui worktree dei due commit, per i run del bench della handoff (M8).
+- **La patch sui commit di riferimento.** A `6ff494f` (passo 3) e a `608a113` (passo 4) sono identici a oggi `render-graph.ts`, `gpu-profiler.ts`, `render-pass.ts`, `light-groups-pass.ts`, `transparent-sort-pass.ts`, `hyperion.ts`, `index.ts` e i test di render-graph, gpu-profiler, light-groups, `hyperion.test.ts` e `prefab/integration.test.ts`. `renderer.ts` differisce di 5 righe, e `transparent-sort-pass.test.ts` di 16 (un import in cima e un test in più). Per i run del bench della handoff (M8):
+  - si portano con `cherry-pick` sui worktree dei due commit **solo i commit di codice**; quelli di documentazione no, perché il README delle prove Mac lì non esiste e le righe di CLAUDE.md sono diverse;
+  - il commit che cambia il test del sort può chiedere un merge a mano (la review della spec l'ha simulato: nessun conflitto per una riscrittura realistica, uno se si tocca la prima riga);
+  - prima dei run va rifatto `git diff --stat <riferimento> <punta> --` sui file esatti che i commit del profiler toccano.
 - **Condizioni:** alimentatore collegato, con i watt annotati, e `caffeinate` per tutta la durata. La handoff chiede i timing solo così.
 - **Confronto con AMD:** solo sul totale del frame, cioè lo span sul Mac contro il `total` dei marker su AMD. Sui marker AMD il costo del draw uber cadeva nel bracket di `fxaa-tonemap` (`bench.js:15-18`); con le coppie cade in `forward`. Le voci per pass non sono confrontabili una a una.
 - **M9:** il ciclo della handoff legge `light-groups/seed|sdf|accum`, chiavi invariate. Sono somme di pass, non bracket.
