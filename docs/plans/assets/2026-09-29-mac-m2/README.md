@@ -35,7 +35,7 @@ Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`,
 | M6c | **passa**: qualità e input del sort arrivano al render worker | `m6c-*.png`, `m6c-sort-map.json` |
 | M7 | **fallisce**: zeri anche con il flag, perché i marker del profiler sono pass vuoti | `m7-timestamps-{gpu,stock}.json`, `m7-timestamp-probe-{gpu,stock}.json` |
 | M8, M9 | **fermi**: dipendono da M7, aspettano la scelta sui timestamp | — |
-| M10 | **bug confermato** (BC7 e ASTC); fix test-first da fare | `m10-tier-growth.json` |
+| M10 | **bug confermato e corretto** (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal | `m10-tier-growth.json`, `m10-tier-growth-after-fix.json` |
 | M5 | **passa**: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto; i controlli negativi hanno i denti | `cull-subgroup-check.js`, `cull-subgroup-check.json` |
 
 ### M0 — Adapter, feature, limiti
@@ -160,8 +160,26 @@ L'analisi dell'handoff regge. `texture-manager.ts:505-516` copia ogni mip con `M
   - L'auto-test del comparatore coglie tutte e 6 le iniezioni: duplicato + buco, indice spostato, scambio, conteggio +1, indice oltre la finestra, `firstInstance` +1.
 - **Esito.** Sull'M2 il percorso cull a subgroup, che il renderer usa davvero, è corretto indice per indice. Il cancello `subgroupCullSupported` (esattamente 32-32) è giusto così com'è per Apple: nessuna domanda da fare. `CLAUDE.md:487` va aggiornato con questo esito (task 6.8).
 
-## Domande aperte per l'utente
+## Fix fatti sul branch (2026-09-29)
 
-1. **Timestamp su Metal (M7): quale strada per il profiler?** (a) Marker con un dispatch da 1 workgroup: cambia poco, ma sull'M2 i pass si sovrappongono e la differenza tra marker non isola un pass; senza flag le durate sono a gradini di 65,5 µs. (b) `timestampWrites` di inizio e fine sui pass veri: misura la finestra di ogni pass anche con la sovrapposizione, ma tocca ogni pass e il contratto `profileStages`/`mark`. (c) Nessun cambio al profiler: su Mac M8 e M9 si misurano in un altro modo, per esempio con i tempi di frame lato CPU. M8 e M9 aspettano questa scelta.
-2. **`{ unit: 'px' }`** (sezione 3.2): oggi vuol dire pixel del **device**, quindi a dpr 2 una linea da 3 px è larga 1,5 px CSS. Il check di Primitives passa ("horizontal covers 3 pixel rows"). Resta così o diventa pixel CSS?
-3. **F1 e F4 del `wgsl-validator`** (bezier dritta → disco attorno a p0; il "PBR Neutral" del bloom non è la curva Khronos): non sono di Metal. Si correggono su questo branch, test-first, o si rimandano al giro?
+Ognuno test-first, in un commit suo, con il design breve approvato dall'utente.
+
+| Commit | Cosa | Test | GPU |
+|---|---|---|---|
+| `f1b8ba9` fix(texture) | M10: la crescita di un tier compresso copia ogni mip in blocchi 4×4 interi (`Math.max(4, size >> mip)`; rgba8 invariato) | `texture-manager.test.ts`: un device finto registra le estensioni copiate (BC7 e ASTC tier 0, BC7 tier 3, rgba8), con valori ricavati a mano; prima del fix 3 test rossi | M10 rilanciato: `ok` per ASTC, BC7 e rgba8, tier 0 e tier 3 (`m10-tier-growth-after-fix.json`) |
+| `db55fed` fix(bloom) | F4: `pbrNeutralTonemap` di `bloom.wgsl` è ora la curva Khronos di `fxaa-tonemap.wgsl` | `bloom-pass.test.ts` confronta i due corpi (commenti e spazi esclusi): la forma approvata dall'utente | naga valido, Tint su Metal senza messaggi. Misura: con il bloom a intensità 0 lo sfondo 0.067 esce a 0.027 = 7/255, il valore Khronos (0.02806); la curva vecchia dava 0.067 |
+| `ba3fb6f` fix(bezier) | F1: sotto `dot(B, B) < 1e-9` (punto di controllo entro 1,6e-5 dalla metà della corda) `bezier_sd` usa la distanza dal segmento | nuovo check 'Straight bezier' in Primitives: l'onda viene resa dritta, poi quasi dritta a 1e-5, 1e-4, 1e-3 e 1e-2 (a cavallo della soglia), e ripristinata; nessuna entità nuova. Prima del fix falliva solo la curva esattamente dritta, con la linea al clear 0.067: la formula di Quilez regge già a \|B\| = 2e-5. Dopo il fix passano tutte e cinque | naga 9/9 sui moduli composti; Primitives 6/7 · 1 skip |
+| `c1b513d` docs(line) | `{ unit: 'px' }` = pixel del device (decisione dell'utente): JSDoc di `line()` e `CLAUDE.md` | — | — |
+| `cd8e398` test(bloom) | il check 'Bloom' confrontava la pipeline senza tonemap con il bloom in PBR Neutral: con la curva giusta falliva (0.067 senza bloom, 0.043 con). L'utente ha deciso di tenere PBR Neutral come default di `enableBloom`, e il check ora confronta lo stesso composite a intensità 0 e 0.5; la soglia del centro del quad scende a 0.8, perché Khronos porta 1.0 a 0.869 | — | 0.027 a intensità 0, 0.043 a 0.5, centro 0.894 |
+
+- **Cancello M4** dopo i fix (al HEAD `cd8e398`, dev server appena riavviato): `compare.mjs --step 0` contro `baseline/run1` dà **PASS** in B e in C (`baseline/after-fixes-B.txt`, `…-C.txt`). La `scene-hdr` è identica al bit in ogni tab, e il check nuovo 'Straight bezier' passa. Il run nuovo resta solo in locale.
+- **Lezione per le catture.** Un file `ts/src/demo/*.ts` modificato con il dev server acceso viene servito all'harness come `…?t=<timestamp>`, mentre `capture.js` lo importa senza `?t` e ottiene **un'altra istanza** del modulo. Il `setup` avvolto non viene mai chiamato, e la cattura va in timeout dopo 30 s ("setup of 'primitives' did not finish"), mentre i check nella pagina passano. Prima di catturare dopo aver toccato una sezione della demo va riavviato il dev server.
+- **WebSocket di Vite.** Nei due caricamenti prima del primo riavvio del server la WebSocket HMR si è chiusa con **code 1006** (senza frame di chiusura) a circa 50-53 s dal caricamento. Visibilità e rAF erano intatti: nessun cambio di `visibilityState`, nessun buco di rAF oltre 250 ms. Dopo i riavvii del dev server, zero chiusure in quattro caricamenti oltre i 50 s. La causa non è stata isolata; l'`initScript` resta, e resta anche la registrazione.
+
+## Domande all'utente e decisioni (2026-09-29)
+
+1. **Timestamp su Metal (M7)**: scelta la strada dei **`timestampWrites` di inizio e fine sui pass veri**. È un cambio architetturale (il contratto tra `RenderGraph`, `GpuProfiler` e ogni `RenderPass`, compresi i pass dei plugin), quindi prima ci sono il design e la spec in `docs/plans/`, poi il piano. M8 e M9 aspettano il nuovo profiler, e l'alimentatore collegato.
+2. **`{ unit: 'px' }`**: restano **pixel del device**; solo documentazione (`c1b513d`).
+3. **F1 e F4**: **corretti tutti e due qui** (`ba3fb6f`, `db55fed`).
+4. **M11 (ASTC)**: **saltato**, nessun target solo-ASTC.
+5. **Default del tonemap del bloom** (emerso dal fix F4): `enableBloom` resta **PBR Neutral** per default; si corregge il check 'Bloom' (`cd8e398`).
