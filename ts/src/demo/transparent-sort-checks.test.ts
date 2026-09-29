@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { verifySortReadback, regionClass, sameIdOrder, readSortFrame } from './transparent-sort-checks';
 import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 import { orthographic, extractFrustumPlanes, isSphereInFrustum } from '../camera';
@@ -244,5 +246,27 @@ describe('readSortFrame', () => {
     });
     await expect(readSortFrame(read, () => true, 100, () => (t += 30)))
       .rejects.toThrow(/no served frame held the scene within 100 ms \(last: no transparent entities this frame\)/);
+  });
+});
+
+describe('sort-test-128.png (scripts/gen-sort-test-png.mjs)', () => {
+  it('is a 128 × 128 RGBA PNG with four semi-transparent coloured quadrants', () => {
+    const png = readFileSync(new URL('../../public/textures/sort-test-128.png', import.meta.url));
+    expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR');
+    expect(png.readUInt32BE(16)).toBe(128); // width
+    expect(png.readUInt32BE(20)).toBe(128); // height
+    expect(png[24]).toBe(8); // bits per channel
+    expect(png[25]).toBe(6); // RGBA
+    // The generator writes one IDAT right after IHDR (8 + 25 bytes in).
+    const idatLength = png.readUInt32BE(33);
+    expect(png.toString('ascii', 37, 41)).toBe('IDAT');
+    const raw = inflateSync(png.subarray(41, 41 + idatLength));
+    const stride = 1 + 128 * 4;
+    const px = (x: number, y: number): number[] => [...raw.subarray(y * stride + 1 + x * 4, y * stride + 5 + x * 4)];
+    expect(px(10, 10)).toEqual([230, 60, 60, 160]);
+    expect(px(100, 10)).toEqual([60, 200, 90, 160]);
+    expect(px(10, 100)).toEqual([60, 110, 230, 160]);
+    expect(px(100, 100)).toEqual([240, 200, 50, 160]);
   });
 });
