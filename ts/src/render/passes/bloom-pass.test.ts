@@ -152,9 +152,10 @@ describe('bloom composite tonemap', () => {
   // The bloom composite replaces FXAATonemapPass as the graph's final pass, and
   // both call their curve "Khronos PBR Neutral". Until 2026-09-29 bloom.wgsl
   // implemented another curve under that name (wgsl-validator on the Mac M2, F4):
-  // a grey of 2.0 came out 1.314, clipped by the 8-bit swapchain, against the
-  // reference's 0.960, so turning bloom on also changed the look of every
-  // pixel it did not touch. fxaa-tonemap.wgsl holds the Khronos reference.
+  // a grey of 2.0 came out 1.314 against the reference's 0.960, a grey of 0.5
+  // 0.5 against 0.46. fxaa-tonemap.wgsl holds the Khronos reference. (The two
+  // composites still differ by DEFAULT: FXAATonemapPass clamps, mode 0, and
+  // BloomPass applies this curve, mode 1.)
   it('applies the same PBR Neutral as FXAATonemapPass', () => {
     const code = (src: string) => functionBody(src, 'pbrNeutralTonemap')?.replace(/\s+/g, '');
     expect(code(fxaaTonemapShaderSource)).toBeTruthy();

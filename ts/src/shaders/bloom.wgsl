@@ -84,8 +84,12 @@ fn fs_upsample(in: VertexOutput) -> @location(0) vec4f {
 }
 
 // --- PBR Neutral tonemap (Khronos) ---
-// The same function as fxaa-tonemap.wgsl's (bloom-pass.test.ts compares them):
-// with bloom on, a pixel bloom does not touch must look as it does without it.
+// The same function as fxaa-tonemap.wgsl's (bloom-pass.test.ts compares them),
+// so that both composites apply the same curve whenever both run mode 1. By
+// default they do not: FXAATonemapPass clamps (mode 0) and this composite
+// applies PBR Neutral (BloomPass default, kept on 2026-09-29), so turning bloom
+// on also re-tones pixels it does not touch (the 0.067 clear becomes 0.028).
+// The two FXAA variants differ at edges as well (luminance and taps).
 fn pbrNeutralTonemap(color: vec3f) -> vec3f {
   let startCompression = 0.8 - 0.04;
   let desaturation = 0.15;
