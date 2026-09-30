@@ -167,10 +167,16 @@ cannot see: DOM overlays, and anything in Mode A (§7: there `vp` is the render 
 
 1. `evaluate_script` with `filePath: <out>/map.json`, returning
    `{ rect: [left, top, width, height] of the canvas getBoundingClientRect(), vp: Array.from(window.__hyperion.cam.viewProjection), dpr: window.devicePixelRatio }`
-   — the file is plain JSON. In Mode A `vp` is NOT `cam.viewProjection`: see §7.
+   — the file is plain JSON. In Mode A `vp` is NOT `cam.viewProjection`: see §7. Read `dpr` live
+   every time and never reuse a number: 2 on the Retina Mac, 1.25 or 1.667 on the Fedora box, and
+   screenshot px = CSS px × dpr (a 1200×689 CSS window at dpr 2 gives a 2400×1378 screenshot).
 2. `take_screenshot` with `filePath: <out>/shot.png`.
 3. `python3 .claude/skills/gpu-check/scripts/pixels.py <out>/shot.png <out>/map.json 15.6,4 15.6,2.8`
-   or `--line x0,y0:x1,y1:N` for a profile. Coordinates are WORLD units.
+   or `--line x0,y0:x1,y1:N` for a profile. Coordinates are WORLD units. It needs Pillow, so
+   `python3` must be a python that has it (`python3 -c "import PIL"` says): on the Mac it is
+   Homebrew's (3.14, Pillow 12.3 from `brew install pillow`, no venv), while Apple's
+   `/usr/bin/python3` has none and dies with `ModuleNotFoundError: No module named 'PIL'`, which is
+   what a shell with a bare PATH gets. If Pillow lives in a venv, call `<venv>/bin/python` instead.
 
 `<out>` is a directory inside the repo: the MCP servers write only within their workspace roots,
 and on the Mac the session scratchpad (`/private/tmp/...`) was refused with

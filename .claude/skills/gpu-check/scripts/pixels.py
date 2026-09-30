@@ -7,15 +7,23 @@ Usage:
 
 MAP.json is what the gpu-check skill's evaluate_script returns:
     {"rect": [left, top, width, height],   # canvas getBoundingClientRect(), CSS px
-     "vp": [16 floats],                    # engine.cam.viewProjection (column-major)
-     "dpr": 1.25}                          # window.devicePixelRatio
+     "vp": [16 floats],                    # engine.cam.viewProjection (column-major);
+                                           # Mode A: the render worker's, SKILL.md section 7
+     "dpr": 2}                             # window.devicePixelRatio: READ it every time
+
+dpr belongs to the machine and its display, so it is never a constant: 2 on the
+Retina Mac, 1.25 or 1.667 on the Fedora box. A stale value moves every point to
+the wrong pixel and the script cannot tell (it still prints a colour), so read
+it from the live page, in the same evaluate_script that returns rect and vp.
 
 The mapping that went wrong by hand on 2026-09-26: world -> clip through the
 view-projection, clip -> CSS through the canvas rect, CSS -> screenshot pixels
 through devicePixelRatio (NOT through canvas.width / rect.width).
 
 Prints, per point: world, screenshot pixel, RGB, Rec. 709 luminance.
-Needs Pillow (python3 -c "import PIL").
+Needs Pillow, so run it with a python that has it: python3 -c "import PIL" says.
+On the Mac python3 is Homebrew's (Pillow from brew); Apple's /usr/bin/python3,
+which a bare PATH finds, has none. If Pillow lives in a venv, call that python.
 """
 import json
 import sys
