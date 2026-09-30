@@ -126,6 +126,8 @@ Object.create(desc ?? {}, {
 });
 ```
 
+**Aggiornamento 2026-09-30 (Task 7).** Il descrittore derivato è un `Proxy` su un oggetto vuoto: ogni membro si legge dall'originale con l'originale come ricevitore, e l'originale non si scrive mai. Con `Object.create` l'originale diventava il prototipo, e i suoi accessor giravano sull'oggetto derivato: un descrittore di classe con un getter su un campo `#private` lanciava, solo misurato. Un `Proxy` sull'originale stesso viola l'invariante di `get` su un originale congelato con `timestampWrites: undefined`; il bersaglio vuoto non ne ha. Prova sulla GPU: `docs/plans/assets/2026-09-29-mac-m2/m7-probe5-derive-proxy-gpu.json`. La ragione del §4.1 per non usare un `Proxy` riguarda l'encoder, che resta nativo, non il descrittore, che è un dizionario.
+
 Il descrittore originale non viene mai scritto (probe 3), e i suoi membri si leggono per ereditarietà. `beginComputePass()` senza argomenti riceve un descrittore con il solo `timestampWrites`.
 
 ### 4.3 `enterNode(nome, misurato)` ed `enterStage(stage)`

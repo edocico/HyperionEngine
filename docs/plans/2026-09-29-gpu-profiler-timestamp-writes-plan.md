@@ -2670,6 +2670,6 @@ Non sono task di codice, ma la ripresa dei test sul Mac: si seguono la handoff (
 3. **Il bench**, alla versione di HEAD (formato `/2`), su `?mode=B&bench` di ogni worktree:
    - si confronta **`total`**, cioè lo span, fra i passi e con il `total` AMD (formato `/1`);
    - `passSum` e le voci singole servono solo sull'M2.
-4. **M9:** il ciclo della handoff legge `light-groups/seed|sdf|accum`, con le stesse chiavi, e "il totale" è lo span (handoff aggiornata nel Task 6).
+4. **M9:** il ciclo della handoff legge `light-groups/seed|sdf|accum`, con le stesse chiavi, e il costo della lighting è seed + sdf + accum, da confrontare con la riga "2 set, 2 gruppi"; lo span è solo contesto del frame (handoff corretta nel Task 7).
 5. **Linux (Vulkan)**, al ritorno sulla macchina Fedora: i passi 2-6 del Task 8, con le avvertenze di CLAUDE.md sugli adapter.
 6. **Alla fine dei test sul Mac:** la sezione 9 della handoff, "Esito sul Mac" (spec §7.4).

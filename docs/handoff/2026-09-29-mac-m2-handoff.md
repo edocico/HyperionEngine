@@ -745,7 +745,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M6c — Mode A: stato che viaggia per messaggio (importante)
 
-- **Perché qui.** Due percorsi di trasporto non sono mai stati provati su una GPU. La qualità della lighting passa per `hyperion.ts:834-838` → `worker-bridge.ts:373-375` → `render-worker.ts:54-57`, compreso il valore in sospeso che arriva prima che il renderer esista. Gli input del sort 5b, `transparentCount`/`entityIdsGeneration`, viaggiano nello stato inoltrato (design 5b §10, "Mode A non verificabile qui").
+- **Perché qui.** Due percorsi di trasporto non sono mai stati provati su una GPU. La qualità della lighting passa per `hyperion.ts:849-853` → `worker-bridge.ts:373-375` → `render-worker.ts:54-57`, compreso il valore in sospeso che arriva prima che il renderer esista. Gli input del sort 5b, `transparentCount`/`entityIdsGeneration`, viaggiano nello stato inoltrato (design 5b §10, "Mode A non verificabile qui").
 - **Procedura.**
   - Qualità: su `?mode=A`, tab Lighting. `window.__hyperion.lighting.setQuality({ shadowSteps: 4 })` e screenshot, poi `setQuality({ shadowSteps: 48 })` e screenshot. Per il percorso "in sospeso": ricarica la pagina e chiama `setQuality` nel primo `evaluate_script`.
   - Sort: su `?mode=A&bench`, tre gradient `.transparent()` sovrapposti nell'origine, con colori diversi e `.depth(0.2)`, `.depth(0.5)`, `.depth(0.8)`. Controlla con `pixels.py` che davanti ci sia la depth minore, poi scambia le depth a runtime e ricontrolla.
@@ -757,7 +757,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M7 — `timestamp-query` (importante, prerequisito di M8 e M9)
 
-- **Perché qui.** Su Metal il profiler vecchio leggeva solo zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
+- **Perché qui.** Su Metal il profiler vecchio leggeva solo zeri. I marker del profiler vecchio erano compute pass **vuoti** con i soli `timestampWrites` (`d3c520f:ts/src/render/gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
 - **Procedura.** Con `chrome-devtools-gpu`, prima di qualsiasi probe della swapchain (il primo probe riconfigura il canvas):
   1. `?mode=B`, tab Lighting.
   2. `window.__hyperion.enableGpuProfiling()`, circa 4 s di attesa (almeno 130 frame), poi `window.__hyperion.getGpuTimings()`.
@@ -769,7 +769,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M8 — Bench 5b sull'M2 (importante)
 
-- **Perché qui.** È la domanda rimasta aperta dalla 5b. Su AMD, a 100k trasparenti con depth distinte, il totale del frame cresce di +1,137 ms dal passo 3 al 4, contro +0,251 ms con depth uguali. Il costo finisce nel bracket `fxaa-tonemap`, cioè nell'ordine di blend ordinato e sparso (design 5b §11). L'AMD è una GPU immediate-mode. Sull'M2, che è TBDR, il blend avviene in tile memory e quel costo dovrebbe quasi sparire. Le scritture sparse del sort in compute (upsweep 0,59 ms su AMD) potrebbero però costare in modo diverso sulla memoria unificata.
+- **Perché qui.** È la domanda rimasta aperta dalla 5b. Su AMD, a 100k trasparenti con depth distinte, il totale del frame cresce di +1,137 ms dal passo 3 al 4, contro +0,251 ms con depth uguali. Il costo finisce nel bracket `fxaa-tonemap`, cioè nell'ordine di blend ordinato e sparso (design 5b §11). L'AMD è una GPU immediate-mode. Sull'M2, che è TBDR, il blend avviene in tile memory e quel costo dovrebbe quasi sparire. Le scritture sparse del sort in compute (upsweep 0,59 ms su AMD, misurato con i marker) potrebbero però costare in modo diverso sulla memoria unificata.
 - **Prerequisiti.** M7 verde, alimentazione e refresh come in 3.2, `caffeinate`.
 - **Procedura.**
   1. HEAD: `http://localhost:5173/?mode=B&bench`, senza probe prima.
@@ -784,7 +784,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
      ```
 
      Il dev server va in background. Poi lancia lo **stesso** `bench.js` di HEAD (formato `/2`) su `http://localhost:5174/?mode=B&bench` → `bench-step3.json`. Se serve, anche il passo 4, il cui label è `step4 608a113`. Alla fine: `git worktree remove ../hyperion-5b-step3`.
-- **Atteso.** Sort < 1 ms a 100 000 (D3). Riferimento AMD: 0,787 ms con depth uguali, 0,869 con depth distinte.
+- **Atteso.** Sort < 1 ms a 100 000 (D3). Con l'AMD si confronta solo `total` (lo span) con il `total` dei JSON AMD `/1`: le voci per pass e gli stage del sort sono misurati in modo diverso (coppie sui pass veri qui, bracket di marker su AMD) e non si confrontano una a una (spec §11).
 - **Come leggerlo.**
   - Se sull'M2 total(distinte) ≈ total(uguali) a HEAD, il +1 ms di AMD è un costo di località delle GPU immediate-mode.
   - Se anche l'M2 mostra circa +1 ms, il costo è intrinseco (per esempio l'indirezione dell'ordine dei trasparenti), e vale la pena ottimizzarlo su tutte le GPU.
@@ -798,7 +798,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
   1. `?mode=B&bench`, poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione.
   2. `document.querySelectorAll('.tab')[6].click()` (Lighting), 7 s di attesa, `enableGpuProfiling()`.
   3. Interroga `getGpuTimings()` finché `light-groups/sdf` non ha `sampleCount >= 120`.
-  4. Registra seed, sdf, accum, `forward`, lo span (`getGpuFrameTiming().averageMs`) e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set, quindi si confronta con la riga "2 set, 2 gruppi".
+  4. Registra seed, sdf, accum e la loro somma, cioè il costo della lighting da confrontare con la riga "2 set, 2 gruppi" (3,66 ms su AMD, misurata con i marker); poi `forward`, lo span (`getGpuFrameTiming().averageMs`, solo come contesto del frame: §13.2 non ha un equivalente AMD) e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set.
   5. Ripeti con `lighting.setQuality({ shadowSteps: 24 })` per ricontrollare il "+2% tra 48 e 24".
   6. Salva tutto in `lighting-cost.json`.
 - **Atteso.** Numeri e basta. Vanno in una riga M2 separata nel §13.2, senza sovrascrivere quella AMD.

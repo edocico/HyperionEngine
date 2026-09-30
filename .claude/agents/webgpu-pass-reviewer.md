@@ -54,7 +54,8 @@ Given a change (a diff range or a list of files), check each pass it touches:
     output (`loadOp: 'load'`) reads AND writes `swapchain`. GPU profiler contract: `execute`'s 4th
     argument `stage` exists only while the profiler measures, so a pass must work the same without
     it; `profile: false` keeps a node out of the profiler; a pass that opens passes on an encoder of
-    its own, or through `GPUCommandEncoder.prototype`, is not timed.
+    its own, through `GPUCommandEncoder.prototype`, or with a `timestampWrites` of its own, is not
+    timed.
 12. **Pool resources owned by the renderer.** A pass must not register pool resources in `setup()`:
     HMR probes run `setup()` then `destroy()` against the LIVE pool. `entity-ids`,
     `transparent-order` and `transparent-args` are created by `createRenderer`; `entity-ids` is
