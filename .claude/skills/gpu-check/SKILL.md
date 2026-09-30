@@ -117,7 +117,7 @@ async () => {
     const leaves = [...document.querySelectorAll('*')].filter((n) => n.children.length === 0);
     out[name] = {
       summary: leaves.map((n) => n.textContent.trim()).filter((t) => /\d+\/\d+ passed/.test(t)).at(-1) ?? null,
-      failed: leaves.filter((n) => /^[✗×]/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 100)),
+      failed: leaves.filter((n) => /^✕/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 100)),
       pending: leaves.filter((n) => /^⏳/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 60)),
     };
   }
@@ -125,10 +125,13 @@ async () => {
 }
 ```
 
+The harness draws ✓ pass, ✕ fail, ⊘ skip and ⏳ pending (`STATUS_ICON` in `main.ts`): the runner
+reads those glyphs, and `summary` also says `N failed`.
+
 Expected today (2026-09-27, the checks read pixels through the probe): every tab green except
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
-check. In Mode A the pixel checks skip ("pixel probe unavailable"). Lighting, Rendering FX and
+check. In Mode A most checks skip: §7 has the list. Lighting, Rendering FX and
 Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (6 checks) holds the one check of
 scatter format 0 and the transparent-sort checks: run it with `?mode=C` too, where its row check
 must report scatter frames (Mode B uploads every row, so there it reports 0) and 'Transparent sort
@@ -160,21 +163,102 @@ DOM overlay in the way. From `evaluate_script`:
 
 `await window.__hyperion.debug.readEntityTransforms()` compares the GPU transform rows with the
 CPU ones (`usedScatter` true only in `?mode=C`). The screenshot path below is for what the probe
-cannot see: DOM overlays, and anything in Mode A.
+cannot see: DOM overlays, and anything in Mode A (§7: there `vp` is the render worker's).
 
-
-1. `evaluate_script` with `filePath: <scratchpad>/map.json`, returning
+1. `evaluate_script` with `filePath: <out>/map.json`, returning
    `{ rect: [left, top, width, height] of the canvas getBoundingClientRect(), vp: Array.from(window.__hyperion.cam.viewProjection), dpr: window.devicePixelRatio }`
-   — the file is plain JSON.
-2. `take_screenshot` with `filePath: <scratchpad>/shot.png`.
-3. `python3 .claude/skills/gpu-check/scripts/pixels.py shot.png map.json 15.6,4 15.6,2.8`
+   — the file is plain JSON. In Mode A `vp` is NOT `cam.viewProjection`: see §7.
+2. `take_screenshot` with `filePath: <out>/shot.png`.
+3. `python3 .claude/skills/gpu-check/scripts/pixels.py <out>/shot.png <out>/map.json 15.6,4 15.6,2.8`
    or `--line x0,y0:x1,y1:N` for a profile. Coordinates are WORLD units.
+
+`<out>` is a directory inside the repo: the MCP servers write only within their workspace roots,
+and on the Mac the session scratchpad (`/private/tmp/...`) was refused with
+`Access denied: ... is not within any of the configured workspace roots`. Use the gitignored
+`target/gpu-check`; the tools create it.
 
 With animated lights, compare points inside ONE screenshot (e.g. points symmetric about a light),
 never across two. To test another canvas aspect, `resize_page`, then re-enter the tab (its setup
 reads the size), and restore the size afterwards.
 
+## 7. Mode A (`?mode=A`, the Mac only)
+
+Main thread + engine worker + render worker. Chrome on macOS picks it with `?mode=auto` (checked
+on both servers), but the harness forces B by default (`demo/preferred-mode.ts`), so ask for it.
+`window.__hyperion.mode` must answer `'A'`: a `'B'` with a white canvas is the fallback failing
+silently (look for `[Hyperion] Mode A failed, trying next fallback` or `Render Worker error` in the
+console). The canvas belongs to the render worker, so the main thread has no renderer: the adapter
+line and every GPU error come from the worker (`list_console_messages` shows them), and there is
+no probe, no bloom, no outlines, no particles and no texture loading on the main thread. Load it
+like §3, with the anti-reload initScript for a tab run.
+
+**Expected: no `fail` from Mode A itself.** A check that passes in B passes or skips in A. Measured
+on 2026-09-30 (M2 Pro, Chrome 154, `13d8c10`, the §4 runner, 35 s): Primitives 0/9 · 9 skipped,
+Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio 4/4, Particles 0/4 · 4
+skipped, Rendering FX 0/4 · 3 skipped · 1 failed, Lighting 4/6 · 2 skipped, Debug Tools 6/7 · 1
+skipped, Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped. The skips fall in a few classes:
+"pixel probe unavailable" (every check that reads pixels: the probe needs a main-thread renderer),
+"no renderer" (selection, particles, outlines), "no main-thread renderer" (test textures), the
+ones B has too (MSDF atlas, Tonemap stub, determinism hash) and 'Transparent sort under churn'
+(Mode C only).
+
+The one fail is a harness bug, not Mode A: 'Bloom' reports
+`probe error: Cannot enable bloom: no renderer available`. Since `cd8e398` the check calls
+`engine.enableBloom()` before its first probe call, inside `pixelCheck`, which reports every throw
+but a probe-unavailable one as a fail; before, the probe threw first and the check skipped (the
+run of 2026-09-29: 0/4 · 4 skipped). It should skip in A: until it does, that one fail is expected
+there and any other is real.
+
+**Pixels: screenshots only.** No probe, so §6's screenshot path, with `vp` from the render
+worker's camera and not from `cam.viewProjection`: the worker has its own `Camera`
+(`render-worker.ts`), orthographic 20·aspect × 20, near -1, far 1000, view identity (it never
+calls `setPosition`), and neither `engine.cam` nor the tabs' `fitView` reach it. Its aspect is the
+one of the last `engine.resize(w, h)`, that is `floor(clientWidth·dpr) / floor(clientHeight·dpr)`,
+not `rect.width / rect.height` (the CSS height is fractional: 0.08 % apart on the M2, under a
+pixel there). `evaluate_script` with `filePath: <out>/map.json`:
+
+```js
+() => {
+  const c = document.getElementById('canvas');
+  const dpr = window.devicePixelRatio;
+  const a = Math.floor(c.clientWidth * dpr) / Math.floor(c.clientHeight * dpr);
+  const r = c.getBoundingClientRect();
+  return {
+    rect: [r.left, r.top, r.width, r.height],
+    vp: [1 / (10 * a), 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -1 / 1001, 0, 0, 0, 1 / 1001, 1],
+    dpr,
+  };
+}
+```
+
+Checked on the M2 (2026-09-30, `?mode=A&bench`, camera at the origin, zoom 1): three 2D quads at
+x = -4, 0, 4 (scale 2: white, a uniform-red gradient, a white `.transparent()`; the scene of M6b in
+`docs/handoff/2026-09-29-mac-m2-handoff.md`) sample white 255, (255, 0, 0), white 255, and the
+clear 17 at (-4, 1.2), the same as in B. After `engine.cam.position(3, 0, 0)` and `zoom(2)` the
+worker's image had not moved: this `vp` still hit all three quads, `cam.viewProjection` missed them.
+
+**An empty world keeps the last image.** The bridge drops render states with no entity
+(`worker-bridge.ts`) and the render worker skips a frame at 0 entities (`render-worker.ts`), so
+after everything is destroyed the screenshot still shows the last frame, and
+`window.__hyperion.bridge.latestRenderState.entityCount` keeps its last non-zero value: the three
+quads above still sampled white, red, white 1.2 s after `destroy()`, where B went back to the clear
+(17). It is step 10 of the open-items round (`docs/plans/2026-09-27-open-items-round-plan.md`), a
+known gap and not a regression: a "gone after destroy" pixel check proves nothing in A, run it in B
+or C.
+
+**State that travels by message.** The lighting quality and the sort's inputs (`transparentCount`,
+`entityIdsGeneration`) reach the render worker too, and only a screenshot shows it. The Lighting
+tab moves its lights every tick, so two of its screenshots never match: build a static scene in
+`?mode=A&bench`. The sort, checked on the M2: three overlapping `.transparent()` 2D gradients at
+`.depth()` 0.2, 0.5 and 0.8 (red uniform, green to black, blue to black) sample red in front at
+(-0.6, 0), (0, 0) and (0.6, 0); after `depth(0.8)` on the red and `depth(0.2)` on the blue, blue is
+in front: 202, 126, 51 along its gradient. The quality (README M6c in
+`docs/plans/assets/2026-09-29-mac-m2/`, not re-run): `shadowSteps` 4 against 48 on a static lit
+scene changes 6.35 % of the canvas.
+
 ## Report
 
 One line per tab (`N/M passed`, pending, failed), the adapter, console errors, and any pixel
-measurements with the points used. Say explicitly what this did NOT cover: Mode A, and physics.
+measurements with the points used. Say explicitly what this did NOT cover: physics, and on the
+Fedora box Mode A ("did NOT cover Mode A"). On the Mac Mode A is covered, by screenshots only (§7):
+write "Mode A: solo screenshot" instead.
