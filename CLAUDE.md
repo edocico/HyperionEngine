@@ -706,7 +706,7 @@ Hook logic lives in standalone, directly testable scripts — see [`.claude/hook
 - `/new-command` — Add a new ring-buffer CommandType end-to-end (Rust enum + handler + TS producer + fluent API + tests)
 - `/start-phase` — Begin a new engine development phase from the masterplan (9-step workflow)
 - `/close-phase` — Close a phase: full feature matrix, refresh every stale count, append the MEMORY.md record, stage the commit
-- `/gpu-check` — Real-WebGPU check in the harness: rebuild a stale `ts/wasm`, AMD adapter, every tab's `N/M passed`, console errors, pixel sampling at world coordinates (`scripts/pixels.py`)
+- `/gpu-check` — Real-WebGPU check in the harness: rebuild a stale `ts/wasm`, a hardware adapter (AMD iGPU on Fedora, Apple GPU on the Mac; Modes B, C and, on the Mac, A), every tab's `N/M passed`, console errors, pixel sampling at world coordinates (`scripts/pixels.py`)
 
 ### Agents
 
