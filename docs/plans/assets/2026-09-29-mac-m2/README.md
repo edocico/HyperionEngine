@@ -35,7 +35,7 @@ Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`,
 | M6c | **passa**: qualità e input del sort arrivano al render worker | `m6c-*.png`, `m6c-sort-map.json` |
 | M7 | **passa** con il profiler nuovo (Task 8 del piano, a batteria): voci e span in B e C, 0 scarti dopo il riscaldamento, quantizzazione a 65 536 ns solo sullo stock, overlay misurato e opt-out, stage del sort misurati. Con il profiler vecchio falliva: zeri anche con il flag, perché i marker erano pass vuoti | `m7-profiler-{gpu,stock}-B.json`, `m7-profiler-gpu-C.json`, `m7-profiler-gpu-overlays-B.json`, `m7-profiler-{gpu,stock}-bench.json`; diagnosi del profiler vecchio: `m7-timestamps-{gpu,stock}.json`, `m7-timestamp-probe-{gpu,stock}.json`, `m7-probe2-stale-empty-gpu.json` |
 | M8 | **passa** (2026-09-30, alimentatore 65 W, due run per passo): D3 rispettata, i 22 pass del sort a 100 000 vanno in fila senza sovrapporsi e la catena dura 0,70-0,76 ms di media, con nessun frame a 1 ms; a HEAD distinte ≈ uguali (−0,07 e +0,17 ms), quindi il +1 ms di AMD non si riproduce sull'M2; resta un costo del draw uber indipendente dall'ordine, +0,21/+0,23 ms a 10 000 (§ M8) | `bench-head.json`, `bench-step3.json`, `bench-step4.json`, `bench-*-run2.json`, `m8-diag-sort-timeline-100k.json` |
-| M9 | **da decidere**: sull'M2 la somma seed + sdf + accum non è il costo della lighting (§ M7, Profiler nuovo); l'utente sceglie la misura, poi serve l'alimentatore | `m7-profiler-gpu-B.json`, `m7-profiler-diag-pass-timeline-gpu-B.json` |
+| M9 | **misurato** (2026-09-30, alimentatore 65 W) con l'A/B dello span del frame scelto dall'utente, a 1920×1080: la lighting della tab Lighting costa **4,06 ms** di span (coppie 4,00-4,10 ms; lit 4,84 contro off 0,79 ms), e il frame resta a 120 fps; 48 passi contro 24 +0,27 ms (5,6 %), dentro il rumore fra finestre (§ M9) | `lighting-cost.json` |
 | M10 | **bug confermato e corretto** (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal | `m10-tier-growth.json`, `m10-tier-growth-after-fix.json` |
 | M5 | **passa**: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto; i controlli negativi hanno i denti | `cull-subgroup-check.js`, `cull-subgroup-check.json` |
 
@@ -256,6 +256,62 @@ Tre entità 2D nell'origine con camera in (0,0,0) e zoom 1: quad bianco in x = -
 - **Carico.** Il campionatore (dalle 09:28:58, quindi non per HEAD r1 né per la timeline) mostra durante i run Chrome (processo GPU al 30-50 % di un core, renderer al 20-30 %, e al 200-230 % mentre crea e distrugge le 100 000 entità) e WindowServer, più picchi isolati di altri processi (launchd, mdworker, NotificationCenter, il processo di Claude Code e un helper "(Plugin)"), fino al 51 % di un core in un singolo campione. Fra un run e l'altro ci sono state le build (rustc, wasm-opt), Spotlight che indicizzava i worktree (`mds_stores` fino al 230 %) e `contactsd` (210 %, prima del passo 3 r1).
 - **Console.** In ogni pagina ci sono le righe di Vite, dell'adapter (`apple / metal-3 / 0x0000, subgroups 32-32`), del modo e di `?bench`, e nessun errore: nessun avviso `GPU profiling` e nessun errore di validazione WebGPU. Durante lo spawn e la distruzione in blocco compaiono circa 200-220 avvisi `Ring buffer full, dropping command N` per pagina, con N = 1, 2, 3, 5, 15 e 16 (`SpawnEntity`, `DespawnEntity`, `SetPosition`, `SetScale`, `SetTransparent`, `SetDepth`): è la contropressione (§ M7), e ogni riga del bench ha `gpuEntityCount` = N e 120 campioni. Sulla prima pagina di `:5174` c'è il 404 di `favicon.ico` (origine nuova). La WebSocket di Vite si è chiusa (1006, reload soppresso dall'`initScript`) solo quando ho fermato il server di `:5174`, a run finito.
 - **File.** I run del brief: `bench-head.json`, `bench-step3.json`, `bench-step4.json`. I controlli: `bench-head-run2.json`, `bench-step3-run2.json`, `bench-step4-run2.json`. La timeline: `m8-diag-sort-timeline-100k.json`. Nel design 5b, §11, c'è la tabella M2 accanto a quella AMD.
+
+### M9 — Costo della lighting sull'M2
+
+- **Metodo: la decisione dell'utente (2026-09-30).** Sull'M2 anche i pass dipendenti si sovrappongono, quindi la somma seed + sdf + accum non è il costo della lighting (§ M7, "Profiler nuovo": 38,1 ms contro uno span di 4,8 ms). L'utente ha deciso di misurarlo come **A/B dello span del frame**: `getGpuFrameTiming().averageMs` sulla stessa scena a 1920×1080, una volta con il backend `'lit'` e una con `'off'`. Il costo è la differenza. Nessun codice nuovo nel motore.
+- **Condizioni.** 2026-09-30, dalle 09:56 alle 10:00, HEAD `750f530`. Server "gpu", una sola pagina `?mode=B&bench` aperta con `ignoreCache` e l'`initScript` anti-reload: lo stesso `timeOrigin` in tutte le finestre, nessuna chiusura della WebSocket di Vite. L'altra istanza (stock) è rimasta su `about:blank` per tutta la prova. **Alimentatore collegato**:
+  - `pmset -g batt` dice "AC Power" prima e dopo ogni giro;
+  - `pmset -g adapter` dà 65 W (alimentatore Apple USB-C da 67 W), con la batteria al 100 %;
+  - Low Power Mode 0, `caffeinate -dimsu` attivo;
+  - un campionatore ogni 2 s (dalle 09:54:53 alle 10:00:25) dà "AC Power" in 161 campioni su 161, e `pmset -g log` non registra passaggi dopo le 09:20:01.
+
+  Etichetta: "Apple M2 Pro (16-core GPU) / Metal, Chrome 154.0.8037.58" (`fullVersionList`); display a 120 Hz.
+- **Dimensione.** `window.__hyperion.resize(1920, 1080)`, senza ridimensionare la finestra (CSS 1200×689, dpr 2). Il controllo ha due parti. `canvas.width × canvas.height` vale 1920×1080. Prima di ogni misura, un probe di `scene-hdr` (`engine.debug.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] })`) ha dato `targetSize` [1920, 1080], cioè le dimensioni della texture che il frame ha disegnato; `viewProjection[0]` vale 0,05625 (16:9). In ogni finestra il canvas è rimasto 1920×1080.
+- **Tab Lighting.** Aperta con un click sulla `.tab` che ha il testo "Lighting" (indice 6). Stato dopo la fine dei check più 2 s: **6/6 passed** ("2 groups, 2 SDF sets"; "lit 0.488, 0.101, unlit x light 0.489, 0.101"). Il backend letto da WASM è `lit`; 12 entità.
+- **Una finestra.** Prima si applica la condizione:
+  - `L48`: `setBackend('lit')`, con `shadowSteps` 48;
+  - `OFF`: `setBackend('off')`;
+  - `L24`: `setBackend('lit')`, poi `setQuality({ shadowSteps: 24 })`.
+
+  Uscendo da `L24` si rimette `setQuality({ shadowSteps: 48 })`. Poi si aspetta il grafo vivo. `renderer.lightingEnabled` riporta il modo **richiesto** (`requests.requested.mode.lighting`, `renderer.ts:860`), non quello vivo. Per questo ho usato anche l'`executionOrder` di `renderer.graph`, cioè del grafo che disegna ora (`RenderGraphHost.graph`). La finestra parte quando valgono tutte e quattro:
+  1. l'`executionOrder` contiene `light-groups` se e solo se la condizione è lit;
+  2. `lightingEnabled` è coerente;
+  3. `lighting.backend`, letto da WASM, è coerente;
+  4. `lighting._needsRebuild` è falso (`tick()` ha consegnato la qualità al renderer), e `quality.shadowSteps` è quello voluto.
+
+  A ogni cambio di backend il grafo nuovo è andato in vivo in 3-4 frame (17-33 ms). Poi 30 frame di assestamento, `disableGpuProfiling(); enableGpuProfiling();` (il reset), e un ciclo `requestAnimationFrame` che aspetta `getGpuFrameTiming().sampleCount >= 120`. Il timeout di 20 s non è mai scattato: 1,01-1,02 s per finestra. Alla fine si leggono nello stesso turno sincrono lo span, `getGpuTimings()`, i 120 span della finestra (`profiler.window.spans`, gli stessi della media) e `discardReasons`. Gli fps vengono dai timestamp di `requestAnimationFrame`. `discardReasons` si legge subito dopo il reset e alla fine, perché il reset butta i frame in volo senza contarli.
+- **I tre giri**, nell'ordine `L48, OFF, L24, L24, OFF, L48, L48, OFF, L24`. Span in ms, media su 120 frame:
+
+  | Giro (ordine) | L48 | OFF | L24 | Costo = L48 − OFF | L48 − L24 |
+  |---|---|---|---|---|---|
+  | 1 (L48, OFF, L24) | 4,850 | 0,775 | 4,523 | 4,075 | +0,327 (6,7 %) |
+  | 2 (L24, OFF, L48) | 4,813 | 0,816 | 4,796 | 3,997 | +0,017 (0,4 %) |
+  | 3 (L48, OFF, L24) | 4,869 | 0,764 | 4,401 | 4,105 | +0,468 (9,6 %) |
+  | media | 4,844 | 0,785 | 4,573 | **4,059** | +0,271 (5,6 %) |
+
+  In ogni finestra: 120 campioni, 0 scarti per ognuno dei sei motivi, `skippedFrames` 0, 119,9-120,2 fps, grafo e condizione invariati dall'inizio alla fine. Anche i totali di `discardReasons` dalla creazione del profiler restano 0. Nei giri 2 e 3 le finestre sono andate una dopo l'altra, una ogni 1,5 s; nel giro 1 fra una finestra e la successiva sono passati 14-20 s, con la condizione precedente accesa.
+- **Costo della lighting: 4,06 ms di span** (media delle tre coppie adiacenti, da 3,997 a 4,105 ms, deviazione standard 0,056). Con la lighting il frame passa da 0,79 a 4,84 ms e resta a 120 fps, su un budget di 8,33 ms. La dispersione delle tre coppie sottostima quella di una singola finestra lit: nel controllo qui sotto, 1,5 minuti dopo, le finestre L48 vanno da 4,375 a 4,799 ms, che contro la media OFF dei giri darebbero 3,59-4,01 ms. Come contesto, con 24 passi (L24 − OFF adiacenti) il costo vale 3,748, 3,980 e 3,637 ms, in media 3,79.
+- **48 contro 24 passi.** Nei tre giri span(L48) − span(L24) vale +0,327, +0,017 e +0,468 ms, in media +0,271 ms, cioè il 5,6 % dello span L48. Nei giri, però, due delle tre finestre L24 seguono una fase OFF, e due delle tre L48 una fase lit. Per questo ho aggiunto un **controllo, fuori dal brief**: L48 e L24 alternate direttamente, senza OFF in mezzo (`L48, L24, L24, L48, L48, L24, L24, L48`, dalle 09:59:37 alle 09:59:49, con le stesse regole di finestra).
+  - Span: L48 4,757, 4,799, 4,375 e 4,492 ms; L24 4,414, 4,444, 4,202 e 4,576 ms.
+  - Coppie adiacenti: +0,343, +0,355, +0,174 e −0,084 ms. I due ABBA danno +0,349 e +0,045 ms, la media +0,197 ms (4,3 %).
+
+  Lettura: in 6 confronti su 7 i 48 passi allungano lo span, in media di 0,2-0,3 ms (4-6 %). I singoli confronti vanno però da −0,08 a +0,47 ms: l'effetto è dello stesso ordine del rumore fra finestre, e con questi dati non si risolve più fine. Il "+2 % tra 48 e 24" del design era tempo di `light-accum` sull'AMD misurato con i marker, non tempo del frame. Sull'M2 `light-accum` da solo non si misura, perché la sua voce è un intervallo (4,65 ms con 48 passi). I due numeri quindi non si confrontano.
+- **Dentro una finestra lo span oscilla.** Nelle finestre lit lo span va da circa 3 a 6,5 ms (2,3-7,1 nel controllo), a tratti di 10-45 frame. Nella finestra 3, per esempio: 6,4 ms al frame 31, 3,2-3,6 fra i frame 38 e 55 (tranne uno), 6,2 ai frame 66-67, 3,0-3,4 fra 83 e 98. Deviazione standard dentro una finestra: 0,45-1,08 ms in lit, 0,17-0,19 ms in OFF. Non è l'animazione della scena, per tre motivi:
+  - un tratto dura 0,1-0,4 s, mentre la luce puntiforme fa un giro in circa 10,5 s e lo spot un'oscillazione in circa 15,7 s;
+  - le finestre 7 (4,869 ms) e c8 (4,492 ms) hanno le luci quasi nella stessa posizione (`lightsAtReset` e `lightsAtFill` nel JSON) e differiscono di 0,38 ms;
+  - anche le finestre OFF, dove le luci non disegnano niente, vanno da 0,3 a 1,3 ms.
+
+  Uno stato di clock della GPU che cambia spiegherebbe questi tratti, come in M8, ma la causa non è misurata.
+- **Voci per pass** (intervalli, solo contesto; media delle tre finestre per condizione). L48: `seed` 1,655, `sdf` 33,103, `accum` 4,652, `forward` 2,903, `fxaa-tonemap` 3,121 ms. OFF: `forward` 0,133, `fxaa-tonemap` 0,450 ms. Per finestra lit seed + sdf + accum vale 34,0-40,5 ms, cioè 7,7-8,4 volte lo span: di nuovo intervalli che si sovrappongono (§ M7).
+- **Gruppi.** `window.__hyperion.lighting.groups` letto in `L48` (finestra 1): **2 gruppi** (layer 1 → set 0, layer 2 → set 1) e **2 SDF set** (`occluderLayers` 1 e 2). `layerToGroup` vale [16, 0]; le maschere delle luci sono [2, 65535, 1], quelle degli occluder [65535, 1, 3]. Tutte le finestre lit hanno gli stessi 2 gruppi e 2 set.
+- **Carico.** Il campionatore (`ps`, i 5 processi con più CPU, ogni 2 s) mostra durante le finestre Chrome (processo GPU al 30-51 % di un core, renderer al 15-33 %) e WindowServer (in genere 10-15 %, picchi fino al 38 %). Ci sono poi picchi isolati:
+  - VS Code (`Code Helper (Renderer)`): 95 % alle 09:56:10, prima della finestra 1, e 52 % alle 09:58:16, durante la finestra 8;
+  - `Code Helper (Plugin)`: 61 % alle 09:56:20, fra le finestre 1 e 2;
+  - `mobileassetd` e `modelcatalogd`: 72 % e 22 % alle 09:57:00, fra le finestre 3 e 4;
+  - `parsec-fbf` (45 %) e il processo di Claude Code (48 %): fra la finestra 6 e la 7.
+- **Console.** Dopo il run: le righe di Vite, dell'adapter (`apple / metal-3 / 0x0000, subgroups 32-32`), del modo e di `?bench`. Nessun avviso `GPU profiling`, nessun errore di validazione WebGPU, nessun 404.
+- **File.** `lighting-cost.json` contiene metodo, condizioni, ambiente e risultati, più le 17 finestre grezze: le 9 dei giri e le 8 del controllo. Ogni finestra ha i 120 span, le voci, `discardReasons` prima e dopo, gli fps e la posizione delle luci. Nel design 17 §13.2 c'è la riga M2, separata da quelle AMD.
 
 ### M10 — Crescita dei tier compressi
 

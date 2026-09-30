@@ -797,13 +797,24 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 - **Perché qui.** Il costo della lighting esiste solo per l'iGPU AMD a 1920×1081 (design 17 §13.2): catena SDF 1,77 ms, backend lit ≈ 2,3 ms; con light layers, "2 set, 2 gruppi" = **3,66 ms** (seed 0,406, sdf 3,042, accum 0,213). Sull'M2 ognuno degli ~11 passi della catena SDF è un render pass completo, con uno store per tile.
 - **Procedura.**
-  ⚠️ Da decidere con l'utente prima di M9: sull'M2 anche i pass dipendenti si sovrappongono, e la somma seed + sdf + accum (38,1 ms) supera di molto lo span del frame (4,8 ms) (Task 8, `m7-profiler-gpu-B.json` e `m7-profiler-diag-pass-timeline-gpu-B.json`): il passo 4 non misura il costo della lighting. Il passo 4 resta com'è finché l'utente non sceglie la misura.
-  1. `?mode=B&bench`, poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione.
-  2. `document.querySelectorAll('.tab')[6].click()` (Lighting), 7 s di attesa, `enableGpuProfiling()`.
-  3. Interroga `getGpuTimings()` finché `light-groups/sdf` non ha `sampleCount >= 120`.
-  4. Registra seed, sdf, accum e la loro somma, cioè il costo della lighting da confrontare con la riga "2 set, 2 gruppi" (3,66 ms su AMD, misurata con i marker); poi `forward`, lo span (`getGpuFrameTiming().averageMs`, solo come contesto del frame: §13.2 non ha un equivalente AMD) e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set.
-  5. Ripeti con `lighting.setQuality({ shadowSteps: 24 })` per ricontrollare il "+2% tra 48 e 24".
-  6. Salva tutto in `lighting-cost.json`.
+  Decisione dell'utente (2026-09-30): il costo della lighting si misura come **A/B dello span del frame, `lit` contro `off`**. Sull'M2 anche i pass dipendenti si sovrappongono, e la somma seed + sdf + accum (38,1 ms) supera di molto lo span del frame (4,8 ms) (Task 8, `m7-profiler-gpu-B.json` e `m7-profiler-diag-pass-timeline-gpu-B.json`).
+  1. `?mode=B&bench` con `ignoreCache` e l'`initScript` anti-reload, con l'altra istanza su `about:blank`; poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione. Controlla la dimensione: `canvas.width` e `canvas.height`, e il `targetSize` di un probe di `scene-hdr`, devono dare 1920×1080.
+  2. Clicca la `.tab` che ha il testo "Lighting" (indice 6). Aspetta che lo stato mostri `N/M passed` con tutti i check finiti (6/6), poi altri 2 s.
+  3. Misura ogni condizione in una finestra pulita. Le condizioni:
+     - `L48`: `setBackend('lit')`, con `shadowSteps` 48;
+     - `OFF`: `setBackend('off')`;
+     - `L24`: `setBackend('lit')`, poi `setQuality({ shadowSteps: 24 })`. Uscendo da `L24` si rimette 48.
+
+     Applica la condizione e aspetta che il grafo sia vivo. `renderer.lightingEnabled` è il modo richiesto, non quello vivo: guarda anche `renderer.graph.executionOrder` (contiene `light-groups` solo in lit), `lighting.backend` e `lighting._needsRebuild`, che dev'essere falso. Poi aspetta 30 frame, chiama `disableGpuProfiling(); enableGpuProfiling();` e aspetta `getGpuFrameTiming().sampleCount >= 120` (timeout 20 s).
+  4. In ogni finestra registra:
+     - lo span di `getGpuFrameTiming()` (`averageMs`, `lastMs`, `sampleCount`);
+     - le voci di `getGpuTimings()`, solo come contesto, perché sono intervalli;
+     - gli fps;
+     - `discardReasons` prima e dopo: la differenza dev'essere 0.
+
+     Tre giri ABBA: `L48, OFF, L24, L24, OFF, L48, L48, OFF, L24`. Il costo della lighting è span(L48) − span(OFF), per coppia adiacente e in media con la sua dispersione. Non si confronta uno a uno con la riga AMD "2 set, 2 gruppi" (3,66 ms), che è misurata con i marker. Leggi una volta `window.__hyperion.lighting.groups` in `L48`: la demo ha 2 gruppi e 2 SDF set.
+  5. L'effetto dei passi d'ombra è span(L48) − span(L24), in % di span(L48). Ricontrolla così il "+2% tra 48 e 24", che su AMD era tempo di `light-accum`, non del frame. Il 2026-09-30 c'è stato anche un controllo con `L48` e `L24` alternate senza `OFF` (README § M9).
+  6. Salva tutto in `lighting-cost.json`: le finestre grezze, le condizioni e l'ambiente.
 - **Atteso.** Numeri e basta. Vanno in una riga M2 separata nel §13.2, senza sovrascrivere quella AMD.
 
 ### M10 — Crescita dei tier compressi (importante, bug probabile)
