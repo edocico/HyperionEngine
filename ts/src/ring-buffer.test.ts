@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { RingBufferProducer, CommandType, IS_LITTLE_ENDIAN, extractUnread, PAYLOAD_SIZES } from "./ring-buffer";
 
 const HEADER_SIZE = 32;
@@ -73,6 +73,29 @@ describe("RingBufferProducer", () => {
     const rb = new RingBufferProducer(smallSab);
     const ok = rb.setPosition(1, 0, 0, 0);
     expect(ok).toBe(false);
+  });
+
+  it("tryWriteCommand returns false on a full buffer and logs nothing: the caller decides", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rb = new RingBufferProducer(new SharedArrayBuffer(HEADER_SIZE + 8));
+      expect(rb.tryWriteCommand(CommandType.SetPosition, 1, new Float32Array([0, 0, 0]))).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("writeCommand says a command that does not fit is dropped: this producer has no queue", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rb = new RingBufferProducer(new SharedArrayBuffer(HEADER_SIZE + 8));
+      expect(rb.writeCommand(CommandType.SetPosition, 1, new Float32Array([0, 0, 0]))).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/dropped/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("writes multiple commands sequentially", () => {

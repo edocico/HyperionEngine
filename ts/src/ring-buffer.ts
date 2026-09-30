@@ -213,14 +213,17 @@ export class RingBufferProducer {
     return r - w - 1;
   }
 
-  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
+  /**
+   * Writes one command, or nothing when it does not fit: then it returns false
+   * and logs nothing, because what a full buffer means is the caller's call.
+   * `BackpressuredProducer`, which every bridge uses, keeps the command queued
+   * for its next flush: for it a full buffer only defers the command.
+   */
+  tryWriteCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
     const payloadSize = PAYLOAD_SIZES[cmd];
     const msgSize = 1 + 4 + payloadSize;
 
-    if (this.freeSpace < msgSize) {
-      console.warn("Ring buffer full, dropping command", cmd);
-      return false;
-    }
+    if (this.freeSpace < msgSize) return false;
 
     let pos = this.writeHead;
 
@@ -289,6 +292,16 @@ export class RingBufferProducer {
     // Commit write head
     this.writeHead = pos % this.capacity;
     return true;
+  }
+
+  /**
+   * `tryWriteCommand` for a caller with no queue of its own: a command that
+   * does not fit is lost, and this says so.
+   */
+  writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {
+    if (this.tryWriteCommand(cmd, entityId, payload)) return true;
+    console.warn(`[Hyperion] Ring buffer full: command ${cmd} for entity ${entityId} dropped (this producer has no backpressure queue)`);
+    return false;
   }
 
   setPosition(entityId: number, x: number, y: number, z: number): boolean {

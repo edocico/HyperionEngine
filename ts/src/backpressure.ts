@@ -270,7 +270,7 @@ export class PrioritizedCommandQueue {
     let i = 0;
     for (; i < this.critical.length; i++) {
       const c = this.critical[i];
-      if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
+      if (!rb.tryWriteCommand(c.cmd, c.entityId, c.payload)) break;
       stats.writtenCount++;
       if (tap) {
         const bytes = c.payload
@@ -288,7 +288,7 @@ export class PrioritizedCommandQueue {
     // Overwrites
     const toDelete: number[] = [];
     for (const [key, c] of this.overwrites) {
-      if (!rb.writeCommand(c.cmd, c.entityId, c.payload)) break;
+      if (!rb.tryWriteCommand(c.cmd, c.entityId, c.payload)) break;
       stats.writtenCount++;
       toDelete.push(key);
       // The entry is in hand: unindex here rather than look it up again below
@@ -332,6 +332,8 @@ export class BackpressuredProducer {
   private recordingTap: ((type: number, entityId: number, payload: Uint8Array) => void) | null = null;
   private despawnWritten: ((entityId: number) => void) | null = null;
   private referenceGuard: ((entityId: number) => boolean) | null = null;
+  /** True from a flush that left commands queued until one drains the queue (noteDeferral). */
+  private deferring = false;
 
   constructor(inner: RingBufferProducer) {
     this.inner = inner;
@@ -369,7 +371,27 @@ export class BackpressuredProducer {
   }
 
   flush(): FlushStats {
-    return this.queue.drainTo(this.inner, this.recordingTap, this.despawnWritten);
+    const stats = this.queue.drainTo(this.inner, this.recordingTap, this.despawnWritten);
+    this.noteDeferral();
+    return stats;
+  }
+
+  /**
+   * A full ring buffer loses nothing here: what did not fit stays queued for
+   * the next flush. Says so once per episode, from the first flush that leaves
+   * commands queued until one drains the queue, in dev builds only: under a
+   * steady overload every frame would repeat it.
+   */
+  private noteDeferral(): void {
+    const pending = this.pendingCount;
+    if (pending === 0) {
+      this.deferring = false;
+      return;
+    }
+    if (this.deferring) return;
+    this.deferring = true;
+    if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+    console.warn(`[Hyperion] Ring buffer full: ${pending} commands deferred to the next flush (backpressure). Silent until the queue drains.`);
   }
 
   writeCommand(cmd: CommandType, entityId: number, payload?: Float32Array | Uint8Array): boolean {

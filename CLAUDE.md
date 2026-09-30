@@ -63,7 +63,7 @@ cat ts/wasm/hyperion_core.d.ts
 ### TypeScript
 
 ```bash
-cd ts && npm test                            # All vitest tests (1989 tests + 7 skipped, 113 files)
+cd ts && npm test                            # All vitest tests (1992 tests + 7 skipped, 113 files)
 cd ts && npm run test:watch                  # Watch mode (re-runs on file change)
 cd ts && npx tsc --noEmit                    # Type-check only (no output files)
 cd ts && npm run build                       # Production build (tsc + vite build)
@@ -72,7 +72,7 @@ cd ts && npm run dev                         # Vite dev server with COOP/COEP he
 # Run a specific test file (pattern: npx vitest run src/<path>.test.ts)
 # 113 test files colocated with source across src/, src/render/, src/render/passes/, src/shaders/, src/debug/, src/prefab/, src/replay/, src/demo/, src/asset-pipeline/, src/text/, src/hmr/, src/plugins/
 cd ts && npx vitest run src/hyperion.test.ts                  # e.g. Hyperion facade (108 tests)
-cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (101 tests)
+cd ts && npx vitest run src/backpressure.test.ts              # e.g. Backpressure queue (102 tests)
 cd ts && npx vitest run src/entity-handle.test.ts             # e.g. EntityHandle fluent API (87 tests)
 cd ts && npx vitest run src/render/passes/cull-pass.test.ts   # e.g. CullPass (44 tests)
 cd ts && npx vitest run src/physics-api.test.ts               # e.g. PhysicsAPI events + queries (20 tests)

@@ -229,17 +229,24 @@ function quietMain(argv) {
 }
 
 test('main exits 0 on PASS, 1 on FAIL and 2 on bad arguments or unreadable files', () => {
-  const base = captureDir();
-  const same = captureDir();
-  const changed = captureDir((tab, cap) => (tab === 'primitives' ? capture(withPoint(0, [1, 1, 1, 1]), { tab }) : cap));
-  const args = (run, step = '0') => ['--base', base, '--run', run, '--mode', 'B', '--step', step];
-  assert.equal(quietMain(args(same)), 0);
-  assert.equal(quietMain(args(changed)), 1);
-  assert.equal(quietMain(['--base', base, '--run', same, '--step', '0']), 2);
-  assert.equal(quietMain(['--base', base, '--run', same, '--mode', 'X', '--step', '0']), 2);
-  assert.equal(quietMain(args(same, '5')), 2);
-  assert.equal(quietMain([...args(same), '--bogus']), 2);
-  assert.equal(quietMain(args(mkdtempSync(join(tmpdir(), 'compare-test-empty-')))), 2);
+  // Every directory made here is removed at the end, pass or fail.
+  const dirs = [];
+  const kept = (dir) => (dirs.push(dir), dir);
+  try {
+    const base = kept(captureDir());
+    const same = kept(captureDir());
+    const changed = kept(captureDir((tab, cap) => (tab === 'primitives' ? capture(withPoint(0, [1, 1, 1, 1]), { tab }) : cap)));
+    const args = (run, step = '0') => ['--base', base, '--run', run, '--mode', 'B', '--step', step];
+    assert.equal(quietMain(args(same)), 0);
+    assert.equal(quietMain(args(changed)), 1);
+    assert.equal(quietMain(['--base', base, '--run', same, '--step', '0']), 2);
+    assert.equal(quietMain(['--base', base, '--run', same, '--mode', 'X', '--step', '0']), 2);
+    assert.equal(quietMain(args(same, '5')), 2);
+    assert.equal(quietMain([...args(same), '--bogus']), 2);
+    assert.equal(quietMain(args(kept(mkdtempSync(join(tmpdir(), 'compare-test-empty-'))))), 2);
+  } finally {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the CLI runs main() when compare.mjs is reached through a symlink', () => {
