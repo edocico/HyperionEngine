@@ -290,7 +290,7 @@ describe('GpuProfiler', () => {
 
     it('the zero-timestamp warning names the pass that did work but read back zero, after 120 discarded frames in a row', async () => {
       const p = new GpuProfiler(gpu.device);
-      // A pass with work whose stamps the GPU never wrote: on a fresh query set they read 0.
+      // A pass with work whose stamps the GPU never wrote: on a fresh query set they read 0 in Chrome (and in this fake), a destroyed set's stamps in Safari 27 (M12).
       for (let i = 0; i < 120; i++) await measure(p, gpu, ['bundle-only'], undefined);
       expect(p.discardReasons.zero).toBe(120);
       expect(warn).toHaveBeenCalledTimes(1);
