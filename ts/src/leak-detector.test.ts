@@ -5,9 +5,10 @@ import type { HandleRegistry, RegistryFactory } from './leak-detector';
 
 /**
  * A FinalizationRegistry the test drives by hand. A real one calls back
- * whenever V8 collects, which no test can wait for, and which is what made the
- * suite exit 1 at random: the callback's console.warn landed while vitest was
- * closing the worker.
+ * whenever V8 collects, and this suite runs without `--expose-gc`, so no test
+ * can wait for or trigger a collection. A collection at a bad moment is also
+ * what made the suite exit 1 at random: the callback's console.warn landed
+ * while vitest was closing the worker.
  */
 function manualRegistry() {
   let onCollected: (entityId: number) => void = () => {};
@@ -42,10 +43,28 @@ describe('LeakDetector', () => {
     // No assertion on finalization (GC is unpredictable), just verify no crash.
   });
 
-  it('constructs without FinalizationRegistry in environments that lack it', () => {
-    // In test environment, FinalizationRegistry exists, so this just verifies the constructor.
+  it('constructs with every default, on the real FinalizationRegistry of this environment', () => {
+    // The default factory meets the real global, which this environment has, so
+    // it builds a real registry. The branch without one is the next test.
+    expect(typeof FinalizationRegistry).toBe('function');
     const detector = new LeakDetector();
     expect(detector).toBeTruthy();
+  });
+
+  it('has no registry where FinalizationRegistry is missing: register, unregister and dispose do not throw', () => {
+    // The stub makes the DEFAULT factory take its null branch. The 'dispose()
+    // works where there is no FinalizationRegistry' test reaches the same state
+    // through a hand-made factory, not through the default one.
+    vi.stubGlobal('FinalizationRegistry', undefined);
+    try {
+      const detector = new LeakDetector();
+      const handle = {};
+      expect(() => detector.register(handle, 1)).not.toThrow();
+      expect(() => detector.unregister(handle)).not.toThrow();
+      expect(() => detector.dispose()).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('warns, with the entity id, for a handle that is collected while registered', () => {

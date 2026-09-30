@@ -8,9 +8,11 @@ export interface HandleRegistry {
 
 /**
  * Builds the registry around the callback that reports a collected handle, or
- * returns null where there is no `FinalizationRegistry`. It is the test seam:
- * a real registry calls back whenever V8 collects, which no test can wait for
- * or trigger, so a test hands in one it drives by hand.
+ * returns null where there is no `FinalizationRegistry`. It is the test seam: a
+ * real registry calls back whenever V8 collects, and no test in this suite can
+ * wait for or trigger a collection, because the suite runs without
+ * `--expose-gc` (a test under that flag could), so a test hands in a registry
+ * it drives by hand.
  */
 export type RegistryFactory = (onCollected: (entityId: number) => void) => HandleRegistry | null;
 

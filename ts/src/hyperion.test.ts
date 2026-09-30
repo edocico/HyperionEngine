@@ -253,14 +253,37 @@ describe('Hyperion', () => {
     dispose.mockRestore();
   });
 
-  it('destroy() switches the leak detector off before tearing anything down: a throwing bridge cannot leave it armed', () => {
+  // Every step destroy() runs after it switches the leak detector off, as
+  // [label, the field that owns the step (null: the engine itself), its method].
+  // A step that throws (a worker already gone, a DOM node that misbehaves) aborts
+  // destroy(), and the detector must be off whichever one it is. Each case makes
+  // ONE step throw, so the suite fails if dispose() ever moves behind any of them,
+  // not only behind the bridge.
+  const teardownSteps: [label: string, owner: string | null, method: string][] = [
+    ['disableProfiler', null, 'disableProfiler'],
+    ['pluginRegistry.destroyAll', 'pluginRegistry', 'destroyAll'],
+    ['loop.stop', 'loop', 'stop'],
+    ['inputManager.destroy', 'inputManager', 'destroy'],
+    ['immediateState.clearAll', 'immediateState', 'clearAll'],
+    ['eventBus.destroy', 'eventBus', 'destroy'],
+    ['audioManager.destroy', 'audioManager', 'destroy'],
+    ['physicsApi.destroy', 'physicsApi', 'destroy'],
+    ['bridge.destroy', 'bridge', 'destroy'],
+    ['renderer.destroy', 'renderer', 'destroy'],
+  ];
+
+  it.each(teardownSteps)('destroy() switches the leak detector off before any teardown step: a throwing %s cannot leave it armed', (label, owner, method) => {
     const dispose = vi.spyOn(LeakDetector.prototype, 'dispose');
-    const bridge = mockBridge();
-    vi.mocked(bridge.destroy).mockImplementation(() => { throw new Error('worker gone'); });
-    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
-    expect(() => engine.destroy()).toThrow('worker gone');
-    expect(dispose).toHaveBeenCalledTimes(1);
-    dispose.mockRestore();
+    try {
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+      const target = (owner === null ? engine : (engine as unknown as Record<string, unknown>)[owner]) as
+        Record<string, (...args: unknown[]) => unknown>;
+      vi.spyOn(target, method).mockImplementation(() => { throw new Error(`${label} failed`); });
+      expect(() => engine.destroy()).toThrow(`${label} failed`);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose.mockRestore();
+    }
   });
 
   it('spawn() refuses, loudly, when every id is live or in quarantine (WASM would drop it silently)', () => {
