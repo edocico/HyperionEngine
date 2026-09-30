@@ -1,426 +1,403 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
-import { GpuProfiler, WINDOW } from './gpu-profiler';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, type MockInstance } from 'vitest';
+import { GpuProfiler, nextSeal } from './gpu-profiler';
+import { installGpuGlobals, makeGpu, stampsOf, type FakeBuffer, type Gpu } from './gpu-profiler.fixture';
 
-// Polyfill the WebGPU bitflag globals for Node/vitest (browser globals).
-// Same pattern as texture-manager.test.ts.
-beforeAll(() => {
-  if (typeof globalThis.GPUBufferUsage === 'undefined') {
-    (globalThis as any).GPUBufferUsage = {
-      MAP_READ: 0x0001, MAP_WRITE: 0x0002,
-      COPY_SRC: 0x0004, COPY_DST: 0x0008,
-      INDEX: 0x0010, VERTEX: 0x0020, UNIFORM: 0x0040,
-      STORAGE: 0x0080, INDIRECT: 0x0100, QUERY_RESOLVE: 0x0200,
-    };
-  }
-  if (typeof globalThis.GPUMapMode === 'undefined') {
-    (globalThis as any).GPUMapMode = { READ: 0x0001, WRITE: 0x0002 };
-  }
-});
+beforeAll(installGpuGlobals);
 
 /**
- * Minimal fake device. WebGPU is not testable headless, so these tests cover
- * the bookkeeping the profiler does around the API — marker counting, readback
- * recycling, the rolling window, the invalid-frame guard — not the GPU itself.
+ * One measured frame: a compute pass with work per node, then submitted (or rejected) and, by default, polled.
+ * A node listed in `idle` opens and ends its pass without dispatching: a pass without work.
  */
-function makeDevice() {
-  const computePasses: Array<{ label?: string; index?: number }> = [];
-  const buffers: Array<{ destroyed: boolean }> = [];
-
-  const mapped: { data: BigInt64Array<ArrayBufferLike> } = { data: new BigInt64Array(0) };
-
-  const device = {
-    computePasses,
-    buffers,
-    mapped,
-    createQuerySet: vi.fn(() => ({ destroy: vi.fn() })),
-    createBuffer: vi.fn(() => {
-      // Like WebGPU: the range honours its size, and mapping a buffer that is
-      // still mapped rejects.
-      const b = {
-        destroyed: false,
-        isMapped: false,
-        destroy() { this.destroyed = true; },
-        mapAsync: vi.fn(async () => {
-          if (b.isMapped) throw new Error('OperationError: buffer already mapped');
-          b.isMapped = true;
-        }),
-        getMappedRange: vi.fn((offset = 0, size?: number) =>
-          mapped.data.buffer.slice(offset, size === undefined ? undefined : offset + size)),
-        unmap: vi.fn(() => { b.isMapped = false; }),
-      };
-      buffers.push(b as unknown as { destroyed: boolean });
-      return b;
-    }),
-  };
-  return device as unknown as GPUDevice & typeof device;
-}
-
-function makeEncoder(device: ReturnType<typeof makeDevice>) {
-  return {
-    beginComputePass: vi.fn((desc: { label?: string; timestampWrites?: { beginningOfPassWriteIndex: number } }) => {
-      device.computePasses.push({
-        label: desc.label,
-        index: desc.timestampWrites?.beginningOfPassWriteIndex,
-      });
-      return { end: vi.fn() };
-    }),
-    resolveQuerySet: vi.fn(),
-    copyBufferToBuffer: vi.fn(),
-  } as unknown as GPUCommandEncoder;
-}
-
-/** Build a timestamp table where pass i costs `costsMs[i]`. */
-function stamps(costsMs: number[]): BigInt64Array<ArrayBufferLike> {
-  const out = new BigInt64Array(costsMs.length + 1);
-  let t = 1_000_000n; // start non-zero: 0 is the "never written" sentinel
-  out[0] = t;
-  for (let i = 0; i < costsMs.length; i++) {
-    t += BigInt(Math.round(costsMs[i] * 1e6));
-    out[i + 1] = t;
+async function measure(
+  p: GpuProfiler, gpu: Gpu, nodes: string[], stamps: bigint[] | undefined,
+  opts: { reject?: boolean; poll?: boolean; profiled?: boolean; idle?: string[] } = {},
+): Promise<boolean> {
+  if (!p.beginFrame()) return false;
+  const enc = gpu.encoder();
+  p.instrument(enc);
+  for (const node of nodes) {
+    p.enterNode(node, opts.profiled ?? true);
+    const pass = enc.beginComputePass({ label: node });
+    if (!opts.idle?.includes(node)) pass.dispatchWorkgroups(1);
+    pass.end();
   }
-  return out;
+  p.endFrame(enc);
+  gpu.submit(enc, { stamps, reject: opts.reject });
+  if (opts.poll !== false) await p.poll();
+  return true;
 }
 
 describe('GpuProfiler', () => {
-  let device: ReturnType<typeof makeDevice>;
-
-  beforeEach(() => { device = makeDevice(); });
+  let gpu: Gpu;
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => {
+    gpu = makeGpu();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
 
   describe('isSupported', () => {
-    it('reports true when the feature is present', () => {
+    it('reports whether the feature is present', () => {
       expect(GpuProfiler.isSupported(new Set(['timestamp-query']))).toBe(true);
-    });
-
-    it('reports false when it is not', () => {
       expect(GpuProfiler.isSupported(new Set(['subgroups']))).toBe(false);
     });
   });
 
+  describe('resources', () => {
+    it('512 pairs by default: 1024 queries, three readbacks of 8 KB plus 8 bytes, a 4-byte seal', () => {
+      new GpuProfiler(gpu.device);
+      expect(gpu.createQuerySet).toHaveBeenCalledWith(expect.objectContaining({ type: 'timestamp', count: 1024 }));
+      const readbacks = gpu.buffers.filter((b) => b.label?.startsWith('gpu-profiler-readback'));
+      expect(readbacks).toHaveLength(3);
+      for (const b of readbacks) {
+        expect(b.size).toBe(1024 * 8 + 8);
+        expect(b.usage).toBe(GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
+      }
+      const seal = gpu.buffers.find((b) => b.label === 'gpu-profiler-seal')!;
+      expect(seal.size).toBe(4);
+      expect(seal.usage).toBe(GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+      const resolve = gpu.buffers.find((b) => b.label === 'gpu-profiler-resolve')!;
+      expect(resolve.size).toBe(1024 * 8);
+      expect(resolve.usage).toBe(GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC);
+    });
+
+    it.each([0, -1, 2049, 512.5, NaN, Infinity])(
+      'maxPairs %s is refused with a RangeError, before any GPU object exists',
+      (maxPairs) => {
+        expect(() => new GpuProfiler(gpu.device, maxPairs)).toThrow(RangeError);
+        expect(gpu.createQuerySet).not.toHaveBeenCalled();
+        expect(gpu.buffers).toEqual([]);
+      },
+    );
+
+    it('maxPairs 2048 fills the 4096 queries WebGPU allows a query set, and 1 is the smallest', () => {
+      new GpuProfiler(gpu.device, 2048);
+      expect(gpu.createQuerySet).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'timestamp', count: 4096 }));
+      new GpuProfiler(gpu.device, 1);
+      expect(gpu.createQuerySet).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'timestamp', count: 2 }));
+    });
+  });
+
   describe('frame lifecycle', () => {
-    it('encodes one marker per pass plus a closing marker', () => {
-      const p = new GpuProfiler(device);
-      const enc = makeEncoder(device);
-
-      expect(p.beginFrame(['cull', 'forward', 'fxaa'])).toBe(true);
-      p.mark(enc); p.mark(enc); p.mark(enc);
-      p.endFrame(enc);
-
-      expect(device.computePasses).toHaveLength(4);
-      expect(device.computePasses.map(c => c.index)).toEqual([0, 1, 2, 3]);
-    });
-
-    it('encodes nothing when beginFrame was not called', () => {
-      const p = new GpuProfiler(device);
-      const enc = makeEncoder(device);
-      p.mark(enc);
-      p.endFrame(enc);
-      expect(device.computePasses).toHaveLength(0);
-    });
-
-    it('holds 256 markers by default: ~20 graph passes plus 16 SDF sets x 3 stages fit', () => {
-      const p = new GpuProfiler(device);
-      expect(p.beginFrame(Array(255).fill('p'))).toBe(true);
-    });
-
-    it('refuses a graph larger than the query set', () => {
-      const p = new GpuProfiler(device, 2);
-      expect(p.beginFrame(['a', 'b', 'c'])).toBe(false);
-    });
-
-    it('refuses a second beginFrame while one is open', () => {
-      const p = new GpuProfiler(device);
-      expect(p.beginFrame(['a'])).toBe(true);
-      expect(p.beginFrame(['a'])).toBe(false);
-    });
-
-    it('skips frames when every readback buffer is in flight', () => {
-      const p = new GpuProfiler(device);
-      // Three slots: consume all of them without ever polling.
-      for (let i = 0; i < 3; i++) {
-        expect(p.beginFrame(['a'])).toBe(true);
-        const enc = makeEncoder(device);
-        p.mark(enc);
-        p.endFrame(enc);
-      }
-      expect(p.beginFrame(['a'])).toBe(false);
-      expect(p.skippedFrames).toBe(1);
-    });
-  });
-
-  describe('timing math', () => {
-    async function runFrame(p: GpuProfiler, names: string[], costsMs: number[]) {
-      device.mapped.data = stamps(costsMs);
-      p.beginFrame(names);
-      const enc = makeEncoder(device);
-      for (const _ of names) p.mark(enc);
-      p.endFrame(enc);
-      await p.poll();
-    }
-
-    it('turns timestamp deltas into per-pass milliseconds', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['cull', 'forward'], [0.25, 1.5]);
-
-      const t = p.getTimingsByName();
-      expect(t.get('cull')?.lastMs).toBeCloseTo(0.25, 5);
-      expect(t.get('forward')?.lastMs).toBeCloseTo(1.5, 5);
-    });
-
-    it('sums the intervals that share a name within one frame (the stages of a staged pass)', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['x/a', 'x/b', 'x/a'], [1, 2, 3]);
-      const t = p.getTimingsByName();
-      expect(t.get('x/a')?.lastMs).toBeCloseTo(4, 5);
-      expect(t.get('x/a')?.sampleCount).toBe(1);
-      expect(t.get('x/b')?.lastMs).toBeCloseTo(2, 5);
-    });
-
-    // A staged pass changes its stage list from frame to frame with no graph
-    // change (no reset): LightGroupsPass drops seed/sdf when the SDF sets go to
-    // zero. Review 2026-09-26: the vanished stages kept their frozen average and
-    // still counted in totalAverageMs.
-    it('a stage missing from a frame took 0 ms in it: its mean decays and lastMs is 0', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['lg/seed', 'lg/accum'], [2, 1]);
-      await runFrame(p, ['lg/accum'], [1]);
-      const seed = p.getTimingsByName().get('lg/seed')!;
-      expect(seed.lastMs).toBe(0);
-      expect(seed.sampleCount).toBe(2);
-      expect(seed.averageMs).toBeCloseTo(1, 5);
-      expect(p.totalAverageMs()).toBeCloseTo(2, 5);
-    });
-
-    it('forgets a stage once it has been missing for a whole window', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['lg/seed', 'lg/accum'], [2, 1]);
-      for (let i = 0; i < WINDOW; i++) await runFrame(p, ['lg/accum'], [1]);
-      expect(p.getTimingsByName().has('lg/seed')).toBe(false);
-      expect(p.totalAverageMs()).toBeCloseTo(1, 5);
-    });
-
-    // Second review 2026-09-26: "forget when every sample is 0" dropped a stage
-    // measured at 0 ms on its first missing frame, so it flickered in and out.
-    it('forgets a stage only after a whole window without it, even if it measured 0 ms', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['a', 'z'], [1, 0]);
-      await runFrame(p, ['a'], [1]);
-      expect(p.getTimingsByName().has('z')).toBe(true);
-      for (let i = 0; i < WINDOW - 2; i++) await runFrame(p, ['a'], [1]);
-      expect(p.getTimingsByName().has('z')).toBe(true);
-      await runFrame(p, ['a'], [1]);
-      expect(p.getTimingsByName().has('z')).toBe(false);
-    });
-
-    it('a stage appearing mid-window is averaged per frame too: every name has the same sample count', async () => {
-      const p = new GpuProfiler(device);
-      for (let i = 0; i < 3; i++) await runFrame(p, ['a'], [1]);
-      await runFrame(p, ['a', 'b'], [1, 4]);
-      const b = p.getTimingsByName().get('b')!;
-      expect(b.sampleCount).toBe(4);
-      expect(b.averageMs).toBeCloseTo(1, 5);
-      expect(b.lastMs).toBeCloseTo(4, 5);
-      expect(p.totalAverageMs()).toBeCloseTo(2, 5);
-    });
-
-    it('drops a frame whose marks do not match its names, and keeps its buffer usable', async () => {
-      const p = new GpuProfiler(device);
-      device.mapped.data = stamps([1, 1, 1]);
-      p.beginFrame(['a', 'b', 'c']);
-      const enc = makeEncoder(device);
-      p.mark(enc);
-      p.mark(enc); // one short: a staged pass that marked fewer stages than it listed
-      p.endFrame(enc);
-      await p.poll();
-      expect(p.timings()).toEqual([]);
-      // Every readback buffer still comes back unmapped and free: the next
-      // frames measure normally.
-      for (let i = 0; i < 4; i++) await runFrame(p, ['a'], [1]);
-      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(4);
-    });
-
-    it('never forgets a stage that is still measured, even at 0 ms', async () => {
-      const p = new GpuProfiler(device);
-      for (let i = 0; i < WINDOW + 5; i++) await runFrame(p, ['lg/seed'], [0]);
-      expect(p.getTimingsByName().has('lg/seed')).toBe(true);
-    });
-
-    it('averages across frames, which is what defeats the 100us quantization', async () => {
-      const p = new GpuProfiler(device);
-      // Chrome would report a 60us pass as 0 or 100us on alternate frames.
-      await runFrame(p, ['jfa'], [0.0]);
-      await runFrame(p, ['jfa'], [0.1]);
-
-      const jfa = p.getTimingsByName().get('jfa')!;
-      expect(jfa.sampleCount).toBe(2);
-      expect(jfa.averageMs).toBeCloseTo(0.05, 5);
-    });
-
-    it('caps history at WINDOW samples', async () => {
-      const p = new GpuProfiler(device);
-      for (let i = 0; i < WINDOW + 25; i++) {
-        await runFrame(p, ['forward'], [1.0]);
-      }
-      expect(p.getTimingsByName().get('forward')!.sampleCount).toBe(WINDOW);
-    });
-
-    it('discards a frame containing an unwritten (zero) timestamp', async () => {
-      const p = new GpuProfiler(device);
-      device.mapped.data = new BigInt64Array([0n, 0n]);
-      p.beginFrame(['cull']);
-      const enc = makeEncoder(device);
-      p.mark(enc);
-      p.endFrame(enc);
-      await p.poll();
-      expect(p.timings()).toEqual([]);
-      // Counted, so a browser that serves only zeroes is diagnosable rather
-      // than looking like a profiler that never finishes warming up.
-      expect(p.discardedFrames).toBe(1);
-    });
-
-    it('counts zeroed frames separately from skipped ones', async () => {
-      const p = new GpuProfiler(device);
-      device.mapped.data = new BigInt64Array([0n, 0n]);
-      for (let i = 0; i < 3; i++) {
-        p.beginFrame(['cull']);
-        const enc = makeEncoder(device);
-        p.mark(enc);
-        p.endFrame(enc);
-        await p.poll();
-      }
-      expect(p.discardedFrames).toBe(3);
-      expect(p.skippedFrames).toBe(0);
-      expect(p.timings()).toEqual([]);
-    });
-
-    it('keeps the zero-frame count across reset, since it describes the browser', async () => {
-      const p = new GpuProfiler(device);
-      device.mapped.data = new BigInt64Array([0n, 0n]);
-      p.beginFrame(['cull']);
-      const enc = makeEncoder(device);
-      p.mark(enc);
-      p.endFrame(enc);
-      await p.poll();
-
-      p.reset();
-      expect(p.discardedFrames).toBe(1);
-    });
-
-    it('clamps a non-monotonic delta to zero instead of reporting a negative', async () => {
-      const p = new GpuProfiler(device);
-      device.mapped.data = new BigInt64Array([5_000_000n, 1_000_000n]);
-      p.beginFrame(['weird']);
-      const enc = makeEncoder(device);
-      p.mark(enc);
-      p.endFrame(enc);
-      await p.poll();
-      expect(p.getTimingsByName().get('weird')!.lastMs).toBe(0);
-    });
-
-    it('sums pass averages into an approximate frame cost', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['cull', 'forward'], [0.5, 2.0]);
-      expect(p.totalAverageMs()).toBeCloseTo(2.5, 5);
-    });
-
-    it('reset() drops accumulated history', async () => {
-      const p = new GpuProfiler(device);
-      await runFrame(p, ['cull'], [1.0]);
-      expect(p.timings()).toHaveLength(1);
-      p.reset();
-      expect(p.timings()).toEqual([]);
-    });
-
-    it('recycles readback buffers so long runs never starve', async () => {
-      const p = new GpuProfiler(device);
-      for (let i = 0; i < 20; i++) {
-        await runFrame(p, ['forward'], [1.0]);
-      }
-      expect(p.skippedFrames).toBe(0);
-    });
-  });
-
-  describe('aborting a frame', () => {
-    it('reopens a frame left dangling by a throwing pass', () => {
-      const p = new GpuProfiler(device);
-      expect(p.beginFrame(['a'])).toBe(true);
-      expect(p.beginFrame(['a'])).toBe(false);  // still open, correctly refused
+    it('refuses a second beginFrame while one is open, and abortFrame reopens it without using a slot', () => {
+      const p = new GpuProfiler(gpu.device);
+      expect(p.beginFrame()).toBe(true);
+      expect(p.beginFrame()).toBe(false);
       p.abortFrame();
-      expect(p.beginFrame(['a'])).toBe(true);
-    });
-
-    it('consumes no readback slot, so repeated failures cannot starve the pool', () => {
-      const p = new GpuProfiler(device);
-      // Five aborted frames against three slots: without the fix this would
-      // have exhausted the pool after the third.
       for (let i = 0; i < 5; i++) {
-        expect(p.beginFrame(['a'])).toBe(true);
-        p.mark(makeEncoder(device));
+        expect(p.beginFrame()).toBe(true);
         p.abortFrame();
       }
       expect(p.skippedFrames).toBe(0);
     });
+
+    it('skips frames when every readback buffer is in flight', async () => {
+      const p = new GpuProfiler(gpu.device);
+      for (let i = 0; i < 3; i++) await measure(p, gpu, ['a'], stampsOf(i, 1), { poll: false });
+      expect(p.beginFrame()).toBe(false);
+      expect(p.skippedFrames).toBe(1);
+    });
+
+    it("a frame queued while a readback's mapAsync is pending never reuses it", async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+      // Takes frame 0 and leaves its mapAsync pending: the fake marks the buffer mapped at call time,
+      // and a write, resolve or copy into it would throw.
+      const inflight = p.poll();
+      await measure(p, gpu, ['a'], stampsOf(1, 1), { poll: false });
+      await measure(p, gpu, ['a'], stampsOf(2, 1), { poll: false });
+      await inflight;
+      await p.poll();
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(3);
+    });
+
+    it('reports the passes of a measured frame and its span', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['cull', 'forward'], stampsOf(0, 0.25, 1.5));
+      const t = p.getTimingsByName();
+      expect(t.get('cull')?.lastMs).toBeCloseTo(0.25, 6);
+      expect(t.get('forward')?.lastMs).toBeCloseTo(1.5, 6);
+      // Two passes 10 ms apart: the span runs from the first begin to the last end.
+      expect(p.frameTiming()?.lastMs).toBeCloseTo(11.5, 6);
+    });
+
+    it('a frame whose nodes all opted out is discarded as empty', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['overlay'], [], { profiled: false });
+      expect(p.timings()).toEqual([]);
+      expect(p.discardReasons.empty).toBe(1);
+    });
   });
 
-  describe('reset with frames still in flight', () => {
-    /** Open and close a frame without polling: it stays queued for readback. */
-    function encodeUnpolledFrame(p: GpuProfiler, names: string[], costsMs: number[]) {
-      device.mapped.data = stamps(costsMs);
-      p.beginFrame(names);
-      const enc = makeEncoder(device);
-      for (const _ of names) p.mark(enc);
-      p.endFrame(enc);
-    }
-
-    it('discards samples measured before the reset', async () => {
-      const p = new GpuProfiler(device);
-      encodeUnpolledFrame(p, ['jfa-iter-0'], [1.0]);
-
-      // Simulates rebuildGraph(): the pass set changed under us.
-      p.reset();
-      await p.poll();
-
-      // The stale frame must not resurrect a pass the new graph does not have.
-      expect(p.timings()).toEqual([]);
+  describe('the seal', () => {
+    it('a rejected frame is discarded as unexecuted, and never replays the older frame its readback still holds', async () => {
+      const p = new GpuProfiler(gpu.device);
+      for (let i = 0; i < 3; i++) await measure(p, gpu, ['forward'], stampsOf(i, 1));
+      expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(3);
+      for (let i = 0; i < 6; i++) await measure(p, gpu, ['forward'], undefined, { reject: true });
+      expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(3);
+      expect(p.discardReasons.unexecuted).toBe(6);
     });
 
-    it('keeps measuring frames opened after the reset', async () => {
-      const p = new GpuProfiler(device);
-      encodeUnpolledFrame(p, ['old-pass'], [1.0]);
-      p.reset();
-
-      encodeUnpolledFrame(p, ['new-pass'], [2.0]);
+    it('writes 0 at the readback tail through the queue, and copies the seal in the command buffer', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+      const tailWrite = (gpu.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.find(([buffer]) =>
+        (buffer as FakeBuffer).label?.startsWith('gpu-profiler-readback'));
+      expect(tailWrite?.[1]).toBe(2 * 8);
+      expect(Array.from(tailWrite?.[2] as Uint32Array)).toEqual([0]);
+      // The frame is accepted, and its readback holds the first seal at the tail: the queue wrote 0
+      // there, so only the copy encoded in the command buffer can have put 1 in its place.
       await p.poll();
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(1);
+      expect(new Uint32Array((tailWrite![0] as FakeBuffer).bytes.buffer, 16, 1)[0]).toBe(1);
+    });
 
+    it('two readbacks holding different frames, read with every submit rejected: nothing accepted, nothing in the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });   // readback X: frame 0
+      await measure(p, gpu, ['a'], stampsOf(1, 1), { poll: false });   // readback Y: frame 1
+      await p.poll();
+      // Two rejected frames reuse Y then X, which still hold frames 1 and 0.
+      await measure(p, gpu, ['a'], undefined, { reject: true, poll: false });
+      await measure(p, gpu, ['a'], undefined, { reject: true, poll: false });
+      await p.poll();
+      expect(p.discardReasons.unexecuted).toBe(2);
+      // The query set still holds frame 1, the last that ran: a pass that did not refresh it is stale.
+      await measure(p, gpu, ['a'], undefined);
+      expect(p.discardReasons.stale).toBe(1);
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
+    });
+
+    it('nextSeal counts 1..0xFFFFFFFF and never returns 0', () => {
+      expect(nextSeal(0)).toBe(1);
+      expect(nextSeal(41)).toBe(42);
+      expect(nextSeal(0xfffffffe)).toBe(0xffffffff);
+      expect(nextSeal(0xffffffff)).toBe(1);
+    });
+  });
+
+  describe('the per-index history', () => {
+    it('an executed frame whose pass did not refresh its stamps is stale', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const s = stampsOf(0, 1);
+      await measure(p, gpu, ['overlay'], s);
+      await measure(p, gpu, ['overlay'], undefined);          // ran, but the query set still holds s
+      expect(p.discardReasons.stale).toBe(1);
+      await measure(p, gpu, ['overlay'], undefined, { reject: true });
+      await measure(p, gpu, ['overlay'], stampsOf(1, 1));
+      expect(p.getTimingsByName().get('overlay')?.sampleCount).toBe(2);
+    });
+
+    it('a pass without work whose stamps equal the recorded history does not discard the frame (the Metal case)', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const s0 = stampsOf(0, 1, 2);
+      const s1 = stampsOf(1, 1, 2);
+      await measure(p, gpu, ['forward', 'idle'], s0, { idle: ['idle'] });
+      // 'idle' opened a pass and dispatched nothing: the query set keeps its indices' previous stamps.
+      await measure(p, gpu, ['forward', 'idle'], [s1[0], s1[1], s0[2], s0[3]], { idle: ['idle'] });
+      expect(Object.values(p.discardReasons).every((n) => n === 0), JSON.stringify(p.discardReasons)).toBe(true);
       const t = p.getTimingsByName();
-      expect(t.has('old-pass')).toBe(false);
-      expect(t.get('new-pass')?.lastMs).toBeCloseTo(2.0, 5);
+      expect(t.get('forward')?.sampleCount).toBe(2);
+      expect(t.get('idle')?.lastMs).toBe(0);
+      expect(t.get('idle')?.averageMs).toBe(0);
     });
 
-    it('returns the invalidated frames to the pool instead of starving it', () => {
-      const p = new GpuProfiler(device);
-      for (let i = 0; i < 3; i++) encodeUnpolledFrame(p, ['a'], [1.0]);
-      expect(p.beginFrame(['a'])).toBe(false);  // all three slots checked out
-
+    it('reset with frames in flight: their samples are dropped, their buffers recycled, and the history forgotten', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const s = stampsOf(0, 1);
+      await measure(p, gpu, ['old-pass'], s);
+      for (let i = 0; i < 3; i++) await measure(p, gpu, ['old-pass'], stampsOf(1 + i, 1), { poll: false });
+      expect(p.beginFrame()).toBe(false);
       p.reset();
+      expect(p.timings()).toEqual([]);
+      // The history is unknown, so a new frame repeating stamps read before is not stale.
+      await measure(p, gpu, ['new-pass'], s);
+      expect(p.getTimingsByName().has('old-pass')).toBe(false);
+      expect(p.getTimingsByName().get('new-pass')?.sampleCount).toBe(1);
+    });
 
-      // Dropping the entries without recycling their buffers would leave the
-      // profiler permanently unable to open a frame.
-      expect(p.beginFrame(['a'])).toBe(true);
+    it('a discarded frame still updates the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a', 'b'], stampsOf(0, 1, 1));
+      const s = stampsOf(1, 1, 1);
+      const reversed = [s[0], s[1], s[3], s[2]];                 // 'b' ends before it begins
+      await measure(p, gpu, ['a', 'b'], reversed);
+      expect(p.discardReasons.reversed).toBe(1);
+      const next = stampsOf(2, 1, 1);
+      await measure(p, gpu, ['a', 'b'], [reversed[0], reversed[1], next[2], next[3]]);   // 'a' keeps frame 1's stamps
+      expect(p.discardReasons.stale).toBe(1);
+    });
+
+    it('a frame of an old generation still updates the history', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+      const reading = p.poll();       // takes the frame now
+      p.reset();                      // which from here on belongs to an old generation
+      await reading;
+      expect(p.timings()).toEqual([]);
+      await measure(p, gpu, ['a'], undefined);   // the query set still holds that frame's stamps
+      expect(p.discardReasons.stale).toBe(1);
+    });
+
+    it('a lost readback (device loss) throws nothing, logs nothing, frees its buffer and forgets its indices', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        const s = stampsOf(0, 1);
+        await measure(p, gpu, ['a'], s);
+        for (const b of gpu.buffers) b.failMap = true;
+        // Three lost frames in a row: the pool is LIFO with three slots, so a buffer
+        // that failed to come back shows only when all three have been lost.
+        for (let i = 1; i <= 3; i++) await expect(measure(p, gpu, ['a'], stampsOf(i, 1))).resolves.toBe(true);
+        for (const b of gpu.buffers) b.failMap = false;
+        // Were the history kept, a frame repeating s would be stale.
+        await expect(measure(p, gpu, ['a'], s)).resolves.toBe(true);
+        expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
+        expect(p.skippedFrames).toBe(0);
+        // A lost device is expected, not a bug: only a failure AFTER the map is reported (see diagnostics).
+        expect(error).not.toHaveBeenCalled();
+      } finally {
+        error.mockRestore();
+      }
+    });
+  });
+
+  describe('diagnostics', () => {
+    it('warns once, after 120 discarded frames in a row, naming the reason', async () => {
+      const p = new GpuProfiler(gpu.device);
+      for (let i = 0; i < 119; i++) await measure(p, gpu, ['a'], undefined, { reject: true });
+      expect(warn).not.toHaveBeenCalled();
+      await measure(p, gpu, ['a'], undefined, { reject: true });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/did not run/);
+      for (let i = 0; i < 10; i++) await measure(p, gpu, ['a'], undefined, { reject: true });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(p.discardedFrames).toBe(130);
+    });
+
+    it('the warning names the pass behind the most frequent reason', async () => {
+      const p = new GpuProfiler(gpu.device);
+      const first = stampsOf(0, 1, 1);
+      await measure(p, gpu, ['forward', 'overlay'], first);
+      for (let i = 1; i <= 120; i++) {
+        const s = stampsOf(i, 1, 1);
+        await measure(p, gpu, ['forward', 'overlay'], [s[0], s[1], first[2], first[3]]);   // overlay keeps frame 0's stamps
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/pass 'overlay' did work but its timestamps were not refreshed/);
+    });
+
+    it('the zero-timestamp warning names the pass that did work but read back zero, after 120 discarded frames in a row', async () => {
+      const p = new GpuProfiler(gpu.device);
+      // A pass with work whose stamps the GPU never wrote: on a fresh query set they read 0 in Chrome (and in this fake), a destroyed set's stamps in Safari 27 (M12).
+      for (let i = 0; i < 120; i++) await measure(p, gpu, ['bundle-only'], undefined);
+      expect(p.discardReasons.zero).toBe(120);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(
+        "pass 'bundle-only' did work but read back a zero timestamp (this browser does not serve timestamps, " +
+        "or the pass's only work was not sampled, like an empty render bundle)",
+      );
+    });
+
+    it('a valid frame breaks the streak', async () => {
+      const p = new GpuProfiler(gpu.device);
+      for (let i = 0; i < 100; i++) await measure(p, gpu, ['a'], undefined, { reject: true });
+      await measure(p, gpu, ['a'], stampsOf(0, 1));
+      for (let i = 0; i < 100; i++) await measure(p, gpu, ['a'], undefined, { reject: true });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a truncated frame is discarded and warns once: how many passes, which node ran out of pairs, profile: false', async () => {
+      const p = new GpuProfiler(gpu.device, 2);
+      // 'c' opens the first pass without a pair; 'd' is refused too, but 'c' is the one named.
+      await measure(p, gpu, ['a', 'b', 'c', 'd'], stampsOf(0, 1, 1));
+      await measure(p, gpu, ['a', 'b', 'c', 'd'], stampsOf(1, 1, 1));
+      expect(p.truncatedFrames).toBe(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toBe(
+        '[Hyperion] GPU profiling: a frame opened more than 2 passes, so its timings were dropped; ' +
+        "the first untimed pass belonged to 'c'. Give the nodes that open many passes `profile: false`.",
+      );
+      // The class is not exported and the renderer builds it with the default: nobody could follow that advice.
+      expect(message).not.toMatch(/maxPairs/);
+    });
+
+    it('the streak warning for truncated frames names the first untimed pass too', async () => {
+      const p = new GpuProfiler(gpu.device, 2);
+      for (let i = 0; i < 120; i++) await measure(p, gpu, ['a', 'b', 'c'], stampsOf(i, 1, 1));
+      // The one-time truncation warning came with the first frame; the streak warning with the 120th.
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1][0])).toBe(
+        '[Hyperion] GPU profiling is enabled but the last 120 frames were discarded: ' +
+        "frames opened more passes than the profiler has query pairs for (the first untimed: pass 'c'). " +
+        'No timings will be reported until that changes.',
+      );
+    });
+
+    it('discard counts survive reset: they describe the browser', async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], undefined, { reject: true });
+      p.reset();
+      expect(p.discardedFrames).toBe(1);
+    });
+
+    it('a failure while reading a mapped frame is reported once, and the buffer comes back: the profiler keeps working', async () => {
+      // Not a lost device (that is a failing map, above): a bug in the reading itself, which would
+      // otherwise stop all reporting with no discard counted and no warning.
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        await measure(p, gpu, ['forward'], stampsOf(0, 1));
+        expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(1);
+        for (const b of gpu.buffers) b.failRange = true;
+        // Three failed reads in a row: the pool is LIFO with three slots, so a buffer
+        // that failed to come back shows only when all three have failed.
+        for (let i = 1; i <= 3; i++) await measure(p, gpu, ['forward'], stampsOf(i, 1));
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(String(error.mock.calls[0][0])).toContain('GPU profiler');
+        for (const b of gpu.buffers) b.failRange = false;
+        await expect(measure(p, gpu, ['forward'], stampsOf(4, 1))).resolves.toBe(true);
+        await measure(p, gpu, ['forward'], stampsOf(5, 1));
+        expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(3);
+        for (const b of gpu.buffers) b.failRange = true;
+        await measure(p, gpu, ['forward'], stampsOf(6, 1));
+        expect(error).toHaveBeenCalledTimes(1);
+      } finally {
+        error.mockRestore();
+      }
     });
   });
 
   describe('destroy', () => {
-    it('releases every buffer and stops measuring', () => {
-      const p = new GpuProfiler(device);
+    it('releases every buffer and stops measuring, and is idempotent', () => {
+      const p = new GpuProfiler(gpu.device);
       p.destroy();
-      expect(device.buffers.every(b => b.destroyed)).toBe(true);
-      expect(p.beginFrame(['a'])).toBe(false);
+      expect(gpu.buffers.every((b) => b.destroyed)).toBe(true);
+      const querySet = gpu.createQuerySet.mock.results[0].value;
+      expect(querySet.destroy).toHaveBeenCalledTimes(1);
+      expect(p.beginFrame()).toBe(false);
+      expect(() => p.destroy()).not.toThrow();
+      expect(querySet.destroy).toHaveBeenCalledTimes(1);
     });
 
-    it('is idempotent', () => {
-      const p = new GpuProfiler(device);
-      p.destroy();
-      expect(() => p.destroy()).not.toThrow();
+    it('a destroy() between a resolved map and the read is a quiet end: no error is logged for the lost frame', async () => {
+      // getMappedRange throws on a destroyed buffer, in WebGPU and in the fake. The one-time "reading a
+      // resolved frame failed" error is for a bug in the reading, not for tearing the renderer down.
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+        // The map resolves, and the profiler is destroyed before poll() continues from its await.
+        for (const b of gpu.buffers) b.onMap = () => p.destroy();
+        await p.poll();
+        expect(error).not.toHaveBeenCalled();
+        expect(p.timings()).toEqual([]);
+        expect(p.beginFrame()).toBe(false);
+      } finally {
+        error.mockRestore();
+      }
     });
   });
 });

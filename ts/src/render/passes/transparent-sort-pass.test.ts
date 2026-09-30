@@ -35,7 +35,7 @@ type Copy = { kind: 'copy'; src: Buf; srcOffset: number; dst: Buf; dstOffset: nu
 type Cmd =
   | { kind: 'pass' }
   | { kind: 'end' }
-  | { kind: 'mark' }
+  | { kind: 'stage'; name: string }
   | { kind: 'pipeline'; entry: string }
   | { kind: 'group'; index: number; group: Group }
   | { kind: 'dispatch'; x: number }
@@ -113,7 +113,7 @@ function setUp(probe: SortReadbackTaker | null = null) {
 const frameOf = (transparentCount: number, frameStamp = 7) =>
   ({ transparentCount, frameStamp, entityCount: transparentCount }) as unknown as FrameState;
 
-/** An encoder that records passes, dispatches, copies and profiler marks in order. */
+/** An encoder that records passes, dispatches, copies and profiler stage names in order. */
 function record() {
   const cmds: Cmd[] = [];
   const encoder = {
@@ -131,21 +131,33 @@ function record() {
       cmds.push({ kind: 'copy', src, srcOffset, dst, dstOffset, size });
     },
   } as unknown as GPUCommandEncoder;
-  const mark = (_encoder: GPUCommandEncoder) => { cmds.push({ kind: 'mark' }); };
-  return { encoder, cmds, mark };
+  const stage = (name: string) => { cmds.push({ kind: 'stage', name }); };
+  return { encoder, cmds, stage };
 }
 
-/** One entry per dispatch: its pipeline's entry point, its bind group, its size or indirect source. */
+/**
+ * One entry per dispatch: its pipeline's entry point, its bind group 0, its size or indirect source.
+ * A pass starts with nothing set, and a dispatch needs both set inside ITS OWN pass: carried across
+ * passes, the two would let a refactor that stopped setting them in each of the 22 measured passes
+ * go unseen headless, while on the GPU it drops every measured frame.
+ */
 function dispatches(cmds: Cmd[]) {
   const out: Array<{ entry: string; group: Group; x?: number; indirect?: { buffer: Buf; offset: number } }> = [];
   let entry = '';
   let group: Group | null = null;
-  for (const c of cmds) {
-    if (c.kind === 'pipeline') entry = c.entry;
-    else if (c.kind === 'group') group = c.group;
-    else if (c.kind === 'dispatch') out.push({ entry, group: group!, x: c.x });
-    else if (c.kind === 'indirect') out.push({ entry, group: group!, indirect: { buffer: c.buffer, offset: c.offset } });
-  }
+  const dispatchAt = (i: number) => {
+    if (entry === '' || group === null) {
+      throw new Error(`command ${i}: a dispatch with no pipeline and bind group 0 set in its own pass`);
+    }
+    return { entry, group };
+  };
+  cmds.forEach((c, i) => {
+    if (c.kind === 'pass') { entry = ''; group = null; }
+    else if (c.kind === 'pipeline') entry = c.entry;
+    else if (c.kind === 'group' && c.index === 0) group = c.group;
+    else if (c.kind === 'dispatch') out.push({ ...dispatchAt(i), x: c.x });
+    else if (c.kind === 'indirect') out.push({ ...dispatchAt(i), indirect: { buffer: c.buffer, offset: c.offset } });
+  });
   return out;
 }
 
@@ -192,15 +204,15 @@ describe('TransparentSortPass as a graph node', () => {
     expect(pass.optional).toBe(true);
   });
 
-  it('a pass never set up writes nothing, encodes nothing and names no stage', () => {
+  it('a pass never set up writes nothing and encodes nothing, measured or not', () => {
     const { device, writes } = makeDevice();
     const pass = new TransparentSortPass();
-    const { encoder, cmds, mark } = record();
+    const { encoder, cmds, stage } = record();
     pass.prepare(device, frameOf(10));
-    pass.execute(encoder, frameOf(10), new ResourcePool(), mark);
+    pass.execute(encoder, frameOf(10), new ResourcePool(), stage);
+    pass.execute(encoder, frameOf(10), new ResourcePool());
     expect(writes).toEqual([]);
     expect(cmds).toEqual([]);
-    expect(pass.profileStages(frameOf(10))).toEqual([]);
   });
 });
 
@@ -414,37 +426,35 @@ describe('TransparentSortPass.execute', () => {
     const f = frameOf(4000, 3);
     pass.prepare(device, f);
     const before = writes.length;
-    for (const withMark of [false, true]) {
-      const { encoder, mark } = record();
-      pass.execute(encoder, f, pool, withMark ? mark : undefined);
+    for (const withStage of [false, true]) {
+      const { encoder, stage } = record();
+      pass.execute(encoder, f, pool, withStage ? stage : undefined);
     }
     expect(writes.length).toBe(before);
   });
 
-  it.each([0, Number.NaN])('count %s: encodes nothing and profileStages is empty', (count) => {
+  it.each([0, Number.NaN])('count %s: encodes nothing, measured or not', (count) => {
     const { pass, device, pool } = setUp();
     const f = frameOf(count);
     pass.prepare(device, f);
-    expect(pass.profileStages(f)).toEqual([]);
-    const { encoder, cmds, mark } = record();
+    const { encoder, cmds, stage } = record();
     pass.execute(encoder, f, pool);
-    pass.execute(encoder, f, pool, mark);
+    pass.execute(encoder, f, pool, stage);
     expect(cmds).toEqual([]);
   });
 
-  it('with the profiler: 22 compute passes, one per stage, each right after its mark — as profileStages names them', () => {
+  it('with the profiler: 22 compute passes, each right after its stage name — gather, then upsweep/scan/scatter seven times', () => {
     const { pass, device, pool } = setUp();
     const f = frameOf(5000);
     pass.prepare(device, f);
-    const stages = pass.profileStages(f);
-    expect(stages).toEqual(STAGES);
-    expect(stages).toHaveLength(22);
-    const { encoder, cmds, mark } = record();
-    pass.execute(encoder, f, pool, mark);
-    expect(cmds.filter((c) => c.kind === 'mark')).toHaveLength(stages.length);
-    expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(stages.length);
-    cmds.forEach((c, i) => { if (c.kind === 'mark') expect(cmds[i + 1].kind).toBe('pass'); });
-    expect(dispatches(cmds).map((d) => d.entry)).toEqual(stages.map((s) => ENTRY[s]));
+    const { encoder, cmds, stage } = record();
+    pass.execute(encoder, f, pool, stage);
+    const names = cmds.flatMap((c) => (c.kind === 'stage' ? [c.name] : []));
+    expect(names).toEqual(STAGES);
+    expect(names).toHaveLength(22);
+    expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(22);
+    cmds.forEach((c, i) => { if (c.kind === 'stage') expect(cmds[i + 1].kind).toBe('pass'); });
+    expect(dispatches(cmds).map((d) => d.entry)).toEqual(STAGES.map((s) => ENTRY[s]));
   });
 
   it('with a readback request: gather, its output copied, the sort in a second pass, then header, hist and order', () => {
@@ -477,13 +487,13 @@ describe('TransparentSortPass.execute', () => {
     const { pass, device, pool } = setUp({ take: () => target });
     const f = frameOf(2000, 5);
     pass.prepare(device, f);
-    const { encoder, cmds, mark } = record();
-    pass.execute(encoder, f, pool, mark);
+    const { encoder, cmds, stage } = record();
+    pass.execute(encoder, f, pool, stage);
     expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(22);
-    expect(cmds.filter((c) => c.kind === 'mark')).toHaveLength(22);
+    expect(cmds.filter((c) => c.kind === 'stage')).toHaveLength(22);
     const firstEnd = cmds.findIndex((c) => c.kind === 'end');
     expect(cmds.slice(firstEnd + 1, firstEnd + 3).map((c) => c.kind)).toEqual(['copy', 'copy']);
-    expect(cmds[firstEnd + 3].kind).toBe('mark');
+    expect(cmds[firstEnd + 3].kind).toBe('stage');
     expect(cmds.slice(-3).map((c) => c.kind)).toEqual(['copy', 'copy', 'copy']);
   });
 
@@ -511,13 +521,13 @@ describe('TransparentSortPass.execute', () => {
       expect(byLabel('sort-keys-a').usage & USAGE.COPY_SRC).toBe(0);
       const f = frameOf(3000, 4);
       pass.prepare(device, f);
-      for (const withMark of [false, true]) {
-        const { encoder, cmds, mark } = record();
-        pass.execute(encoder, f, pool, withMark ? mark : undefined);
+      for (const withStage of [false, true]) {
+        const { encoder, cmds, stage } = record();
+        pass.execute(encoder, f, pool, withStage ? stage : undefined);
         expect(cmds.filter((c) => c.kind === 'copy')).toEqual([]);
         // The sort itself still runs: one pass, or one per stage with the profiler.
         expect(dispatches(cmds)).toHaveLength(1 + 3 * PASSES);
-        expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(withMark ? 22 : 1);
+        expect(cmds.filter((c) => c.kind === 'pass')).toHaveLength(withStage ? 22 : 1);
       }
       expect(probe.take).not.toHaveBeenCalled();
     } finally {
@@ -542,7 +552,6 @@ describe('TransparentSortPass.destroy', () => {
     const { encoder, cmds } = record();
     pass.execute(encoder, frameOf(10), pool);
     expect(cmds).toEqual([]);
-    expect(pass.profileStages(frameOf(10))).toEqual([]);
   });
 });
 

@@ -46,6 +46,34 @@ describe('pixelCheck', () => {
   });
 });
 
+describe('pixelCheck without a main-thread renderer', () => {
+  // Mode A: the check function reaches for the renderer itself, before any
+  // probe (the Bloom check turns the bloom graph on first), and the engine
+  // says there is none. Same environment limit as an unavailable probe.
+  it.each([
+    'Cannot enable bloom: no renderer available',
+    'Cannot enable outlines: no renderer available',
+  ])('skips, with the reason, when the check calls an engine API that needs the renderer: %s', async (message) => {
+    const reporter = createTestReporter();
+    const probe = vi.fn();
+    await pixelCheck(reporter, 'fx', engineWith(probe), async () => {
+      throw new Error(message);
+    });
+    expect(reporter.results()).toEqual([{ name: 'fx', status: 'skip', detail: `no renderer: ${message}` }]);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('still fails on any other throw of the check function', async () => {
+    const reporter = createTestReporter();
+    await pixelCheck(reporter, 'fx', engineWith(vi.fn()), async () => {
+      throw new Error('Cannot read properties of undefined');
+    });
+    expect(reporter.results()).toEqual([
+      { name: 'fx', status: 'fail', detail: 'probe error: Cannot read properties of undefined' },
+    ]);
+  });
+});
+
 describe('pixelCheck timeout', () => {
   it('fails, instead of hanging the section setup, when no frame serves the probe', async () => {
     vi.useFakeTimers();

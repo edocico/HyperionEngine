@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { Hyperion } from './hyperion';
 import type { EngineBridge } from './worker-bridge';
 import type { Renderer } from './renderer';
@@ -81,6 +82,7 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    getGpuFrameTiming: vi.fn(() => null),
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,
@@ -102,6 +104,28 @@ function defaultConfig(): ResolvedConfig {
     streamingBudgetBytesPerFrame: 256 * 1024,
   };
 }
+
+// Every engine a test builds is destroyed when the test ends. destroy() is
+// idempotent, so the tests that destroy theirs by hand are untouched. An engine
+// left alive keeps its LeakDetector armed: the handles it spawned then warn from
+// the FinalizationRegistry callback whenever V8 collects them, which can be
+// while the worker is torn down, and vitest exits 1 ("Closing rpc while
+// onUserConsoleLog was pending") with every test green.
+let fromPartsSpy: MockInstance<typeof Hyperion.fromParts>;
+
+beforeEach(() => {
+  fromPartsSpy = vi.spyOn(Hyperion, 'fromParts'); // calls through
+});
+
+afterEach(() => {
+  try {
+    for (const call of fromPartsSpy.mock.results) {
+      if (call.type === 'return') call.value.destroy();
+    }
+  } finally {
+    fromPartsSpy.mockRestore();
+  }
+});
 
 describe('Hyperion', () => {
   it('constructs from dependencies', () => {
@@ -216,6 +240,50 @@ describe('Hyperion', () => {
     e.destroy();
     expect(unregister).toHaveBeenCalledWith(e);
     unregister.mockRestore();
+  });
+
+  it('destroy() switches the leak detector off, once', () => {
+    const dispose = vi.spyOn(LeakDetector.prototype, 'dispose');
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.spawn();
+    expect(dispose).not.toHaveBeenCalled();
+    engine.destroy();
+    engine.destroy();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    dispose.mockRestore();
+  });
+
+  // Every step destroy() runs after it switches the leak detector off, as
+  // [label, the field that owns the step (null: the engine itself), its method].
+  // A step that throws (a worker already gone, a DOM node that misbehaves) aborts
+  // destroy(), and the detector must be off whichever one it is. Each case makes
+  // ONE step throw, so the suite fails if dispose() ever moves behind any of them,
+  // not only behind the bridge.
+  const teardownSteps: [label: string, owner: string | null, method: string][] = [
+    ['disableProfiler', null, 'disableProfiler'],
+    ['pluginRegistry.destroyAll', 'pluginRegistry', 'destroyAll'],
+    ['loop.stop', 'loop', 'stop'],
+    ['inputManager.destroy', 'inputManager', 'destroy'],
+    ['immediateState.clearAll', 'immediateState', 'clearAll'],
+    ['eventBus.destroy', 'eventBus', 'destroy'],
+    ['audioManager.destroy', 'audioManager', 'destroy'],
+    ['physicsApi.destroy', 'physicsApi', 'destroy'],
+    ['bridge.destroy', 'bridge', 'destroy'],
+    ['renderer.destroy', 'renderer', 'destroy'],
+  ];
+
+  it.each(teardownSteps)('destroy() switches the leak detector off before any teardown step: a throwing %s cannot leave it armed', (label, owner, method) => {
+    const dispose = vi.spyOn(LeakDetector.prototype, 'dispose');
+    try {
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+      const target = (owner === null ? engine : (engine as unknown as Record<string, unknown>)[owner]) as
+        Record<string, (...args: unknown[]) => unknown>;
+      vi.spyOn(target, method).mockImplementation(() => { throw new Error(`${label} failed`); });
+      expect(() => engine.destroy()).toThrow(`${label} failed`);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose.mockRestore();
+    }
   });
 
   it('spawn() refuses, loudly, when every id is live or in quarantine (WASM would drop it silently)', () => {
@@ -997,6 +1065,20 @@ describe('debug API', () => {
       const b = Hyperion.fromParts(defaultConfig(), mockBridge(), supported);
       expect(b.gpuProfilingSupported).toBe(true);
       b.destroy();
+    });
+
+    it('reports the GPU frame span from the renderer', () => {
+      const renderer = mockRenderer();
+      renderer.getGpuFrameTiming = vi.fn(() => ({ averageMs: 3.2, lastMs: 3.1, sampleCount: 120 }));
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+      expect(engine.getGpuFrameTiming()).toEqual({ averageMs: 3.2, lastMs: 3.1, sampleCount: 120 });
+      engine.destroy();
+    });
+
+    it('has no frame span without a renderer (headless, or Mode A main thread)', () => {
+      const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), null);
+      expect(engine.getGpuFrameTiming()).toBeNull();
+      engine.destroy();
     });
   });
 });

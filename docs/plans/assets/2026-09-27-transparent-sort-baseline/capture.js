@@ -3,7 +3,15 @@ async () => {
   // chrome-devtools `evaluate_script` call, reused UNCHANGED at steps 0-4.
   //
   // Page: the dev harness opened with ?bench (no section at load), e.g.
-  // http://localhost:5173/?mode=B&bench, 1920x1080, AMD low-power adapter.
+  // http://localhost:5173/?mode=B&bench, on a hardware adapter (no adapter
+  // initScript on the Mac). Framing: 1920x1080 on Fedora (resize_page); the
+  // Mac baseline is a CSS window of 1200x689 at dpr 2, canvas 1960x1248 (M4 in
+  // docs/plans/assets/2026-09-29-mac-m2/README.md), and compare.mjs refuses a
+  // run whose canvas size or devicePixelRatio differ.
+  // A capture is ONE page load per mode and a Vite reload in the middle means
+  // redoing it (M4): on the Mac navigate with the anti-reload WebSocket
+  // initScript (M6 in the same README; the script text is in
+  // docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md, Task 8).
   // Before each call an earlier evaluate_script sets
   //   window.__captureOpts = { tab: '<key>' }   one tab, in TAB_KEYS order, once per page load
   //   window.__captureOpts = { statuses: true } after the 10 tabs: the statuses of all of them

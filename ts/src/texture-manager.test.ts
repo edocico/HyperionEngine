@@ -228,6 +228,52 @@ describe("Lazy tier allocation", () => {
   });
 });
 
+describe("Tier growth copies every mip in whole texel blocks", () => {
+  // Growing a tier copies each mip of the old texture into the new one. For a
+  // block-compressed format a copy extent that is not a multiple of the 4x4
+  // block is a validation error: the encoder dies, and the old texture (every
+  // layer loaded so far) is destroyed anyway. Measured on Metal (Mac M2,
+  // 2026-09-29): "copySize.width (2) is not a multiple of compressed texture
+  // format block width (4)". Mips smaller than a block are copied as one whole
+  // block, their physical size.
+  function growAndRecordCopies(compressedFormat: GPUTextureFormat | null, tier: number) {
+    const copies: { mipLevel: number; width: number; height: number; layers: number }[] = [];
+    const device = {
+      createSampler: () => ({}),
+      createTexture: (desc: any) => ({ desc, createView: () => ({}), destroy: () => {} }),
+      queue: { writeTexture: () => {}, submit: () => {} },
+      createCommandEncoder: () => ({
+        copyTextureToTexture: (src: any, _dst: any, size: any) => {
+          copies.push({ mipLevel: src.mipLevel, width: size.width, height: size.height, layers: size.depthOrArrayLayers });
+        },
+        finish: () => ({}),
+      }),
+    } as unknown as GPUDevice;
+    const tm = new TextureManager(device, { compressedFormat });
+    tm.ensureTierCapacity(tier, 1);   // 16 layers, nothing to copy
+    tm.ensureTierCapacity(tier, 17);  // 16 -> 32: every mip of the 16 old layers is copied
+    return copies;
+  }
+
+  it.each([
+    ["bc7-rgba-unorm", 0, [64, 32, 16, 8, 4, 4, 4]],
+    ["astc-4x4-unorm", 0, [64, 32, 16, 8, 4, 4, 4]],
+    ["bc7-rgba-unorm", 3, [512, 256, 128, 64, 32, 16, 8, 4, 4, 4]],
+  ] as const)("%s tier %i: mips below one block are copied as a whole 4x4 block", (format, tier, extents) => {
+    const copies = growAndRecordCopies(format, tier);
+    expect(copies.map((c) => c.mipLevel)).toEqual(extents.map((_, mip) => mip));
+    expect(copies.map((c) => c.width)).toEqual(extents);
+    expect(copies.map((c) => c.height)).toEqual(extents);
+    expect(copies.every((c) => c.layers === 16)).toBe(true);
+  });
+
+  it("rgba8 (no compression) keeps the logical mip size down to 1x1", () => {
+    const copies = growAndRecordCopies(null, 0);
+    expect(copies.map((c) => c.width)).toEqual([64, 32, 16, 8, 4, 2, 1]);
+    expect(copies.map((c) => c.height)).toEqual([64, 32, 16, 8, 4, 2, 1]);
+  });
+});
+
 describe("retainBitmaps option", () => {
   it("retainBitmaps option keeps ImageBitmaps for re-upload", () => {
     const device = createMockDevice();

@@ -35,7 +35,7 @@ export type { ProfilerConfig } from './profiler';
 
 // Rendering passes
 export type { BloomConfig } from './render/passes/bloom-pass';
-export type { PassTiming } from './render/gpu-profiler';
+export type { PassTiming, GpuFrameTiming } from './render/gpu-profiler';
 export { SCENE_HDR_FORMAT, JFA_FORMAT } from './render/formats';
 
 // GPU Particle System

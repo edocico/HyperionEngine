@@ -990,6 +990,24 @@ Letture:
 - Scena di default prima e dopo i light layers, con il motore in pausa: **0 pixel diversi** nel canvas. Le uniche differenze sono le cifre dell'FPS nell'overlay.
 - Un layer raggiunto da una luce con ombra ma da nessun caster non riceve un set: la marcia su "nessun occluder" dà già lo stesso risultato. Ce ne siamo accorti sulla GPU, dove costava un flood vuoto.
 
+#### 🆕 Apple M2 Pro / Metal, Chrome 154.0.8037.58 — misurato 2026-09-30 (test M9 del Mac)
+
+MacBook Pro 14", GPU a 16 core; alimentatore collegato (65 W), Low Power Mode 0. **Metodo: A/B dello span del frame a 1920×1080.** Si misura `getGpuFrameTiming().averageMs` (dal primo inizio all'ultima fine dei pass misurati, su 120 frame) sulla stessa scena, con il backend `lit` e con `off`; il costo è la differenza. È la scelta dell'utente.
+
+**Non è il metodo delle righe AMD qui sopra** (bracket di marker, seed + sdf + accum), quindi le due misure non si confrontano una a una. Sull'M2 le voci per pass sono intervalli che si sovrappongono anche fra pass dipendenti: seed + sdf + accum somma 31,3-40,5 ms nelle 14 finestre lit, 7,45-8,35 volte il frame. Anche la scena è diversa: è la tab Lighting dell'harness in Mode B, con una luce puntiforme e una spot con ombre (in movimento), una luce blu sul layer 1 con ombre e una globale, un pavimento a schermo intero che riceve la luce, 2 gruppi e 2 SDF set. Non è la scena statica della tabella dei light layers. Le finestre sono tre giri ABBA: `lit` 48, `off`, `lit` 24 / 24, `off`, 48 / 48, `off`, 24. Valori in ms, in `assets/2026-09-29-mac-m2/lighting-cost.json` (README § M9):
+
+| Condizione | Span, media dei 3 giri | Per giro |
+|---|---|---|
+| `off` | 0,785 | 0,775 / 0,816 / 0,764 |
+| `lit`, `shadowSteps` 48 | 4,844 | 4,850 / 4,813 / 4,869 |
+| `lit`, `shadowSteps` 24 | 4,573 | 4,523 / 4,796 / 4,401 |
+| **costo della lighting** (`lit` 48 − `off`, coppie adiacenti) | **circa 4 ms** (4,06 dalle tre coppie; 3,6-4,1 con le finestre del controllo) | 4,075 / 3,997 / 4,105 |
+| 48 passi − 24 | +0,27 (5,6 %) | +0,327 / +0,017 / +0,468 |
+
+- Con la lighting accesa il frame resta a 120 fps: 4,84 ms su un budget di 8,33.
+- Una finestra `lit` presa da sola ha una dispersione più larga di quella delle tre coppie (deviazione standard 0,056 ms). Le 4 finestre a 48 passi del controllo, che comincia 79 s dopo la fine dei giri, vanno da 4,375 a 4,799 ms (0,42 ms di ampiezza); tutte e 7 le finestre a 48 passi (3 dei giri, 4 del controllo) da 4,375 a 4,869 ms (0,49 ms, deviazione standard 0,19), e le 7 a 24 passi da 4,202 a 4,796 ms (0,59 ms). L'errore standard della media di tre coppie è quindi circa 0,11 ms. Dentro una finestra lo span `lit` oscilla fra circa 3 e 6,5 ms, a tratti di decine di frame; la causa non è misurata.
+- 48 contro 24 passi: in media +0,2-0,3 ms (4-6 % del frame) nei giri e nel controllo, ma i singoli confronti vanno da −0,08 a +0,47 ms, cioè lo stesso ordine del rumore fra finestre. Il +2 % del §7.3 è tempo di `light-accum` sull'AMD, non tempo del frame, e sull'M2 `light-accum` da solo non si misura.
+
 ---
 
 ## 14. Rischi e mitigazioni

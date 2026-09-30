@@ -1,0 +1,468 @@
+{
+ "mode": "C",
+ "url": "http://localhost:5173/?mode=C",
+ "env": {
+  "date": "2026-09-30",
+  "head": "a4708c8",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28) (AppleWebKit/605.1.15), macOS 27.0.1 (26A434), Apple M2 Pro",
+  "driver": "safaridriver 27.0.1, W3C WebDriver: POST /url, then POST /execute/async (script timeout 400000 ms)",
+  "window": "Safari frontmost (open -a Safari), document visible for the whole run, CSS inner 1200x689, dpr 2, canvas 1960x1248 (CSS 980x624) as in Chrome's M2/M3/M6, rAF 60 Hz (Chrome: 120 Hz on this display)",
+  "power": "AC Power, battery 100% charged, lowpowermode 0, caffeinate -dimsu running",
+  "chromeIdle": "both Chrome MCP servers on about:blank"
+ },
+ "runOrder": "every tab but Audio in the tab-bar order, then Audio alone, on the same page: without a user gesture (the runner's in-page tab.click() is not one) Audio setup never reaches its 4th check, which calls engine.audio.suspend() then resume() (most likely AudioContext.resume(), which Safari's autoplay policy holds until a gesture; the exact point was not measured), and the SectionSwitcher (one switch at a time) would hold every later tab on the Audio panel (see attempt1BlockedByAudio in m12-tabs-B.json)",
+ "Primitives": {
+  "header": "Mode: C | FPS: 60 | Entities: 44",
+  "summary": "8/9 passed · 1 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Quad grid (5x5)",
+    "detail": "25/25 centres white, 4/4 gaps at the clear"
+   },
+   {
+    "status": "pass",
+    "name": "Gradients (linear/radial/conic)",
+    "detail": "linear (0.198, 0.000, 0.801) -> (0.799, 0.000, 0.200); radial (0.992, 0.992, 0.992) -> (0.104, 0.104, 0.104); conic seam (0.973, 0.026, 0.000) | (0.028, 0.972, 0.000), opposite (0.499, 0.500, 0.000)"
+   },
+   {
+    "status": "pass",
+    "name": "Box shadows (sharp/soft/rounded)",
+    "detail": "sharp 0.187, 0.067 (want 0.187, 0.067); soft b 0.323, 0.067; rounded r edge 0.350 (want 0.350), corner 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "Lines (6V world + 4H 3px)",
+    "detail": "vertical 1.000, 0.067; horizontal covers 3 pixel rows (want 3)"
+   },
+   {
+    "status": "pass",
+    "name": "Bezier curves (arch/S/wave)",
+    "detail": "arch centre 1.000, off-curve 0.067, 0.067; S centre 1.000; wave centre 0.067, one unit off 0.067, 1.000"
+   },
+   {
+    "status": "pass",
+    "name": "Straight bezier",
+    "detail": "straight: on 1.000, 1.000, off 0.067, 0.067, 0.067; 1e-5 off: on 1.000, 1.000, off 0.067, 0.067, 0.067; 1e-4 off: on 1.000, 1.000, off 0.067, 0.067, 0.067; 1e-3 off: on 1.000, 1.000, off 0.067, 0.067, 0.067; 1e-2 off: on 1.000, 1.000, off 0.067, 0.067, 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "Near-straight bezier (35.26°)",
+    "detail": "35.26° 0.0001: 0/45 holes, 0/28 lit outside; 35.26° 0.001: 0/45 holes, 0/28 lit outside; 35.26° 0.005: 0/45 holes, 0/28 lit outside; 144.74° 0.0001: 0/45 holes, 0/28 lit outside; 144.74° 0.001: 0/45 holes, 0/28 lit outside; 144.74° 0.005: 0/45 holes, 0/28 lit outside"
+   },
+   {
+    "status": "pass",
+    "name": "Thin curved bezier (1024/2048 px)",
+    "detail": "1024 px: 0/68 holes on the curve, 0/6 lit 8 px off it; 2048 px: 0/135 holes on the curve, 0/6 lit 8 px off it"
+   },
+   {
+    "status": "skip",
+    "name": "MSDF text",
+    "detail": "no font atlas in demo assets"
+   }
+  ],
+  "waitedMs": 3502,
+  "visibility": "visible"
+ },
+ "Scene Graph": {
+  "header": "Mode: C | FPS: 60 | Entities: 12",
+  "summary": "5/5 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Velocity",
+    "detail": "position moved from -8 to -7.97"
+   },
+   {
+    "status": "pass",
+    "name": "Parent/child hierarchy",
+    "detail": "parent 1.000, children 1.000, 1.000, between 0.067, 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "Rotation",
+    "detail": "on the diamond's vertex axis 1.000, unturned corner 0.067, centre 1.000"
+   },
+   {
+    "status": "pass",
+    "name": "Scale",
+    "detail": "0.5x 1.000, 0.067, 2x edge 1.000, 3x1 1.000, 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "Nested transforms",
+    "detail": "grandparent 1.000, mid 1.000, leaf 1.000, past the leaf 0.067"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Input": {
+  "header": "Mode: C | FPS: 60 | Entities: 9",
+  "summary": "2/6 passed",
+  "failed": [],
+  "pending": [
+   "⏳Keyboard callback",
+   "⏳Click callback",
+   "⏳Pointer move callback",
+   "⏳Scroll callback"
+  ],
+  "checks": [
+   {
+    "status": "pending",
+    "name": "Keyboard callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Click callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Pointer move callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Scroll callback",
+    "detail": ""
+   },
+   {
+    "status": "pass",
+    "name": "Hit testing",
+    "detail": "hitTest(0,0) returned null"
+   },
+   {
+    "status": "pass",
+    "name": "Selection toggle",
+    "detail": "select=true, toggle=false, afterToggle=false, afterClear=false"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Audio": {
+  "header": "Mode: C | FPS: 60 | Entities: 0",
+  "summary": "3/3 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Load sound",
+    "detail": "loaded handle=0"
+   },
+   {
+    "status": "pass",
+    "name": "Play sound",
+    "detail": "playbackId=0"
+   },
+   {
+    "status": "pass",
+    "name": "Spatial position",
+    "detail": "setSoundPosition(id, 5, 0) ok"
+   }
+  ],
+  "waitedMs": 3502,
+  "visibility": "visible"
+ },
+ "Particles": {
+  "header": "Mode: C | FPS: 60 | Entities: 4",
+  "summary": "4/4 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Create emitter",
+    "detail": "handle=1"
+   },
+   {
+    "status": "pass",
+    "name": "Multiple emitters",
+    "detail": "created 3 themed emitters (fire/water/nature), all handles valid"
+   },
+   {
+    "status": "pass",
+    "name": "Destroy emitter",
+    "detail": "destroyed handle=4"
+   },
+   {
+    "status": "pass",
+    "name": "Entity tracking",
+    "detail": "moved anchor entity to (3, 6, 0); particles follow"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Rendering FX": {
+  "header": "Mode: C | FPS: 60 | Entities: 16",
+  "summary": "3/4 passed · 1 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Bloom",
+    "detail": "6 px outside a white quad, bloom on: 0.027 at intensity 0, 0.043 at 0.5; quad centre 0.894"
+   },
+   {
+    "status": "pass",
+    "name": "Outline",
+    "detail": "beside the selected quad (0.961, 0.482, 0.004), beside an unselected one (0.067, 0.067, 0.067)"
+   },
+   {
+    "status": "skip",
+    "name": "Tonemap switch",
+    "detail": "enablePostProcessing is a stub: the renderer fixes the tonemap mode"
+   },
+   {
+    "status": "pass",
+    "name": "Resize",
+    "detail": "scene-hdr 800x600 after resize(800, 600), 1960x1248 restored"
+   }
+  ],
+  "waitedMs": 7001,
+  "visibility": "visible"
+ },
+ "Lighting": {
+  "header": "Mode: C | FPS: 60 | Entities: 12",
+  "summary": "6/6 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Backend lit",
+    "detail": "engine reports 'lit'"
+   },
+   {
+    "status": "pass",
+    "name": "Ambient",
+    "detail": "[0.060, 0.070, 0.120, 1.000]"
+   },
+   {
+    "status": "pass",
+    "name": "Quality",
+    "detail": "shadowSteps 48 handed to the renderer on the next frame"
+   },
+   {
+    "status": "pass",
+    "name": "Light layers",
+    "detail": "2 groups, 2 SDF sets"
+   },
+   {
+    "status": "pass",
+    "name": "Lit vs unlit",
+    "detail": "lit 0.489, 0.101, unlit x light 0.489, 0.101 (light 0.813, 0.672, 0.630)"
+   },
+   {
+    "status": "pass",
+    "name": "Layer shadow on screen",
+    "detail": "blue: in the band 0.295, mirrored point 1.097"
+   }
+  ],
+  "waitedMs": 7001,
+  "visibility": "visible"
+ },
+ "Debug Tools": {
+  "header": "Mode: C | FPS: 60 | Entities: 12",
+  "summary": "6/7 passed · 1 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Profiler overlay",
+    "detail": "enableProfiler succeeded"
+   },
+   {
+    "status": "pass",
+    "name": "Bounds visualizer",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "ECS Inspector",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "Debug camera",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "Time-travel record",
+    "detail": "captured 48 entries"
+   },
+   {
+    "status": "pass",
+    "name": "Physics debug render",
+    "detail": "plugin installed (F3 toggle; lines appear on physics-debug WASM builds)"
+   },
+   {
+    "status": "skip",
+    "name": "Determinism hash",
+    "detail": "engine_state_hash unavailable (non-dev-tools WASM build)"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Lifecycle": {
+  "header": "Mode: C | FPS: 60 | Entities: 27",
+  "summary": "6/6 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Spawn + destroy",
+    "detail": "after spawn 1.000, after destroy 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "Batch operation",
+    "detail": "40/40 batch quads drawn in view"
+   },
+   {
+    "status": "pass",
+    "name": "Compact",
+    "detail": "destroyed 0.067, 0.067, survivors 1.000, 1.000"
+   },
+   {
+    "status": "pass",
+    "name": "Immediate mode",
+    "detail": "at (5, 5) 1.000, at the spawn point 0.067"
+   },
+   {
+    "status": "pass",
+    "name": "EntityHandle.data()",
+    "detail": "wrote 42, read back 42"
+   },
+   {
+    "status": "pass",
+    "name": "Prefab lifecycle",
+    "detail": "moved: root 1.000, children 1.000, 1.000, old place 0.067; after destroyAll 0.067"
+   }
+  ],
+  "waitedMs": 7003,
+  "visibility": "visible"
+ },
+ "2D Twins": {
+  "header": "Mode: C | FPS: 60 | Entities: 25",
+  "summary": "6/6 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Twins draw the same pixels",
+    "detail": "4749/4749 texels match (worst 0.000), the scans crossing 38 edges (through the 2D child: 4, 2); twin offset 749 px"
+   },
+   {
+    "status": "pass",
+    "name": "GPU rows of 2D entities",
+    "detail": "12 frames, 12 via scatter (Mode C); worst GPU/CPU difference 1.2e-7"
+   },
+   {
+    "status": "pass",
+    "name": "Depth orders 2D sprites",
+    "detail": "pair/child/sibling/parent: green, green, blue, white (10 frames); after swapping depths: blue, green, white, white"
+   },
+   {
+    "status": "pass",
+    "name": "Depth orders transparent sprites",
+    "detail": "cell 0 (0.000, 1.000, 0.000) want (0.000, 1.000, 0.000); cell 1 (0.686, 0.769, 0.307) want (0.686, 0.769, 0.307); cell 4 (1.000, 1.000, 0.000) want (1.000, 1.000, 0.000); cell 5 (0.000, 1.000, 1.000) want (0.000, 1.000, 1.000); right on 10/10 frames; after swapping depths: cell 0 (0.500, 0.500, 0.000) want (0.500, 0.500, 0.000); cell 1 (0.250, 0.750, 0.500) want (0.250, 0.750, 0.500); cell 4 (1.000, 1.000, 0.000) want (1.000, 1.000, 0.000); cell 5 (1.000, 0.000, 1.000) want (1.000, 0.000, 1.000)"
+   },
+   {
+    "status": "pass",
+    "name": "Transparent sort matches the oracle",
+    "detail": "frame 2383: 36 sorted of 38 transparent rows, (a)-(f) and (i) hold; two requests together: stamps 2384 → 2385, id order identical"
+   },
+   {
+    "status": "pass",
+    "name": "Transparent sort under churn",
+    "detail": "60 frames of churn, 60 read back, 59 with a scatter upload AND a new id column; every one passes (a)-(f)"
+   }
+  ],
+  "waitedMs": 7002,
+  "visibility": "visible"
+ },
+ "runs": [
+  {
+   "part": "all but Audio",
+   "timeOrigin": 1790756852205.16,
+   "timeOriginAtEnd": 1790756852205.4,
+   "reloaded": false,
+   "startedAt": "2026-09-30T08:27:32.501Z",
+   "endedAt": "2026-09-30T08:28:18.015Z",
+   "viteWsCloses": [],
+   "visChanges": [
+    {
+     "t": 153,
+     "vis": "visible",
+     "note": "at install"
+    }
+   ],
+   "console": []
+  },
+  {
+   "part": "Audio",
+   "timeOrigin": 1790756852205.4,
+   "timeOriginAtEnd": 1790756852205.42,
+   "reloaded": false,
+   "startedAt": "2026-09-30T08:28:18.191Z",
+   "endedAt": "2026-09-30T08:28:21.693Z",
+   "viteWsCloses": [],
+   "visChanges": [
+    {
+     "t": 153,
+     "vis": "visible",
+     "note": "at install"
+    }
+   ],
+   "console": []
+  }
+ ],
+ "consoleNote": "console = window.__cap, a wrap of console.error/warn/info/log installed right after the navigation (guard.js below): it misses everything logged before it ran, the adapter line and the initial render graph included (Hyperion.create had already finished), and any worker message",
+ "comparisonWithChrome": {
+  "file": "m3-tabs-C.json",
+  "sameStatus": 53,
+  "differences": [
+   {
+    "tab": "Primitives",
+    "check": "Near-straight bezier (35.26°)",
+    "safari": "pass",
+    "chrome": null
+   },
+   {
+    "tab": "Primitives",
+    "check": "Straight bezier",
+    "safari": "pass",
+    "chrome": null
+   },
+   {
+    "tab": "Primitives",
+    "check": "Thin curved bezier (1024/2048 px)",
+    "safari": "pass",
+    "chrome": null
+   },
+   {
+    "tab": "Audio",
+    "check": "Suspend/resume",
+    "safari": null,
+    "chrome": "pass"
+   }
+  ]
+ },
+ "runner": "async () => {\n  // The §4 runner of .claude/skills/gpu-check/SKILL.md (click every tab, wait, read\n  // `N/M passed`, the ✕ failed and the ⏳ pending names), extended like the Chrome runs\n  // of M2/M3/M6: status, name and detail of every check, the HUD header, 7 s on the slow\n  // tabs. Safari runs rAF at 60 Hz (Chrome at 120 on this display), so a check that\n  // counts frames takes twice Chrome's wall time: after the fixed wait the runner keeps\n  // polling every 500 ms while a check is still ⏳ (not on Input, whose 4 ⏳ wait for\n  // real input), up to MAX_MS per tab.\n  const ONLY = window.__m12Only ?? [];\n  const MAX_MS = 15000;\n  const SLOW = ['Lighting', 'Rendering FX', 'Lifecycle', '2D Twins'];\n  const wait = (ms) => new Promise((r) => setTimeout(r, ms));\n  const read = () => {\n    const leaves = [...document.querySelectorAll('*')].filter((n) => n.children.length === 0);\n    const summary = leaves.map((n) => n.textContent.trim()).filter((t) => /\\d+\\/\\d+ passed/.test(t)).at(-1) ?? null;\n    const failed = leaves.filter((n) => /^✕/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 100));\n    const pending = leaves.filter((n) => /^⏳/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 60));\n    const checks = [];\n    for (const item of document.querySelectorAll('#check-list .check-item')) {\n      const icon = item.querySelector('.check-icon');\n      const status = ['pass', 'fail', 'skip', 'pending'].find((s) => icon && icon.classList.contains(s)) ?? (icon ? icon.textContent : '?');\n      const name = item.querySelector('.check-name')?.textContent ?? '';\n      const next = item.nextElementSibling;\n      const detail = next && next.classList.contains('check-detail') ? next.textContent : '';\n      checks.push({ status, name, detail });\n    }\n    const header = (document.getElementById('overlay')?.textContent ?? '').split('\\n').at(-1);\n    return { header, summary, failed, pending, checks };\n  };\n  const out = { mode: window.__hyperion?.mode ?? null, url: location.href, timeOrigin: performance.timeOrigin, startedAt: new Date().toISOString() };\n  for (const tab of [...document.querySelectorAll('.tab')]) {\n    const name = tab.textContent.trim();\n    if (ONLY.length && !ONLY.includes(name)) continue;\n    const t0 = performance.now();\n    tab.click();\n    await wait(SLOW.includes(name) ? 7000 : 3500);\n    let r = read();\n    while (name !== 'Input' && r.pending.length > 0 && performance.now() - t0 < MAX_MS) {\n      await wait(500);\n      r = read();\n    }\n    out[name] = { ...r, waitedMs: Math.round(performance.now() - t0), visibility: document.visibilityState };\n  }\n  out.endedAt = new Date().toISOString();\n  out.timeOriginAtEnd = performance.timeOrigin;\n  out.viteWsCloses = window.__viteWsCloses ?? null;\n  out.visChanges = window.__visChanges ?? null;\n  out.cap = window.__cap ?? null;\n  return out;\n}\n",
+ "guard": "async () => {\n  // M12 post-navigation guard (Safari has no initScript under WebDriver; the BiDi\n  // preload of safaridriver 27.0.1 runs nothing). Run right after each navigation.\n  // (1) console capture into window.__cap: misses everything logged before it runs.\n  // (2) anti-reload: Vite 6.4 reloads after `waitForSuccessfulPing`, which opens\n  //     `new WebSocket(url, 'vite-ping')` through the global; a vite-ping socket that\n  //     never opens keeps the page (recorded in window.__viteWsCloses). Touches\n  //     neither the adapter nor the engine.\n  if (!window.__cap) {\n    window.__cap = [];\n    window.__capFrom = 'post-navigation';\n    window.__capInstalledAt = Math.round(performance.now());\n    window.__capHyperionAtInstall = !!window.__hyperion;\n    const fmt = (a) => {\n      try {\n        if (typeof a === 'string') return a;\n        if (a instanceof Error) return String(a.stack || a);\n        return JSON.stringify(a);\n      } catch { return String(a); }\n    };\n    for (const level of ['error', 'warn', 'info', 'log']) {\n      const orig = console[level];\n      console[level] = function (...args) {\n        try { window.__cap.push({ t: Math.round(performance.now()), level, msg: args.map(fmt).join(' ').slice(0, 2000) }); } catch {}\n        return orig.apply(this, args);\n      };\n    }\n    window.addEventListener('error', (e) => {\n      window.__cap.push({ t: Math.round(performance.now()), level: 'uncaught', msg: String(e.message) + ' @ ' + e.filename + ':' + e.lineno });\n    });\n    window.addEventListener('unhandledrejection', (e) => {\n      window.__cap.push({ t: Math.round(performance.now()), level: 'unhandledrejection', msg: fmt(e.reason) });\n    });\n  }\n  if (!window.__viteWsCloses) {\n    window.__viteWsCloses = [];\n    const Native = window.WebSocket;\n    function Patched(url, protocols) {\n      const proto = Array.isArray(protocols) ? protocols.join(',') : String(protocols ?? '');\n      if (proto.includes('vite-ping')) {\n        const rec = { t: new Date().toISOString(), perf: Math.round(performance.now()), url: String(url), note: 'vite-hmr socket lost; ping blocked, reload suppressed' };\n        window.__viteWsCloses.push(rec);\n        console.warn('[mac-m2 test] vite-hmr websocket closed, reload suppressed: ' + JSON.stringify(rec));\n        const fake = new EventTarget();\n        fake.close = () => {};\n        return fake; // never fires open or error: waitForSuccessfulPing never resolves\n      }\n      return protocols === undefined ? new Native(url) : new Native(url, protocols);\n    }\n    Patched.prototype = Native.prototype;\n    Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });\n    window.WebSocket = Patched;\n  }\n  if (!window.__visChanges) {\n    // Safari stops rAF (and so the engine) while its window is occluded: log every change.\n    window.__visChanges = [{ t: Math.round(performance.now()), vis: document.visibilityState, note: 'at install' }];\n    document.addEventListener('visibilitychange', () => {\n      window.__visChanges.push({ t: Math.round(performance.now()), vis: document.visibilityState });\n    });\n  }\n  return {\n    visibility: document.visibilityState,\n    capFrom: window.__capFrom,\n    installedAtMs: window.__capInstalledAt,\n    hyperionAtInstall: window.__capHyperionAtInstall,\n    readyState: document.readyState,\n    href: location.href,\n    timeOrigin: performance.timeOrigin,\n  };\n}\n"
+}

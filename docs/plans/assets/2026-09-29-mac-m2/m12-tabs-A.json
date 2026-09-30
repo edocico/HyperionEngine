@@ -1,0 +1,601 @@
+{
+ "mode": "A",
+ "url": "http://localhost:5173/?mode=A",
+ "env": {
+  "date": "2026-09-30",
+  "head": "a4708c8",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28) (AppleWebKit/605.1.15), macOS 27.0.1 (26A434), Apple M2 Pro",
+  "driver": "safaridriver 27.0.1, W3C WebDriver: POST /url, then POST /execute/async (script timeout 400000 ms)",
+  "window": "Safari frontmost (open -a Safari), document visible for the whole run, CSS inner 1200x689, dpr 2, canvas 1960x1248 (CSS 980x624) as in Chrome's M2/M3/M6, rAF 60 Hz (Chrome: 120 Hz on this display)",
+  "power": "AC Power, battery 100% charged, lowpowermode 0, caffeinate -dimsu running",
+  "chromeIdle": "both Chrome MCP servers on about:blank"
+ },
+ "runOrder": "every tab but Audio in the tab-bar order, then Audio alone, on the same page: without a user gesture (the runner's in-page tab.click() is not one) Audio setup never reaches its 4th check, which calls engine.audio.suspend() then resume() (most likely AudioContext.resume(), which Safari's autoplay policy holds until a gesture; the exact point was not measured), and the SectionSwitcher (one switch at a time) would hold every later tab on the Audio panel (see attempt1BlockedByAudio in m12-tabs-B.json)",
+ "Primitives": {
+  "header": "Mode: A | FPS: 60 | Entities: 44",
+  "summary": "0/9 passed · 9 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "skip",
+    "name": "Quad grid (5x5)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Gradients (linear/radial/conic)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Box shadows (sharp/soft/rounded)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Lines (6V world + 4H 3px)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Bezier curves (arch/S/wave)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Straight bezier",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Near-straight bezier (35.26°)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Thin curved bezier (1024/2048 px)",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "MSDF text",
+    "detail": "no font atlas in demo assets"
+   }
+  ],
+  "waitedMs": 3502,
+  "visibility": "visible"
+ },
+ "Scene Graph": {
+  "header": "Mode: A | FPS: 60 | Entities: 12",
+  "summary": "1/5 passed · 4 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Velocity",
+    "detail": "position moved from -8 to -7.97"
+   },
+   {
+    "status": "skip",
+    "name": "Parent/child hierarchy",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Rotation",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Scale",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Nested transforms",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   }
+  ],
+  "waitedMs": 3502,
+  "visibility": "visible"
+ },
+ "Input": {
+  "header": "Mode: A | FPS: 60 | Entities: 9",
+  "summary": "1/6 passed · 1 skipped",
+  "failed": [],
+  "pending": [
+   "⏳Keyboard callback",
+   "⏳Click callback",
+   "⏳Pointer move callback",
+   "⏳Scroll callback"
+  ],
+  "checks": [
+   {
+    "status": "pending",
+    "name": "Keyboard callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Click callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Pointer move callback",
+    "detail": ""
+   },
+   {
+    "status": "pending",
+    "name": "Scroll callback",
+    "detail": ""
+   },
+   {
+    "status": "pass",
+    "name": "Hit testing",
+    "detail": "hitTest(0,0) returned null"
+   },
+   {
+    "status": "skip",
+    "name": "Selection toggle",
+    "detail": "no renderer (selection unavailable)"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Audio": {
+  "header": "Mode: A | FPS: 60 | Entities: 0",
+  "summary": "3/3 passed",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Load sound",
+    "detail": "loaded handle=0"
+   },
+   {
+    "status": "pass",
+    "name": "Play sound",
+    "detail": "playbackId=0"
+   },
+   {
+    "status": "pass",
+    "name": "Spatial position",
+    "detail": "setSoundPosition(id, 5, 0) ok"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Particles": {
+  "header": "Mode: A | FPS: 60 | Entities: 1",
+  "summary": "0/4 passed · 4 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "skip",
+    "name": "Create emitter",
+    "detail": "no renderer (createParticleEmitter returned null)"
+   },
+   {
+    "status": "skip",
+    "name": "Multiple emitters",
+    "detail": "no renderer"
+   },
+   {
+    "status": "skip",
+    "name": "Destroy emitter",
+    "detail": "no renderer"
+   },
+   {
+    "status": "skip",
+    "name": "Entity tracking",
+    "detail": "no renderer"
+   }
+  ],
+  "waitedMs": 3500,
+  "visibility": "visible"
+ },
+ "Rendering FX": {
+  "header": "Mode: A | FPS: 60 | Entities: 16",
+  "summary": "0/4 passed · 4 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "skip",
+    "name": "Bloom",
+    "detail": "no renderer: Cannot enable bloom: no renderer available"
+   },
+   {
+    "status": "skip",
+    "name": "Outline",
+    "detail": "no renderer available"
+   },
+   {
+    "status": "skip",
+    "name": "Tonemap switch",
+    "detail": "enablePostProcessing is a stub: the renderer fixes the tonemap mode"
+   },
+   {
+    "status": "skip",
+    "name": "Resize",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   }
+  ],
+  "waitedMs": 7002,
+  "visibility": "visible"
+ },
+ "Lighting": {
+  "header": "Mode: A | FPS: 60 | Entities: 12",
+  "summary": "4/6 passed · 2 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Backend lit",
+    "detail": "engine reports 'lit'"
+   },
+   {
+    "status": "pass",
+    "name": "Ambient",
+    "detail": "[0.060, 0.070, 0.120, 1.000]"
+   },
+   {
+    "status": "pass",
+    "name": "Quality",
+    "detail": "shadowSteps 48 handed to the renderer on the next frame"
+   },
+   {
+    "status": "pass",
+    "name": "Light layers",
+    "detail": "2 groups, 2 SDF sets"
+   },
+   {
+    "status": "skip",
+    "name": "Lit vs unlit",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Layer shadow on screen",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   }
+  ],
+  "waitedMs": 7001,
+  "visibility": "visible"
+ },
+ "Debug Tools": {
+  "header": "Mode: A | FPS: 60 | Entities: 12",
+  "summary": "6/7 passed · 1 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "pass",
+    "name": "Profiler overlay",
+    "detail": "enableProfiler succeeded"
+   },
+   {
+    "status": "pass",
+    "name": "Bounds visualizer",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "ECS Inspector",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "Debug camera",
+    "detail": "plugin installed"
+   },
+   {
+    "status": "pass",
+    "name": "Time-travel record",
+    "detail": "captured 61 entries"
+   },
+   {
+    "status": "pass",
+    "name": "Physics debug render",
+    "detail": "plugin installed (F3 toggle; lines appear on physics-debug WASM builds)"
+   },
+   {
+    "status": "skip",
+    "name": "Determinism hash",
+    "detail": "engine_state_hash unavailable (non-dev-tools WASM build)"
+   }
+  ],
+  "waitedMs": 3501,
+  "visibility": "visible"
+ },
+ "Lifecycle": {
+  "header": "Mode: A | FPS: 60 | Entities: 27",
+  "summary": "1/6 passed · 5 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "skip",
+    "name": "Spawn + destroy",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Batch operation",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Compact",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Immediate mode",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "pass",
+    "name": "EntityHandle.data()",
+    "detail": "wrote 42, read back 42"
+   },
+   {
+    "status": "skip",
+    "name": "Prefab lifecycle",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   }
+  ],
+  "waitedMs": 7001,
+  "visibility": "visible"
+ },
+ "2D Twins": {
+  "header": "Mode: A | FPS: 60 | Entities: 25",
+  "summary": "0/6 passed · 6 skipped",
+  "failed": [],
+  "pending": [],
+  "checks": [
+   {
+    "status": "skip",
+    "name": "Twins draw the same pixels",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "GPU rows of 2D entities",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Depth orders 2D sprites",
+    "detail": "pixel probe unavailable: The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)"
+   },
+   {
+    "status": "skip",
+    "name": "Depth orders transparent sprites",
+    "detail": "no main-thread renderer: Cannot load textures: no renderer available"
+   },
+   {
+    "status": "skip",
+    "name": "Transparent sort matches the oracle",
+    "detail": "no main-thread renderer: Cannot load textures: no renderer available"
+   },
+   {
+    "status": "skip",
+    "name": "Transparent sort under churn",
+    "detail": "Mode A: only Mode C uploads through the scatter pass, which this checks (?mode=C)"
+   }
+  ],
+  "waitedMs": 7002,
+  "visibility": "visible"
+ },
+ "runs": [
+  {
+   "part": "all but Audio",
+   "timeOrigin": 1790756932799.76,
+   "timeOriginAtEnd": 1790756932800,
+   "reloaded": false,
+   "startedAt": "2026-09-30T08:29:19.006Z",
+   "endedAt": "2026-09-30T08:30:04.518Z",
+   "viteWsCloses": [],
+   "visChanges": [
+    {
+     "t": 146,
+     "vis": "visible",
+     "note": "at install"
+    }
+   ],
+   "console": []
+  },
+  {
+   "part": "Audio",
+   "timeOrigin": 1790756932800,
+   "timeOriginAtEnd": 1790756932800.02,
+   "reloaded": false,
+   "startedAt": "2026-09-30T08:30:04.713Z",
+   "endedAt": "2026-09-30T08:30:08.214Z",
+   "viteWsCloses": [],
+   "visChanges": [
+    {
+     "t": 146,
+     "vis": "visible",
+     "note": "at install"
+    }
+   ],
+   "console": []
+  }
+ ],
+ "consoleNote": "console = window.__cap, a wrap of console.error/warn/info/log installed right after the navigation (guard.js below): it misses everything logged before it ran, the adapter line and the initial render graph included (Hyperion.create had already finished), and any worker message",
+ "comparisonWithChrome": {
+  "file": "m6-tabs-A.json",
+  "sameStatus": 53,
+  "differences": [
+   {
+    "tab": "Primitives",
+    "check": "Near-straight bezier (35.26°)",
+    "safari": "skip",
+    "chrome": null
+   },
+   {
+    "tab": "Primitives",
+    "check": "Straight bezier",
+    "safari": "skip",
+    "chrome": null
+   },
+   {
+    "tab": "Primitives",
+    "check": "Thin curved bezier (1024/2048 px)",
+    "safari": "skip",
+    "chrome": null
+   },
+   {
+    "tab": "Audio",
+    "check": "Suspend/resume",
+    "safari": null,
+    "chrome": "pass"
+   }
+  ]
+ },
+ "screenshots": {
+  "primitives": {
+   "file": "m12-primitives-A.png",
+   "screenshotSize": [
+    2400,
+    1378
+   ],
+   "canvasBoxPx": [
+    0,
+    80,
+    1960,
+    1328
+   ],
+   "pixels": 2446080,
+   "clear17": 0.8444,
+   "white255": 0.0505,
+   "nearWhite": 0.0506,
+   "mean": [
+    34.4,
+    32.2,
+    32.5
+   ],
+   "uniqueColors": 1133,
+   "top": [
+    [
+     [
+      17,
+      17,
+      17
+     ],
+     2065377
+    ],
+    [
+     [
+      255,
+      255,
+      255
+     ],
+     123640
+    ],
+    [
+     [
+      5,
+      5,
+      5
+     ],
+     59569
+    ],
+    [
+     [
+      48,
+      48,
+      48
+     ],
+     35125
+    ],
+    [
+     [
+      82,
+      29,
+      27
+     ],
+     31364
+    ]
+   ]
+  },
+  "lighting": {
+   "file": "m12-lighting-A.png",
+   "screenshotSize": [
+    2400,
+    1378
+   ],
+   "canvasBoxPx": [
+    0,
+    80,
+    1960,
+    1328
+   ],
+   "pixels": 2446080,
+   "clear17": 0.0818,
+   "white255": 0.0187,
+   "nearWhite": 0.021,
+   "mean": [
+    105.7,
+    98.0,
+    112.4
+   ],
+   "uniqueColors": 18151,
+   "top": [
+    [
+     [
+      46,
+      43,
+      73
+     ],
+     691085
+    ],
+    [
+     [
+      17,
+      17,
+      17
+     ],
+     199968
+    ],
+    [
+     [
+      255,
+      255,
+      255
+     ],
+     45859
+    ],
+    [
+     [
+      5,
+      5,
+      5
+     ],
+     37680
+    ],
+    [
+     [
+      14,
+      13,
+      22
+     ],
+     19241
+    ]
+   ]
+  },
+  "note": "WebDriver viewport screenshots, committed from the session scratchpad in the M12 fix round as m12-primitives-A.png (was shot-A-initial.png) and m12-lighting-A.png (was shot-A-lighting.png): Primitives right after the load (auto-selected tab), Lighting on a fresh ?mode=A page 7 s after the click (backend lit, 4/6 passed · 2 skipped). Canvas box = CSS rect (0,40,980,624) at dpr 2. Clear colour 17 as in Chrome"
+ },
+ "runner": "async () => {\n  // The §4 runner of .claude/skills/gpu-check/SKILL.md (click every tab, wait, read\n  // `N/M passed`, the ✕ failed and the ⏳ pending names), extended like the Chrome runs\n  // of M2/M3/M6: status, name and detail of every check, the HUD header, 7 s on the slow\n  // tabs. Safari runs rAF at 60 Hz (Chrome at 120 on this display), so a check that\n  // counts frames takes twice Chrome's wall time: after the fixed wait the runner keeps\n  // polling every 500 ms while a check is still ⏳ (not on Input, whose 4 ⏳ wait for\n  // real input), up to MAX_MS per tab.\n  const ONLY = window.__m12Only ?? [];\n  const MAX_MS = 15000;\n  const SLOW = ['Lighting', 'Rendering FX', 'Lifecycle', '2D Twins'];\n  const wait = (ms) => new Promise((r) => setTimeout(r, ms));\n  const read = () => {\n    const leaves = [...document.querySelectorAll('*')].filter((n) => n.children.length === 0);\n    const summary = leaves.map((n) => n.textContent.trim()).filter((t) => /\\d+\\/\\d+ passed/.test(t)).at(-1) ?? null;\n    const failed = leaves.filter((n) => /^✕/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 100));\n    const pending = leaves.filter((n) => /^⏳/.test(n.textContent.trim())).map((n) => n.parentElement.textContent.trim().slice(0, 60));\n    const checks = [];\n    for (const item of document.querySelectorAll('#check-list .check-item')) {\n      const icon = item.querySelector('.check-icon');\n      const status = ['pass', 'fail', 'skip', 'pending'].find((s) => icon && icon.classList.contains(s)) ?? (icon ? icon.textContent : '?');\n      const name = item.querySelector('.check-name')?.textContent ?? '';\n      const next = item.nextElementSibling;\n      const detail = next && next.classList.contains('check-detail') ? next.textContent : '';\n      checks.push({ status, name, detail });\n    }\n    const header = (document.getElementById('overlay')?.textContent ?? '').split('\\n').at(-1);\n    return { header, summary, failed, pending, checks };\n  };\n  const out = { mode: window.__hyperion?.mode ?? null, url: location.href, timeOrigin: performance.timeOrigin, startedAt: new Date().toISOString() };\n  for (const tab of [...document.querySelectorAll('.tab')]) {\n    const name = tab.textContent.trim();\n    if (ONLY.length && !ONLY.includes(name)) continue;\n    const t0 = performance.now();\n    tab.click();\n    await wait(SLOW.includes(name) ? 7000 : 3500);\n    let r = read();\n    while (name !== 'Input' && r.pending.length > 0 && performance.now() - t0 < MAX_MS) {\n      await wait(500);\n      r = read();\n    }\n    out[name] = { ...r, waitedMs: Math.round(performance.now() - t0), visibility: document.visibilityState };\n  }\n  out.endedAt = new Date().toISOString();\n  out.timeOriginAtEnd = performance.timeOrigin;\n  out.viteWsCloses = window.__viteWsCloses ?? null;\n  out.visChanges = window.__visChanges ?? null;\n  out.cap = window.__cap ?? null;\n  return out;\n}\n",
+ "guard": "async () => {\n  // M12 post-navigation guard (Safari has no initScript under WebDriver; the BiDi\n  // preload of safaridriver 27.0.1 runs nothing). Run right after each navigation.\n  // (1) console capture into window.__cap: misses everything logged before it runs.\n  // (2) anti-reload: Vite 6.4 reloads after `waitForSuccessfulPing`, which opens\n  //     `new WebSocket(url, 'vite-ping')` through the global; a vite-ping socket that\n  //     never opens keeps the page (recorded in window.__viteWsCloses). Touches\n  //     neither the adapter nor the engine.\n  if (!window.__cap) {\n    window.__cap = [];\n    window.__capFrom = 'post-navigation';\n    window.__capInstalledAt = Math.round(performance.now());\n    window.__capHyperionAtInstall = !!window.__hyperion;\n    const fmt = (a) => {\n      try {\n        if (typeof a === 'string') return a;\n        if (a instanceof Error) return String(a.stack || a);\n        return JSON.stringify(a);\n      } catch { return String(a); }\n    };\n    for (const level of ['error', 'warn', 'info', 'log']) {\n      const orig = console[level];\n      console[level] = function (...args) {\n        try { window.__cap.push({ t: Math.round(performance.now()), level, msg: args.map(fmt).join(' ').slice(0, 2000) }); } catch {}\n        return orig.apply(this, args);\n      };\n    }\n    window.addEventListener('error', (e) => {\n      window.__cap.push({ t: Math.round(performance.now()), level: 'uncaught', msg: String(e.message) + ' @ ' + e.filename + ':' + e.lineno });\n    });\n    window.addEventListener('unhandledrejection', (e) => {\n      window.__cap.push({ t: Math.round(performance.now()), level: 'unhandledrejection', msg: fmt(e.reason) });\n    });\n  }\n  if (!window.__viteWsCloses) {\n    window.__viteWsCloses = [];\n    const Native = window.WebSocket;\n    function Patched(url, protocols) {\n      const proto = Array.isArray(protocols) ? protocols.join(',') : String(protocols ?? '');\n      if (proto.includes('vite-ping')) {\n        const rec = { t: new Date().toISOString(), perf: Math.round(performance.now()), url: String(url), note: 'vite-hmr socket lost; ping blocked, reload suppressed' };\n        window.__viteWsCloses.push(rec);\n        console.warn('[mac-m2 test] vite-hmr websocket closed, reload suppressed: ' + JSON.stringify(rec));\n        const fake = new EventTarget();\n        fake.close = () => {};\n        return fake; // never fires open or error: waitForSuccessfulPing never resolves\n      }\n      return protocols === undefined ? new Native(url) : new Native(url, protocols);\n    }\n    Patched.prototype = Native.prototype;\n    Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });\n    window.WebSocket = Patched;\n  }\n  if (!window.__visChanges) {\n    // Safari stops rAF (and so the engine) while its window is occluded: log every change.\n    window.__visChanges = [{ t: Math.round(performance.now()), vis: document.visibilityState, note: 'at install' }];\n    document.addEventListener('visibilitychange', () => {\n      window.__visChanges.push({ t: Math.round(performance.now()), vis: document.visibilityState });\n    });\n  }\n  return {\n    visibility: document.visibilityState,\n    capFrom: window.__capFrom,\n    installedAtMs: window.__capInstalledAt,\n    hyperionAtInstall: window.__capHyperionAtInstall,\n    readyState: document.readyState,\n    href: location.href,\n    timeOrigin: performance.timeOrigin,\n  };\n}\n"
+}

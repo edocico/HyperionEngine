@@ -500,10 +500,16 @@ export class TextureManager {
         state.nextFreeLayer = 1;
       }
     } else if (oldTexture !== null && oldAllocatedLayers > 0) {
-      // Copy existing layers from old texture to new texture (all mip levels)
+      // Copy existing layers from old texture to new texture (all mip levels).
+      // A block-compressed mip is copied in whole 4x4 blocks (BC7 and ASTC 4x4,
+      // the only compressed formats the tiers use): below one block its physical
+      // size is the block. A 2x2 or 1x1 extent is a validation error that kills
+      // the encoder, and the old texture, every layer loaded so far, is still
+      // destroyed below.
+      const minExtent = isCompressed ? 4 : 1;
       const encoder = this.device.createCommandEncoder();
       for (let mip = 0; mip < mips; mip++) {
-        const mipSize = Math.max(1, size >> mip);
+        const mipSize = Math.max(minExtent, size >> mip);
         encoder.copyTextureToTexture(
           { texture: oldTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },
           { texture: newTexture, mipLevel: mip, origin: { x: 0, y: 0, z: 0 } },

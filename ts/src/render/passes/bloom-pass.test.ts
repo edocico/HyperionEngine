@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { BloomPass } from './bloom-pass';
 import type { FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
+import bloomShaderSource from '../../shaders/bloom.wgsl?raw';
+import fxaaTonemapShaderSource from '../../shaders/fxaa-tonemap.wgsl?raw';
+import { functionBody } from '../../shaders/wgsl-analysis';
 
 describe('BloomPass', () => {
   it('should be optional (dead-pass culled when unused)', () => {
@@ -142,5 +145,20 @@ describe('BloomPass sub-passes', () => {
         Math.fround(1 / (w / divisors[i])), Math.fround(1 / (h / divisors[i])),
       ]);
     });
+  });
+});
+
+describe('bloom composite tonemap', () => {
+  // The bloom composite replaces FXAATonemapPass as the graph's final pass, and
+  // both call their curve "Khronos PBR Neutral". Until 2026-09-29 bloom.wgsl
+  // implemented another curve under that name (wgsl-validator on the Mac M2, F4):
+  // a grey of 2.0 came out 1.314 against the reference's 0.960, a grey of 0.5
+  // 0.5 against 0.46. fxaa-tonemap.wgsl holds the Khronos reference. (The two
+  // composites still differ by DEFAULT: FXAATonemapPass clamps, mode 0, and
+  // BloomPass applies this curve, mode 1.)
+  it('applies the same PBR Neutral as FXAATonemapPass', () => {
+    const code = (src: string) => functionBody(src, 'pbrNeutralTonemap')?.replace(/\s+/g, '');
+    expect(code(fxaaTonemapShaderSource)).toBeTruthy();
+    expect(code(bloomShaderSource)).toBe(code(fxaaTonemapShaderSource));
   });
 });

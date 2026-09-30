@@ -1,0 +1,501 @@
+{
+ "probe": "M12 part c.2: probe 5 (m7-probe5-derive-proxy-gpu.json) repeated in Safari: can the profiler hand WebKit a derived pass descriptor that carries timestampWrites?",
+ "date": "2026-09-30",
+ "head": "a4708c8",
+ "machine": "Apple M2 Pro / Metal, Safari 27.0.1 (macOS 27.0.1, 26A434), safaridriver 27.0.1 (W3C WebDriver execute/async), page http://localhost:5173/?mode=B",
+ "adapter": {
+  "vendor": "apple",
+  "architecture": "apple"
+ },
+ "timestampQuery": {
+  "adapter": true,
+  "device": [
+   "core-features-and-limits",
+   "timestamp-query"
+  ]
+ },
+ "method": "The Chrome script of probe 5 was not committed; this one is rebuilt from the method recorded in m7-probe5-derive-proxy-gpu.json. One fresh device with timestamp-query. Per derivation set: one query set (2 stamps per case), one command encoder; each case opens ONE pass through the derived descriptor and draws a full-screen triangle into a 512x512 rgba8unorm target (render) or dispatches 64 workgroups of 64 (compute); then resolveQuerySet + copy in the same command buffer, readback. A validation + internal error scope wraps the encoding and the submit of each set. Three sets over the same six cases: run2 (the Proxy of the Chrome JSON, verbatim), engineDerive (FrameRecorder.derive imported from /src/render/timestamp-intercept.ts: the code the profiler ships), objectCreateControl (run1 viaCreate). The script is in `script`.",
+ "run": {
+  "run2": {
+   "derivation": "const source = desc ?? {}; new Proxy({}, { get: (_target, key) => (key === 'timestampWrites' ? tw : Reflect.get(source, key, source)) }) — verbatim from m7-probe5-derive-proxy-gpu.json run2",
+   "results": {
+    "0 render class #private": "ok",
+    "1 frozen literal, explicit undefined timestampWrites": "ok",
+    "2 literal with a this-getter": "ok",
+    "3 compute undefined": "ok",
+    "4 compute null": "ok",
+    "5 compute label literal": "ok"
+   },
+   "validationError": null,
+   "internalError": null,
+   "submitThrew": null,
+   "pairs": [
+    {
+     "pair": 0,
+     "begin": "60940598155625",
+     "end": "60940598184333",
+     "durNs": 28708
+    },
+    {
+     "pair": 1,
+     "begin": "60940598167625",
+     "end": "60940598200000",
+     "durNs": 32375
+    },
+    {
+     "pair": 2,
+     "begin": "60940598305125",
+     "end": "60940598332250",
+     "durNs": 27125
+    },
+    {
+     "pair": 3,
+     "begin": "60940598636000",
+     "end": "60940598745166",
+     "durNs": 109166
+    },
+    {
+     "pair": 4,
+     "begin": "60940598745833",
+     "end": "60940598873625",
+     "durNs": 127792
+    },
+    {
+     "pair": 5,
+     "begin": "60940598874166",
+     "end": "60940599093791",
+     "durNs": 219625
+    }
+   ],
+   "frozenOriginalUnchanged": true,
+   "originalsWithoutOwnTimestampWrites": true
+  },
+  "engineDerive": {
+   "derivation": "FrameRecorder.derive() of ts/src/render/timestamp-intercept.ts (the code the profiler runs), imported from the dev server",
+   "results": {
+    "0 render class #private": "ok",
+    "1 frozen literal, explicit undefined timestampWrites": "ok",
+    "2 literal with a this-getter": "ok",
+    "3 compute undefined": "ok",
+    "4 compute null": "ok",
+    "5 compute label literal": "ok"
+   },
+   "validationError": null,
+   "internalError": null,
+   "submitThrew": null,
+   "pairs": [
+    {
+     "pair": 0,
+     "begin": "60940603010125",
+     "end": "60940603098250",
+     "durNs": 88125
+    },
+    {
+     "pair": 1,
+     "begin": "60940603073958",
+     "end": "60940603231083",
+     "durNs": 157125
+    },
+    {
+     "pair": 2,
+     "begin": "60940603085958",
+     "end": "60940603668875",
+     "durNs": 582917
+    },
+    {
+     "pair": 3,
+     "begin": "60940603173083",
+     "end": "60940603326291",
+     "durNs": 153208
+    },
+    {
+     "pair": 4,
+     "begin": "60940603326916",
+     "end": "60940603638041",
+     "durNs": 311125
+    },
+    {
+     "pair": 5,
+     "begin": "60940598874166",
+     "end": "60940599093791",
+     "durNs": 219625
+    }
+   ],
+   "frozenOriginalUnchanged": true,
+   "originalsWithoutOwnTimestampWrites": true
+  },
+  "objectCreateControl": {
+   "derivation": "Object.create(desc ?? {}, { timestampWrites: { value: tw, enumerable: true } }) — run1 viaCreate, the control",
+   "results": {
+    "0 render class #private": "THROWS TypeError: Cannot access invalid private field (evaluating 'this.#view')",
+    "1 frozen literal, explicit undefined timestampWrites": "ok",
+    "2 literal with a this-getter": "ok",
+    "3 compute undefined": "ok",
+    "4 compute null": "ok",
+    "5 compute label literal": "ok"
+   },
+   "validationError": null,
+   "internalError": null,
+   "submitThrew": null,
+   "pairs": [
+    {
+     "pair": 0,
+     "begin": "60940603010125",
+     "end": "60940603098250",
+     "durNs": 88125
+    },
+    {
+     "pair": 1,
+     "begin": "60940611249250",
+     "end": "60940611633083",
+     "durNs": 383833
+    },
+    {
+     "pair": 2,
+     "begin": "60940611270833",
+     "end": "60940611318041",
+     "durNs": 47208
+    },
+    {
+     "pair": 3,
+     "begin": "60940610497916",
+     "end": "60940610881416",
+     "durNs": 383500
+    },
+    {
+     "pair": 4,
+     "begin": "60940610882125",
+     "end": "60940611054291",
+     "durNs": 172166
+    },
+    {
+     "pair": 5,
+     "begin": "60940611055333",
+     "end": "60940611269791",
+     "durNs": 214458
+    }
+   ],
+   "frozenOriginalUnchanged": true,
+   "originalsWithoutOwnTimestampWrites": true
+  }
+ },
+ "verdict": {
+  "run2": "6/6 ok, no validation or internal error, the frozen original unchanged, no original written",
+  "engineDerive": "6/6 ok, same",
+  "objectCreateControl": "case 0 (class with a #private getter) THROWS TypeError: Cannot access invalid private field (evaluating 'this.#view') — the Object.create failure Chrome showed (C8); the other 5 ok",
+  "reading": "WebKit reads a pass descriptor with [[Get]] only, like Chrome: a Proxy over a fresh empty object that reads every member from the original, with the original as receiver, is accepted for render and compute passes, from a class with a #private getter, a frozen literal with an own timestampWrites: undefined, a literal with a this-getter, and undefined, null and {label} compute descriptors. The spec's §8.2 fallback ({ ...desc, timestampWrites }) is not needed in Safari."
+ },
+ "stampAnomalies": {
+  "what": "in the first run, engineDerive pair 5 (the compute case 5, with work) carries exactly run2 pair 5's stamps, and objectCreateControl pair 0 (whose pass threw and never opened) exactly engineDerive pair 0's. Classified with two repeats (same six cases and derivations; every stamp compared with every stamp read before):",
+  "repeatBothResolveModes": {
+   "setup": "6 iterations, set order rotated each iteration; each set once with the resolve in the same command buffer as the passes ('same-cb', what the profiler does) and once in a second submit after device.queue.onSubmittedWorkDone() ('after-done')",
+   "tally": {
+    "same-cb/run2": {
+     "passesOpened": 36,
+     "fresh": 36,
+     "stale": 0,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "same-cb/engineDerive": {
+     "passesOpened": 36,
+     "fresh": 34,
+     "stale": 2,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "same-cb/objectCreateControl": {
+     "passesOpened": 30,
+     "fresh": 26,
+     "stale": 4,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 6,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "after-done/run2": {
+     "passesOpened": 36,
+     "fresh": 36,
+     "stale": 0,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "after-done/engineDerive": {
+     "passesOpened": 36,
+     "fresh": 36,
+     "stale": 0,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "after-done/objectCreateControl": {
+     "passesOpened": 30,
+     "fresh": 30,
+     "stale": 0,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 6,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    }
+   },
+   "staleLog": [
+    {
+     "where": "0/same-cb/objectCreateControl/5",
+     "kind": "compute",
+     "begin": "61013002663833",
+     "end": "61013003025875",
+     "staleBegin": "0/same-cb/engineDerive/5",
+     "staleEnd": "0/same-cb/engineDerive/5"
+    },
+    {
+     "where": "1/same-cb/engineDerive/5",
+     "kind": "compute",
+     "begin": "61013010775583",
+     "end": "61013011063666",
+     "staleBegin": "0/after-done/objectCreateControl/5",
+     "staleEnd": "0/after-done/objectCreateControl/5"
+    },
+    {
+     "where": "2/same-cb/objectCreateControl/5",
+     "kind": "compute",
+     "begin": "61013021345583",
+     "end": "61013021716916",
+     "staleBegin": "1/after-done/run2/5",
+     "staleEnd": "1/after-done/run2/5"
+    },
+    {
+     "where": "3/same-cb/objectCreateControl/5",
+     "kind": "compute",
+     "begin": "61013037643666",
+     "end": "61013038012416",
+     "staleBegin": "3/same-cb/engineDerive/5",
+     "staleEnd": "3/same-cb/engineDerive/5"
+    },
+    {
+     "where": "4/same-cb/engineDerive/5",
+     "kind": "compute",
+     "begin": "61013046674541",
+     "end": "61013046855500",
+     "staleBegin": "3/after-done/objectCreateControl/5",
+     "staleEnd": "3/after-done/objectCreateControl/5"
+    },
+    {
+     "where": "5/same-cb/objectCreateControl/5",
+     "kind": "compute",
+     "begin": "61013057444791",
+     "end": "61013057554708",
+     "staleBegin": "4/after-done/run2/5",
+     "staleEnd": "4/after-done/run2/5"
+    }
+   ]
+  },
+  "repeatRenderLast": {
+   "setup": "12 iterations, same-cb only, run2 and engineDerive, cases reordered so the three render passes come LAST (compute 3,4,5 then render 0,1,2)",
+   "tally": {
+    "same-cb/run2": {
+     "passesOpened": 72,
+     "fresh": 71,
+     "stale": 1,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    },
+    "same-cb/engineDerive": {
+     "passesOpened": 72,
+     "fresh": 67,
+     "stale": 5,
+     "zero": 0,
+     "reversed": 0,
+     "threwPairsStale": 0,
+     "threwPairsZero": 0,
+     "validationErrors": 0
+    }
+   },
+   "staleLog": [
+    {
+     "where": "0/same-cb/engineDerive/2",
+     "kind": "compute",
+     "begin": "61066776964625",
+     "end": "61066777072791",
+     "staleBegin": "0/same-cb/run2/2",
+     "staleEnd": "0/same-cb/run2/2"
+    },
+    {
+     "where": "2/same-cb/engineDerive/2",
+     "kind": "compute",
+     "begin": "61066784753708",
+     "end": "61066784998333",
+     "staleBegin": "2/same-cb/run2/2",
+     "staleEnd": "2/same-cb/run2/2"
+    },
+    {
+     "where": "5/same-cb/engineDerive/2",
+     "kind": "compute",
+     "begin": "61066794287000",
+     "end": "61066794449375",
+     "staleBegin": "4/same-cb/engineDerive/2",
+     "staleEnd": "4/same-cb/engineDerive/2"
+    },
+    {
+     "where": "6/same-cb/engineDerive/2",
+     "kind": "compute",
+     "begin": "61066799697500",
+     "end": "61066799956791",
+     "staleBegin": "6/same-cb/run2/2",
+     "staleEnd": "6/same-cb/run2/2"
+    },
+    {
+     "where": "9/same-cb/engineDerive/2",
+     "kind": "compute",
+     "begin": "61066807535083",
+     "end": "61066807643875",
+     "staleBegin": "8/same-cb/engineDerive/2",
+     "staleEnd": "8/same-cb/engineDerive/2"
+    },
+    {
+     "where": "11/same-cb/run2/2",
+     "kind": "compute",
+     "begin": "61066816080916",
+     "end": "61066816248875",
+     "staleBegin": "11/same-cb/engineDerive/2",
+     "staleEnd": "11/same-cb/engineDerive/2"
+    }
+   ]
+  },
+  "reading": [
+   "A pass that opened and did work gets fresh stamps, except the LAST compute pass of the command buffer when the resolve is in that same command buffer: 6 of 18 same-cb sets in the first repeat, 6 of 24 with three render passes after it; never a render pass, never an earlier compute pass, and never with the resolve in a later submit (0 of 102 passes). Its pair then reads what the query set held before, so resolveQuerySet does not wait for that pass's samples.",
+   "A never-written pair of a NEW query set resolves to the stamps of a query set destroyed before (12 of 12), not 0: WebKit reuses the storage of a destroyed query set without clearing it. Chrome gives 0 on a fresh query set (M7 probe 2).",
+   "The derivation plays no part: the stale pairs fall in every set, the engine's derive included."
+  ]
+ },
+ "liveProfiler": {
+  "what": "does the race reach the engine? The profiler resolves in the same command buffer, and in its graph cull (or the last sort pass) is the last compute pass; a raced pair would equal the last value read at its index, so the profiler would discard the frame as 'stale' (timestamp-frames.ts StampHistory), not mis-measure it",
+  "lightingTab20s": {
+   "seconds": 20,
+   "framesInWindow": 1200,
+   "discardsInWindow": {
+    "unexecuted": 0,
+    "truncated": 0,
+    "zero": 0,
+    "reversed": 0,
+    "stale": 0,
+    "empty": 0
+   },
+   "skippedFramesInWindow": 115,
+   "frame": {
+    "averageMs": 13.359852449999998,
+    "lastMs": 13.415292,
+    "sampleCount": 120
+   },
+   "graphOrder": [
+    "scatter",
+    "cull",
+    "transparent-sort",
+    "light-groups",
+    "forward",
+    "fxaa-tonemap"
+   ],
+   "entityCount": 12,
+   "fps": 60,
+   "warnings": [],
+   "errors": [],
+   "timings": [
+    {
+     "name": "cull",
+     "averageMs": 0.043345850000000005,
+     "sampleCount": 120
+    },
+    {
+     "name": "light-groups/seed",
+     "averageMs": 6.473420724999998,
+     "sampleCount": 120
+    },
+    {
+     "name": "light-groups/sdf",
+     "averageMs": 112.46677674166658,
+     "sampleCount": 120
+    },
+    {
+     "name": "light-groups/accum",
+     "averageMs": 15.117423966666667,
+     "sampleCount": 120
+    },
+    {
+     "name": "forward",
+     "averageMs": 9.324429183333336,
+     "sampleCount": 120
+    },
+    {
+     "name": "fxaa-tonemap",
+     "averageMs": 0.8795315749999999,
+     "sampleCount": 120
+    }
+   ]
+  },
+  "oneQuadBench10s": {
+   "seconds": 10,
+   "framesInWindow": 600,
+   "discardsInWindow": {
+    "unexecuted": 0,
+    "truncated": 0,
+    "zero": 0,
+    "reversed": 0,
+    "stale": 0,
+    "empty": 0
+   },
+   "skippedFramesInWindow": 0,
+   "frame": {
+    "averageMs": 0.6736169999999999,
+    "lastMs": 0.546167,
+    "sampleCount": 120
+   },
+   "graphOrder": [
+    "scatter",
+    "cull",
+    "transparent-sort",
+    "forward",
+    "fxaa-tonemap"
+   ],
+   "entityCount": 1,
+   "fps": 60,
+   "warnings": [],
+   "errors": [],
+   "timings": [
+    {
+     "name": "cull",
+     "averageMs": 0.04195897500000001,
+     "sampleCount": 120
+    },
+    {
+     "name": "forward",
+     "averageMs": 0.4657014416666667,
+     "sampleCount": 120
+    },
+    {
+     "name": "fxaa-tonemap",
+     "averageMs": 0.10242705000000003,
+     "sampleCount": 120
+    }
+   ],
+   "scene": "?mode=B&bench, one 2D quad at the origin, camera (0,0,0) zoom 1: little GPU work between cull and the resolve"
+  },
+  "reading": "0 discards of any kind over 1200 + 600 live frames: the race stays in the synthetic probe"
+ },
+ "script": "async () => {\n  // M12 part c.2: probe 5 (m7-probe5-derive-proxy-gpu.json) repeated in Safari.\n  // One fresh device with timestamp-query. Per derivation set: one query set (2 stamps per\n  // case), one command encoder; each case opens ONE pass through the derived descriptor,\n  // draws a full-screen triangle (render) or dispatches 64 workgroups (compute); then the\n  // set is resolved and read back. A validation + internal error scope wraps the encoding\n  // and the submit of each set.\n  const { FrameRecorder } = await import('/src/render/timestamp-intercept.ts');\n  const adapter = await navigator.gpu.requestAdapter();\n  const hasTs = adapter.features.has('timestamp-query');\n  const device = await adapter.requestDevice({ requiredFeatures: hasTs ? ['timestamp-query'] : [] });\n  const renderModule = device.createShaderModule({ code: `\n@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {\n  var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));\n  return vec4f(p[i], 0.0, 1.0);\n}\n@fragment fn fs() -> @location(0) vec4f { return vec4f(0.2, 0.4, 0.6, 1.0); }` });\n  const computeModule = device.createShaderModule({ code: `\n@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) g: vec3u) {\n  var x = f32(g.x);\n  for (var i = 0u; i < 256u; i++) { x = x * 1.0001 + 0.5; }\n  data[g.x] = x;\n}` });\n  const renderPipeline = device.createRenderPipeline({ layout: 'auto', vertex: { module: renderModule, entryPoint: 'vs' }, fragment: { module: renderModule, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });\n  const computePipeline = device.createComputePipeline({ layout: 'auto', compute: { module: computeModule, entryPoint: 'main' } });\n  const storage = device.createBuffer({ size: 64 * 64 * 4, usage: GPUBufferUsage.STORAGE });\n  const computeBindGroup = device.createBindGroup({ layout: computePipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: storage } }] });\n  const target = device.createTexture({ size: [512, 512], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT });\n  const view = target.createView();\n  const attachments = () => [{ view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }];\n  class RenderDesc {\n    #view;\n    constructor(v) { this.#view = v; }\n    get colorAttachments() { return [{ view: this.#view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }]; }\n    get label() { return 'class-desc'; }\n  }\n  const cases = [\n    { name: '0 render class #private', kind: 'render', make: () => new RenderDesc(view) },\n    { name: '1 frozen literal, explicit undefined timestampWrites', kind: 'render', make: () => Object.freeze({ colorAttachments: Object.freeze(attachments()), timestampWrites: undefined }) },\n    { name: '2 literal with a this-getter', kind: 'render', make: () => ({ _ca: attachments(), get colorAttachments() { return this._ca; } }) },\n    { name: '3 compute undefined', kind: 'compute', make: () => undefined },\n    { name: '4 compute null', kind: 'compute', make: () => null },\n    { name: '5 compute label literal', kind: 'compute', make: () => ({ label: 'probe-compute' }) },\n  ];\n  const sets = {\n    run2: {\n      derivation: \"const source = desc ?? {}; new Proxy({}, { get: (_target, key) => (key === 'timestampWrites' ? tw : Reflect.get(source, key, source)) }) — verbatim from m7-probe5-derive-proxy-gpu.json run2\",\n      derive: (desc, tw) => { const source = desc ?? {}; return new Proxy({}, { get: (_target, key) => (key === 'timestampWrites' ? tw : Reflect.get(source, key, source)) }); },\n    },\n    engineDerive: {\n      derivation: 'FrameRecorder.derive() of ts/src/render/timestamp-intercept.ts (the code the profiler runs), imported from the dev server',\n      recorder: true,\n    },\n    objectCreateControl: {\n      derivation: \"Object.create(desc ?? {}, { timestampWrites: { value: tw, enumerable: true } }) — run1 viaCreate, the control\",\n      derive: (desc, tw) => Object.create(desc ?? {}, { timestampWrites: { value: tw, enumerable: true } }),\n    },\n  };\n  const out = { adapterHasTimestampQuery: hasTs, deviceFeatures: [...device.features].sort(), sets: {} };\n  for (const [setName, set] of Object.entries(sets)) {\n    const n = cases.length;\n    const querySet = hasTs ? device.createQuerySet({ type: 'timestamp', count: 2 * n }) : null;\n    const resolve = device.createBuffer({ size: 2 * n * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });\n    const readback = device.createBuffer({ size: 2 * n * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });\n    const recorder = set.recorder && querySet ? new FrameRecorder(querySet, n) : null;\n    if (recorder) recorder.enterNode('probe5', true);\n    device.pushErrorScope('internal');\n    device.pushErrorScope('validation');\n    const encoder = device.createCommandEncoder();\n    const results = {};\n    const originals = [];\n    for (let k = 0; k < n; k++) {\n      const c = cases[k];\n      const original = c.make();\n      originals.push({ c, original });\n      const tw = querySet ? { querySet, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } : undefined;\n      let derived;\n      try {\n        if (recorder) {\n          const r = recorder.derive(original);\n          derived = r.desc;\n          if (!r.pair) throw new Error('FrameRecorder.derive gave no pair');\n        } else {\n          derived = set.derive(original, tw);\n        }\n        if (c.kind === 'render') {\n          const pass = encoder.beginRenderPass(derived);\n          pass.setPipeline(renderPipeline);\n          pass.draw(3);\n          pass.end();\n        } else {\n          const pass = encoder.beginComputePass(derived);\n          pass.setPipeline(computePipeline);\n          pass.setBindGroup(0, computeBindGroup);\n          pass.dispatchWorkgroups(64);\n          pass.end();\n        }\n        results[c.name] = 'ok';\n      } catch (err) {\n        results[c.name] = 'THROWS ' + String(err && err.message ? `${err.name}: ${err.message}` : err);\n      }\n    }\n    if (querySet) {\n      encoder.resolveQuerySet(querySet, 0, 2 * n, resolve, 0);\n      encoder.copyBufferToBuffer(resolve, 0, readback, 0, 2 * n * 8);\n    }\n    let submitThrew = null;\n    try { device.queue.submit([encoder.finish()]); } catch (err) { submitThrew = String(err); }\n    const validation = await device.popErrorScope();\n    const internal = await device.popErrorScope();\n    let pairs = null;\n    if (querySet) {\n      await readback.mapAsync(GPUMapMode.READ);\n      const stamps = new BigUint64Array(readback.getMappedRange().slice(0));\n      readback.unmap();\n      pairs = cases.map((c, k) => {\n        const b = stamps[2 * k], e = stamps[2 * k + 1];\n        return { pair: k, begin: String(b), end: String(e), durNs: b > 0n && e > 0n ? Number(e - b) : null };\n      });\n    }\n    const frozen = originals[1].original;\n    out.sets[setName] = {\n      derivation: set.derivation,\n      results,\n      validationError: validation ? validation.message : null,\n      internalError: internal ? internal.message : null,\n      submitThrew,\n      pairs,\n      frozenOriginalUnchanged: Object.isFrozen(frozen) && frozen.timestampWrites === undefined && Object.keys(frozen).join(',') === 'colorAttachments,timestampWrites',\n      originalsWithoutOwnTimestampWrites: originals.filter(({ original }) => original != null && !Object.isFrozen(original)).every(({ original }) => !Object.prototype.hasOwnProperty.call(original, 'timestampWrites')),\n    };\n    querySet?.destroy();\n    resolve.destroy();\n    readback.destroy();\n  }\n  const { vendor, architecture } = adapter.info;\n  device.destroy();\n  return { adapter: { vendor, architecture }, ...out };\n}\n",
+ "repeatScriptNote": "the repeats are the same script with the per-set body in a loop over iterations and resolve modes, staleness = a stamp value already read before: m12-probe5-repeat-safari.js (repeatBothResolveModes) and m12-probe5-renderlast-safari.js (repeatRenderLast), committed from the session scratchpad in the M12 fix round"
+}

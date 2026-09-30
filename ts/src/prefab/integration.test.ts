@@ -69,6 +69,7 @@ function mockRenderer(): Renderer {
     enableGpuProfiling: vi.fn(() => false),
     disableGpuProfiling: vi.fn(),
     getGpuTimings: vi.fn(() => []),
+    getGpuFrameTiming: vi.fn(() => null),
     lightingEnabled: false,
     setLightingQuality: vi.fn(),
     debugProbe: null,

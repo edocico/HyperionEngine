@@ -20,12 +20,16 @@ const GRADIENT_X = -12.5;
 const SHADOW_X = -8;
 const LINE_X0 = 8;
 const BEZIER_X = 21;
+/** The wave's control points (uv) and every curve's width; 'Straight bezier' restores the wave from these. */
+const WAVE: readonly [number, number, number, number, number, number] = [0, 0.5, 0.5, 0, 1, 0.5];
+const BEZIER_WIDTH = 0.04;
 
 const section: DemoSection = {
   name: 'primitives',
   label: 'Primitives (Quad / Line / Gradient / BoxShadow / Bezier)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
+    let wave!: EntityHandle;
     engine.batch(() => {
       // ── 1. Quad grid (5x5), 1x1 white quads 2.5 apart ─────────────────
       for (let row = 0; row < 5; row++) {
@@ -65,9 +69,10 @@ const section: DemoSection = {
 
       // ── 5. Bezier curves: the arch and the S pass through their quad's
       // centre at t = 0.5 ─────────────────────────────────────────────────
-      entities.push(engine.spawn().position(BEZIER_X, 4, 0).scale(4, 4, 1).bezier(0, 0, 0.5, 1, 1, 0, 0.04));   // arch
-      entities.push(engine.spawn().position(BEZIER_X, 0, 0).scale(4, 4, 1).bezier(0, 0, 1, 0.5, 0, 1, 0.04));   // S
-      entities.push(engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(0, 0.5, 0.5, 0, 1, 0.5, 0.04)); // wave
+      entities.push(engine.spawn().position(BEZIER_X, 4, 0).scale(4, 4, 1).bezier(0, 0, 0.5, 1, 1, 0, BEZIER_WIDTH));   // arch
+      entities.push(engine.spawn().position(BEZIER_X, 0, 0).scale(4, 4, 1).bezier(0, 0, 1, 0.5, 0, 1, BEZIER_WIDTH));   // S
+      wave = engine.spawn().position(BEZIER_X, -4, 0).scale(4, 4, 1).bezier(...WAVE, BEZIER_WIDTH);
+      entities.push(wave);
     });
 
     fitView(engine, SCENE_CENTER_X, 0, SCENE_HALF_WIDTH);
@@ -155,6 +160,134 @@ const section: DemoSection = {
       const wave = near(waveMid[0], BACKGROUND, 0.01) && ((waveUp[0] > 0.5) !== (waveDown[0] > 0.5));
       const ok = archC[0] > 0.5 && near(archOff1[0], BACKGROUND, 0.01) && near(archOff2[0], BACKGROUND, 0.01) && sC[0] > 0.5 && wave;
       return { ok, detail: `arch centre ${fmt([archC[0]])}, off-curve ${fmt([archOff1[0], archOff2[0]])}; S centre ${fmt([sC[0]])}; wave centre ${fmt([waveMid[0]])}, one unit off ${fmt([waveUp[0], waveDown[0]])}` };
+    });
+
+    await pixelCheck(reporter, 'Straight bezier', engine, async (probe) => {
+      // A quadratic whose control point is the middle of its chord IS that
+      // chord, and bezier_sd's cubic loses its leading term there
+      // (B = p0 - 2 p1 + p2 = 0, which it divided by). On Metal (Mac M2,
+      // 2026-09-29) such a curve drew a dot around p0 instead of the segment.
+      // The wave is made straight, then nearly straight, for this check only
+      // and restored after it: no entity is spawned, so ids stay those of the
+      // M4 baseline. The line runs along v = 0.5, the quad's middle row,
+      // whichever way its v runs; world x = BEZIER_X + (u - 0.5) * 4.
+      const onLine: [number, number][] = [[BEZIER_X, -4], [BEZIER_X - 0.8, -4]];                    // u = 0.5, 0.3
+      const offLine: [number, number][] = [[BEZIER_X, -3.6], [BEZIER_X, -4.4], [BEZIER_X + 1.8, -4]]; // v ± 0.1, u = 0.95 (past p2)
+      const parts: string[] = [];
+      let ok = true;
+      try {
+        for (const [label, dv] of [['straight', 0], ['1e-5 off', 1e-5], ['1e-4 off', 1e-4], ['1e-3 off', 1e-3], ['1e-2 off', 1e-2]] as const) {
+          wave.bezier(0.1, 0.5, 0.5, 0.5 + dv, 0.9, 0.5, BEZIER_WIDTH);
+          await frames(4);
+          const values = await probe('scene-hdr', [...onLine, ...offLine]);
+          const on = values.slice(0, onLine.length).map((p) => p[0]);
+          const off = values.slice(onLine.length).map((p) => p[0]);
+          ok = ok && on.every((v) => v > 0.5) && off.every((v) => near(v, BACKGROUND, 0.01));
+          parts.push(`${label}: on ${fmt(on)}, off ${fmt(off)}`);
+        }
+      } finally {
+        wave.bezier(...WAVE, BEZIER_WIDTH);
+        await frames(4);
+      }
+      return { ok, detail: parts.join('; ') };
+    });
+
+    await pixelCheck(reporter, 'Near-straight bezier (35.26°)', engine, async (probe) => {
+      // When the control point's offset from the chord's middle makes 35.26°
+      // (cos^2 = 2/3) or 144.74° with the chord, the two leading terms of
+      // bezier_sd's cubic coefficient p cancel all along a near-straight
+      // curve, and the one-root branch took the cube root of a difference
+      // that kept only rounding error: on the Mac M2 (2026-09-29) such a
+      // curve drew noise (70% of the stroke missing and pixels lit around it
+      // at an offset of 1e-4, holes up to 2e-2). Same method as 'Straight
+      // bezier': the wave is reshaped and restored, nothing spawned. The
+      // curve stays within |B|/4 = offset/2 of its chord.
+      const inside: [number, number][] = [];
+      const outside: [number, number][] = [];
+      for (let u = 0.15; u <= 0.8501; u += 0.05) {
+        for (const dv of [0, 0.008, -0.008]) inside.push([BEZIER_X + (u - 0.5) * 4, -4 + dv * 4]);
+      }
+      for (let u = 0.2; u <= 0.8001; u += 0.1) {
+        for (const dv of [0.05, -0.05, 0.1, -0.1]) outside.push([BEZIER_X + (u - 0.5) * 4, -4 + dv * 4]);
+      }
+      const parts: string[] = [];
+      let ok = true;
+      try {
+        for (const deg of [35.26, 144.74]) {
+          for (const offset of [1e-4, 1e-3, 5e-3]) {
+            const a = (deg * Math.PI) / 180;
+            wave.bezier(0.1, 0.5, 0.5 + offset * Math.cos(a), 0.5 + offset * Math.sin(a), 0.9, 0.5, BEZIER_WIDTH);
+            await frames(4);
+            const values = await probe('scene-hdr', [...inside, ...outside]);
+            const holes = values.slice(0, inside.length).filter((p) => p[0] <= 0.5).length;
+            const ghosts = values.slice(inside.length).filter((p) => !near(p[0], BACKGROUND, 0.01)).length;
+            ok = ok && holes === 0 && ghosts === 0;
+            parts.push(`${deg}° ${offset}: ${holes}/${inside.length} holes, ${ghosts}/${outside.length} lit outside`);
+          }
+        }
+      } finally {
+        wave.bezier(...WAVE, BEZIER_WIDTH);
+        await frames(4);
+      }
+      return { ok, detail: parts.join('; ') };
+    });
+
+    await pixelCheck(reporter, 'Thin curved bezier (1024/2048 px)', engine, async (probe) => {
+      // A strongly curved wave with a 2-px stroke, its quad zoomed to `size`
+      // device pixels. Around t = 0.766 the cubic's p crosses 0, and there
+      // the one-root branch took the cube root of a difference of two terms
+      // ~|q| that kept only rounding error: on the Mac M2 (2026-09-29) the
+      // stroke had holes at t = 0.7646-0.7665, at both sizes, and none after
+      // the fix. The camera and the wave are restored afterwards: nothing is
+      // spawned.
+      const [ax, ay, bx, by, cx, cy] = [0.25, 0.25, 0.15, 0.65, 0.95, 0.85];
+      const curve = (t: number): [number, number] => [
+        (1 - t) ** 2 * ax + 2 * t * (1 - t) * bx + t * t * cx,
+        (1 - t) ** 2 * ay + 2 * t * (1 - t) * by + t * t * cy,
+      ];
+      const normal = (t: number): [number, number] => {
+        const dx = 2 * (1 - t) * (bx - ax) + 2 * t * (cx - bx);
+        const dy = 2 * (1 - t) * (by - ay) + 2 * t * (cy - by);
+        const len = Math.hypot(dx, dy);
+        return [-dy / len, dx / len];
+      };
+      const world = ([u, v]: [number, number]): [number, number] => [BEZIER_X + (u - 0.5) * 4, -4 + (v - 0.5) * 4];
+      const canvasHeight = document.querySelector('canvas')?.height ?? 1;
+      const [camX, camY, camZoom] = [engine.cam.x, engine.cam.y, engine.cam.zoomLevel];
+      const parts: string[] = [];
+      let ok = true;
+      try {
+        for (const size of [1024, 2048]) {
+          engine.cam.position(...world(curve(0.766)), 0);
+          engine.cam.zoom((5 * size) / canvasHeight); // 20 world units span the canvas height
+          const pxPerUv = (4 * engine.cam.viewProjection[5] * canvasHeight) / 2;
+          wave.bezier(ax, ay, bx, by, cx, cy, 2 / pxPerUv);
+          await frames(4);
+          // On the curve about every device pixel from t = 0.74 to 0.79; 8 px
+          // off it on both sides at three places.
+          const steps = Math.ceil(0.05 * 1.3 * pxPerUv);
+          const ts = Array.from({ length: steps + 1 }, (_, i) => 0.74 + (0.05 * i) / steps);
+          const on = ts.map((t) => world(curve(t)));
+          const off: [number, number][] = [];
+          for (const t of [0.74, 0.766, 0.79]) {
+            const [u, v] = curve(t);
+            const [nx, ny] = normal(t);
+            for (const side of [8, -8]) off.push(world([u + (side * nx) / pxPerUv, v + (side * ny) / pxPerUv]));
+          }
+          const values = await probe('scene-hdr', [...on, ...off]);
+          const holes = ts.filter((_, i) => values[i][0] <= 0.5);
+          const lit = values.slice(on.length).filter((p) => !near(p[0], BACKGROUND, 0.01)).length;
+          ok = ok && holes.length === 0 && lit === 0;
+          const where = holes.length > 0 ? ` (t = ${holes.map((t) => t.toFixed(4)).join(', ')})` : '';
+          parts.push(`${size} px: ${holes.length}/${on.length} holes on the curve${where}, ${lit}/${off.length} lit 8 px off it`);
+        }
+      } finally {
+        wave.bezier(...WAVE, BEZIER_WIDTH);
+        engine.cam.position(camX, camY, 0);
+        engine.cam.zoom(camZoom);
+        await frames(4);
+      }
+      return { ok, detail: parts.join('; ') };
     });
 
     // ── 6. MSDF text — skip (no font atlas in demo assets) ────────────

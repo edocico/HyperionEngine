@@ -1,0 +1,179 @@
+{
+ "ok": true,
+ "env": {
+  "date": "2026-09-30",
+  "head": "a4708c8",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28) (AppleWebKit/605.1.15), macOS 27.0.1 (26A434), MacBook Pro Mac14,9, Apple M2 Pro",
+  "driver": "safaridriver 27.0.1, W3C WebDriver (execute/async, script timeout 180000 ms)",
+  "page": "http://localhost:5173/?mode=B",
+  "window": "CSS inner 1200x689, dpr 2, canvas 1960x1248 (CSS 980x624), Safari frontmost, document visible, rAF 60 Hz",
+  "power": "AC Power, battery 100% charged, lowpowermode 0, caffeinate -dimsu running"
+ },
+ "source": [
+  "docs/plans/assets/2026-09-27-transparent-sort-validate-wgsl.js",
+  "docs/plans/assets/2026-09-27-transparent-sort-validate-sort-wgsl.js"
+ ],
+ "primitives": {
+  "ok": true,
+  "adapter": {
+   "vendor": "apple",
+   "architecture": "apple",
+   "description": "apple"
+  },
+  "results": [
+   {
+    "name": "type-0-quad",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "type-1-line",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "type-2-msdf-text",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "type-3-bezier",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "type-4-gradient",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "type-5-box-shadow",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "opaque": [],
+     "transparent": [],
+     "occluder": []
+    },
+    "matchesPublished": true
+   },
+   {
+    "name": "uber",
+    "compileErrors": 0,
+    "messages": [],
+    "pipelines": {
+     "transparent": []
+    },
+    "matchesPublished": true
+   }
+  ]
+ },
+ "sort": {
+  "ok": true,
+  "adapter": {
+   "vendor": "apple",
+   "architecture": "apple",
+   "description": "apple"
+  },
+  "sources": {
+   "transparent-gather": 4974,
+   "transparent-sort": 9320
+  },
+  "compilation": {
+   "transparent-gather": [],
+   "transparent-sort": []
+  },
+  "setupErrors": []
+ },
+ "negativeControls": {
+  "what": "Same fresh-device setup and the same layouts/descriptors as the primitive validator: does each Safari error channel (getCompilationInfo, createShaderModule/createRenderPipeline/createComputePipeline inside validation+internal error scopes) report a known-bad input? The script is in `script` below; every case is its output.",
+  "adapter": {
+   "vendor": "apple",
+   "architecture": "apple",
+   "description": "apple"
+  },
+  "uberFirstLine": "diagnostic(off, derivative_uniformity);",
+  "uberPublished": {
+   "moduleErrors": [],
+   "messages": [],
+   "pipeline": []
+  },
+  "uberWithoutDirective": {
+   "removed": true,
+   "moduleErrors": [
+    "validation: 1 error generated while compiling the shader:\n773:26: call to 'line_fs' requires uniform control flow"
+   ],
+   "messages": [
+    "error 773:27 call to 'line_fs' requires uniform control flow"
+   ],
+   "pipeline": [
+    "validation: Vertex module is not valid"
+   ]
+  },
+  "syntaxError": {
+   "moduleErrors": [
+    "validation: 1 error generated while compiling the shader:\n1:11: Expected a Identifier, but got a {"
+   ],
+   "messages": [
+    "error 1:12 Expected a Identifier, but got a {"
+   ],
+   "pipeline": [
+    "validation: Vertex module is not valid"
+   ]
+  },
+  "tinyNoDirective": {
+   "moduleErrors": [
+    "validation: 1 error generated while compiling the shader:\n6:25: call to 'fwidth' requires uniform control flow"
+   ],
+   "messages": [
+    "error 6:26 call to 'fwidth' requires uniform control flow"
+   ]
+  },
+  "tinyWithDirective": {
+   "moduleErrors": [],
+   "messages": []
+  },
+  "computeBadEntry": {
+   "messages": [],
+   "pipeline": [
+    "validation: Compute library failed creation"
+   ]
+  },
+  "uberTwoGroupLayout": {
+   "pipeline": [
+    "validation: Shader is incompatible with layout pipeline"
+   ]
+  },
+  "script": "async () => {\n  // M12 negative controls: do Safari's getCompilationInfo and error scopes report at all?\n  // Same layouts and descriptors as docs/plans/assets/2026-09-27-transparent-sort-validate-wgsl.js.\n  const { primitiveGroup0LayoutEntries, textureTierLayoutEntries } = await import('/src/render/primitive-bindings.ts');\n  const { SCENE_HDR_FORMAT } = await import('/src/render/formats.ts');\n  const { ForwardPass } = await import('/src/render/passes/forward-pass.ts');\n  const { TransparentSortPass } = await import('/src/render/passes/transparent-sort-pass.ts');\n\n  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'low-power' });\n  const device = await adapter.requestDevice();\n  const g0 = device.createBindGroupLayout({ entries: primitiveGroup0LayoutEntries() });\n  const g1 = device.createBindGroupLayout({ entries: textureTierLayoutEntries() });\n  const g2 = device.createBindGroupLayout({\n    entries: [\n      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },\n      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },\n      { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },\n    ],\n  });\n  const forwardLayout = device.createPipelineLayout({ bindGroupLayouts: [g0, g1, g2] });\n  const blend = {\n    color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },\n    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },\n  };\n  const transparent = (module) => ({\n    layout: forwardLayout,\n    vertex: { module, entryPoint: 'vs_main', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },\n    primitive: { topology: 'triangle-list', cullMode: 'back' },\n    fragment: { module, entryPoint: 'fs_main', targets: [{ format: SCENE_HDR_FORMAT, blend }] },\n    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },\n  });\n  const scoped = async (fn) => {\n    device.pushErrorScope('internal');\n    device.pushErrorScope('validation');\n    let thrown = null;\n    try { fn(); } catch (err) { thrown = err; }\n    const validation = await device.popErrorScope();\n    const internal = await device.popErrorScope();\n    return [thrown && ('threw: ' + String(thrown)), validation && ('validation: ' + validation.message), internal && ('internal: ' + internal.message)].filter(Boolean).map((s) => s.slice(0, 600));\n  };\n  const compile = async (code) => {\n    let module = null;\n    const moduleErrors = await scoped(() => { module = device.createShaderModule({ code }); });\n    const info = await module.getCompilationInfo();\n    return { module, moduleErrors, messages: info.messages.map((m) => `${m.type} ${m.lineNum}:${m.linePos} ${m.message}`.slice(0, 600)) };\n  };\n\n  const out = {};\n  const uber = ForwardPass.UBER_SOURCE;\n  const firstLine = uber.split('\\n')[0];\n  out.uberFirstLine = firstLine;\n\n  // C0: the uber as published (should be clean, as in the validator).\n  {\n    const c = await compile(uber);\n    out.uberPublished = { moduleErrors: c.moduleErrors, messages: c.messages, pipeline: await scoped(() => device.createRenderPipeline(transparent(c.module))) };\n  }\n  // C1: the uber WITHOUT its diagnostic line (is the directive load-bearing on WebKit?).\n  {\n    const noDirective = uber.replace(/^diagnostic\\(off, derivative_uniformity\\);[^\\n]*\\n/, '');\n    const c = await compile(noDirective);\n    out.uberWithoutDirective = { removed: noDirective.length !== uber.length, moduleErrors: c.moduleErrors, messages: c.messages, pipeline: await scoped(() => device.createRenderPipeline(transparent(c.module))) };\n  }\n  // C2: a syntax error (must be reported by both channels).\n  {\n    const c = await compile('fn broken( {');\n    out.syntaxError = { moduleErrors: c.moduleErrors, messages: c.messages, pipeline: await scoped(() => device.createRenderPipeline({\n      layout: 'auto',\n      vertex: { module: c.module, entryPoint: 'vs' },\n      fragment: { module: c.module, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },\n    })) };\n  }\n  // C3: minimal fwidth under a per-fragment branch, without and with the directive.\n  const tiny = (directive) => `${directive}\n@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(f32(i), 0.0, 0.0, 1.0); }\nstruct In { @location(0) v: vec2f, @location(1) @interpolate(flat) k: u32 }\n@fragment fn fs(inp: In) -> @location(0) vec4f {\n  var r = 0.0;\n  if (inp.k == 1u) { r = fwidth(inp.v.x); }\n  return vec4f(r);\n}`;\n  for (const [name, directive] of [['tinyNoDirective', ''], ['tinyWithDirective', 'diagnostic(off, derivative_uniformity);']]) {\n    const c = await compile(tiny(directive));\n    out[name] = { moduleErrors: c.moduleErrors, messages: c.messages };\n  }\n  // C4: a compute pipeline with a wrong entry point (must fail validation in the scope).\n  {\n    const c = await compile(TransparentSortPass.SORT_SOURCE);\n    out.computeBadEntry = { messages: c.messages, pipeline: await scoped(() => device.createComputePipeline({ layout: 'auto', compute: { module: c.module, entryPoint: 'no_such_entry' } })) };\n  }\n  // C5: the uber on a TWO-group layout (the occluder layout): its fs_main reaches group 2\n  // (lit quad/gradient cases), so the pipeline must fail validation.\n  {\n    const c = await compile(uber);\n    const d = transparent(c.module);\n    d.layout = device.createPipelineLayout({ bindGroupLayouts: [g0, g1] });\n    out.uberTwoGroupLayout = { pipeline: await scoped(() => device.createRenderPipeline(d)) };\n  }\n  const { vendor, architecture, description } = adapter.info ?? {};\n  device.destroy();\n  return { adapter: { vendor, architecture, description }, ...out };\n}\n"
+ }
+}

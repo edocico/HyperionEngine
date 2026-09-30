@@ -1,0 +1,246 @@
+{
+ "test": "M12 part c.1: the GPU profiler in Safari (?mode=B, tab Lighting at 6/6, then 2 s)",
+ "env": {
+  "date": "2026-09-30",
+  "head": "a4708c8",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28), macOS 27.0.1 (26A434), Apple M2 Pro",
+  "driver": "safaridriver 27.0.1, W3C WebDriver execute/async",
+  "window": "Safari frontmost, document visible, canvas 1960x1248 (CSS 980x624), dpr 2, rAF 60 Hz",
+  "power": "AC Power, battery 100% charged, lowpowermode 0, caffeinate running",
+  "chromeIdle": "both Chrome MCP servers on about:blank"
+ },
+ "snippet": "the Task 8 measurement snippet of docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md, plus the return value of enableGpuProfiling(), every console.warn/error during the window, frameAgain, the live graph order; source in `script`",
+ "result": {
+  "enabled": true,
+  "gpuProfilingSupported": true,
+  "fps": 60.15112348379398,
+  "elapsedMs": 2011.6000000000004,
+  "frame": {
+   "averageMs": 7.102150383333333,
+   "lastMs": 6.886917,
+   "sampleCount": 120
+  },
+  "timings": [
+   {
+    "name": "cull",
+    "averageMs": 0.023806241666666665,
+    "lastMs": 0.0215,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/seed",
+    "averageMs": 3.3131364083333343,
+    "lastMs": 3.500667,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/sdf",
+    "averageMs": 58.14515759999999,
+    "lastMs": 61.329876,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/accum",
+    "averageMs": 7.877129133333336,
+    "lastMs": 8.54625,
+    "sampleCount": 120
+   },
+   {
+    "name": "forward",
+    "averageMs": 4.927001375000001,
+    "lastMs": 5.430333,
+    "sampleCount": 120
+   },
+   {
+    "name": "fxaa-tonemap",
+    "averageMs": 0.05975766666666666,
+    "lastMs": 0.009375,
+    "sampleCount": 120
+   }
+  ],
+  "again": [
+   {
+    "name": "cull",
+    "averageMs": 0.02397914166666667,
+    "lastMs": 0.024083,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/seed",
+    "averageMs": 3.286067675000002,
+    "lastMs": 3.725833,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/sdf",
+    "averageMs": 57.70598306666669,
+    "lastMs": 65.74520700000001,
+    "sampleCount": 120
+   },
+   {
+    "name": "light-groups/accum",
+    "averageMs": 7.785630225000001,
+    "lastMs": 9.016333,
+    "sampleCount": 120
+   },
+   {
+    "name": "forward",
+    "averageMs": 4.845198983333332,
+    "lastMs": 5.720375,
+    "sampleCount": 120
+   },
+   {
+    "name": "fxaa-tonemap",
+    "averageMs": 0.016078491666666663,
+    "lastMs": 0.01025,
+    "sampleCount": 120
+   }
+  ],
+  "frameAgain": {
+   "averageMs": 7.000314899999996,
+   "lastMs": 6.946583,
+   "sampleCount": 120
+  },
+  "skippedFrames": 0,
+  "discardReasonsBeforeEnable": null,
+  "discardReasons": {
+   "unexecuted": 0,
+   "truncated": 0,
+   "zero": 0,
+   "reversed": 0,
+   "stale": 0,
+   "empty": 0
+  },
+  "discardsAfterWarmUp": {
+   "unexecuted": 0,
+   "truncated": 0,
+   "zero": 0,
+   "reversed": 0,
+   "stale": 0,
+   "empty": 0
+  },
+  "warnings": [],
+  "allWarnings": [],
+  "errors": [],
+  "graphOrder": [
+   "scatter",
+   "cull",
+   "transparent-sort",
+   "light-groups",
+   "forward",
+   "fxaa-tonemap"
+  ],
+  "lightingBackend": "lit",
+  "lightingEnabled": true,
+  "canvas": [
+   1960,
+   1248
+  ],
+  "visibility": "visible"
+ },
+ "criteria": {
+  "enabledTrue": true,
+  "sampleCount120": true,
+  "elapsedMs": 2011.6,
+  "fpsAtLeast50": true,
+  "entriesNonEmpty": true,
+  "allSixEntriesPositive120": true,
+  "singlePassEntriesWithinSpan": true,
+  "forwardStable": 0.0166,
+  "unexecutedZero": true,
+  "discardsAfterWarmUpAllZero": true,
+  "skippedFrames": 0,
+  "noWarningsNoErrors": true
+ },
+ "timestampResolution": {
+  "what": "every lastMs as a count of 41.667 ns ticks (the 24 MHz Apple GPU timestamp) and of Chrome's 65 536 ns quanta",
+  "values": [
+   {
+    "entry": "frame",
+    "lastMs": 6.886917,
+    "ticks41_667ns": 165286.008,
+    "quanta65536ns": 105.086
+   },
+   {
+    "entry": "frameAgain",
+    "lastMs": 6.946583,
+    "ticks41_667ns": 166717.992,
+    "quanta65536ns": 105.996
+   },
+   {
+    "entry": "cull",
+    "lastMs": 0.0215,
+    "ticks41_667ns": 516.0,
+    "quanta65536ns": 0.328
+   },
+   {
+    "entry": "light-groups/seed",
+    "lastMs": 3.500667,
+    "ticks41_667ns": 84016.008,
+    "quanta65536ns": 53.416
+   },
+   {
+    "entry": "light-groups/sdf",
+    "lastMs": 61.329876,
+    "ticks41_667ns": 1471917.024,
+    "quanta65536ns": 935.82
+   },
+   {
+    "entry": "light-groups/accum",
+    "lastMs": 8.54625,
+    "ticks41_667ns": 205110.0,
+    "quanta65536ns": 130.405
+   },
+   {
+    "entry": "forward",
+    "lastMs": 5.430333,
+    "ticks41_667ns": 130327.992,
+    "quanta65536ns": 82.86
+   },
+   {
+    "entry": "fxaa-tonemap",
+    "lastMs": 0.009375,
+    "ticks41_667ns": 225.0,
+    "quanta65536ns": 0.143
+   },
+   {
+    "entry": "cull (again)",
+    "lastMs": 0.024083,
+    "ticks41_667ns": 577.992,
+    "quanta65536ns": 0.367
+   },
+   {
+    "entry": "light-groups/seed (again)",
+    "lastMs": 3.725833,
+    "ticks41_667ns": 89419.992,
+    "quanta65536ns": 56.852
+   },
+   {
+    "entry": "light-groups/sdf (again)",
+    "lastMs": 65.74520700000001,
+    "ticks41_667ns": 1577884.968,
+    "quanta65536ns": 1003.192
+   },
+   {
+    "entry": "light-groups/accum (again)",
+    "lastMs": 9.016333,
+    "ticks41_667ns": 216391.992,
+    "quanta65536ns": 137.578
+   },
+   {
+    "entry": "forward (again)",
+    "lastMs": 5.720375,
+    "ticks41_667ns": 137289.0,
+    "quanta65536ns": 87.286
+   },
+   {
+    "entry": "fxaa-tonemap (again)",
+    "lastMs": 0.01025,
+    "ticks41_667ns": 246.0,
+    "quanta65536ns": 0.156
+   }
+  ],
+  "reading": "all whole ticks of 41.667 ns (within the 1 ns rounding of the ms values), none a multiple of 65 536 ns: Safari reports the GPU tick unquantized"
+ },
+ "script": "async () => {\n  // Task 8 measurement snippet (docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md), plus:\n  // the return value of enableGpuProfiling(), every console.warn/error in the window (Safari\n  // under WebDriver has no console), the discard counters before enabling, the live graph.\n  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n  const engine = window.__hyperion;\n  const profiler = () => engine.renderer?.graph?.profiler ?? null;\n  const warnings = [];\n  const errors = [];\n  const warn = console.warn;\n  const error = console.error;\n  console.warn = (...a) => { warnings.push(a.map(String).join(' ')); warn(...a); };\n  console.error = (...a) => { errors.push(a.map(String).join(' ')); error(...a); };\n  try {\n    const beforeEnable = profiler() ? { ...profiler().discardReasons } : null;\n    const enabled = engine.enableGpuProfiling();\n    if (!enabled) return { enabled, gpuProfilingSupported: engine.gpuProfilingSupported, beforeEnable, warnings, errors };\n    const t0 = performance.now();\n    let rafs = 0;\n    let counting = true;\n    const count = () => { rafs++; if (counting) requestAnimationFrame(count); };\n    requestAnimationFrame(count);\n    await sleep(1000); // warm-up\n    const warm = { ...profiler().discardReasons };\n    while ((engine.getGpuFrameTiming()?.sampleCount ?? 0) < 120 && performance.now() - t0 < 15000) await sleep(100);\n    counting = false;\n    const elapsedMs = performance.now() - t0;\n    const timings = engine.getGpuTimings();\n    const frame = engine.getGpuFrameTiming();\n    await sleep(2000);\n    const again = engine.getGpuTimings();\n    const frameAgain = engine.getGpuFrameTiming();\n    const after = { ...profiler().discardReasons };\n    const skippedFrames = profiler().skippedFrames;\n    const graphOrder = engine.renderer.graph.executionOrder;\n    engine.disableGpuProfiling();\n    return {\n      enabled, gpuProfilingSupported: engine.gpuProfilingSupported,\n      fps: (rafs * 1000) / elapsedMs, elapsedMs, frame, timings, again, frameAgain, skippedFrames,\n      discardReasonsBeforeEnable: beforeEnable, discardReasons: after,\n      discardsAfterWarmUp: Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - warm[k]])),\n      warnings: warnings.filter((w) => w.includes('GPU profiling')),\n      allWarnings: warnings, errors,\n      graphOrder, lightingBackend: engine.lighting.backend, lightingEnabled: engine.renderer.lightingEnabled,\n      canvas: [engine.renderer ? document.getElementById('canvas').width : null, document.getElementById('canvas').height],\n      visibility: document.visibilityState,\n    };\n  } finally {\n    console.warn = warn;\n    console.error = error;\n  }\n}\n"
+}

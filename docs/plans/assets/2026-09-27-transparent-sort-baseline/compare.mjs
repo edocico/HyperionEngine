@@ -17,9 +17,9 @@
 // check that may be 'skip' instead (a Mode C-only check, run in Mode B).
 // Exit code: 0 PASS, 1 FAIL, 2 bad arguments or unreadable files.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 export const TABS = ['primitives', 'scene-graph', 'input', 'audio', 'particles', 'rendering-fx', 'lighting', 'debug-tools', 'lifecycle', 'twin-2d'];
@@ -241,6 +241,23 @@ export function main(argv) {
   return ok ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * True when this file is the entry point. Node resolves the symlinks of an
+ * entry module for import.meta.url, while process.argv[1] is only made absolute
+ * (its symlinks stay), so through a symlink (macOS: /tmp and /var are links
+ * into /private) the plain comparison was false, main() never ran and the gate
+ * ended with exit 0 and no output. Both sides go through realpathSync; a path
+ * that cannot be resolved means "imported", never a throw.
+ */
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   process.exit(main(process.argv.slice(2)));
 }

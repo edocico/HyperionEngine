@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:wasm": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm",
-    "build:wasm:opt": "test -f wasm/hyperion_core_bg.wasm && wasm-opt -O3 --strip-debug --enable-simd wasm/hyperion_core_bg.wasm -o wasm/hyperion_core_bg.wasm || echo 'ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.'",
+    "build:wasm:opt": "command -v wasm-opt >/dev/null 2>&1 || { echo 'ERROR: wasm-opt not found on PATH. Install binaryen (macOS: brew install binaryen).' >&2; exit 1; }; test -f wasm/hyperion_core_bg.wasm || { echo 'ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.' >&2; exit 1; }; wasm-opt -O3 --strip-debug --enable-simd wasm/hyperion_core_bg.wasm -o wasm/hyperion_core_bg.wasm",
     "build:wasm:release": "npm run build:wasm && npm run build:wasm:opt",
     "build:wasm:physics": "wasm-pack build ../crates/hyperion-core --target web --out-dir ../../ts/wasm-physics -- --features physics-2d",
     "build:wasm:physics:dev": "wasm-pack build ../crates/hyperion-core --dev --target web --out-dir ../../ts/wasm-physics -- --features \"physics-2d dev-tools physics-debug\"",

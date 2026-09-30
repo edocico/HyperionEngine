@@ -213,6 +213,64 @@ describe("describeAdapter", () => {
     expect(d.message).toMatch(/software fallback/i);
   });
 
+  it("says what a fallback means on each platform: Linux needs flags, macOS needs none", () => {
+    // Measured on Chrome 154.0.8037.58 / Apple M2 Pro (2026-09-30): one headless
+    // instance per row, a fresh profile each, asking for the default adapter;
+    // chrome://gpu's WebGPU status in brackets.
+    //   no flags, or --enable-unsafe-webgpu alone     -> Metal, not a fallback [Hardware accelerated]
+    //   --use-webgpu-adapter=swiftshader              -> NO adapter [Hardware accelerated]
+    //     + --enable-unsafe-webgpu                    -> SwiftShader, a fallback [Hardware accelerated]
+    //   --gpu-blocklist-test-group=1 (*)              -> NO adapter [Software only]
+    //     + --enable-unsafe-webgpu                    -> SwiftShader, a fallback [Software only]
+    //     + --ignore-gpu-blocklist instead            -> Metal, not a fallback [Hardware accelerated]
+    //   --use-angle=swiftshader                       -> NO adapter [Software only]
+    //     + --enable-unsafe-webgpu                    -> SwiftShader, a fallback [Software only]
+    //   --disable-gpu, --use-gl=disabled (+/- unsafe) -> NO adapter [Disabled]
+    // (*) Entry 152 of software_rendering_list.json, a test entry (test_group 1) that blocks
+    // WebGPU through the same path as a real entry: what a GPU on the blocklist gets.
+    // In the three "+ --enable-unsafe-webgpu" rows that end in SwiftShader,
+    // --disable-dawn-features=adapter_blocklist gave the same result.
+    // So on the Mac a fallback is SwiftShader, which Chrome hands out only with its
+    // adapter blocklist off, and it has two causes:
+    //   1. --use-webgpu-adapter=swiftshader: the cure is to DROP that flag, the
+    //      opposite of Linux;
+    //   2. a GPU Chrome runs as software only, e.g. one on its GPU blocklist: no
+    //      flag of the reader's to drop (without --enable-unsafe-webgpu there is no
+    //      adapter at all), chrome://gpu says why.
+    const d = describeAdapter(info({ vendor: "google", architecture: "swiftshader", isFallbackAdapter: true }));
+    expect(d.fallback).toBe(true);
+    // Linux: the flags that hand Chrome the real GPU (all the message named before).
+    for (const flag of ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=vulkan"]) {
+      expect(d.message).toContain(flag);
+    }
+    // macOS: no flag needed for the real GPU, and a software adapter only with the
+    // adapter blocklist off.
+    expect(d.message).toMatch(/macOS[^.]*no flag/i);
+    const mac = d.message.slice(d.message.indexOf("macOS"));
+    expect(mac).toContain("--enable-unsafe-webgpu");
+    // Cause 1, with the flag to drop named: two flags are in the sentence, so
+    // "drop that flag" left the reader to guess which.
+    expect(mac).toContain("--use-webgpu-adapter=swiftshader (drop it)");
+    expect(mac).not.toContain("drop that flag");
+    // Cause 2: a GPU on Chrome's blocklist, as chrome://gpu reports it. "GPU
+    // blocklist", not just "blocklist": the adapter blocklist named above would
+    // satisfy the latter on its own.
+    expect(mac).toContain("GPU blocklist");
+    expect(mac).toContain("chrome://gpu");
+    expect(mac).toContain("Software only");
+  });
+
+  it("keeps the platform hints off a hardware adapter's line", () => {
+    // Stock Chrome's line on the M2 (docs/plans/assets/2026-09-29-mac-m2/README.md,
+    // M7, "Server stock": no device id; the gpu server's line, in the header table,
+    // adds / 0x0000).
+    const d = describeAdapter(info({
+      vendor: "apple", architecture: "metal-3", subgroupMinSize: 32, subgroupMaxSize: 32,
+    }));
+    expect(d.fallback).toBe(false);
+    expect(d.message).toBe("[Hyperion] WebGPU adapter: apple / metal-3, subgroups 32-32");
+  });
+
   it("an adapter without info is unknown, not assumed to be hardware or fallback", () => {
     const d = describeAdapter(undefined);
     expect(d.fallback).toBe(false);

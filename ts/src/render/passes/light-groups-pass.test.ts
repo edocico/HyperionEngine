@@ -57,10 +57,10 @@ function setUp() {
   const pass = new LightGroupsPass({ 0: OCCLUDER });
   pass.setup(device, pool);
 
-  /** Render one frame. Returns the events: one per render pass (its target) or mark. */
-  const frame = (lightGroups: LightGroups | undefined, w = 128, h = 64, withMark = false) => {
+  /** Render one frame. Returns the events: one per render pass (its target) or stage name. */
+  const frame = (lightGroups: LightGroups | undefined, w = 128, h = 64, withStage = false) => {
     const f = { canvasWidth: w, canvasHeight: h, cameraViewProjection: new Float32Array(16), lightGroups } as unknown as FrameState;
-    const events: Array<{ kind: 'pass'; target: View; sdf?: View } | { kind: 'mark' }> = [];
+    const events: Array<{ kind: 'pass'; target: View; sdf?: View } | { kind: 'stage'; name: string }> = [];
     const encoder = {
       beginRenderPass: (desc: GPURenderPassDescriptor) => {
         const ev = { kind: 'pass' as const, target: [...desc.colorAttachments][0]!.view as unknown as View, sdf: undefined as View | undefined };
@@ -75,7 +75,7 @@ function setUp() {
       },
     } as unknown as GPUCommandEncoder;
     pass.prepare(device, f);
-    pass.execute(encoder, f, pool, withMark ? () => { events.push({ kind: 'mark' }); } : undefined);
+    pass.execute(encoder, f, pool, withStage ? (name: string) => { events.push({ kind: 'stage', name }); } : undefined);
     return events;
   };
   const label = (v: View) => `${v.tex.desc.label}${v.d?.baseArrayLayer !== undefined ? `#${v.d.baseArrayLayer}` : ''}`;
@@ -190,13 +190,37 @@ describe('LightGroupsPass', () => {
     expect(seed.desc.size).toMatchObject({ width: 128, height: 32 });
   });
 
-  it('names its stages for the profiler and marks each one just before it runs', () => {
-    const { pass, frame } = setUp();
+  it('names each stage for the profiler just before it runs: seed, sdf, accum per set, then accum for set-less groups', () => {
+    const { frame, label } = setUp();
     const lg = groups([[1, 0], [2, 1], [4, -1]], [1, 2]);
-    expect(pass.profileStages({ lightGroups: lg } as unknown as FrameState))
-      .toEqual(['seed', 'sdf', 'accum', 'seed', 'sdf', 'accum', 'accum']);
     const events = frame(lg, 128, 64, true);
-    expect(events.filter((e) => e.kind === 'mark')).toHaveLength(7);
-    expect(events[0].kind).toBe('mark');
+    const names = events.flatMap((e) => (e.kind === 'stage' ? [e.name] : []));
+    expect(names).toEqual(['seed', 'sdf', 'accum', 'seed', 'sdf', 'accum', 'accum']);
+    expect(events[0].kind).toBe('stage');
+
+    // WHERE each stage applies: the stage in force when a pass is recorded is the one its target belongs
+    // to: the seed texture is 'seed', the SDF ping-pong pair is 'sdf', the light-buffer layers are 'accum'.
+    const stageOfTarget = (target: View): 'seed' | 'sdf' | 'accum' => {
+      const l = label(target);
+      if (l.startsWith('light-seed')) return 'seed';
+      if (l.startsWith('light-sdf-')) return 'sdf';
+      if (l.startsWith('light-buffer')) return 'accum';
+      throw new Error(`unexpected render target ${l}`);
+    };
+    let inForce: string | undefined;
+    const checked = { seed: 0, sdf: 0, accum: 0 };
+    for (const e of events) {
+      if (e.kind === 'stage') {
+        inForce = e.name;
+        continue;
+      }
+      const owner = stageOfTarget(e.target);
+      expect(inForce, `the pass into ${label(e.target)}`).toBe(owner);
+      checked[owner]++;
+    }
+    // Not vacuous: two seeds, three accumulations (one per group), and the flood in between.
+    expect(checked.seed).toBe(2);
+    expect(checked.accum).toBe(3);
+    expect(checked.sdf).toBeGreaterThan(0);
   });
 });

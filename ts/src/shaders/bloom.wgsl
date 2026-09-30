@@ -84,15 +84,31 @@ fn fs_upsample(in: VertexOutput) -> @location(0) vec4f {
 }
 
 // --- PBR Neutral tonemap (Khronos) ---
+// The same function as fxaa-tonemap.wgsl's (bloom-pass.test.ts compares them),
+// so that both composites apply the same curve whenever both run mode 1. By
+// default they do not: FXAATonemapPass clamps (mode 0) and this composite
+// applies PBR Neutral (BloomPass default, kept on 2026-09-29), so turning bloom
+// on also re-tones pixels it does not touch (the 0.067 clear becomes 0.028).
+// The two FXAA variants differ at edges as well (luminance and taps).
 fn pbrNeutralTonemap(color: vec3f) -> vec3f {
   let startCompression = 0.8 - 0.04;
   let desaturation = 0.15;
-  let x = min(color, vec3f(startCompression));
-  let over = max(color - vec3f(startCompression), vec3f(0.0));
-  let compressed = x + over / (1.0 + over);
-  let peak = max(compressed.r, max(compressed.g, compressed.b));
-  let g = max(1.0 / (desaturation * (peak - startCompression) + 1.0), 0.0);
-  return mix(vec3f(peak), compressed, g);
+
+  let x = min(color.r, min(color.g, color.b));
+  let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+  var c = color - offset;
+
+  let peak = max(c.r, max(c.g, c.b));
+  if (peak < startCompression) {
+    return c;
+  }
+
+  let d = 1.0 - startCompression;
+  let newPeak = 1.0 - d * d / (peak + d - startCompression);
+  c *= newPeak / peak;
+
+  let g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(c, vec3f(newPeak), g);
 }
 
 // --- ACES filmic tonemap ---

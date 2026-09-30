@@ -1,0 +1,613 @@
+{
+ "test": "M12 fix round, measurement A: M1's extension (wgsl-compile-all.json, Chrome 154) repeated in Safari 27.0.1",
+ "label": "Apple M2 Pro / Metal, Safari 27.0.1",
+ "env": {
+  "date": "2026-09-30",
+  "head": "11f83da",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28), macOS 27.0.1 (26A434), MacBook Pro Mac14,9, Apple M2 Pro",
+  "driver": "safaridriver 27.0.1 (-p 4444), W3C WebDriver from node fetch: POST /session, POST /window/rect 1200x741, POST /url, POST /execute/async (script timeout 180000 ms); session deleted and safaridriver stopped at the end",
+  "window": "Safari frontmost (open -a Safari before each run, checked with lsappinfo), document visible for the whole run, CSS inner 1200x689, dpr 2, rAF 60 Hz",
+  "power": "AC Power (pmset -g batt), 65 W from the Apple 67W USB-C adapter (pmset -g adapter), battery 100% charged, lowpowermode 0, caffeinate -dimsu running; AC Power again after each run",
+  "chromeIdle": "both Chrome MCP servers had their only page on about:blank before the runs (chrome-devtools-gpu page 18, chrome-devtools page 2); not touched afterwards",
+  "devServer": "vite on :5173 (pid 60862), serving the main checkout at 11f83da, COOP same-origin + COEP require-corp",
+  "shaderCache": "not cold: the same WebKit GPU process (alive since 07:21, pid 46752) compiled the same shaders during M12 the same morning; neither measurement times a compilation",
+  "guard": "M12's post-navigation guard (m12-tabs-B.json `guard`): console capture into window.__cap, the Vite ping blocked, visibility log",
+  "page": "http://localhost:5173/?mode=B (the Primitives tab, auto-selected), loaded at 09:26:51Z; run at 09:27:01Z",
+  "crossOriginIsolated": true,
+  "navigatorGpu": true
+ },
+ "method": "M1's script (the evaluate_script body behind wgsl-compile-all.json, taken from the session transcript), run through execute/async: a fresh device, every other WGSL module of the app compiled with createShaderModule inside a validation and an internal error scope, then getCompilationInfo. Changes forced by Safari, which has no subgroups feature: the device is requested without features, and cull is counted as the engine builds it in Safari, prepareShaderSource(cull, false); M1's two subgroup variants go to `extra`, next to the modules nothing imports. As in M1, `results` builds no pipeline (M1: \"Pipelines are exercised by the harness tabs (M2)\"); the pipelines M1 built with the two validators (19 primitive, 4 sort) are in wgsl-validation-safari.json. Added beyond M1, `pipelines`: the pipelines of the three modules whose harness checks read no pixel, built by the engine code inside the same two error scopes: ParticleSystem.buildSimulate and buildRender (the calls of the renderer and of the particle hot-reload, with the canvas format) and DebugLinePass.setup (LineBatchPass, the debug-line pipeline of the overlays). Nothing is drawn.",
+ "ok": true,
+ "pipelinesOk": true,
+ "adapter": "apple",
+ "deviceFeatures": [
+  "core-features-and-limits"
+ ],
+ "canvasFormat": "bgra8unorm",
+ "debugLineSourceIsTheLiveOne": true,
+ "results": [
+  {
+   "label": "cull (atomic: region stripped, as the engine builds it without subgroups)",
+   "bytes": 5205,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "scatter",
+   "bytes": 3308,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "fxaa-tonemap",
+   "bytes": 5488,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "selection-seed",
+   "bytes": 1927,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "jfa",
+   "bytes": 2592,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "outline-composite",
+   "bytes": 4703,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "bloom",
+   "bytes": 7664,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "particle-simulate",
+   "bytes": 3359,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "particle-render",
+   "bytes": 1548,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "debug-line",
+   "bytes": 753,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "sdf-jfa",
+   "bytes": 3655,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "light-accum",
+   "bytes": 9546,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "pixel-probe",
+   "bytes": 1712,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "transparent-gather",
+   "bytes": 4974,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  },
+  {
+   "label": "transparent-sort",
+   "bytes": 9320,
+   "errors": 0,
+   "messages": [],
+   "scope": []
+  }
+ ],
+ "extra": [
+  {
+   "label": "cull (subgroups: not built in Safari, no 'subgroups' feature)",
+   "bytes": 9192,
+   "errors": 1,
+   "messages": [
+    "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ],
+   "scope": [
+    "1 error generated while compiling the shader:\n1:0: Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ]
+  },
+  {
+   "label": "cull (subgroups + subgroup_id: not built in Safari, no 'subgroups' feature)",
+   "bytes": 9214,
+   "errors": 1,
+   "messages": [
+    "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ],
+   "scope": [
+    "1 error generated while compiling the shader:\n1:0: Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ]
+  },
+  {
+   "label": "prefix-sum (+ enable subgroups; not imported)",
+   "bytes": 3437,
+   "errors": 1,
+   "messages": [
+    "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ],
+   "scope": [
+    "1 error generated while compiling the shader:\n1:0: Expected 'clip_distances', 'f16', or 'primitive_index'"
+   ]
+  },
+  {
+   "label": "basic-binding-array (design artifact, not imported)",
+   "bytes": 2356,
+   "errors": 1,
+   "messages": [
+    "error 20:68 Tried parsing a type and it did not start with an identifier"
+   ],
+   "scope": [
+    "1 error generated while compiling the shader:\n20:67: Tried parsing a type and it did not start with an identifier"
+   ]
+  }
+ ],
+ "pipelines": [
+  {
+   "label": "particle-simulate: simulate + spawn (ParticleSystem.buildSimulate, layout auto)",
+   "built": [
+    "simulate",
+    "spawn"
+   ],
+   "scope": []
+  },
+  {
+   "label": "particle-render: render (ParticleSystem.buildRender, layout auto, bgra8unorm)",
+   "built": [
+    "render"
+   ],
+   "scope": []
+  },
+  {
+   "label": "debug-line: LineBatchPass.setup (explicit layout, line-list, bgra8unorm)",
+   "built": [
+    "pipeline"
+   ],
+   "scope": []
+  }
+ ],
+ "comparisonWithChrome": {
+  "file": "wgsl-compile-all.json (M1, Chrome 154, 2026-09-29, at 22fd6b0)",
+  "summary": "The 15 modules the engine loads in Safari compile with no message and empty scopes, as their 15 counterparts in Chrome. Chrome counted 17: its other two are cull's subgroup variants, which the engine never builds without the 'subgroups' feature and which Safari rejects ('enable subgroups;': \"Expected 'clip_distances', 'f16', or 'primitive_index'\"). Every module has the source length it had in Chrome except bloom (7664 against 7099: bloom.wgsl changed in db55fed, the F4 fix, after M1). Not counted in either browser: prefix-sum, which Chrome compiles with its directive and Safari rejects at the same directive, and basic-binding-array, which fails in both with a different message (binding_array is not available).",
+  "rows": [
+   {
+    "module": "cull-atomic",
+    "chrome": {
+     "counted": true,
+     "bytes": 5205,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 5205,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "cull-subgroups",
+    "chrome": {
+     "counted": true,
+     "bytes": 9192,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": false,
+     "bytes": 9192,
+     "errors": 1,
+     "messages": [
+      "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+     ],
+     "scope": 1
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "cull-subgroups-id",
+    "chrome": {
+     "counted": true,
+     "bytes": 9214,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": false,
+     "bytes": 9214,
+     "errors": 1,
+     "messages": [
+      "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+     ],
+     "scope": 1
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "scatter",
+    "chrome": {
+     "counted": true,
+     "bytes": 3308,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 3308,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "fxaa-tonemap",
+    "chrome": {
+     "counted": true,
+     "bytes": 5488,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 5488,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "selection-seed",
+    "chrome": {
+     "counted": true,
+     "bytes": 1927,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 1927,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "jfa",
+    "chrome": {
+     "counted": true,
+     "bytes": 2592,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 2592,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "outline-composite",
+    "chrome": {
+     "counted": true,
+     "bytes": 4703,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 4703,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "bloom",
+    "chrome": {
+     "counted": true,
+     "bytes": 7099,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 7664,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": false
+   },
+   {
+    "module": "particle-simulate",
+    "chrome": {
+     "counted": true,
+     "bytes": 3359,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 3359,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "particle-render",
+    "chrome": {
+     "counted": true,
+     "bytes": 1548,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 1548,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "debug-line",
+    "chrome": {
+     "counted": true,
+     "bytes": 753,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 753,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "sdf-jfa",
+    "chrome": {
+     "counted": true,
+     "bytes": 3655,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 3655,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "light-accum",
+    "chrome": {
+     "counted": true,
+     "bytes": 9546,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 9546,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "pixel-probe",
+    "chrome": {
+     "counted": true,
+     "bytes": 1712,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 1712,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "transparent-gather",
+    "chrome": {
+     "counted": true,
+     "bytes": 4974,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 4974,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "transparent-sort",
+    "chrome": {
+     "counted": true,
+     "bytes": 9320,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": true,
+     "bytes": 9320,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "prefix-sum",
+    "chrome": {
+     "counted": false,
+     "bytes": 3437,
+     "errors": 0,
+     "messages": [],
+     "scope": 0
+    },
+    "safari": {
+     "counted": false,
+     "bytes": 3437,
+     "errors": 1,
+     "messages": [
+      "error 1:1 Expected 'clip_distances', 'f16', or 'primitive_index'"
+     ],
+     "scope": 1
+    },
+    "sameSourceLength": true
+   },
+   {
+    "module": "basic-binding-array",
+    "chrome": {
+     "counted": false,
+     "bytes": 2356,
+     "errors": 1,
+     "messages": [
+      "error 20:37 use of 'binding_array' requires the 'sized_binding_array'language feature, which is not allowed in the current environment"
+     ],
+     "scope": 1
+    },
+    "safari": {
+     "counted": false,
+     "bytes": 2356,
+     "errors": 1,
+     "messages": [
+      "error 20:68 Tried parsing a type and it did not start with an identifier"
+     ],
+     "scope": 1
+    },
+    "sameSourceLength": true
+   }
+  ]
+ },
+ "pageEnv": {
+  "crossOriginIsolated": true,
+  "navigatorGpu": true,
+  "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15",
+  "href": "http://localhost:5173/?mode=B",
+  "mode": "B",
+  "hasRenderer": true,
+  "deviceFeatures": [
+   "core-features-and-limits",
+   "indirect-first-instance",
+   "texture-compression-bc",
+   "timestamp-query"
+  ],
+  "gpuProfilingSupported": true,
+  "preferredCanvasFormat": "bgra8unorm",
+  "canvas": [
+   1960,
+   1248,
+   980,
+   624
+  ],
+  "dpr": 2,
+  "inner": [
+   1200,
+   689
+  ],
+  "visibility": "visible",
+  "timeOrigin": 1790760410988.42,
+  "now": 2211,
+  "capFrom": "post-navigation",
+  "capInstalledAtMs": 99,
+  "visChanges": [
+   {
+    "t": 99,
+    "vis": "visible",
+    "note": "at install"
+   }
+  ],
+  "viteWsCloses": [],
+  "cap": []
+ },
+ "consoleAfterRun": [],
+ "reloads": {
+  "viteWsCloses": [],
+  "timeOrigin": [
+   1790760410988.42,
+   1790760410988.46
+  ]
+ },
+ "script": "async () => {\n  // Mac M2 session, M12 fix round, measurement A: M1's extension (wgsl-compile-all.json,\n  // Chrome 154) run in Safari 27.0.1 on ?mode=B. Same method as M1: every other WGSL module\n  // of the app compiled on a fresh device, getCompilationInfo plus a validation and an\n  // internal error scope around createShaderModule; the live renderer's device is left alone.\n  // Changes forced by Safari, which has no 'subgroups' feature: the device is requested\n  // without features, and cull is counted as the engine builds it here,\n  // prepareShaderSource(cull, false) (the BEGIN/END-SUBGROUPS-ONLY region stripped). The two\n  // subgroup variants of M1 go to `extra`, next to the modules nothing imports: the engine\n  // never builds them in Safari, and they are expected to fail.\n  // As in M1, `results` builds no pipeline (M1: \"Pipelines are exercised by the harness\n  // tabs (M2)\"). The primitive and sort pipelines are in wgsl-validation-safari.json.\n  // Added beyond M1, `pipelines`: the pipelines of the three modules whose harness checks\n  // read no pixel, built by the engine's own code inside the same two error scopes:\n  // ParticleSystem.buildSimulate / buildRender (the calls of the renderer and of the\n  // particle hot-reload, with the canvas format) and DebugLinePass.setup (LineBatchPass,\n  // debug-line.wgsl). Nothing is drawn.\n  const { prepareShaderSource } = await import('/src/render/passes/cull-pass.ts');\n  const { ParticleSystem } = await import('/src/particle-system.ts');\n  const { DebugLinePass, LineBatchPass } = await import('/src/render/passes/debug-line-pass.ts');\n  const adapter = await navigator.gpu.requestAdapter();\n  const device = await adapter.requestDevice();\n  const deviceFeatures = [...device.features].sort();\n  const src = async (name, imported) => imported\n    ? (await import(`/src/shaders/${name}.wgsl?raw`)).default\n    : await (await fetch(`/src/shaders/${name}.wgsl`)).text();\n  const compile = async (label, code) => {\n    device.pushErrorScope('internal');\n    device.pushErrorScope('validation');\n    let module = null, thrown = null;\n    try { module = device.createShaderModule({ code, label }); } catch (e) { thrown = String(e); }\n    const validation = await device.popErrorScope();\n    const internal = await device.popErrorScope();\n    const info = module ? await module.getCompilationInfo() : { messages: [] };\n    return {\n      label, bytes: code.length,\n      errors: info.messages.filter((m) => m.type === 'error').length,\n      messages: info.messages.map((m) => `${m.type} ${m.lineNum}:${m.linePos} ${m.message}`),\n      scope: [thrown, validation?.message, internal?.message].filter(Boolean),\n    };\n  };\n  const scoped = async (label, build) => {\n    device.pushErrorScope('internal');\n    device.pushErrorScope('validation');\n    let built = null, thrown = null;\n    try { built = build(); } catch (e) { thrown = String(e); }\n    const validation = await device.popErrorScope();\n    const internal = await device.popErrorScope();\n    return { label, built, scope: [thrown, validation?.message, internal?.message].filter(Boolean) };\n  };\n\n  const cull = await src('cull', true);\n  const results = [\n    await compile('cull (atomic: region stripped, as the engine builds it without subgroups)', prepareShaderSource(cull, false)),\n  ];\n  const sources = {};\n  for (const name of ['scatter', 'fxaa-tonemap', 'selection-seed', 'jfa', 'outline-composite', 'bloom',\n    'particle-simulate', 'particle-render', 'debug-line', 'sdf-jfa', 'light-accum', 'pixel-probe',\n    'transparent-gather', 'transparent-sort']) {\n    sources[name] = await src(name, true);\n    results.push(await compile(name, sources[name]));\n  }\n  // Not built by the engine in Safari (no 'subgroups'), or not imported anywhere live: reported, not counted.\n  const extra = [\n    await compile(\"cull (subgroups: not built in Safari, no 'subgroups' feature)\", prepareShaderSource(cull, true)),\n    await compile(\"cull (subgroups + subgroup_id: not built in Safari, no 'subgroups' feature)\", prepareShaderSource(cull, true, true)),\n    await compile('prefix-sum (+ enable subgroups; not imported)', 'enable subgroups;\\n' + await src('prefix-sum', false)),\n    await compile('basic-binding-array (design artifact, not imported)', await src('basic-binding-array', false)),\n  ];\n\n  const format = navigator.gpu.getPreferredCanvasFormat();\n  const particles = new ParticleSystem(device);\n  const line = new DebugLinePass(1);\n  const pipelines = [\n    await scoped('particle-simulate: simulate + spawn (ParticleSystem.buildSimulate, layout auto)',\n      () => Object.keys(particles.buildSimulate(sources['particle-simulate']))),\n    await scoped(`particle-render: render (ParticleSystem.buildRender, layout auto, ${format})`,\n      () => Object.keys(particles.buildRender(sources['particle-render'], format))),\n    await scoped(`debug-line: LineBatchPass.setup (explicit layout, line-list, ${format})`,\n      () => { line.setup(device, null); return ['pipeline']; }),\n  ];\n  particles.destroy();\n  line.destroy();\n  device.destroy();\n  return {\n    ok: results.every((r) => r.errors === 0 && r.scope.length === 0),\n    pipelinesOk: pipelines.every((p) => p.scope.length === 0),\n    adapter: adapter.info.description,\n    deviceFeatures,\n    canvasFormat: format,\n    debugLineSourceIsTheLiveOne: LineBatchPass.SHADER_SOURCE === sources['debug-line'],\n    crossOriginIsolated: window.crossOriginIsolated === true,\n    navigatorGpu: !!navigator.gpu,\n    visibility: document.visibilityState,\n    results, extra, pipelines,\n  };\n}"
+}

@@ -281,7 +281,7 @@ claude mcp list
 Se il primo `claude mcp list` mostra già un `chrome-devtools-gpu` di agosto, rimuovilo prima con `claude mcp remove -s local chrome-devtools-gpu`. Perché proprio così:
 - **Il nome resta `chrome-devtools-gpu`**: lo usano la skill `/gpu-check` e il matcher dell'hook stale-wasm (`.claude/settings.json:25`).
 - **Niente `--enable-unsafe-webgpu`, `--enable-features=Vulkan` o `--use-angle=vulkan`.** Su macOS Chrome ha WebGPU su Metal di default. `unsafe-webgpu` toglierebbe la blocklist ed esporrebbe feature sperimentali, e allora non sarebbe più il Chrome di un utente.
-- **`--enable-webgpu-developer-features`** serve per avere `timestamp-query` diversi da zero su Metal. Senza, il 2026-08-04 davano tutti 0. Con il flag, se funziona sull'M2 è da verificare (test M7).
+- **`--enable-webgpu-developer-features`** toglie la quantizzazione di `timestamp-query`: senza, Chrome dà multipli di 65 536 ns su Metal. Gli zeri del 2026-08-04 venivano dai marker vuoti del profiler vecchio (M7 del 2026-09-29, spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`).
 - **Nessun altro flag.** chrome-devtools-mcp (verificato sulla 1.10.1) avvia Chrome tramite puppeteer, i cui argomenti di default includono già `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`, `--disable-background-timer-throttling` e `--force-color-profile=srgb`.
 - **La `userDataDir` deve essere diversa da quella del server stock** (`~/.cache/chrome-devtools-mcp/chrome-profile`), altrimenti il secondo avvio fallisce con "The browser is already running". Essendo persistente, conserva anche la cache degli shader tra una sessione e l'altra.
 
@@ -424,7 +424,7 @@ L'ordine conta. `build:wasm` va prima di `preflight.sh`, perché `tsc --noEmit` 
 
 Cosa vuol dire uno scarto:
 - **`npm ci` si ferma con `EBADENGINE`**: la Node sul PATH non è la 24.
-- **`--full` scrive `ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.` ed esce con 0**: il file c'è, manca `wasm-opt`. `build:wasm:opt` in `ts/package.json:10` nasconde l'errore 127, quindi il gate ha misurato un binario non ottimizzato. Il physics release invece fallisce in modo esplicito, con "command not found".
+- **`--full` si ferma con `ERROR: wasm-opt not found on PATH. Install binaryen (macOS: brew install binaryen).` ed esce con 1**, al passo «WASM — build standard (release)»: manca `wasm-opt`. `build:wasm:opt` (`ts/package.json:10`) controlla prima `command -v wasm-opt`, poi il file, e il suo exit status è quello di `wasm-opt`. Prima del fix 6.22 stampava invece `ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.` ed usciva con 0, anche con il file presente e anche quando `wasm-opt` falliva: il gate misurava un binario senza il secondo passaggio di `wasm-opt` (`--strip-debug --enable-simd`; il primo lo fa wasm-pack, vedi «wasm-opt runs twice» in `CLAUDE.md`). Il physics release fallisce in modo esplicito (`sh: wasm-opt: command not found`, exit 127), prima e dopo il fix.
 - **Un conteggio Rust diverso**: un test compilato fuori da un `#[cfg]`, oppure una configurazione della matrice sbagliata. Va indagato, e non dipende dalla piattaforma.
 - **Un test Rust che fallisce solo sul Mac con una differenza nell'ultima cifra di un float**: i test nativi girano su aarch64, con la libm di Apple, e la fisica si assesta su valori un po' diversi da x86_64 e wasm32 (`CLAUDE.md:518`). Il test sta fissando un float che dipende dalla piattaforma. Si corregge il test, passando a un invariante o a una tolleranza, con la procedura della sezione 5. Non è una regressione del motore. Non aggiungere hash d'oro presi dal Mac: il confronto tra macchine resta wasm contro wasm.
 - **vitest con un numero diverso di test o file**: `node_modules` non viene da `npm ci`, oppure la Node è sbagliata. I test che leggono sorgenti in `crates/` falliscono se vitest non parte dalla radice del repo.
@@ -467,7 +467,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
 - **zsh ovunque.** Sul Mac sono zsh sia il Terminale sia il tool Bash di Claude. `NOMATCH` è attivo di default, quindi un URL con `?` non quotato fa fallire il comando prima che parta: per esempio `curl http://localhost:5173/?mode=B`, o il `curl` di `?raw` suggerito in `CLAUDE.md:460`. Metti sempre gli URL tra apici. Le globs di `--include` vanno quotate (`CLAUDE.md:415`, di nuovo vero). Nei comandi da far incollare all'utente, niente `#` in linea.
 - **grep.** Nel tool Bash di Claude `grep` è una funzione che chiama l'ugrep incluso in Claude Code, su entrambi i sistemi. Ha `--ignore-files`, quindi una ricerca ricorsiva salta le cartelle in `.gitignore`: `ts/wasm`, `ts/node_modules`, `target/`, `.remember/`. Per cercare nei binding generati usa `command grep -n X ts/wasm/hyperion_core.d.ts` oppure `cat`. Il `/usr/bin/grep` BSD gira solo negli hook e negli script, che sono già sicuri per bash 3.2/BSD. `grep -P` resta vietato negli script (`CLAUDE.md:414`, di nuovo letterale sul Mac).
 - **sed e mktemp.** Nei comandi estemporanei usa `sed -i.bak` e non `sed -i`, e `mktemp -d` senza il `-p` di GNU.
-- **`/tmp` è un link simbolico a `/private/tmp`**, e `$TMPDIR` punta sotto `/private/var`. `compare.mjs`, lanciato da una copia o da un percorso con link simbolici, esce con 0 senza stampare nulla. Il motivo è la guardia `import.meta.url === pathToFileURL(argv[1])` a riga 244. Il risultato è un PASS falso. Lancialo solo dal percorso del repo: `node docs/plans/assets/2026-09-27-transparent-sort-baseline/compare.mjs …`. Giudica sull'ultima riga, che deve essere `PASS`, mai sul solo exit 0. Le cartelle `--base`/`--run` possono stare dove vuoi.
+- **`/tmp` è un link simbolico a `/private/tmp`**, e `$TMPDIR` punta sotto `/private/var`. Fino al fix 6.25 `compare.mjs`, lanciato da una copia o da un percorso con link simbolici, usciva con 0 senza stampare nulla: la guardia `import.meta.url === pathToFileURL(argv[1])` era falsa, perché Node risolve i link simbolici per `import.meta.url` ma lascia quelli di `argv[1]`, e il risultato era un PASS falso. Ora la guardia (`isEntryPoint()`) confronta i `realpathSync` di entrambi, con un test che passa da un link, quindi il percorso da cui lo lanci non conta più. Giudica comunque sull'ultima riga, che deve essere `PASS`. Le cartelle `--base`/`--run` possono stare dove vuoi.
 - **`/tmp/claude-1000` è di Linux** (uid 1000). È scritto fisso in `.claude/workflows/adversarial-review.js:33` e `.claude/agents/wgsl-validator.md:12`. Sul Mac (uid 501) usa la scratchpad della sessione oppure `mktemp -d` (task 6.17, 6.18).
 - **Test Rust nativi su `aarch64-apple-darwin`.** La fisica si assesta su valori diversi da x86_64 e da wasm32. I test verificano invarianti, quindi i conteggi non cambiano (vedi 2.6).
 - **Link simbolici e maiuscole**: vedi 1.14.
@@ -483,7 +483,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
   - i check sui pixel vanno in skip.
 
   Sono lacune note del motore, non bug di Metal.
-- **Timestamp.** Con il Chrome stock su Metal tutti i timestamp valgono 0 (`CLAUDE.md:450`, verificato il 2026-08-04). `GpuProfiler` scarta quei frame e dopo 120 avvisa con "frames of zeroed timestamps". `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, ma che basti con i marker a compute pass vuoti sulle GPU Apple è da verificare (M7). Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
+- **Timestamp.** Senza flag Chrome quantizza a 65 536 ns su Metal; gli zeri di M7 venivano dai marker vuoti del profiler vecchio (spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`). `chrome-devtools-gpu` passa `--enable-webgpu-developer-features`, che toglie la quantizzazione. Nessun check dell'harness dipende dai timing: ne dipendono solo il bench, il costo della lighting e il profiler.
 - **Due server Chrome, due ruoli.** `chrome-devtools` (da `.mcp.json`, senza flag) è "il Chrome di un utente": serve per i verdetti pass/fail. `chrome-devtools-gpu` serve per i timing. rAF si ferma comunque con la finestra minimizzata, con lo schermo in stop o bloccato. Per le sessioni lunghe tieni la finestra visibile e lancia `caffeinate -dimsu` in background (`kill` alla fine).
 - **Retina, dpr 2.** Leggilo a ogni sessione: su Linux era 1.25, poi 1.667. Vale `px screenshot = px CSS × dpr`, e `pixels.py` legge il dpr da `map.json`. Il backing store del canvas è `clientWidth × dpr` (`main.ts:82-85`), quindi a finestra piena ci sono circa 2,5 volte i pixel di Linux a dpr 1.25 e i timing a finestra piena non si confrontano. Per ogni misura fissa la dimensione con `window.__hyperion.resize(1920, 1080)`, come fa il bench.
 - **`{ unit: 'px' }` vuol dire pixel del device.** Lo shader della linea riceve la dimensione piena del canvas. A dpr 2 una linea da 3 px è larga 1,5 px CSS e negli screenshot sembra più sottile che sulla Fedora. Il check di Primitives conta texel e passa comunque. Non "correggerlo": è una domanda per l'utente (sezione 5).
@@ -513,7 +513,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
 
 ### 3.3 Build e plugin
 
-- **`wasm-opt` mancante** dà un errore sbagliato con exit 0 (vedi 2.6). Prima di `preflight.sh --full` o di `/check-size`, controlla `command -v wasm-opt`.
+- **`wasm-opt` mancante** ferma `build:wasm:opt` con `ERROR: wasm-opt not found on PATH` ed exit 1 (dal fix 6.22: prima dava un errore sbagliato con exit 0, vedi 2.6). `command -v wasm-opt` dà la stessa risposta prima di lanciare `preflight.sh --full` o `/check-size`, senza aspettare la build.
 - **`tsc` ha bisogno di `ts/wasm`** (2.6). vitest invece no.
 - **L'harness carica `ts/wasm`** (`build:wasm`, senza `physics-2d`). La fisica è coperta solo da `cargo test` su aarch64, come su Linux.
 - **LSP.** `rust-analyzer-lsp` e `typescript-lsp` erano abilitati senza binario anche su Linux (1.6, 1.11).
@@ -745,7 +745,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M6c — Mode A: stato che viaggia per messaggio (importante)
 
-- **Perché qui.** Due percorsi di trasporto non sono mai stati provati su una GPU. La qualità della lighting passa per `hyperion.ts:834-838` → `worker-bridge.ts:373-375` → `render-worker.ts:54-57`, compreso il valore in sospeso che arriva prima che il renderer esista. Gli input del sort 5b, `transparentCount`/`entityIdsGeneration`, viaggiano nello stato inoltrato (design 5b §10, "Mode A non verificabile qui").
+- **Perché qui.** Due percorsi di trasporto non sono mai stati provati su una GPU. La qualità della lighting passa per `hyperion.ts:849-853` → `worker-bridge.ts:373-375` → `render-worker.ts:54-57`, compreso il valore in sospeso che arriva prima che il renderer esista. Gli input del sort 5b, `transparentCount`/`entityIdsGeneration`, viaggiano nello stato inoltrato (design 5b §10, "Mode A non verificabile qui").
 - **Procedura.**
   - Qualità: su `?mode=A`, tab Lighting. `window.__hyperion.lighting.setQuality({ shadowSteps: 4 })` e screenshot, poi `setQuality({ shadowSteps: 48 })` e screenshot. Per il percorso "in sospeso": ricarica la pagina e chiama `setQuality` nel primo `evaluate_script`.
   - Sort: su `?mode=A&bench`, tre gradient `.transparent()` sovrapposti nell'origine, con colori diversi e `.depth(0.2)`, `.depth(0.5)`, `.depth(0.8)`. Controlla con `pixels.py` che davanti ci sia la depth minore, poi scambia le depth a runtime e ricontrolla.
@@ -757,24 +757,26 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 ### M7 — `timestamp-query` (importante, prerequisito di M8 e M9)
 
-- **Perché qui.** Su Metal il Chrome stock dà zeri. I marker del profiler sono compute pass **vuoti** con i soli `timestampWrites` (`gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag.
+- **Perché qui.** Su Metal il profiler vecchio leggeva solo zeri. I marker del profiler vecchio erano compute pass **vuoti** con i soli `timestampWrites` (`d3c520f:ts/src/render/gpu-profiler.ts:203-207`), e le GPU Apple campionano i contatori solo ai confini degli stage: potrebbero dare 0 anche con il flag. (Storico: dal 2026-09-29 il profiler mette i `timestampWrites` sui pass veri.)
 - **Procedura.** Con `chrome-devtools-gpu`, prima di qualsiasi probe della swapchain (il primo probe riconfigura il canvas):
   1. `?mode=B`, tab Lighting.
   2. `window.__hyperion.enableGpuProfiling()`, circa 4 s di attesa (almeno 130 frame), poi `window.__hyperion.getGpuTimings()`.
   3. Lo stesso una volta con il server stock `chrome-devtools`.
 - **Atteso.**
-  - Con il flag: voci (`cull`, `forward`, `light-groups/seed|sdf|accum`, `fxaa-tonemap`) con `averageMs > 0`, `sampleCount` che sale fino a 120, e nessun avviso "frames of zeroed timestamps".
-  - Con il server stock: l'avviso deve comparire. Questo verifica il gotcha di `CLAUDE.md:450`.
-- **Se fallisce.** Zeri anche con il flag: **fermati**, non lanciare il bench (aspetterebbe 180 s per ogni caso della griglia, circa 18 minuti, prima di lanciare l'errore) e riferisci. Le strade possibili sono dare ai marker un dispatch da 1 workgroup, oppure spostare `timestampWrites` sui pass veri. È una scelta di design: chiedila.
+  - Con il flag: voci (`cull`, `forward`, `light-groups/seed|sdf|accum`, `fxaa-tonemap`) con `averageMs > 0`, `sampleCount` che sale fino a 120, e `getGpuFrameTiming()` non nullo.
+  - Con il server stock: le stesse voci, con valori multipli di 65 536 ns (0 o 0,0655 ms sui pass brevi) e medie stabili, e nessun avviso del profiler. Fino al profiler nuovo qui compariva l'avviso: gli zeri venivano dai marker vuoti (M7 del 2026-09-29, spec `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`).
+- **Se fallisce.** Voci vuote dopo 4 s: **fermati**, non lanciare il bench, e riferisci l'avviso del profiler, che dice il motivo (e, per `zero`/`reversed`/`stale`, il pass).
 
 ### M8 — Bench 5b sull'M2 (importante)
 
-- **Perché qui.** È la domanda rimasta aperta dalla 5b. Su AMD, a 100k trasparenti con depth distinte, il totale del frame cresce di +1,137 ms dal passo 3 al 4, contro +0,251 ms con depth uguali. Il costo finisce nel bracket `fxaa-tonemap`, cioè nell'ordine di blend ordinato e sparso (design 5b §11). L'AMD è una GPU immediate-mode. Sull'M2, che è TBDR, il blend avviene in tile memory e quel costo dovrebbe quasi sparire. Le scritture sparse del sort in compute (upsweep 0,59 ms su AMD) potrebbero però costare in modo diverso sulla memoria unificata.
+- **Perché qui.** È la domanda rimasta aperta dalla 5b. Su AMD, a 100k trasparenti con depth distinte, il totale del frame cresce di +1,137 ms dal passo 3 al 4, contro +0,251 ms con depth uguali. Il costo finisce nel bracket `fxaa-tonemap`, cioè nell'ordine di blend ordinato e sparso (design 5b §11). L'AMD è una GPU immediate-mode. Sull'M2, che è TBDR, il blend avviene in tile memory e quel costo dovrebbe quasi sparire. Le scritture sparse del sort in compute (upsweep 0,59 ms su AMD, misurato con i marker) potrebbero però costare in modo diverso sulla memoria unificata.
 - **Prerequisiti.** M7 verde, alimentazione e refresh come in 3.2, `caffeinate`.
 - **Procedura.**
+  ⚠️ Durante le misure l'altra istanza di Chrome MCP resta su `about:blank`: con la scena lit aperta nell'altra, il sort a 10 000 (depth uguali) è passato da 0,53 a 1,32 ms (Task 8, `m7-profiler-diag-gpu-bench-other-blank.json`).
+  ⚠️ La soglia D3 "Sort < 1 ms a 100 000" usa `sort`, la somma dei 4 stage, cioè 22 intervalli di compute pass dipendenti. Il Task 8 ha visto sovrapporsi i render pass dipendenti, non ancora la catena del sort: prima di giudicare D3 confronta `passSum` con `total` e, se la somma supera di molto lo span, cattura una timeline dei 22 pass.
   1. HEAD: `http://localhost:5173/?mode=B&bench`, senza probe prima.
   2. `evaluate_script` con `() => { window.__benchOpts = { label: 'm2 HEAD <sha>' }; }`, poi il corpo di `docs/plans/assets/2026-09-27-transparent-sort-bench.js` con `filePath: docs/plans/assets/2026-09-29-mac-m2/bench-head.json`. Se la chiamata MCP va in timeout, dividi per `sizes` (`window.__benchOpts.sizes = [100000]`).
-  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`.
+  3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`. Subito dopo `git worktree add`, prima di `npm ci`, fai il `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2), e lo stesso nel worktree del passo 4: senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`.
 
      ```
      git worktree add ../hyperion-5b-step3 6ff494f
@@ -783,8 +785,8 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
      npm --prefix ../hyperion-5b-step3/ts run dev -- --strictPort --port 5174
      ```
 
-     Il dev server va in background. Poi lancia lo **stesso** `bench.js` di master su `http://localhost:5174/?mode=B&bench` → `bench-step3.json`. Se serve, anche il passo 4, il cui label è `step4 608a113`. Alla fine: `git worktree remove ../hyperion-5b-step3`.
-- **Atteso.** Sort < 1 ms a 100 000 (D3). Riferimento AMD: 0,787 ms con depth uguali, 0,869 con depth distinte.
+     Il dev server va in background. Poi lancia lo **stesso** `bench.js` di HEAD (formato `/2`) su `http://localhost:5174/?mode=B&bench` → `bench-step3.json`. Se serve, anche il passo 4, il cui label è `step4 608a113`. Alla fine: `git worktree remove ../hyperion-5b-step3`.
+- **Atteso.** Sort < 1 ms a 100 000 (D3). Con l'AMD si confronta solo `total` (lo span) con il `total` dei JSON AMD `/1`: le voci per pass e gli stage del sort sono misurati in modo diverso (coppie sui pass veri qui, bracket di marker su AMD) e non si confrontano una a una (spec §11).
 - **Come leggerlo.**
   - Se sull'M2 total(distinte) ≈ total(uguali) a HEAD, il +1 ms di AMD è un costo di località delle GPU immediate-mode.
   - Se anche l'M2 mostra circa +1 ms, il costo è intrinseco (per esempio l'indirezione dell'ordine dei trasparenti), e vale la pena ottimizzarlo su tutte le GPU.
@@ -795,12 +797,24 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 - **Perché qui.** Il costo della lighting esiste solo per l'iGPU AMD a 1920×1081 (design 17 §13.2): catena SDF 1,77 ms, backend lit ≈ 2,3 ms; con light layers, "2 set, 2 gruppi" = **3,66 ms** (seed 0,406, sdf 3,042, accum 0,213). Sull'M2 ognuno degli ~11 passi della catena SDF è un render pass completo, con uno store per tile.
 - **Procedura.**
-  1. `?mode=B&bench`, poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione.
-  2. `document.querySelectorAll('.tab')[6].click()` (Lighting), 7 s di attesa, `enableGpuProfiling()`.
-  3. Interroga `getGpuTimings()` finché `light-groups/sdf` non ha `sampleCount >= 120`.
-  4. Registra seed, sdf, accum, `forward`, il totale e `window.__hyperion.lighting.groups`: la demo ha 2 gruppi e 2 SDF set, quindi si confronta con la riga "2 set, 2 gruppi".
-  5. Ripeti con `lighting.setQuality({ shadowSteps: 24 })` per ricontrollare il "+2% tra 48 e 24".
-  6. Salva tutto in `lighting-cost.json`.
+  Decisione dell'utente (2026-09-30): il costo della lighting si misura come **A/B dello span del frame, `lit` contro `off`**. Sull'M2 anche i pass dipendenti si sovrappongono, e la somma seed + sdf + accum (38,1 ms) supera di molto lo span del frame (4,8 ms) (Task 8, `m7-profiler-gpu-B.json` e `m7-profiler-diag-pass-timeline-gpu-B.json`).
+  1. `?mode=B&bench` con `ignoreCache` e l'`initScript` anti-reload, con l'altra istanza su `about:blank`; poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione. Controlla la dimensione: `canvas.width` e `canvas.height`, e il `targetSize` di un probe di `scene-hdr`, devono dare 1920×1080.
+  2. Clicca la `.tab` che ha il testo "Lighting" (indice 6). Aspetta che lo stato mostri `N/M passed` con tutti i check finiti (6/6), poi altri 2 s.
+  3. Misura ogni condizione in una finestra pulita. Le condizioni:
+     - `L48`: `setBackend('lit')`, con `shadowSteps` 48;
+     - `OFF`: `setBackend('off')`;
+     - `L24`: `setBackend('lit')`, poi `setQuality({ shadowSteps: 24 })`. Uscendo da `L24` si rimette 48.
+
+     Applica la condizione e aspetta che il grafo sia vivo. `renderer.lightingEnabled` è il modo richiesto, non quello vivo: guarda anche `renderer.graph.executionOrder` (contiene `light-groups` solo in lit), `lighting.backend` e `lighting._needsRebuild`, che dev'essere falso. Poi aspetta 30 frame, chiama `disableGpuProfiling(); enableGpuProfiling();` e aspetta `getGpuFrameTiming().sampleCount >= 120` (timeout 20 s).
+  4. In ogni finestra registra:
+     - lo span di `getGpuFrameTiming()` (`averageMs`, `lastMs`, `sampleCount`);
+     - le voci di `getGpuTimings()`, solo come contesto, perché sono intervalli;
+     - gli fps;
+     - `discardReasons` prima e dopo: la differenza dev'essere 0.
+
+     Tre giri ABBA: `L48, OFF, L24, L24, OFF, L48, L48, OFF, L24`. Il costo della lighting è span(L48) − span(OFF), per coppia adiacente e in media con la sua dispersione. Non si confronta uno a uno con la riga AMD "2 set, 2 gruppi" (3,66 ms), che è misurata con i marker. Leggi una volta `window.__hyperion.lighting.groups` in `L48`: la demo ha 2 gruppi e 2 SDF set.
+  5. L'effetto dei passi d'ombra è span(L48) − span(L24), in % di span(L48). Ricontrolla così il "+2% tra 48 e 24", che su AMD era tempo di `light-accum`, non del frame. Il 2026-09-30 c'è stato anche un controllo con `L48` e `L24` alternate senza `OFF` (README § M9).
+  6. Salva tutto in `lighting-cost.json`: le finestre grezze, le condizioni e l'ambiente.
 - **Atteso.** Numeri e basta. Vanno in una riga M2 separata nel §13.2, senza sovrascrivere quella AMD.
 
 ### M10 — Crescita dei tier compressi (importante, bug probabile)
@@ -859,7 +873,7 @@ Atteso: nessun errore, e colori entro l'errore di ASTC.
   - Nessun errore di compilazione e tutti gli scope `null`.
   - Gli stessi verdetti di Chrome in B e C, tranne Audio: l'AudioContext vuole un gesto vero e sotto automazione può restare in attesa.
   - `window.__hyperion.mode` uguale all'URL.
-  - Nessun timing: il profiling si fa solo in Chrome.
+  - Il profiler in Safari: `enableGpuProfiling()` su `?mode=B`, poi `getGpuTimings()` e `getGpuFrameTiming()` dopo circa 4 s. Voci non vuote e nessun errore di validazione in console: verifica il meccanismo del profiler: override come proprietà proprie dell'encoder, e un descrittore derivato come `Proxy` su un oggetto vuoto che legge ogni membro dall'originale (probe 5, `m7-probe5-derive-proxy-gpu.json`). Se Safari rifiuta il `Proxy`, il ripiego della spec §8.2 (`{ ...desc, timestampWrites }`) vale solo per i descrittori letterali: su un descrittore di classe perde i getter del prototipo.
 - **Se fallisce.**
   - `diagnostic` rifiutato: il piano B è nel design 5b §10, prima riga dei rischi (portare `fwidth(uv.y)`/`dpdx`/`dpdy` fuori dallo `switch` e riscrivere il `fwidth` della bezier con la regola della catena). È una modifica di design: chiedila.
   - `?mode=A` forzato con canvas bianco dopo `[Hyperion] Mode A failed, trying next fallback`: è il difetto di fallback descritto in 3.2, non un guasto della GPU. Annotalo e segnalalo come domanda.
@@ -1021,3 +1035,88 @@ Se il branch del Mac non è ancora su master, al posto di `git switch master` va
 - `docs/plans/assets/2026-09-27-transparent-sort-bench.js` e `…-bench-step{0,1,3,4}.json`, con i label `5c97619`, `c57a4c1`, `6ff494f`, `608a113`;
 - `docs/plans/assets/2026-09-27-transparent-sort-validate-wgsl.js` e `…-validate-sort-wgsl.js`;
 - `.claude/skills/gpu-check/SKILL.md` e `scripts/pixels.py`; `.claude/hooks/README.md`, che spiega come verificare un hook.
+
+---
+
+## 9. Esito sul Mac
+
+I test GPU sul Mac sono finiti: M0-M10 e M12 fatti, M11 saltato per decisione dell'utente. Il lavoro è del 2026-09-29 e del 2026-09-30, sul branch `test/mac-m2-gpu` (da `22fd6b0` a `cdea7ce`, 88 commit dopo il primo). Prove, timing e note di ogni test, con l'intestazione (macchina, versioni di Chrome e Safari, adapter, dpr, display, alimentazione per sessione), stanno nel README: [`docs/plans/assets/2026-09-29-mac-m2/README.md`](../plans/assets/2026-09-29-mac-m2/README.md). Qui c'è solo il riassunto.
+
+### 9.1 Esito per test
+
+- **M0** passa: adapter `apple / metal-3`, subgroups 32-32, il cull usa il percorso a subgroup, nessun errore GPU all'avvio (`adapter-chrome.json`).
+- **M1** passa: i 7 moduli composti con le 19 pipeline, gather e sort, e gli altri moduli WGSL dell'app (17 su 17) compilano su Metal senza messaggi (`wgsl-validation.json`, `wgsl-compile-all.json`).
+- **M2** passa: harness in Mode B, verdetti uguali al riferimento AMD.
+- **M3** passa: harness in Mode C, 2D Twins 6/6.
+- **M4** passa: baseline di pixel dell'M2, stabilità in B e in C `PASS`, verdetti uguali ad AMD; il cancello dopo i fix dà PASS in B e in C.
+- **M5** passa: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto e i controlli negativi hanno i denti; il cancello `subgroupCullSupported` a 32-32 è giusto per Apple.
+- **M6** passa: Mode A parte, nessun `fail`, disegna.
+- **M6b** passa: A e B uguali al pixel; a mondo vuoto A tiene l'ultimo frame, la lacuna nota del passo 10.
+- **M6c** passa: la qualità delle luci e l'input del sort arrivano al render worker.
+- **M7** passa con il profiler nuovo (Task 8, a batteria): voci e span in B e in C, 0 scarti dopo il riscaldamento. Con il profiler vecchio falliva: zeri anche con il flag.
+- **M8** passa: D3 rispettata (la catena del sort dura 0,70-0,76 ms di media, massimo 0,995); il +1 ms di AMD con depth distinte non si riproduce sull'M2 e il meccanismo non è misurato; resta un costo del draw uber di +0,21/+0,23 ms a 10 000.
+- **M9** misurato: la lighting costa circa 4 ms di span a 1920×1080 (A/B `lit` contro `off`, il metodo scelto dall'utente), e il frame resta a 120 fps.
+- **M10** bug confermato e corretto (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal.
+- **M11** saltato per decisione dell'utente: nessun target solo-ASTC.
+- **M12** passa (Safari 27.0.1 con `safaridriver`): WebKit accetta il `diagnostic(off, derivative_uniformity);` dell'uber e ne ha bisogno; B, C e A danno i verdetti di Chrome check per check, tranne 'Suspend/resume' di Audio, che senza un gesto vero resta appeso; il profiler dà tutte le voci con 0 scarti, sort dal vivo compreso. Due anomalie di WebKit sui timestamp, senza effetti misurati sul profiler; restano casi non provati (README § M12). La strada `safaridriver` del §4 ("non ancora verificata") ora è verificata, con le avvertenze del README: Safari in primo piano, nessuna console.
+- **M13** nota, senza test a parte: coperta da M1-M3 e M6, la cui console ha solo il 404 di `favicon.ico`.
+
+### 9.2 Fix del motore fatti sul branch
+
+I dettagli, i test e le misure dei fix stanno nel README, sezione "Fix fatti sul branch", e nel messaggio di ciascun commit.
+
+- **M10**, `f1b8ba9`: la crescita di un tier compresso copia ogni mip in blocchi 4×4 interi. Prima l'encoder diventava invalido e la vecchia texture veniva distrutta con tutti i layer.
+- **F4**, `db55fed`: il composite del bloom usa la curva PBR Neutral di Khronos, la stessa di `fxaa-tonemap`.
+- **F1**, `ba3fb6f`: una bezier con il punto di controllo a metà corda disegna il segmento.
+- `c1b513d` (solo documentazione): `{ unit: 'px' }` sono pixel del device, decisione dell'utente.
+- `cd8e398`: il check 'Bloom' misura il solo bagliore, a intensità 0 contro 0.5; PBR Neutral resta il default di `enableBloom`, decisione dell'utente.
+- **Bezier quasi dritte**, `ad91e4f` e `cb0ddc6`: la fascia di cancellazione a 35,26° e 144,74° (un candidato di Newton dalla corda) e la sua causa vera, la radice cubica piccola presa da Vieta.
+- **Il profiler con i `timestampWrites` sui pass veri** (M7, decisione dell'utente del 2026-09-29): design `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`, piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`. I 9 commit di codice sono `f96bc1c dfb1a88 ee0df52 967e45b f324c70 f6e104b 7b92eb5 c9393f2 89aae6d`; `getGpuFrameTiming()` viene da `f324c70`.
+- `08e2a5d`: dopo `cd8e398` il check 'Bloom' in Mode A falliva, perché non c'è un renderer sul main thread; ora salta, e Mode A non ha più nessun `fail`.
+- `0726c98` e `a2eb377`: il flake di teardown del LeakDetector (`npm test` usciva con 1 a test tutti verdi, `EnvironmentTeardownError`). `Hyperion.destroy()` spegne per prima cosa il rilevatore (`dispose()`) e `hyperion.test.ts` distrugge ogni motore che costruisce.
+
+### 9.3 Adattamenti della sezione 6
+
+Applicati 6.1-6.25, in commit separati sullo stesso branch (le correzioni comprese); tutti i commit portano il numero nell'oggetto (`git log --oneline --grep='(tools): 6\.'`).
+
+| # | Cosa | Commit |
+|---|---|---|
+| 6.1 | La descrizione di `gpu-check` nomina un adapter hardware | `ec920f0` |
+| 6.2 | `gpu-check` §3 diviso per macchina, un reload non porta con sé l'initScript | `da42961`, `747773d` |
+| 6.3 | `gpu-check` §1: un `ts/wasm` assente non passa per fresco | `6e9faa3` |
+| 6.4 | `gpu-check`: sezione Mode A, report del Mac; il check Bloom salta in Mode A | `fb67534`, `08e2a5d`, `411db5d`, `b9d5312` |
+| 6.5 | `pixels.py` e `gpu-check` §6: il dpr si legge sempre, `python3` con Pillow | `45c6cb4` |
+| 6.6 | `close-phase`: il percorso della memoria si calcola dal clone | `41e277c`, `5d0e1ad` |
+| 6.7 | `CLAUDE.md`: la riga dell'adapter divisa per macchina | `7595c82` |
+| 6.8 | `CLAUDE.md`: il cull a subgroup, esito di M0 e M5 | `1f39e7c` |
+| 6.9 | `CLAUDE.md`: `timestamp-query`, il flag di `chrome-devtools-gpu` sul Mac | `46e6bb7` |
+| 6.10 | `CLAUDE.md`: il dpr dei controlli con `take_screenshot` si legge a ogni sessione | `de4cb24` |
+| 6.11 | `CLAUDE.md`: grep e zsh | `f8ef546`, `e569eaf` |
+| 6.12 | `CLAUDE.md`: la riga "macOS setup" nelle dipendenze | `212396c`, `ba460a3` |
+| 6.13 | `CLAUDE.md`: l'elenco delle skill, `/gpu-check` non solo sull'AMD | `6c65035` |
+| 6.14 | `CLAUDE.md`: i plugin (la mappa non li elenca tutti, il token di `github` manca sulla Fedora) | `baa98dd`, `3c338ac` |
+| 6.15 | `CLAUDE.md`: "Metal verified at `22fd6b0`" dopo M1-M3 | `a83a4c6` |
+| 6.16 | `CLAUDE.md`: le note su Mode A con gli esiti di M6, M6b e M6c | `dc0a9e1`, `7f5d6c1` |
+| 6.17 | `adversarial-review`: i file di scratch nella scratchpad di sessione | `6e44281` |
+| 6.18 | `wgsl-validator`: i moduli composti in una cartella da `mktemp` | `83d20e5`, `19827b7` |
+| 6.19 | `new-primitive`: il costo di un reload completo, per macchina | `2ba9973` |
+| 6.20 | `claude-md-auditor`: classi POSIX al posto di `\s` | `c153a12` |
+| 6.21 | `determinism-cross-version.mjs`: la ricetta crea `$SB/old`, confronto solo wasm | `e1cdc7b`, `a0d1d81` |
+| 6.22 | `build:wasm:opt` fallisce in modo esplicito senza `wasm-opt` | `dc7fcdb`, `5ff62f4` |
+| 6.23 | `capabilities.ts`: il messaggio di fallback spiega il caso macOS | `b810f84`, `9f49fc5` |
+| 6.24 | Le intestazioni di `bench.js` e `capture.js`, la guardia "nessun campione" nel bench | `d5ac56c`, `3cad44e` |
+| 6.25 | `compare.mjs`: la guardia del main risolve i link simbolici | `c2b4e02`, `85c25d0` |
+
+Restano fuori: la 6.26 (alla ripresa del giro, insieme all'utente), la 6.27 (condizionale: solo se si aggiunge un altro server MCP per un browser) e la 6.28 (un'idea, non ora).
+
+### 9.4 Domande per l'utente
+
+1. **Audio nelle esecuzioni automatiche (M12).** Senza un gesto vero il `setup` della sezione Audio non finisce mai, e il `SectionSwitcher` trattiene tutti i tab dopo di lui: un run automatico con il `tab.click()` del runner l'ha incontrato in B, in C e in A. Serve un timeout sul `resume` di Audio, o sul `setup` delle sezioni in generale? Nel motore non è stato cambiato niente (README § M12).
+2. **Il costo del draw uber, passo 3→4.** Sull'M2 vale circa +0,21/+0,23 ms a 10 000 (M8), indipendente dalla distribuzione delle depth. Conta?
+3. **Le decisioni in sospeso del giro**: passi 6, 7, 8 e 10 (il passo 8b non ne ha), nella memoria `round-pending-decisions`, da chiedere ora che i test sul Mac sono finiti. Il passo 10 (`powerPreference`) va letto alla luce di M6 e M12: Mode A funziona sul Mac senza (in Chrome con M6, in Safari con M12), e la lacuna del mondo vuoto in Mode A, la parte (a) del passo 10 secondo la 6.26, l'ha confermata M6b.
+4. **Non è una domanda: il meccanismo del +1 ms di AMD.** Sull'M2 non si riproduce (M8); si chiude solo rifacendo il bench `/2` sulla Fedora con l'AMD. È un lavoro futuro su Linux (§7), non una decisione.
+
+### 9.5 Fuori da questa chiusura
+
+- La copia della memoria in `docs/handoff/claude-memory/` (§7).
+- Il merge di `test/mac-m2-gpu` su master, che per §5 si chiede all'utente: a `cdea7ce` il branch è 89 commit avanti a master (`f4a755d`).

@@ -2,9 +2,11 @@
 // Run: node --test docs/plans/assets/2026-09-27-transparent-sort-baseline/compare.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { TABS, comparePixels, compareStatuses, framingDiff, main, parseJsonOutput } from './compare.mjs';
 
 const VP = [0.05, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -0.001, 0, 0, 0, 0, 1];
@@ -238,4 +240,20 @@ test('main exits 0 on PASS, 1 on FAIL and 2 on bad arguments or unreadable files
   assert.equal(quietMain(args(same, '5')), 2);
   assert.equal(quietMain([...args(same), '--bogus']), 2);
   assert.equal(quietMain(args(mkdtempSync(join(tmpdir(), 'compare-test-empty-')))), 2);
+});
+
+test('the CLI runs main() when compare.mjs is reached through a symlink', () => {
+  // Through a link process.argv[1] is not the module's real path: the old guard
+  // skipped main() and the process exited 0 in silence, so a failing gate looked
+  // like a pass. No arguments make main() print the usage and return 2.
+  const dir = mkdtempSync(join(tmpdir(), 'compare-test-link-'));
+  try {
+    const link = join(dir, 'compare-link.mjs');
+    symlinkSync(fileURLToPath(new URL('./compare.mjs', import.meta.url)), link);
+    const run = spawnSync(process.execPath, [link], { encoding: 'utf8' });
+    assert.equal(run.status, 2);
+    assert.match(run.stderr, /^usage: node compare\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

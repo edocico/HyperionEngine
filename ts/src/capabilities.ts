@@ -176,10 +176,26 @@ export function describeAdapter(info: GPUAdapterInfo | undefined): { message: st
     ? `, subgroups ${info.subgroupMinSize}-${info.subgroupMaxSize ?? '?'}`
     : '';
   if (info.isFallbackAdapter) {
+    // Linux is fixed by adding flags. macOS needs none for the real GPU, and a fallback there has two
+    // causes, both reachable only with Chrome's adapter blocklist off (`--enable-unsafe-webgpu`, or
+    // `--disable-dawn-features=adapter_blocklist`): (1) `--use-webgpu-adapter=swiftshader`, whose cure
+    // is to drop that flag; (2) a GPU Chrome runs as software only, for instance one on its GPU
+    // blocklist: chrome://gpu shows WebGPU as "Software only" and says why.
+    // Why, in Chromium 154 (read at branch-heads/8037): `GetWebGPUFeatureStatus` (gpu/config/gpu_util.cc)
+    // answers "Software only" for software GL and for a GPU on software_rendering_list.json (on macOS
+    // its "all" entries: the Apple Software Renderer under VMware, IDs 111 and 177, and the Intel HD
+    // 3000, ID 112); `WebGPUDecoderImpl::Initialize` (gpu/command_buffer/service/webgpu_decoder_impl.cc)
+    // turns that status into `force_fallback_adapter_`; `CreatePreferredAdapter` takes SwiftShader only
+    // through `CanUseAdapter`, which rejects a CPU adapter while `use_blocklist()` holds. With no
+    // adapter at all `createRenderer` throws and this line is never reached. The measured rows (one
+    // headless Chrome per flag set, Apple M2 Pro, 2026-09-30) are in the `describeAdapter` tests.
     return {
       message: `[Hyperion] WebGPU adapter: ${name}${subgroups} — SOFTWARE FALLBACK: GPU timings and features `
         + 'are not the hardware\'s. On Linux Chrome needs --enable-unsafe-webgpu --enable-features=Vulkan '
-        + '--use-angle=vulkan for the real GPU.',
+        + '--use-angle=vulkan for the real GPU. On macOS Chrome needs no flag for the real GPU and offers a '
+        + 'software adapter only with its adapter blocklist off (--enable-unsafe-webgpu). A fallback there '
+        + 'means --use-webgpu-adapter=swiftshader (drop it) or a GPU that Chrome runs as software only, '
+        + 'e.g. one on its GPU blocklist (chrome://gpu: WebGPU "Software only").',
       fallback: true,
     };
   }

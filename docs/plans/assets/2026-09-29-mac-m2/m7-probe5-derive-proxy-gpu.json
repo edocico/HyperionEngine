@@ -1,0 +1,58 @@
+{
+  "probe": "m7-probe5: how the profiler may derive a pass descriptor that carries timestampWrites (finding C8 of the adversarial review wf_c06a8209-415)",
+  "date": "2026-09-30",
+  "machine": "Apple M2 Pro (16-core GPU) / Metal, Chrome 154.0.8037.58, chrome-devtools-gpu server (--enable-webgpu-developer-features), page http://localhost:5173/?mode=B&bench",
+  "adapter": { "vendor": "apple", "architecture": "metal-3" },
+  "method": "One device with timestamp-query, one query set, one command encoder. Each case opens a pass through a derived descriptor, draws a full-screen triangle (render) or dispatches 64 workgroups (compute), then the set is resolved and read back. A validation error scope wraps the encoding and the submit.",
+  "run1": {
+    "derivations": {
+      "viaCreate": "Object.create(desc ?? {}, { timestampWrites: { value: tw, enumerable: true } })",
+      "viaProxyOnDesc": "new Proxy(desc ?? {}, { get(target, key) { return key === 'timestampWrites' ? tw : Reflect.get(target, key, target); } })"
+    },
+    "results": {
+      "0 render class via Object.create": "THROWS TypeError: Cannot read private member #view from an object whose class did not declare it",
+      "1 render class via Proxy": "ok",
+      "2 render literal via Proxy": "ok",
+      "3 compute class via Proxy": "ok",
+      "4 compute undefined via Proxy": "ok",
+      "5 frozen literal with explicit undefined timestampWrites via Proxy": "THROWS TypeError: Failed to execute 'beginRenderPass' on 'GPUCommandEncoder': Failed to read the 'timestampWrites' property from 'GPURenderPassDescriptor': 'get' on proxy: property 'timestampWrites' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected 'undefined' but got '#<Object>')",
+      "6 same frozen literal via Object.create": "ok"
+    },
+    "validationError": null,
+    "pairs": [
+      { "pair": 0, "begin": "0", "end": "0", "durNs": null, "note": "the pass threw before opening" },
+      { "pair": 1, "durNs": 26417 },
+      { "pair": 2, "durNs": 20542 },
+      { "pair": 3, "durNs": 13041 },
+      { "pair": 4, "durNs": 138250 },
+      { "pair": 5, "begin": "0", "end": "0", "durNs": null, "note": "the pass threw before opening" },
+      { "pair": 6, "durNs": 253500 }
+    ]
+  },
+  "run2": {
+    "derivation": "const source = desc ?? {}; new Proxy({}, { get: (_target, key) => (key === 'timestampWrites' ? tw : Reflect.get(source, key, source)) }) — a FRESH empty target, so no Proxy invariant can bind",
+    "results": {
+      "0 render class #private": "ok",
+      "1 frozen literal, explicit undefined timestampWrites": "ok",
+      "2 literal with a this-getter": "ok",
+      "3 compute undefined": "ok",
+      "4 compute null": "ok",
+      "5 compute label literal": "ok"
+    },
+    "validationError": null,
+    "pairs": [
+      { "pair": 0, "durNs": 25250 },
+      { "pair": 1, "durNs": 21458 },
+      { "pair": 2, "durNs": 27292 },
+      { "pair": 3, "durNs": 7709 },
+      { "pair": 4, "durNs": 8583 },
+      { "pair": 5, "durNs": 12375 }
+    ],
+    "frozenOriginalUnchanged": true
+  },
+  "conclusions": [
+    "Object.create makes the caller's descriptor the PROTOTYPE of the one the browser reads, so an inherited accessor runs with the derived object as `this`: a class descriptor whose getter reads a #private field throws, inside beginRenderPass, only while profiling (C8).",
+    "A Proxy whose target is the caller's descriptor keeps the receiver, but a frozen descriptor with an own `timestampWrites: undefined` violates the Proxy get invariant and throws.",
+    "A Proxy over a fresh empty object that reads every member from the caller with the caller as receiver works in every case: WebIDL dictionary conversion reads members with [[Get]] only, and Chrome accepts a Proxy there. The caller's descriptor is never written."
+  ]
+}
