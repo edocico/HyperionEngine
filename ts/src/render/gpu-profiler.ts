@@ -26,17 +26,20 @@
  * 2. **Quantization.** Chrome rounds timestamps to 65 536 ns on every
  *    backend unless it runs with `--enable-webgpu-developer-features` or
  *    `--enable-unsafe-webgpu` (Dawn's quantization mask; measured on
- *    macOS/Metal, Chrome 154, 2026-09-29). The ~1.024 us steps seen on
- *    Linux/Vulkan on 2026-09-26 came from a Chrome that needs
- *    `--enable-unsafe-webgpu` for its adapter: unquantized. Quote
- *    `averageMs`: over {@link WINDOW} frames the rounding averages out.
+ *    macOS/Metal, Chrome 154: stock rounds, either flag does not,
+ *    probe 6). The ~1.024 us steps seen on Linux/Vulkan on 2026-09-26 came
+ *    from a Chrome that needs `--enable-unsafe-webgpu` for its adapter:
+ *    unquantized. Quote `averageMs`: over {@link WINDOW} frames the
+ *    rounding averages out.
  * 3. **Only passes with work are measured.** On Metal a pass without
  *    sampled work leaves stale stamps: a compute pass both of its indices'
  *    previous values (0 on a fresh query set), a render pass its end, while
  *    its beginning is fresh (probes 2 and 4). So a pass that recorded no
  *    draw or dispatch counts 0 ms, whatever its stamps. A render pass whose
  *    only command is an empty render bundle counts as work but is not
- *    sampled: its frames are discarded as `reversed`. Give that node
+ *    sampled, so its frames are discarded: as `zero` while its end index
+ *    was never sampled, as `reversed` once an earlier sampled pass wrote
+ *    it (or `stale` after a backward jump of the timer). Give that node
  *    `profile: false`.
  *
  * ## Cost when disabled
@@ -77,7 +80,9 @@ function describeDiscard(reason: DiscardReason, pass: string | undefined): strin
   switch (reason) {
     case 'unexecuted': return "the frames' command buffers did not run (a GPU validation error in the frame)";
     case 'truncated': return 'every frame opened more passes than the profiler has query pairs for';
-    case 'zero': return `${who} did work but read back a zero timestamp (this browser does not serve timestamps)`;
+    case 'zero':
+      return `${who} did work but read back a zero timestamp (this browser does not serve timestamps, ` +
+        `or the pass's only work was not sampled, like an empty render bundle)`;
     case 'reversed': return `${who} read back an end timestamp before its beginning`;
     case 'stale': return `${who} did work but its timestamps were not refreshed`;
     case 'empty': return 'no measured pass recorded any work';
@@ -145,9 +150,10 @@ export class GpuProfiler {
    *   profiler at the first `enableGpuProfiling()` and destroys it with the
    *   renderer; `disableGpuProfiling()` only detaches it, so the query set
    *   (8 KB) and the buffers stay allocated, idle.
-   * @throws RangeError when `maxPairs` is not an integer from 1 to 2048: the
-   *   query set would be invalid, and every measured frame, the scene
-   *   included, would be dropped.
+   * @throws RangeError when `maxPairs` is not an integer from 1 to 2048.
+   *   Above 2048 the query set would exceed WebGPU's 4096 queries and be
+   *   invalid, and every measured frame, the scene included, would be
+   *   dropped; a zero or fractional value is not a number of pairs.
    */
   constructor(private readonly device: GPUDevice, maxPairs = 512) {
     if (!Number.isInteger(maxPairs) || maxPairs < 1 || maxPairs > MAX_PAIRS) {

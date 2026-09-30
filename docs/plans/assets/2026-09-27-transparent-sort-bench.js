@@ -4,7 +4,7 @@ async () => {
   // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
   //
   // Page: the dev harness with ?bench (no section: an otherwise empty world),
-  // http://localhost:5173/?mode=B&bench, (format /1: on the AMD low-power adapter).
+  // http://localhost:5173/?mode=B&bench (format /1: on the AMD low-power adapter).
   // Scene: N = 1 000, 10 000 and 100 000 (= CAP, 98 full tiles) 2D quads,
   // .transparent(), 16x16 px, all inside the view of a 1920x1080 target;
   // depth all 0 ('same') or all distinct in [0, 999], in shuffled order
@@ -16,9 +16,9 @@ async () => {
   // `total` is the GPU frame span (engine.getGpuFrameTiming(): first pass
   // beginning to last pass end). With the marker profiler of steps 0-4 the sum
   // of every pass telescoped to that same span, so `total` stays comparable
-  // across machines. `passSum` is the sum of every pass: since 2026-09-29 each
-  // entry is the duration of the passes that carry its name (the sort's
-  // upsweep/scan/scatter entries sum 7 passes each) (timestampWrites), and
+  // across machines. `passSum` is the sum of every pass: since 2026-09-29
+  // (timestampWrites) each entry is the duration of the passes that carry its
+  // name (the sort's upsweep/scan/scatter entries sum 7 passes each), and
   // passSum − total is the overlap minus the gaps between passes, so passSum
   // can exceed total on a GPU that overlaps passes (the Apple M2). With the
   // markers, part of a render pass's fragment work could land in the NEXT

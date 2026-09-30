@@ -225,6 +225,19 @@ describe('GpuProfiler', () => {
       expect(p.skippedFrames).toBe(1);
     });
 
+    it("a frame queued while a readback's mapAsync is pending never reuses it", async () => {
+      const p = new GpuProfiler(gpu.device);
+      await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+      // Takes frame 0 and leaves its mapAsync pending: the fake marks the buffer mapped at call time,
+      // and a write, resolve or copy into it would throw.
+      const inflight = p.poll();
+      await measure(p, gpu, ['a'], stampsOf(1, 1), { poll: false });
+      await measure(p, gpu, ['a'], stampsOf(2, 1), { poll: false });
+      await inflight;
+      await p.poll();
+      expect(p.getTimingsByName().get('a')?.sampleCount).toBe(3);
+    });
+
     it('reports the passes of a measured frame and its span', async () => {
       const p = new GpuProfiler(gpu.device);
       await measure(p, gpu, ['cull', 'forward'], stampsOf(0, 0.25, 1.5));
@@ -400,6 +413,18 @@ describe('GpuProfiler', () => {
       }
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0][0])).toMatch(/pass 'overlay' did work but its timestamps were not refreshed/);
+    });
+
+    it('the zero-timestamp warning also names the pass whose only work was not sampled (an empty render bundle)', async () => {
+      const p = new GpuProfiler(gpu.device);
+      // A pass with work whose stamps the GPU never wrote: on a fresh query set they read 0.
+      for (let i = 0; i < 120; i++) await measure(p, gpu, ['bundle-only'], undefined);
+      expect(p.discardReasons.zero).toBe(120);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(
+        "pass 'bundle-only' did work but read back a zero timestamp (this browser does not serve timestamps, " +
+        "or the pass's only work was not sampled, like an empty render bundle)",
+      );
     });
 
     it('a valid frame breaks the streak', async () => {

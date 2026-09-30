@@ -15,7 +15,8 @@ export interface PassTiming {
   /**
    * Rolling mean over the last valid frames (up to {@link WINDOW}), in ms.
    * **This is the number to trust**: over the window, the timestamp
-   * quantization of Chrome without the developer flag averages out.
+   * quantization of Chrome without `--enable-webgpu-developer-features` or
+   * `--enable-unsafe-webgpu` averages out.
    */
   averageMs: number;
   /** Most recent valid frame, in ms. Noisy on its own. */
@@ -58,9 +59,9 @@ export type FrameVerdict =
 
 /**
  * The last value read for every query index. A stamp equal to it was not
- * refreshed by its pass: on Metal an unsampled pass keeps its indices' previous
- * stamps (probe 2). Only a safety net: the work rule is the real defence
- * (design §6.2).
+ * refreshed by its pass: on Metal an unsampled pass leaves stale stamps (a
+ * compute pass both, a render pass its end; probe 2). Only a safety net: the
+ * work rule is the real defence (design §6.2).
  */
 export class StampHistory {
   private readonly last: BigUint64Array;

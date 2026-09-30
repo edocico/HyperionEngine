@@ -269,10 +269,15 @@ describe('FrameRecorder names', () => {
   it('beyond maxPairs a pass is not timed and the frame is marked truncated', () => {
     const { encoder, fake, recorder } = setUp(2);
     recorder.enterNode('p', true);
-    for (let i = 0; i < 3; i++) encoder.beginComputePass({});
+    encoder.beginComputePass({});
+    encoder.beginComputePass({});
+    const third = {};
+    encoder.beginComputePass(third);
     expect(recorder.pairs).toHaveLength(2);
     expect(recorder.truncated).toBe(true);
-    expect(fake.received[2]).toEqual({});
+    // The caller's own descriptor, not a derived one: toEqual({}) could not tell,
+    // a Proxy over an empty object equals {}.
+    expect(fake.received[2]).toBe(third);
   });
 });
 
