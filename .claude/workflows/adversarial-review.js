@@ -30,7 +30,7 @@ if (lenses.length === 0) throw new Error(`no usable lens; defaults are: ${Object
 
 const CONTEXT = [
   `READ-ONLY review of the git range ${input.range} in the current repository (git log --oneline ${input.range}; git diff ${input.range.replace('..', ' ')} -- <path>).`,
-  'Do NOT edit, create or commit files in the repository. Running tests is fine; scratch files only under /tmp/claude-1000/.',
+  'Do NOT edit, create or commit files in the repository. Running tests is fine; scratch files only under the session scratchpad directory named in your system prompt (or `$(mktemp -d)`).',
   input.spec ? `Spec (binding authority): ${input.spec}.` : '',
   input.plan ? `Plan: ${input.plan} (read its Review Focus section if it has one).` : '',
   input.context ? `Context: ${input.context}` : '',
