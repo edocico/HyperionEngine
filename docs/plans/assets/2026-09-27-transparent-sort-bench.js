@@ -4,8 +4,12 @@ async () => {
   // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
   //
   // Page: the dev harness with ?bench (no section: an otherwise empty world),
-  // http://localhost:5173/?mode=B&bench, on a hardware adapter (no initScript
-  // on the Mac; format /1 ran on the AMD low-power adapter).
+  // http://localhost:5173/?mode=B&bench, on a hardware adapter (no adapter
+  // initScript on the Mac; format /1 ran on the AMD low-power adapter).
+  // A run lasts minutes and a Vite reload kills it: on the Mac navigate with the
+  // anti-reload WebSocket initScript (M6 in
+  // docs/plans/assets/2026-09-29-mac-m2/README.md; the script text is in
+  // docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md, Task 8).
   // Scene: N = 1 000, 10 000 and 100 000 (= CAP, 98 full tiles) 2D quads,
   // .transparent(), 16x16 px, all inside the view of a 1920x1080 target;
   // depth all 0 ('same') or all distinct in [0, 999], in shuffled order
