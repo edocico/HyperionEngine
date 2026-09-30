@@ -868,7 +868,7 @@ Atteso: nessun errore, e colori entro l'errore di ASTC.
   2. Uno script node con `fetch`: `POST /session` con `{capabilities:{alwaysMatch:{browserName:'safari'}}}`, `POST /session/:id/timeouts` con `{script:120000}`, `POST /session/:id/url`.
   3. `POST /session/:id/execute/async` con `const done = arguments[arguments.length - 1]; (<fn>)().then(r => done(JSON.stringify(r)), e => done('ERR ' + e))`.
 
-  L'automazione è facoltativa e non ancora verificata.
+  L'automazione è facoltativa. È stata verificata il 2026-09-30 (M12, §9.1), con due avvertenze: Safari coperto da un'altra finestra smette di disegnare, quindi va tenuto in primo piano, e WebDriver non legge la console.
 - **Atteso.**
   - Nessun errore di compilazione e tutti gli scope `null`.
   - Gli stessi verdetti di Chrome in B e C, tranne Audio: l'AudioContext vuole un gesto vero e sotto automazione può restare in attesa.
@@ -1040,7 +1040,7 @@ Se il branch del Mac non è ancora su master, al posto di `git switch master` va
 
 ## 9. Esito sul Mac
 
-I test GPU sul Mac sono finiti: M0-M10 e M12 fatti, M11 saltato per decisione dell'utente. Il lavoro è del 2026-09-29 e del 2026-09-30, sul branch `test/mac-m2-gpu` (da `22fd6b0` a `cdea7ce`, 88 commit dopo il primo). Prove, timing e note di ogni test, con l'intestazione (macchina, versioni di Chrome e Safari, adapter, dpr, display, alimentazione per sessione), stanno nel README: [`docs/plans/assets/2026-09-29-mac-m2/README.md`](../plans/assets/2026-09-29-mac-m2/README.md). Qui c'è solo il riassunto.
+I test GPU sul Mac sono finiti: M0-M10 e M12 fatti, M11 saltato per decisione dell'utente. Il lavoro è del 2026-09-29 e del 2026-09-30, sul branch `test/mac-m2-gpu` (da `22fd6b0` a `58223eb`, 90 commit dopo il primo; merge su master `fe20736` il 2026-09-30). Prove, timing e note di ogni test, con l'intestazione (macchina, versioni di Chrome e Safari, adapter, dpr, display, alimentazione per sessione), stanno nel README: [`docs/plans/assets/2026-09-29-mac-m2/README.md`](../plans/assets/2026-09-29-mac-m2/README.md). Qui c'è solo il riassunto.
 
 ### 9.1 Esito per test
 
@@ -1058,7 +1058,7 @@ I test GPU sul Mac sono finiti: M0-M10 e M12 fatti, M11 saltato per decisione de
 - **M9** misurato: la lighting costa circa 4 ms di span a 1920×1080 (A/B `lit` contro `off`, il metodo scelto dall'utente), e il frame resta a 120 fps.
 - **M10** bug confermato e corretto (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal.
 - **M11** saltato per decisione dell'utente: nessun target solo-ASTC.
-- **M12** passa (Safari 27.0.1 con `safaridriver`): WebKit accetta il `diagnostic(off, derivative_uniformity);` dell'uber e ne ha bisogno; B, C e A danno i verdetti di Chrome check per check, tranne 'Suspend/resume' di Audio, che senza un gesto vero resta appeso; il profiler dà tutte le voci con 0 scarti, sort dal vivo compreso. Due anomalie di WebKit sui timestamp, senza effetti misurati sul profiler; restano casi non provati (README § M12). La strada `safaridriver` del §4 ("non ancora verificata") ora è verificata, con le avvertenze del README: Safari in primo piano, nessuna console.
+- **M12** passa (Safari 27.0.1 con `safaridriver`): WebKit accetta il `diagnostic(off, derivative_uniformity);` dell'uber e ne ha bisogno; B, C e A danno i verdetti di Chrome check per check, tranne 'Suspend/resume' di Audio, che senza un gesto vero resta appeso; il profiler dà tutte le voci con 0 scarti, sort dal vivo compreso. Due anomalie di WebKit sui timestamp, senza effetti misurati sul profiler; restano casi non provati (README § M12). La strada `safaridriver` del §4 ora è verificata, con le avvertenze del README: Safari in primo piano, nessuna console.
 - **M13** nota, senza test a parte: coperta da M1-M3 e M6, la cui console ha solo il 404 di `favicon.ico`.
 
 ### 9.2 Fix del motore fatti sul branch
@@ -1116,7 +1116,7 @@ Restano fuori: la 6.26 (alla ripresa del giro, insieme all'utente), la 6.27 (con
 3. **Le decisioni in sospeso del giro**: passi 6, 7, 8 e 10 (il passo 8b non ne ha), nella memoria `round-pending-decisions`, da chiedere ora che i test sul Mac sono finiti. Il passo 10 (`powerPreference`) va letto alla luce di M6 e M12: Mode A funziona sul Mac senza (in Chrome con M6, in Safari con M12), e la lacuna del mondo vuoto in Mode A, la parte (a) del passo 10 secondo la 6.26, l'ha confermata M6b.
 4. **Non è una domanda: il meccanismo del +1 ms di AMD.** Sull'M2 non si riproduce (M8); si chiude solo rifacendo il bench `/2` sulla Fedora con l'AMD. È un lavoro futuro su Linux (§7), non una decisione.
 
-### 9.5 Fuori da questa chiusura
+### 9.5 Merge e memoria
 
-- La copia della memoria in `docs/handoff/claude-memory/` (§7).
-- Il merge di `test/mac-m2-gpu` su master, che per §5 si chiede all'utente: a `cdea7ce` il branch è 89 commit avanti a master (`f4a755d`).
+- Il merge di `test/mac-m2-gpu` su master l'ha approvato l'utente il 2026-09-30 (§5): è `fe20736`, `--no-ff`, con i 91 commit del branch sopra `f4a755d`. Sul risultato il preflight è verde.
+- La copia della memoria in `docs/handoff/claude-memory/` (§7) è il commit successivo, su master. Ora comprende anche `user-preferences.md` e `verify-before-asserting.md`, che mancavano dalla copia fatta su Linux.

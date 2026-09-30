@@ -1,11 +1,11 @@
 ---
 name: mac-m2-gpu-tests
-description: "From 2026-09-29 development moves to a MacBook Apple M2 to test the GPU on Metal (Mode A, Safari, subgroup cull, ASTC, timings); the handoff doc in docs/handoff/ is the plan; the Mac is the canonical machine"
+description: "From 2026-09-29 development moves to a MacBook Apple M2 to test the GPU on Metal (Mode A, Safari, subgroup cull, ASTC, timings); the handoff doc in docs/handoff/ is the plan; the Mac is the canonical machine; tests FINISHED and merged into master (fe20736) on 2026-09-30"
 metadata:
   node_type: memory
   type: project
   originSessionId: df7ee902-6496-4e89-9073-f4776e2f51ef
-  modified: 2026-09-29T10:25:24.177Z
+  modified: 2026-09-30T04:40:53.770Z
 ---
 
 On 2026-09-29, with master at `b2ccd0c` (phase 5b merged), the user moved development from the Fedora Linux machine to a MacBook with an Apple M2. The goal is to test the GPU there: Metal, Chrome and Safari, and Mode A (checkable there because the Mac has a single GPU and needs no initScript).
@@ -13,9 +13,32 @@ On 2026-09-29, with master at `b2ccd0c` (phase 5b merged), the user moved develo
 - The plan, the setup steps and the test list are in `docs/handoff/2026-09-29-mac-m2-handoff.md`.
 - A copy of the Claude memory as it was on Linux is in `docs/handoff/claude-memory/`. The repo is PUBLIC; the user chose this on 2026-09-29.
 - The Mac is the canonical machine from 2026-09-29.
+- The Mac clone is `~/Code/HyperionEngine`, a fresh clone made on 2026-09-29: `~/Desktop` is iCloud-synced with Optimize Mac Storage on, which had evicted 642 repo files and left conflict copies inside `.git` (`.git/index 2`, `3`, `4`). The memory slug is therefore `-Users-edoardocicognani-Code-HyperionEngine`, which makes handoff row 6.6 (the close-phase memory path) mandatory. The old clone `~/Desktop/Code/HyperionEngine` and its memory dir are obsolete, kept only as a backup until the user deletes them.
 - Mac work goes on a branch, not on master. Ask the user before merging it to master: the standing autonomy covers only the steps of the open-items round.
 - When the Mac work ends, refresh `docs/handoff/claude-memory/` from the Mac memory and commit it, so that a return to Linux can restore it. `sshd` is off on the Linux machine, so git is the only way to carry memory between the two.
 - The open-items round is paused. Its open decisions are in [[round-pending-decisions]]; ask them only after the user says the Mac tests are done.
+
+Machine facts, verified 2026-09-29 by the setup audit (workflow `wf_68b415db-b64`):
+- Apple **M2 Pro** MacBook Pro 14" (Mac14,9): 16-core GPU, Metal 4, 16 GB; built-in Retina at dpr 2, 120 Hz ProMotion. A 35 W adapter was connected (the spec is 67 W): note the adapter with every timing. Label results "Apple M2 Pro (16-core GPU) / Metal, Chrome <ver>".
+- Toolchain: rustup 1.29.1, 1.97.1 + wasm32 + clippy/rustfmt/rust-analyzer; wasm-pack 0.14.0 (on Apple Silicon it COMPILES wasm-bindgen-cli 0.2.126 with cargo install into `~/Library/Caches/.wasm-pack`); naga-cli 30.0.1; brew binaryen 133 is the only `wasm-opt` (the stale cargo 116 was uninstalled); brew Python 3.14.7 + Pillow 12.3.0; `jq` is macOS's own `/usr/bin/jq` 1.7.1, so hooks cannot lose it; typescript-language-server 6.0.1 + typescript 6.0.3 via `vp install -g`.
+- Node 24.21.0 / npm 11.19.0 come from the Vite+ shim (`~/.vite-plus/bin`, loaded by `~/.zshenv`). It picks the version from the CWD, never from `npm --prefix`: inside `ts/` from `engines.node`, at the repo root from "latest LTS". Node 26 becomes LTS on 2026-10-28: from then on `npm --prefix ts ci` run from the root fails with EBADENGINE unless the root is pinned or npm runs from `ts/`. `npm exec -- node -v` is NOT a probe: it downloads the npm package `node`.
+- Setup proof at `f4a755d` in the fresh clone: `npm ci` (darwin-arm64 esbuild/rollup present), preflight and `--full` green with Linux's exact numbers: Rust 216/259, 294/383, 247/295, 340/438; vitest 1878 + 7 skipped in 109 files (vitest 4.1.10, vite 6.4.3, tsc 5.9.3 — the handoff's 2.3 row is wrong); protocol 57/57; WASM 200209 B raw / 70761 B gzip (PASS), physics 339341 B gzip.
+- The black canvas this Mac showed on 2026-08-04 (old `.claude.local.md`) is explained: `cull.wgsl` had 9 storage buffers from `4ea6cb5` until `6331b5c`, so no cull pipeline ever ran.
+- chrome-devtools-mcp (1.10.1) writes `filePath` outputs only under the client roots (the repo) and `os.tmpdir()` (`/var/folders/...`), maybe not under the `/private/tmp` scratchpad: keep evidence under `docs/plans/assets/2026-09-29-mac-m2/`.
+- Decided by the user on 2026-09-29: the FIRST commit on `test/mac-m2-gpu` adds a repo-root `.node-version` containing `24`, so the Vite+ shim stops resolving the root to the latest LTS. It is the fourth place to change with the Node major, together with `ts/package.json` `engines.node`, `ts/.nvmrc` and `@types/node` (see the comment in `ts/.npmrc`).
+- `.claude/settings.local.json` of the fresh clone (user's choice, 2026-09-29): the handoff 1.11 file plus rootly off, deny `rm -rf` / `git reset --hard` / `git clean`, ask `git branch -D`. The August file had more (deny `sed -i`, ask `git push`/`npm ci`); it stays in the Desktop clone. The old gitignored `.claude.local.md` was not carried: Claude Code never loaded it, and its still-true facts are in this file.
+- Pushes over HTTPS use the osxkeychain github.com item (last used 2026-08-04); if the first push of the branch fails, run `gh auth setup-git`. Git author here is `edocico` (Linux commits: `edoardo cicognani`), same email.
+
+Progress (2026-09-30, FINISHED and merged into master at `fe20736`; outcomes in `docs/plans/assets/2026-09-29-mac-m2/README.md` and handoff §9 "Esito sul Mac"):
+- Mac tests DONE: M0-M10 and M12 pass, M11 skipped by the user, M13 covered by M1-M3/M6. Engine fixes on the branch: M10 `f1b8ba9`, F4 `db55fed`, F1 `ba3fb6f`, px docs `c1b513d`, Bloom check `cd8e398`, bezier `ad91e4f`/`cb0ddc6` (Vieta), Mode A Bloom skip `08e2a5d`, LeakDetector teardown flake `0726c98`/`a2eb377`. GPU profiler rewritten with timestampWrites on the real passes (plan `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, executed subagent-driven). Handoff section-6 adaptations 6.1-6.25 applied; 6.26 waits for the round's resume, 6.27/6.28 are conditional/an idea.
+- Key results (details in the repo, not repeated): M8, D3 passes (sort chain 0.70-0.76 ms at 100k, max 0.995) and the AMD distinct-depth +1 ms does NOT reproduce on the M2 (mechanism not measured; re-running the /2 bench on the Fedora AMD box would settle it). M9, lighting costs about 4 ms of frame at 1920x1080, measured as an A/B of the span (the user's method). M12, Safari 27.0.1 passes: every engine WGSL module compiles (the uber's `diagnostic` directive is accepted and needed), the profiler works with unrounded 41.667 ns ticks, the Proxy descriptor works, no subgroups.
+- User decisions: 2026-09-29, profiler = timestampWrites, px = device pixels, F1/F4 fixed here, M11 skipped, Bloom keeps PBR Neutral, bezier = fix the cause. 2026-09-30, M9 = A/B of the span, Safari automation enabled by the user, all extras (flake fix, optional section-6 items, worktree removal, SDD workspace to the Trash), merge approved and done.
+- NOW (handoff §5 "Chiusura", step 3): ask the questions of [[round-pending-decisions]]. Read step 10 in the light of M6/M12: Mode A works on the Mac without powerPreference. Read the +1.137 ms in the light of M8: it does not reproduce on the M2. Also ask the open questions of handoff §9.4: an Audio/section-setup timeout for automated runs, and whether the step-3 to step-4 uber cost (+0.21/+0.23 ms at 10k on the M2) matters. Step 6 of the round does not start before the answers.
+- Housekeeping done on 2026-09-30: every temporary worktree was removed. The old plan dry-run was backed up as a patch in that session's scratchpad before its forced removal. The SDD workspace went to the macOS Trash.
+- Captures: restart the dev server after editing any `ts/src/demo/*.ts`, or capture.js imports another module instance and times out (Vite serves the edited module with `?t=`).
+- chrome-devtools-mcp DOES show worker console messages (the Mode A adapter line comes from the render worker).
+- Vite 6.4's client reloads the page on ANY close of its HMR WebSocket. This happened twice mid-run (server PID unchanged, not caused by agents), killing long evaluate_script runs. Every test navigation now passes an initScript that wraps `WebSocket` for the `vite-hmr` protocol, logs closes to `window.__viteWsCloses` and calls `stopImmediatePropagation`. The README (M6 section) only DESCRIBES it: the verbatim text is in Task 8 of `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`.
+- `evaluate_script`/`take_screenshot` `filePath` only writes under the repo or `$TMPDIR` (`/var/folders/...`), never under the scratchpad. zsh: `set -- $var` does not word-split.
 
 **Why:** the user wants the engine verified on Apple hardware before going on with the round (steps 6-10).
 **How to apply:** at the start of a Mac session, follow the handoff doc's first-turn list. Report GPU findings with their evidence, and fix engine bugs test-first on the branch. Related: [[project-moved-macos-to-linux]], [[linux-webgpu-chrome-flags]].

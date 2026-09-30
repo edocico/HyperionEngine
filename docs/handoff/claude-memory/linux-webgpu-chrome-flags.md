@@ -8,6 +8,8 @@ metadata:
   modified: 2026-09-26T11:53:29.076Z
 ---
 
+Does not apply on the Mac M2: Metal, a single adapter, no Vulkan flags, no initScript.
+
 On the Fedora Linux machine (RTX 4060 + AMD Radeon RDNA 3 iGPU), Chrome 154 without flags returns `null` from `navigator.gpu.requestAdapter()`.
 
 - `--enable-unsafe-webgpu` alone gives SwiftShader (CPU, `isFallbackAdapter=true`).
@@ -22,7 +24,7 @@ On the Fedora Linux machine (RTX 4060 + AMD Radeon RDNA 3 iGPU), Chrome 154 with
 
 **Workaround for visual checks:** force the AMD adapter, which has the same four features and presents fine. Use `navigate_page` with `initScript`:
 `GPU.prototype.requestAdapter = (orig => function (o) { return orig.call(this, { ...(o || {}), powerPreference: 'low-power' }); })(GPU.prototype.requestAdapter)`.
-The initScript lasts ONE navigation (found 2026-09-27): a TS edit while the harness is open makes Vite full-reload the page WITHOUT it, the reload picks NVIDIA and dies with the same OOM, so every check reads "Device is lost". The tell is a second `[vite] connecting...` + an `nvidia / lovelace` adapter line. Re-navigate with the initScript after every TS edit (the 18 hot-reloadable WGSL files swap in place and keep the page).
+The initScript lasts ONE navigation (found 2026-09-27): a TS edit while the harness is open makes Vite full-reload the page WITHOUT it, the reload picks NVIDIA and dies with the same OOM, so every check reads "Device is lost". The tell is a second `[vite] connecting...` + an `nvidia / lovelace` adapter line. Re-navigate with the initScript after every TS edit (the 20 hot-reloadable WGSL files swap in place and keep the page).
 Keep the NVIDIA adapter for compute-only measurements (benchmarks, probes via `evaluate_script`). Its timestamp-query returns real values at ~1.024 µs with no extra flag.
 
 **Why:** the canvas has been black in every GPU session because of this. It masked the engine bugs fixed on 2026-09-26 as well.

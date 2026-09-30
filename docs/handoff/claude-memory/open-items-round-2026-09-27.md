@@ -1,6 +1,6 @@
 ---
 name: open-items-round-2026-09-27
-description: "2026-09-27 round closing harness (H), public 2D spawn (S), Phase 17 leftovers (L) — order, user decisions, progress (steps 1-5 and 5b merged; next step 6)"
+description: "2026-09-27 round closing harness (H), public 2D spawn (S), Phase 17 leftovers (L) — order, user decisions, progress (steps 1-5 and 5b merged; next step 6, paused for the Mac tests)"
 metadata:
   node_type: memory
   type: project
@@ -30,7 +30,7 @@ User decisions 2026-09-27:
 
 Later the same day:
 - D5: entity ids are reused under quarantine, as step 1b right after step 1. An id is reusable only once its DespawnEntity has been WRITTEN to the ring buffer and WASM has confirmed a later tick.
-- Step 10, the user's pick: `HyperionConfig.powerPreference` forwarded to the render worker, so that Mode A becomes GPU-checkable on this machine. It is to be tried after the round.
+- Step 10, the user's pick: `HyperionConfig.powerPreference` forwarded to the render worker, so that Mode A becomes GPU-checkable on the Linux machine. It is to be tried after the round.
 
 Progress:
 - **Step 1 DONE**: merged to master as `4fa4609` and pushed. It covers:
@@ -72,8 +72,8 @@ Progress:
 - **Step 4 DONE** (merged `b783174`, pushed). User decisions (asked 2026-09-27): 3D-only args on a 2D handle ignored + one dev warning per EntityHandle; one EntityHandle class with z optional (`position`/`velocity` 0, `scale` sz 1) + `is2D`; prefabs per template (`mode: '2d'`). Rust already handled payload 1 since Phase 13 (`tests/verify_2d.rs` pins it). New tab "2D Twins" (10 tabs now): texel-exact twins + GPU rows = CPU rows; Mode C 12/12 scatter frames (format 0 parent, format 1 child). Review `wf_24bad90e-4e1` 8 minors fixed (incl. `PrefabInstance.moveTo` dropping `overrides.z`). Lesson: the 2D archetype saves ECS memory only; GPU rows are 16 words either way.
 - **Step 5 DONE** (merged `7a40aba`, pushed). User decisions: in the round; `.depth()` 2D-only (ignored + warning on 3D); relative in children; equal depths undefined. My convention: depth = distance into the screen, row z = -depth (`Depth::z()`). Review `wf_60bf12aa-fa0`: depth does NOT order two `.transparent()` sprites (no depth write, RadixSortPass dead) → user chose "document + new step 5b" (real back-to-front sort). Also fixed: 2D immediate shadow patches x/y only (z null); physics body depth is world; ring-buffer bench flaky timeout (pre-existing) given 30 s.
 - Step 5b decided (user, 2026-09-27): a PHASE of its own, "GPU sort + uber pipeline" — GPU radix sort of the visible transparent entities by world z, ONE draw through a single module covering all six primitives. Tie-break at equal z: the newer entity (higher id) in front. The user said: PLAN it in this session, EXECUTE it in the NEXT session. State and how to resume: [[transparent-sort-phase]] (brainstorming paused mid-design: Section 1 approved, the Section 2 sort candidate + 14 review issues saved in `docs/plans/2026-09-27-transparent-sort-uber-brainstorm.md`).
-- **Step 5b DONE** (merged `b2ccd0c`, pushed, 2026-09-29): GPU transparent sort + uber pipeline — see [[transparent-sort-phase]]. Review `wf_61c6a580-afa`; measurements in the design §11. Next: step 6 (L-c directional shadows): ask its deferred decisions (plan §2) first. **PAUSED 2026-09-29** while the user tests the GPU on a Mac M2: the open decisions are saved in [[round-pending-decisions]].
+- **Step 5b DONE** (merged `b2ccd0c`, pushed, 2026-09-29): GPU transparent sort + uber pipeline — see [[transparent-sort-phase]]. Review `wf_61c6a580-afa`; measurements in the design §11. Next: step 6 (L-c directional shadows): ask its deferred decisions (plan §2) first. **PAUSED 2026-09-29** while the user tests the GPU on a Mac M2: the open decisions are saved in [[round-pending-decisions]]. The Mac tests finished on 2026-09-30 (merged `fe20736`): ask those decisions, then start step 6.
 - AFTER phase 5b: resume the round at step 6 (L-c directional shadows), then 7 (mix), 8 (sprite light), 8b (PhysicsAPI wiring), 9 (close-out), 10 (`powerPreference` for Mode A). Ask each step's deferred decisions (plan §2) first.
 
 **Why:** the user asked for the best order and made these four calls. The other decisions are deferred to specific steps (listed in the plan doc §2).
-**How to apply:** open the plan doc, find the first step without a merged commit (check `git log`), and ask its deferred decisions before starting it. Related: [[cull-fix-decision-pending]].
+**How to apply:** open the plan doc, find the first step without a merged commit (check `git log`), and ask its deferred decisions before starting it — unless [[round-pending-decisions]] says the round is paused. Related: [[cull-fix-decision-pending]].

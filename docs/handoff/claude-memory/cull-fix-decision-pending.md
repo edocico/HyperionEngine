@@ -24,12 +24,12 @@ The visual session of 2026-09-26 on the AMD iGPU (see [[linux-webgpu-chrome-flag
 - `0330ca2`: a parented physics body is drawn on its collider (`pose_is_world` in `propagate_transforms`).
 - `3cffd92`: doc/comment fixes; the brief has an "Esito" section.
 
-`d0b3cee` fixed bloom:
+`93f725b` fixed bloom:
 - a dedicated 1x1 placeholder, never a render target;
 - one 256-byte param slice per sub-pass.
 On the AMD iGPU this went from 250 errors to 0.
 
-The whole series is 11 commits, `6331b5c`..`d0b3cee`, not pushed. preflight.sh is green.
+The whole series is 11 commits, `6331b5c`..`93f725b`, not pushed. preflight.sh is green.
 
 **Later the same day (pushed, `d507be4`):** all five "Before Track B" checks of the Phase 17 plan are closed.
 - `e87deb1`: texture-tier growth destroyed textures still bound by ForwardPass. Fixed with `onViewsChanged` plus a per-frame group-1 rebind.
@@ -50,7 +50,7 @@ The whole series is 11 commits, `6331b5c`..`d0b3cee`, not pushed. preflight.sh i
 - **Light mask resolved (user chose Unity-style: one light buffer per layer group).** Spec/plan `docs/plans/2026-09-26-phase17-light-layer-groups-{design,plan}.md`, commits `e776d1e`..`9634e69` (pushed). User decisions: lights AND shadows per layer, no cap on SDF sets, mask 0 per role, lowest-bit receivers, one set-major node `LightGroupsPass`. GPU: default scene pixel-identical; +1.84 ms per extra SDF set, +0.34 per extra group (1080p iGPU). Final review wf_d626458f-1b8: fixed the design doc §14-18 lost in `714a8cf` (`4be94c1`) and receivers not frustum-filtered (`5ad446f`). Deferred minors: transparent casters/lights keyed but never drawn; profiler keeps stale seed/sdf entries; non-lit primitives still occupy layers; the Lighting tab does not show per-layer shadow on screen.
 - **Task 11 done** (`96c0b5c` demo tab, `3ea68bd` docs). GPU cost at 1080p on the AMD iGPU: SDF chain 1.77 ms, light-accum 0.22, backend lit ≈ 2.3 ms (design §13.2).
 - **Adversarial review of Track C** (workflow wf_74f03165-d20): 5 confirmed, all fixed — caster+receiver never shadowed (`1675a92`), SDF chain after resize (`5f0e8fb` power-of-two steps + GraphRequests.rebuild), lost switch-off intent (`4487bfe`), Mode A quality (`bd6087d`), fixed-k penumbra (`2c77d87`). Also: step-budget light leaks → default shadowSteps 48 (`0815e58`).
-- **Mode A cannot be checked visually here:** the low-power initScript patches only the page, not workers; Mode A's render worker gets NVIDIA and loses the device.
+- **Mode A cannot be checked visually on the Fedora box:** the low-power initScript patches only the page, not workers; Mode A's render worker gets NVIDIA and loses the device.
 - **Deferred minors fixed** (`63fc16b`..`9ad94c8`): profiler forgets vanished stages, transparent casters/lights drawn (slots 12,13,26,27), only quad/gradient receive, Lighting tab shows per-layer shadow (two symmetric pillars, measured 29.4 vs 67.5). **Second review** (wf_4ce100c0-af1, 14 confirmed minors) fixed in `7d32de0`..`a995225`: profiler per-frame means + forget after WINDOW absent + mismatched frames dropped + buffer always unmapped + getGpuTimings [] when disabled; Rust rejects SetRenderPrimitive > 6 (counted in rejected_command_count), deriveLightGroups mirrors cull's clamp; stale bucket comments; demo spot rotates (quaternion) and is layer 0 only; Lighting tab zooms to fit (check passed at aspect 1.185).
 - **MERGED to master 2026-09-26: `47806a8` (--no-ff), pushed; local feature branch deleted (remote copy kept).**
 - **rotation(angle) decided and done (user chose option A, 2026-09-26):** SetRotation2D on a 3D entity = rotation about Z (replaces the quaternion); physics bodies take the angle from the command, repositions merge per batch, bodies are built at the entity's rotation, SetRotation (quat) also repositions bodies (Rotation::z_angle); the TS queue drains in LAST-call order. Review wf_e4c9ebf8-3e0 (12 confirmed) all fixed. Merged to master `4a58ce2`, pushed. Still NOT done: a public 2D spawn (option C) — the Transform2D archetype is unreachable from the public API.
@@ -60,4 +60,4 @@ The whole series is 11 commits, `6331b5c`..`d0b3cee`, not pushed. preflight.sh i
 - **Lesson:** a python append that rewrote a doc from an anchor silently dropped everything after it (`714a8cf`). After scripted doc edits, check `git diff --numstat` for unexpected deletions.
 
 **Why:** a future session must not re-derive any of this.
-**How to apply:** check `git log` for these hashes first. For the next GPU visual session, use the AMD low-power initScript from [[linux-webgpu-chrome-flags]].
+**How to apply:** check `git log` for these hashes first. On the Fedora box only, a GPU visual session needs the AMD low-power initScript from [[linux-webgpu-chrome-flags]]; the Mac needs no initScript ([[mac-m2-gpu-tests]]).
