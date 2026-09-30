@@ -772,6 +772,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 - **Perché qui.** È la domanda rimasta aperta dalla 5b. Su AMD, a 100k trasparenti con depth distinte, il totale del frame cresce di +1,137 ms dal passo 3 al 4, contro +0,251 ms con depth uguali. Il costo finisce nel bracket `fxaa-tonemap`, cioè nell'ordine di blend ordinato e sparso (design 5b §11). L'AMD è una GPU immediate-mode. Sull'M2, che è TBDR, il blend avviene in tile memory e quel costo dovrebbe quasi sparire. Le scritture sparse del sort in compute (upsweep 0,59 ms su AMD, misurato con i marker) potrebbero però costare in modo diverso sulla memoria unificata.
 - **Prerequisiti.** M7 verde, alimentazione e refresh come in 3.2, `caffeinate`.
 - **Procedura.**
+  ⚠️ Durante le misure l'altra istanza di Chrome MCP resta su `about:blank`: con la scena lit aperta nell'altra, il sort a 10 000 è passato da 0,53 a 1,32 ms (Task 8, `m7-profiler-diag-gpu-bench-other-blank.json`).
   1. HEAD: `http://localhost:5173/?mode=B&bench`, senza probe prima.
   2. `evaluate_script` con `() => { window.__benchOpts = { label: 'm2 HEAD <sha>' }; }`, poi il corpo di `docs/plans/assets/2026-09-27-transparent-sort-bench.js` con `filePath: docs/plans/assets/2026-09-29-mac-m2/bench-head.json`. Se la chiamata MCP va in timeout, dividi per `sizes` (`window.__benchOpts.sizes = [100000]`).
   3. Riferimento del passo 3: il label di `bench-step3.json` è `step3 6ff494f`. Subito dopo `git worktree add`, prima di `npm ci`, fai il `git cherry-pick` dei commit di codice del profiler (piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`, "Dopo il piano", punto 2), e lo stesso nel worktree del passo 4: senza, il bench si ferma con `engine.getGpuFrameTiming() is missing`.
@@ -795,6 +796,7 @@ Ordine: prima i bloccanti; la baseline M4 va presa **prima di qualsiasi modifica
 
 - **Perché qui.** Il costo della lighting esiste solo per l'iGPU AMD a 1920×1081 (design 17 §13.2): catena SDF 1,77 ms, backend lit ≈ 2,3 ms; con light layers, "2 set, 2 gruppi" = **3,66 ms** (seed 0,406, sdf 3,042, accum 0,213). Sull'M2 ognuno degli ~11 passi della catena SDF è un render pass completo, con uno store per tile.
 - **Procedura.**
+  ⚠️ Da decidere con l'utente prima di M9: sull'M2 anche i pass dipendenti si sovrappongono, e la somma seed + sdf + accum (38,1 ms) supera di molto lo span del frame (4,8 ms) (Task 8, `m7-profiler-diag-pass-timeline-gpu-B.json`): il passo 4 non misura il costo della lighting. Il passo 4 resta com'è finché l'utente non sceglie la misura.
   1. `?mode=B&bench`, poi `() => window.__hyperion.resize(1920, 1080)`. Non ridimensionare la finestra: il listener di resize di `main.ts` annullerebbe la dimensione.
   2. `document.querySelectorAll('.tab')[6].click()` (Lighting), 7 s di attesa, `enableGpuProfiling()`.
   3. Interroga `getGpuTimings()` finché `light-groups/sdf` non ha `sampleCount >= 120`.
