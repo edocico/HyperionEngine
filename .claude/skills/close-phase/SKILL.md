@@ -89,7 +89,7 @@ Pay particular attention to its *contradiction* findings. When a remediation pas
 
 ## 8. Update MEMORY.md
 
-`~/.claude/projects/<slug>/memory/`, where `<slug>` is the working directory (the repo root) with every non-alphanumeric character replaced by `-`: `pwd | sed 's|[^A-Za-z0-9]|-|g'`. Compute it on the machine you are on instead of copying one: on Linux it is `-home-edoardocicognani-Code-HyperionEngine`, on the Mac `-Users-edoardocicognani-Code-HyperionEngine`. A clone that was moved leaves its old slug behind with the old memory, so check that `ls -d ~/.claude/projects/<slug>/memory` exists before writing to it.
+`~/.claude/projects/<slug>/memory/`, where `<slug>` is the root of the main checkout with every non-alphanumeric character replaced by `-`: `dirname "$(git rev-parse --path-format=absolute --git-common-dir)" | sed 's|[^A-Za-z0-9]|-|g'`. Claude Code derives the project path from the git repository, so the main checkout, its subdirectories and its worktrees share one memory directory, and this form prints the same slug from any of them (`pwd | sed …` is right only from the main checkout's root). Compute it on the machine you are on instead of copying one: on Linux it is `-home-edoardocicognani-Code-HyperionEngine`, on the Mac `-Users-edoardocicognani-Code-HyperionEngine`. A clone that was moved leaves its old slug behind with the old memory, so check that `ls -d ~/.claude/projects/<slug>/memory` exists before writing to it.
 
 ⚠️ **The per-phase test-count lines in MEMORY.md are historical records pinned to a commit. Do NOT rewrite them to today's numbers.** A line like `| 12 | COMPLETE (cd56fdd) | 110 Rust, 632 TS |` documents what was true at `cd56fdd`. Rewriting it destroys the record and makes the progression meaningless.
 
