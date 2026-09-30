@@ -770,3 +770,20 @@ Scenario committato `assets/2026-09-27-transparent-sort-bench.js`, iGPU AMD (ada
 - Il profiler separa i pass con compute pass vuoti e parte dei frammenti del forward può cadere nel pass successivo: i delta del `forward` vanno letti insieme a quelli di `total` (somma di tutti i pass).
 - "sort" è la somma delle medie di `transparent-sort/{gather,upsweep,scan,scatter}`. Con il profiler sono 22 compute pass più i marker contro 1, quindi è un limite superiore del costo in produzione. Soglia (D3): < 1 ms a 100 000.
 - Cancello del passo 4: `assets/2026-09-27-transparent-sort-step4-compare-{B,C}.txt` (C \ T identici al bit, C ∩ T entro 1/255, stati uguali alla baseline).
+
+**Apple M2 Pro / Metal, Chrome 154.0.8037.58** (MacBook Pro 14", GPU a 16 core; test M8 del Mac, 2026-09-30; alimentatore collegato, 65 W, Low Power Mode 0). Stesso scenario, nel formato `/2` (profiler con i `timestampWrites` sui pass veri), `?mode=B&bench`, canvas 1920×1080, illuminazione spenta. I passi 3 e 4 sono `6ff494f` e `608a113` con sopra i 9 commit di codice del profiler; HEAD è `038fc0b`. Media di due run per passo, ognuno con un caricamento di pagina nuovo; valori in ms. I JSON e i valori per run sono in `assets/2026-09-29-mac-m2/` (`bench-{step3,step4,head}.json`, `bench-{step3,step4,head}-run2.json`, README § M8).
+
+| Quad trasparenti | Depth | total p.3 | total p.4 | total HEAD | total 4−3 | sort p.3 | sort p.4 | sort HEAD | forward p.3 | forward p.4 | forward HEAD |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 000 | tutte a 0 | 1.180 | 1.238 | 1.217 | 0.058 | 0.479 | 0.467 | 0.476 | 0.127 | 0.126 | 0.132 |
+| 1 000 | distinte | 1.196 | 1.295 | 1.213 | 0.099 | 0.482 | 0.493 | 0.478 | 0.129 | 0.134 | 0.133 |
+| 10 000 | tutte a 0 | 1.732 | 1.945 | 1.949 | 0.213 | 0.550 | 0.546 | 0.548 | 0.455 | 0.650 | 0.652 |
+| 10 000 | distinte | 1.714 | 1.942 | 1.935 | 0.228 | 0.542 | 0.547 | 0.541 | 0.452 | 0.650 | 0.650 |
+| 100 000 | tutte a 0 | 4.834 | 5.174 | 5.285 | 0.339 | 0.818 | 0.655 | 0.682 | 3.467 | 4.040 | 4.110 |
+| 100 000 | distinte | 4.869 | 5.227 | 5.333 | 0.359 | 0.846 | 0.688 | 0.704 | 3.475 | 4.055 | 4.131 |
+
+- `total` è lo span del frame (`getGpuFrameTiming()`) e si confronta con il `total` AMD della tabella sopra. `sort` e `forward` qui sono intervalli dei pass veri, non bracket fra marker, e non si confrontano uno a uno con le colonne AMD. Sull'M2 `forward` e `fxaa-tonemap` si sovrappongono, quindi `forward` non è il costo del forward.
+- I due run di un passo differiscono al massimo di 0.138 ms a 1 000, di 0.034 a 10 000 e di 0.835 a 100 000: a 10 000 i delta fra passi escono dal rumore, a 100 000 no.
+- 4−3 sull'M2: +0.213/+0.228 ms a 10 000 (per run da +0.198 a +0.233), +0.339/+0.359 a 100 000 in media (per run da +0.07 a +0.65). Le depth distinte non costano di più: distinte − uguali vale −0.069 e +0.165 ms a HEAD nei due run, contro +0.954 su AMD al passo 4. Il +1.137 ms di AMD a 100 000 con depth distinte non si riproduce sull'M2 (TBDR); per la regola della handoff (`docs/handoff/2026-09-29-mac-m2-handoff.md`, M8) è un costo di località delle GPU immediate-mode. Resta un costo del draw uber che non dipende dall'ordine, a 10 000 più alto che su AMD (+0.011).
+- HEAD − passo 4: da −0.082 a +0.004 ms a 1 000 e 10 000, +0.11 a 100 000, dentro il rumore.
+- D3 sull'M2: a 100 000 i 22 pass del sort vanno in fila, senza sovrapporsi (timeline di 362 frame, `assets/2026-09-29-mac-m2/m8-diag-sort-timeline-100k.json`). La catena, dalla fine del cull all'ultimo scatter, dura in media 0.764 / 0.695 ms (tutte a 0 / distinte), al massimo 0.951 / 0.995 ms. Soglia rispettata.
