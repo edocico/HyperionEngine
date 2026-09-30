@@ -40,14 +40,14 @@
  *    averages out.
  * 3. **Only passes with work are measured.** On Metal a pass without
  *    sampled work leaves stale stamps: a compute pass both of its indices'
- *    previous values (0 on a fresh query set), a render pass its end, while
- *    its beginning is fresh (probes 2 and 4). So a pass that recorded no
- *    draw or dispatch counts 0 ms, whatever its stamps. A render pass whose
- *    only command is an empty render bundle counts as work but is not
- *    sampled, so its frames are discarded: as `zero` while its end index
- *    was never sampled, as `reversed` once an earlier sampled pass wrote
- *    it (or `stale` after a backward jump of the timer). Give that node
- *    `profile: false`.
+ *    previous values (on a fresh query set: 0 in Chrome, a destroyed set's
+ *    stamps in Safari 27, M12), a render pass its end, while its beginning
+ *    is fresh (probes 2 and 4). So a pass that recorded no draw or dispatch
+ *    counts 0 ms, whatever its stamps. A render pass whose only command is
+ *    an empty render bundle counts as work but is not sampled, so its
+ *    frames are discarded: as `zero` while its end index was never sampled
+ *    (Chrome), as `reversed` once an earlier sampled pass wrote it (or
+ *    `stale` if the timer jumps back). Give that node `profile: false`.
  *
  * ## Cost when disabled
  *
