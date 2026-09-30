@@ -6,18 +6,18 @@ Piano: `docs/handoff/2026-09-29-mac-m2-handoff.md`, sezione 4 (M0-M13). Regole: 
 
 | Voce | Valore |
 |---|---|
-| Branch / HEAD | `test/mac-m2-gpu` · base `f4a755d` (master), primo commit `22fd6b0` (solo `.node-version`, nessuna modifica al motore) |
+| Branch / HEAD | `test/mac-m2-gpu` · base `f4a755d` (master), primo commit `22fd6b0` (solo `.node-version`, nessuna modifica al motore) · chiusura: intervallo `22fd6b0..cdea7ce` (88 commit dopo il primo); i commit di questa chiusura (intestazione del README, handoff §9, `CLAUDE.md`, un commento di `gpu-profiler.test.ts`) vengono dopo `cdea7ce`. Ogni sezione qui sotto riporta il HEAD a cui è stata presa |
 | Macchina | MacBook Pro 14" (Mac14,9), Apple M2 Pro, GPU 16 core, Metal 4, 16 GB |
 | `sw_vers` | macOS 27.0.1 (26A434) |
 | Chrome | 154.0.8037.58 (stable, `/Applications`), avviato da chrome-devtools-mcp |
 | Safari | 27.0.1 (build 22625.1.29.11.28), pilotato con `safaridriver` 27.0.1 in M12 |
-| Adapter | `[Hyperion] WebGPU adapter: apple / metal-3 / 0x0000, subgroups 32-32` — `description` "Apple M2 Pro", `isFallbackAdapter` false |
-| Subgroup | 32-32: il cancello `subgroupCullSupported` si apre, il renderer vivo usa il percorso cull a subgroup |
-| dpr / finestra CSS | dpr 2 · schermo 1512×982 · finestra CSS 1200×689 · canvas 1960×1248 (2026-09-29, 2.9) |
+| Adapter | Chrome: `[Hyperion] WebGPU adapter: apple / metal-3 / 0x0000, subgroups 32-32` — `description` "Apple M2 Pro", `isFallbackAdapter` false. Safari (M12): `[Hyperion] WebGPU adapter: apple / apple / apple` (vendor, architecture, device e description valgono tutti "apple"), `isFallbackAdapter` false, nessun range di subgroup (`adapter-safari.json`) |
+| Subgroup | Chrome: 32-32, il cancello `subgroupCullSupported` si apre, il renderer vivo usa il percorso cull a subgroup. Safari: nessun `subgroups` (né `subgroup-size-control`), `useSubgroups` è false e il cull va per il percorso atomic |
+| dpr / finestra CSS | dpr 2 · schermo 1512×982 · finestra CSS 1200×689 · canvas 1960×1248 (2026-09-29, 2.9). Safari (M12): finestra impostata via WebDriver a 1200×741, viewport CSS 1200×689, dpr 2, canvas 1960×1248, la stessa inquadratura di Chrome. M8 e M9: canvas 1920×1080, dpr 2 (in M9 con `resize(1920, 1080)`, finestra CSS 1200×689 invariata) |
 | WASM dell'harness | `npm --prefix ts run build:wasm` rifatta a `22fd6b0` (199970 B; `preflight --full` aveva lasciato in `ts/wasm` la build con il secondo `wasm-opt`) |
-| Display | integrato Liquid Retina XDR, 1512×982 punti (3024×1964 px) a 120 Hz (ProMotion) |
-| Alimentazione | 2026-09-29, inizio sessione: **batteria** (94 %, nessun alimentatore), Low Power Mode 0. I timing (M7-M9) solo con l'alimentatore collegato: annotarne i watt (il 2026-09-29 c'era un 35 W, specifica 67 W) |
-| Etichetta dei timing | "Apple M2 Pro (16-core GPU) / Metal, Chrome 154.0.8037.58" |
+| Display | integrato Liquid Retina XDR, 1512×982 punti (3024×1964 px) a 120 Hz (ProMotion); rAF a 120 Hz in Chrome, a 60 Hz in Safari (M12) |
+| Alimentazione | Per sessione. 2026-09-29, inizio sessione: **batteria** (94 %, nessun alimentatore), Low Power Mode 0 (il 2026-09-29 c'era un 35 W, specifica 67 W). 2026-09-30, Task 8 (M7 con il profiler nuovo): **batteria** (80 % alle 04:45, 77 % alle 04:55, `pmset -g batt`), Low Power Mode non annotato; è una verifica di funzionamento, non un benchmark. M8 e M9: **alimentatore** collegato, `pmset -g adapter` 65 W (Apple USB-C da 67 W), Low Power Mode 0; in M8 il Mac è stato a batteria dalle 09:17:31 alle 09:20:01, prima di ogni misura. M12: **alimentatore**, batteria al 100 %, Low Power Mode 0 (§ M12: `pmset -g batt` "AC Power"; i 65 W sono annotati solo nel giro di correzione, in `wgsl-compile-all-safari.json` e `m12-profiler-sort-safari.json`) |
+| Etichetta dei timing | Chrome: "Apple M2 Pro (16-core GPU) / Metal, Chrome 154.0.8037.58"; Safari (M12): "Apple M2 Pro / Metal, Safari 27.0.1" |
 
 Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`, profilo `~/.cache/chrome-devtools-mcp/chrome-profile-webgpu`), "stock" = `chrome-devtools` (nessun flag).
 

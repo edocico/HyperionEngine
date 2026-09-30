@@ -1035,3 +1035,88 @@ Se il branch del Mac non è ancora su master, al posto di `git switch master` va
 - `docs/plans/assets/2026-09-27-transparent-sort-bench.js` e `…-bench-step{0,1,3,4}.json`, con i label `5c97619`, `c57a4c1`, `6ff494f`, `608a113`;
 - `docs/plans/assets/2026-09-27-transparent-sort-validate-wgsl.js` e `…-validate-sort-wgsl.js`;
 - `.claude/skills/gpu-check/SKILL.md` e `scripts/pixels.py`; `.claude/hooks/README.md`, che spiega come verificare un hook.
+
+---
+
+## 9. Esito sul Mac
+
+I test GPU sul Mac sono finiti: M0-M10 e M12 fatti, M11 saltato per decisione dell'utente. Il lavoro è del 2026-09-29 e del 2026-09-30, sul branch `test/mac-m2-gpu` (da `22fd6b0` a `cdea7ce`, 88 commit dopo il primo). Prove, timing e note di ogni test, con l'intestazione (macchina, versioni di Chrome e Safari, adapter, dpr, display, alimentazione per sessione), stanno nel README: [`docs/plans/assets/2026-09-29-mac-m2/README.md`](../plans/assets/2026-09-29-mac-m2/README.md). Qui c'è solo il riassunto.
+
+### 9.1 Esito per test
+
+- **M0** passa: adapter `apple / metal-3`, subgroups 32-32, il cull usa il percorso a subgroup, nessun errore GPU all'avvio (`adapter-chrome.json`).
+- **M1** passa: i 7 moduli composti con le 19 pipeline, gather e sort, e gli altri moduli WGSL dell'app (17 su 17) compilano su Metal senza messaggi (`wgsl-validation.json`, `wgsl-compile-all.json`).
+- **M2** passa: harness in Mode B, verdetti uguali al riferimento AMD.
+- **M3** passa: harness in Mode C, 2D Twins 6/6.
+- **M4** passa: baseline di pixel dell'M2, stabilità in B e in C `PASS`, verdetti uguali ad AMD; il cancello dopo i fix dà PASS in B e in C.
+- **M5** passa: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto e i controlli negativi hanno i denti; il cancello `subgroupCullSupported` a 32-32 è giusto per Apple.
+- **M6** passa: Mode A parte, nessun `fail`, disegna.
+- **M6b** passa: A e B uguali al pixel; a mondo vuoto A tiene l'ultimo frame, la lacuna nota del passo 10.
+- **M6c** passa: la qualità delle luci e l'input del sort arrivano al render worker.
+- **M7** passa con il profiler nuovo (Task 8, a batteria): voci e span in B e in C, 0 scarti dopo il riscaldamento. Con il profiler vecchio falliva: zeri anche con il flag.
+- **M8** passa: D3 rispettata (la catena del sort dura 0,70-0,76 ms di media, massimo 0,995); il +1 ms di AMD con depth distinte non si riproduce sull'M2 e il meccanismo non è misurato; resta un costo del draw uber di +0,21/+0,23 ms a 10 000.
+- **M9** misurato: la lighting costa circa 4 ms di span a 1920×1080 (A/B `lit` contro `off`, il metodo scelto dall'utente), e il frame resta a 120 fps.
+- **M10** bug confermato e corretto (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal.
+- **M11** saltato per decisione dell'utente: nessun target solo-ASTC.
+- **M12** passa (Safari 27.0.1 con `safaridriver`): WebKit accetta il `diagnostic(off, derivative_uniformity);` dell'uber e ne ha bisogno; B, C e A danno i verdetti di Chrome check per check, tranne 'Suspend/resume' di Audio, che senza un gesto vero resta appeso; il profiler dà tutte le voci con 0 scarti, sort dal vivo compreso. Due anomalie di WebKit sui timestamp, senza effetti misurati sul profiler; restano casi non provati (README § M12). La strada `safaridriver` del §4 ("non ancora verificata") ora è verificata, con le avvertenze del README: Safari in primo piano, nessuna console.
+- **M13** nota, senza test a parte: coperta da M1-M3 e M6, la cui console ha solo il 404 di `favicon.ico`.
+
+### 9.2 Fix del motore fatti sul branch
+
+I dettagli, i test e le misure dei fix stanno nel README, sezione "Fix fatti sul branch", e nel messaggio di ciascun commit.
+
+- **M10**, `f1b8ba9`: la crescita di un tier compresso copia ogni mip in blocchi 4×4 interi. Prima l'encoder diventava invalido e la vecchia texture veniva distrutta con tutti i layer.
+- **F4**, `db55fed`: il composite del bloom usa la curva PBR Neutral di Khronos, la stessa di `fxaa-tonemap`.
+- **F1**, `ba3fb6f`: una bezier con il punto di controllo a metà corda disegna il segmento.
+- `c1b513d` (solo documentazione): `{ unit: 'px' }` sono pixel del device, decisione dell'utente.
+- `cd8e398`: il check 'Bloom' misura il solo bagliore, a intensità 0 contro 0.5; PBR Neutral resta il default di `enableBloom`, decisione dell'utente.
+- **Bezier quasi dritte**, `ad91e4f` e `cb0ddc6`: la fascia di cancellazione a 35,26° e 144,74° (un candidato di Newton dalla corda) e la sua causa vera, la radice cubica piccola presa da Vieta.
+- **Il profiler con i `timestampWrites` sui pass veri** (M7, decisione dell'utente del 2026-09-29): design `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-design.md`, piano `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`. I 9 commit di codice sono `f96bc1c dfb1a88 ee0df52 967e45b f324c70 f6e104b 7b92eb5 c9393f2 89aae6d`; `getGpuFrameTiming()` viene da `f324c70`.
+- `08e2a5d`: dopo `cd8e398` il check 'Bloom' in Mode A falliva, perché non c'è un renderer sul main thread; ora salta, e Mode A non ha più nessun `fail`.
+- `0726c98` e `a2eb377`: il flake di teardown del LeakDetector (`npm test` usciva con 1 a test tutti verdi, `EnvironmentTeardownError`). `Hyperion.destroy()` spegne per prima cosa il rilevatore (`dispose()`) e `hyperion.test.ts` distrugge ogni motore che costruisce.
+
+### 9.3 Adattamenti della sezione 6
+
+Applicati 6.1-6.25, in commit separati sullo stesso branch (le correzioni comprese); tutti i commit portano il numero nell'oggetto (`git log --oneline --grep='(tools): 6\.'`).
+
+| # | Cosa | Commit |
+|---|---|---|
+| 6.1 | La descrizione di `gpu-check` nomina un adapter hardware | `ec920f0` |
+| 6.2 | `gpu-check` §3 diviso per macchina, un reload non porta con sé l'initScript | `da42961`, `747773d` |
+| 6.3 | `gpu-check` §1: un `ts/wasm` assente non passa per fresco | `6e9faa3` |
+| 6.4 | `gpu-check`: sezione Mode A, report del Mac; il check Bloom salta in Mode A | `fb67534`, `08e2a5d`, `411db5d`, `b9d5312` |
+| 6.5 | `pixels.py` e `gpu-check` §6: il dpr si legge sempre, `python3` con Pillow | `45c6cb4` |
+| 6.6 | `close-phase`: il percorso della memoria si calcola dal clone | `41e277c`, `5d0e1ad` |
+| 6.7 | `CLAUDE.md`: la riga dell'adapter divisa per macchina | `7595c82` |
+| 6.8 | `CLAUDE.md`: il cull a subgroup, esito di M0 e M5 | `1f39e7c` |
+| 6.9 | `CLAUDE.md`: `timestamp-query`, il flag di `chrome-devtools-gpu` sul Mac | `46e6bb7` |
+| 6.10 | `CLAUDE.md`: il dpr dei controlli con `take_screenshot` si legge a ogni sessione | `de4cb24` |
+| 6.11 | `CLAUDE.md`: grep e zsh | `f8ef546`, `e569eaf` |
+| 6.12 | `CLAUDE.md`: la riga "macOS setup" nelle dipendenze | `212396c`, `ba460a3` |
+| 6.13 | `CLAUDE.md`: l'elenco delle skill, `/gpu-check` non solo sull'AMD | `6c65035` |
+| 6.14 | `CLAUDE.md`: i plugin (la mappa non li elenca tutti, il token di `github` manca sulla Fedora) | `baa98dd`, `3c338ac` |
+| 6.15 | `CLAUDE.md`: "Metal verified at `22fd6b0`" dopo M1-M3 | `a83a4c6` |
+| 6.16 | `CLAUDE.md`: le note su Mode A con gli esiti di M6, M6b e M6c | `dc0a9e1`, `7f5d6c1` |
+| 6.17 | `adversarial-review`: i file di scratch nella scratchpad di sessione | `6e44281` |
+| 6.18 | `wgsl-validator`: i moduli composti in una cartella da `mktemp` | `83d20e5`, `19827b7` |
+| 6.19 | `new-primitive`: il costo di un reload completo, per macchina | `2ba9973` |
+| 6.20 | `claude-md-auditor`: classi POSIX al posto di `\s` | `c153a12` |
+| 6.21 | `determinism-cross-version.mjs`: la ricetta crea `$SB/old`, confronto solo wasm | `e1cdc7b`, `a0d1d81` |
+| 6.22 | `build:wasm:opt` fallisce in modo esplicito senza `wasm-opt` | `dc7fcdb`, `5ff62f4` |
+| 6.23 | `capabilities.ts`: il messaggio di fallback spiega il caso macOS | `b810f84`, `9f49fc5` |
+| 6.24 | Le intestazioni di `bench.js` e `capture.js`, la guardia "nessun campione" nel bench | `d5ac56c`, `3cad44e` |
+| 6.25 | `compare.mjs`: la guardia del main risolve i link simbolici | `c2b4e02`, `85c25d0` |
+
+Restano fuori: la 6.26 (alla ripresa del giro, insieme all'utente), la 6.27 (condizionale: solo se si aggiunge un altro server MCP per un browser) e la 6.28 (un'idea, non ora).
+
+### 9.4 Domande per l'utente
+
+1. **Audio nelle esecuzioni automatiche (M12).** Senza un gesto vero il `setup` della sezione Audio non finisce mai, e il `SectionSwitcher` trattiene tutti i tab dopo di lui: un run automatico con il `tab.click()` del runner l'ha incontrato in B, in C e in A. Serve un timeout sul `resume` di Audio, o sul `setup` delle sezioni in generale? Nel motore non è stato cambiato niente (README § M12).
+2. **Il costo del draw uber, passo 3→4.** Sull'M2 vale circa +0,21/+0,23 ms a 10 000 (M8), indipendente dalla distribuzione delle depth. Conta?
+3. **Le decisioni in sospeso del giro**: passi 6, 7, 8 e 10 (il passo 8b non ne ha), nella memoria `round-pending-decisions`, da chiedere ora che i test sul Mac sono finiti. Il passo 10 (`powerPreference`) va letto alla luce di M6 e M12: Mode A funziona sul Mac senza (in Chrome con M6, in Safari con M12), e la lacuna del mondo vuoto in Mode A, la parte (a) del passo 10 secondo la 6.26, l'ha confermata M6b.
+4. **Non è una domanda: il meccanismo del +1 ms di AMD.** Sull'M2 non si riproduce (M8); si chiude solo rifacendo il bench `/2` sulla Fedora con l'AMD. È un lavoro futuro su Linux (§7), non una decisione.
+
+### 9.5 Fuori da questa chiusura
+
+- La copia della memoria in `docs/handoff/claude-memory/` (§7).
+- Il merge di `test/mac-m2-gpu` su master, che per §5 si chiede all'utente: a `cdea7ce` il branch è 89 commit avanti a master (`f4a755d`).
