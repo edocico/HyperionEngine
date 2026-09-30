@@ -179,10 +179,16 @@ cannot see: DOM overlays, and anything in Mode A (§7: there `vp` is the render 
    `/usr/bin/python3` has none and dies with `ModuleNotFoundError: No module named 'PIL'`, which is
    what a shell with a bare PATH gets. If Pillow lives in a venv, call `<venv>/bin/python` instead.
 
-`<out>` is a directory inside the repo: the MCP servers write only within their workspace roots,
-and on the Mac the session scratchpad (`/private/tmp/...`) was refused with
-`Access denied: ... is not within any of the configured workspace roots`. Use the gitignored
-`target/gpu-check`; the tools create it.
+`<out>` is ONE absolute path, the same string for the MCP tools (paste it expanded into `filePath`:
+they do not expand `$OUT`) and for `pixels.py`:
+`OUT="$(git rev-parse --show-toplevel)/target/gpu-check"`, gitignored, created by the tools. Never a
+relative one: chrome-devtools-mcp resolves it against ITS cwd, the main checkout (`lsof -a -p <pid>
+-d cwd`), and `pixels.py` against the shell's, so from a worktree `take_screenshot` writes into the
+main checkout and `pixels.py` then finds nothing in the worktree. The servers write only within
+their workspace roots (the directory the session was opened on, worktrees under `.claude/worktrees/`
+included) and `os.tmpdir()` (`$TMPDIR`, `/var/folders/…/T` on the Mac), so `$TMPDIR/gpu-check` works
+too; the session scratchpad (`/private/tmp/...`) is outside both and was refused with
+`Access denied: ... is not within any of the configured workspace roots`.
 
 With animated lights, compare points inside ONE screenshot (e.g. points symmetric about a light),
 never across two. To test another canvas aspect, `resize_page`, then re-enter the tab (its setup
