@@ -21,6 +21,11 @@ Piano: `docs/handoff/2026-09-29-mac-m2-handoff.md`, sezione 4 (M0-M13). Regole: 
 
 Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`, profilo `~/.cache/chrome-devtools-mcp/chrome-profile-webgpu`), "stock" = `chrome-devtools` (nessun flag).
 
+**Nota sui JSON (aggiunta il 2026-09-30).** Tre campi dicono più di quanto è stato misurato. I JSON restano come sono stati registrati; fa fede questo README.
+- `lighting-cost.json`, `environment.otherBrowser` ("its only page on about:blank for the whole run"): la pagina dell'altro browser è stata controllata solo all'inizio e alla fine della corsa (§ M9).
+- `m12-probe5-safari.json`, `stampAnomalies.reading[1]`: che WebKit riusi la memoria di un query set distrutto senza azzerarla è una spiegazione, non una misura. Misurato è solo l'effetto: 12 casi su 12 (§ M12).
+- `m12-profiler-safari.json`, `timestampResolution.what`: i "24 MHz" sono dedotti dalla griglia di 41,667 ns, non misurati.
+
 ## Esiti
 
 | ID | Esito | Prove |
