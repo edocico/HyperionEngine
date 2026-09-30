@@ -12,7 +12,7 @@
 //
 // Come si usa (esempio: l'upgrade rapier 0.32 -> 0.34 del 2026-08)
 // ----------------------------------------------------------------
-//   SB=/tmp/detcmp && mkdir -p $SB
+//   SB=$(mktemp -d); mkdir -p $SB/old
 //   git archive <ref-vecchia> | tar -x -C $SB/old
 //   (cd $SB/old/crates/hyperion-core && wasm-pack build --target web \
 //        --out-dir $SB/out-old -- --features "physics-2d dev-tools")
@@ -24,6 +24,8 @@
 //   done
 //
 // Le due righe di ogni scenario devono coincidere carattere per carattere.
+// Il confronto è solo wasm contro wasm (out-old e out-new sono entrambi build
+// wasm32): mai contro un build nativo, vedi ATTENZIONE qui sotto.
 //
 // ATTENZIONE — la bit-exactness vale PER TARGET, non fra target
 // -------------------------------------------------------------
