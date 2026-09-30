@@ -30,9 +30,52 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5173/
 Not `200` → start it in the background (Bash `run_in_background`):
 `npm --prefix ts run dev -- --strictPort --port 5173`.
 
-## 3. Load the harness on the AMD adapter
+## 3. Load the harness on a hardware adapter
 
-Use the **chrome-devtools-gpu** server (the one launched with the Vulkan flags). On this machine the
+Which machine: `uname -s` says `Darwin` on the Mac and `Linux` on the Fedora box. On both, read the
+adapter line before trusting anything (`list_console_messages`, types `log`/`info`/`warn`):
+`[Hyperion] WebGPU adapter: <vendor> / <architecture> / <device>, subgroups <min>-<max>` must name
+the hardware GPU and must not carry `SOFTWARE FALLBACK`.
+
+### Mac (Apple M2, macOS, Chrome stable)
+
+One GPU, Metal, hardware WebGPU with no flag: no adapter initScript (the low-power one below is
+Fedora-only), and Mode A can be checked. Two Chrome servers, two roles: **chrome-devtools-gpu**
+(launched with `--enable-webgpu-developer-features`, persistent profile) for GPU timings, because
+the flag lifts Chrome's 65 536 ns timestamp quantization, and **chrome-devtools** (no flags, what a
+user's Chrome does) for stock behaviour. Either one gives the pass/fail verdicts.
+
+`navigate_page` with `type: "url"`, `url: "http://localhost:5173/?mode=B"` and `ignoreCache: true`,
+WITHOUT an `initScript`. Quote the URL in any shell command (zsh: `?` is a glob). The adapter line
+must say Apple and not a fallback: `apple / metal-3 / 0x0000, subgroups 32-32` on the gpu server
+(the stock Chrome leaves the device out: `apple / metal-3, subgroups 32-32`). A reload after a TS
+edit is harmless: with one GPU and no initScript to reapply nothing is lost, so run the tabs again.
+Then run `?mode=C` and `?mode=A` too, each loaded the same way and with its own adapter line (in
+Mode A the render worker prints it, and `list_console_messages` shows worker messages: no DevTools
+context switch is needed).
+
+Long `evaluate_script` runs (the all-tabs runner: 35 s with its 3.5 s waits per tab, more with the
+7 s the slow tabs want) start from a navigation that carries the anti-reload initScript. In the
+Vite 6.4 client ANY close of the HMR WebSocket, even a clean one, ends in `location.reload()`
+(`vite:ws:disconnect`, then `waitForSuccessfulPing`), and the run dies with
+`Execution context was destroyed`: it happened twice on 2026-09-29, with the same server process
+and nothing in its log. The script wraps `WebSocket` for the `vite-hmr` protocol only, records each
+close in `window.__viteWsCloses` and in the console (a `[mac-m2 test] vite-hmr websocket closed`
+warning), and stops the reload; it touches neither the adapter nor the engine. Verbatim, from
+`docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md` (Task 8), as the `initScript` of
+`navigate_page`:
+
+```js
+(() => { const Native = window.WebSocket; window.__viteWsCloses = []; function Patched(url, protocols) { const ws = protocols === undefined ? new Native(url) : new Native(url, protocols); const proto = Array.isArray(protocols) ? protocols.join(',') : String(protocols ?? ''); if (proto.includes('vite-hmr')) { ws.addEventListener('close', (e) => { const rec = { t: new Date().toISOString(), perf: Math.round(performance.now()), code: e.code, reason: e.reason, wasClean: e.wasClean }; window.__viteWsCloses.push(rec); console.warn('[mac-m2 test] vite-hmr websocket closed, reload suppressed: ' + JSON.stringify(rec)); e.stopImmediatePropagation(); }); } return ws; } Patched.prototype = Native.prototype; Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 }); window.WebSocket = Patched; })()
+```
+
+Like any initScript it applies to ONE navigation (a plain `reload` drops it: pass it again), and
+after a suppressed close the page gets no more HMR updates until the next navigation. An empty
+`window.__viteWsCloses` at the end of a run means the socket never dropped.
+
+### Fedora (AMD iGPU + NVIDIA, Chrome with the Vulkan flags)
+
+Use the **chrome-devtools-gpu** server (the one launched with the Vulkan flags). On the Fedora box the
 NVIDIA adapter cannot present to a canvas, so force the low-power one — `navigate_page` with
 `type: "url"`, `url: "http://localhost:5173/?mode=B"`, `ignoreCache: true` and this `initScript`:
 
@@ -41,8 +84,8 @@ GPU.prototype.requestAdapter = (o => function (x) { return o.call(this, { ...(x 
 ```
 
 Then read the adapter line (`list_console_messages`, types `log`/`info`/`warn`): it must say AMD,
-not nvidia and not a software fallback (SwiftShader). Mode A cannot be checked here: the initScript
-does not reach workers, which then pick NVIDIA and lose the device.
+not nvidia and not a software fallback (SwiftShader). Mode A cannot be checked on the Fedora box: the
+initScript does not reach workers, which then pick NVIDIA and lose the device.
 
 The initScript applies to ONE navigation. An edit Vite cannot hot-swap — any TS module, a demo
 section included — reloads the page without it: the reload gets NVIDIA and loses the device at its
