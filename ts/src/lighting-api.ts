@@ -27,14 +27,20 @@ const BACKEND_NAMES: readonly LightingBackend[] = ['off', 'lit', 'gi'];
  * Renderer-side quality settings.
  *
  * Unlike ambient and backend these never reach WASM: they size textures and
- * pick loop counts, which is entirely a rendering concern. They take effect on
- * the next graph rebuild.
+ * pick loop counts, which is entirely a rendering concern. `setQuality()`
+ * stores them and the next `tick()` hands them to the renderer (in Mode A, by
+ * message to the render worker); nothing is rebuilt. What each key does today
+ * is written on the key: only `shadowSteps` changes anything.
  */
 export interface LightingQuality {
   /**
    * Resolution of the light buffer and the SDF, as a fraction of the canvas.
    * Default 0.5 — Unity ships the same default and documents it as "good
    * performance with almost no noticeable artifact in most situations".
+   *
+   * Not honoured yet: the lit backend fixes the light buffer and the SDF at
+   * half resolution. Another value is stored (and returned by `quality`) but
+   * changes nothing; the renderer warns once per key.
    */
   bufferScale: number;
   /**
@@ -44,6 +50,10 @@ export interface LightingQuality {
    * both axes, so the rect is 1.4x per axis — **1.96x the pixels**. Godot ships
    * 1.2 by default; Hyperion defaults to 1.0 and asks you to measure the edge
    * artifact before paying for it.
+   *
+   * Not honoured yet: the lit backend adds no padding (the default 1.0).
+   * Another value is stored (and returned by `quality`) but changes nothing;
+   * the renderer warns once per key.
    */
   sdfOversize: number;
   /**
@@ -52,15 +62,23 @@ export interface LightingQuality {
    * spend their budget 1-2 texels at a time. Most rays end long before the
    * budget, so it costs little: 24 -> 48 was +2% of light-accum on the AMD
    * iGPU (2026-09-26).
+   *
+   * Honoured by the lit backend, and read every frame (`FrameState.shadowSteps`
+   * goes into the light-accumulation uniform): it applies from the next frame,
+   * with no graph or pipeline rebuild.
    */
   shadowSteps: number;
-  /** Cascade count. Backend `gi` only. Default 6. */
+  /**
+   * Cascade count. Backend `gi` only. Default 6. `gi` is not implemented (it
+   * runs unlit, with one warning), so this changes nothing yet.
+   */
   cascades: number;
   /**
    * Forbid temporal reprojection, stochastic merge and multi-frame
    * amortisation. All three break frame-to-frame determinism, and all three
    * are exactly what one would reach for under performance pressure — hence a
-   * flag rather than a convention. Default true.
+   * flag rather than a convention. Default true. Like `cascades` it belongs to
+   * the `gi` backend, so it changes nothing yet.
    */
   deterministic: boolean;
 }
@@ -159,7 +177,16 @@ export class LightingAPI {
     return [rs?.ambientR ?? 0, rs?.ambientG ?? 0, rs?.ambientB ?? 0, rs?.ambientIntensity ?? 1];
   }
 
-  /** Merge quality settings over the current ones. Takes effect on the next graph rebuild. */
+  /**
+   * Merge quality settings over the current ones.
+   *
+   * Nothing is rebuilt: the next `tick()` hands the merged settings to the
+   * renderer (in Mode A, by message to the render worker), so a change shows
+   * from the next frame the renderer draws. Only `shadowSteps` has an effect
+   * today. `bufferScale` and `sdfOversize` are stored and warned about (the
+   * lit backend fixes both), and `cascades` and `deterministic` belong to the
+   * `gi` backend. See {@link LightingQuality}.
+   */
   setQuality(quality: Partial<LightingQuality>): void {
     for (const [key, value] of Object.entries(quality)) {
       if (typeof value === 'number' && !Number.isFinite(value)) {
@@ -184,7 +211,11 @@ export class LightingAPI {
     return { ...this._quality };
   }
 
-  /** @internal True once `setQuality` ran, until the renderer consumes it. */
+  /**
+   * @internal True once `setQuality` ran, until the renderer consumes it. The
+   * name is historical: consuming it rebuilds nothing, it hands the settings
+   * to the renderer.
+   */
   get _needsRebuild(): boolean {
     return this._qualityDirty;
   }
