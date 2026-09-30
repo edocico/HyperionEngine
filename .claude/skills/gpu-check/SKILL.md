@@ -11,11 +11,15 @@ tab labels to run, e.g. `/gpu-check Lighting` — default is every tab.
 The harness imports `ts/wasm/hyperion_core.js` (`build:wasm`: default features, **no physics-2d**).
 
 ```bash
+[ -f ts/wasm/hyperion_core_bg.wasm ] || echo MISSING
 find crates/hyperion-core/src crates/hyperion-core/Cargo.toml -newer ts/wasm/hyperion_core_bg.wasm \( -name '*.rs' -o -name Cargo.toml \) | head -3
 ```
 
-Any output → `npm --prefix ts run build:wasm` first. Physics behaviour is not in this build at all:
-verify it with `cargo test -p hyperion-core --features physics-2d --test verify_physics`.
+`MISSING` or any listed file → `npm --prefix ts run build:wasm` first. The first line is not
+decoration: `ts/wasm` is generated and gitignored, so a fresh clone or worktree has none, and
+`find -newer` against a file that does not exist prints nothing on stdout (its error goes to
+stderr), which reads exactly like "fresh". Physics behaviour is not in this build at all: verify it
+with `cargo test -p hyperion-core --features physics-2d --test verify_physics`.
 
 ## 2. Dev server
 
