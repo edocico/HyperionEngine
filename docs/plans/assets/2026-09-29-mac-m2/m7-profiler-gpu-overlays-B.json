@@ -1,0 +1,1 @@
+{"bounds":{"name":"bounds-visualizer","averageMs":2.2128400416666674,"lastMs":1.254897,"sampleCount":120},"timed":{"name":"probe-timed","averageMs":0,"lastMs":0,"sampleCount":120},"optedOut":true,"discarded":0,"names":["cull","light-groups/seed","light-groups/sdf","light-groups/accum","forward","fxaa-tonemap","bounds-visualizer","probe-timed"]}

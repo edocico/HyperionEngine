@@ -33,8 +33,8 @@ Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`,
 | M6 | **passa**: Mode A parte, nessun `fail`, disegna | `m6-tabs-A.json`, `m6-primitives-A.png`, `m6-lighting-A.png` |
 | M6b | **passa**: A = B al pixel; mondo vuoto come atteso | `m6b/` |
 | M6c | **passa**: qualità e input del sort arrivano al render worker | `m6c-*.png`, `m6c-sort-map.json` |
-| M7 | **fallisce**: zeri anche con il flag, perché i marker del profiler sono pass vuoti (un pass non campionato lascia lo stamp precedente, e i loro indici non li scrive mai nessuno) | `m7-timestamps-{gpu,stock}.json`, `m7-timestamp-probe-{gpu,stock}.json`, `m7-probe2-stale-empty-gpu.json` |
-| M8, M9 | **fermi**: dipendono da M7, aspettano la scelta sui timestamp | — |
+| M7 | **passa** con il profiler nuovo (Task 8 del piano): voci e span in B e C, 0 scarti dopo il riscaldamento, quantizzazione a 65 536 ns solo sullo stock, overlay misurato e opt-out, stage del sort misurati. Con il profiler vecchio falliva: zeri anche con il flag, perché i marker erano pass vuoti | `m7-profiler-{gpu,stock}-B.json`, `m7-profiler-gpu-C.json`, `m7-profiler-gpu-overlays-B.json`, `m7-profiler-{gpu,stock}-bench.json`; diagnosi del profiler vecchio: `m7-timestamps-{gpu,stock}.json`, `m7-timestamp-probe-{gpu,stock}.json`, `m7-probe2-stale-empty-gpu.json` |
+| M8, M9 | **pronti**: aspettano l'alimentatore | — |
 | M10 | **bug confermato e corretto** (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal | `m10-tier-growth.json`, `m10-tier-growth-after-fix.json` |
 | M5 | **passa**: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto; i controlli negativi hanno i denti | `cull-subgroup-check.js`, `cull-subgroup-check.json` |
 
@@ -153,6 +153,41 @@ Tre entità 2D nell'origine con camera in (0,0,0) e zoom 1: quad bianco in x = -
 
   Su un query set appena creato il compute vuoto e la coppia non usata danno 0: gli zeri di M7 vengono da lì, perché nel profiler i marker sono sempre pass vuoti e i loro indici non li scrive mai nessun pass vero. Un pass che la GPU non campiona non dà 0, ma lo stamp precedente di quell'indice. Un profiler con i `timestampWrites` sui pass veri deve quindi riconoscere gli stamp vecchi coppia per coppia. Draw e dispatch indiretti si campionano invece anche a conteggio 0. Il probe risponde alle domande del critico della valutazione sui pass dei plugin (decisione 1 sotto).
 - **Esito.** È il ramo "zeri anche con il flag" dell'handoff: il bench (M8) e il costo della lighting (M9) non si lanciano finché non c'è il profiler nuovo (decisione 1 sotto).
+- **Profiler nuovo (Task 8 del piano).** Il 2026-09-30, a HEAD `bba8cdc`: il profiler con i `timestampWrites` sui pass veri (Task 1-7 di `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`), con il dev server appena riavviato. Condizioni: **a batteria**, senza alimentatore (80 % alle 04:45 e 77 % alle 04:55, `pmset -g batt`); "Apple M2 Pro (16-core GPU) / Metal, Chrome 154.0.8037.58"; display a 120 Hz. È una verifica di funzionamento, non un benchmark. **Tutti i criteri del Task 8 passano.**
+  - **Voci e span** (`m7-profiler-gpu-B.json`, `m7-profiler-stock-B.json`, `m7-profiler-gpu-C.json`). `?mode=B` sul server gpu e sullo stock, `?mode=C` sul gpu; tab Lighting a 6/6, canvas 1960×1248, lo snippet del Task 8. La finestra di 120 frame validi si riempie in 1,10 s, a 120,7-120,8 fps; `skippedFrames` vale 0 (gpu B), 2 (stock B) e 0 (gpu C). Medie su 120 frame, in ms:
+
+    | Voce | gpu B | stock B | gpu C |
+    |---|---|---|---|
+    | span (`getGpuFrameTiming()`) | 4,810 | 4,036 | 4,227 |
+    | `scatter` | — | — | 0,015 |
+    | `cull` | 0,022 | 0,020 | 0,026 |
+    | `light-groups/seed` | 1,548 | 1,233 | 1,221 |
+    | `light-groups/sdf` | 32,040 | 25,305 | 24,742 |
+    | `light-groups/accum` | 4,489 | 3,370 | 3,356 |
+    | `forward` | 2,841 | 2,125 | 2,157 |
+    | `fxaa-tonemap` | 3,096 | 2,127 | 2,177 |
+    | somma delle voci ÷ span | 9,2 | 8,5 | 8,0 |
+
+    Ogni voce ha `sampleCount` 120 e `averageMs > 0`. `cull`, `forward`, `fxaa-tonemap` e `scatter` aprono un pass ciascuna e restano sotto lo span. Letta di nuovo 2 s dopo, la media di `forward` cambia del 7,0 %, dello 0,5 % e del 3,0 % (soglia: 25 %).
+  - **Sull'M2 una voce non è il costo del suo pass.** La somma delle voci vale 8-9 volte lo span, e `light-groups/sdf` da sola 5,9-6,7 volte, benché misuri una catena di 22 render pass (2 set × 11, a 980×624) in cui ognuno legge l'uscita del precedente. Gli intervalli dei pass si sovrappongono quindi anche fra pass dipendenti, e la durata di un pass comprende l'attesa di quelli prima: è la sovrapposizione di M7 (spec del profiler, §2 e §6.5). Di conseguenza seed + sdf + accum, 38,1 ms sul server gpu in B contro uno span di 4,8 ms, non è il costo della lighting che il passo 4 di M9 registra. Come leggerlo sull'M2 va deciso prima di M9: è una domanda per l'utente.
+  - **Scarti dopo il riscaldamento.** `discardsAfterWarmUp` vale 0 per tutti e sei i motivi (`unexecuted`, `truncated`, `zero`, `reversed`, `stale`, `empty`) nei tre run, e sono 0 anche i totali dalla creazione del profiler, riscaldamento compreso. Nessun avviso `GPU profiling`, né in `warnings` né in console.
+  - **Quantizzazione dello stock** (`m7-profiler-stock-B.json`). `forward.lastMs` = 2,359296 ms = 36 × 0,065536 ms. Tutti i 13 `lastMs` del file (le sei voci nelle due letture, più lo span) sono multipli interi di 65 536 ns: `cull` legge 0 in una lettura e 0,065536 ms nell'altra, con una media di 0,020 ms. Sul server gpu nessun `lastMs` è un multiplo (0 su 13 in B, 0 su 15 in C; `forward.lastMs` = 2,264632 ms, 34,56 quanti): il flag toglie la quantizzazione, come nel probe 6.
+  - **Overlay e opt-out** (`m7-profiler-gpu-overlays-B.json`: server gpu, `?mode=B`, tab Lighting, 3 s di profiling). Il pass del plugin `bounds-visualizer`, che disegna, è misurato da solo: 2,213 ms, 120 campioni. `probe-timed`, un pass esterno senza draw, vale 0 ms con 120 campioni e non invalida i frame. `probe-optout` (`profile: false`) non compare fra le voci. Frame scartati: 0.
+  - **Stage del sort** (`m7-profiler-gpu-bench.json`, `m7-profiler-stock-bench.json`). `?mode=B&bench`, `bench.js` invariato (formato `/2`), label `task8 smoke`, 10 000 quad trasparenti, target 1920×1080. In ogni risultato ci sono 120 campioni e 10 000 entità sulla GPU, e `sort`, `total` e `passSum` sono > 0. È la prima volta che i 22 pass del sort girano misurati su una GPU vera, e ogni stage è > 0 anche sullo stock. Medie in ms:
+
+    | | gpu `same` | gpu `distinct` | stock `same` | stock `distinct` |
+    |---|---|---|---|---|
+    | `gather` | 0,040 | 0,039 | 0,020 | 0,029 |
+    | `upsweep` | 0,420 | 0,374 | 0,125 | 0,121 |
+    | `scan` | 0,323 | 0,278 | 0,091 | 0,106 |
+    | `scatter` | 0,537 | 0,472 | 0,206 | 0,215 |
+    | `sort` | 1,320 | 1,163 | 0,442 | 0,471 |
+    | `forward` | 0,592 | 0,585 | 0,478 | 0,517 |
+    | `total` (span) | 2,784 | 2,613 | 1,571 | 1,671 |
+    | `passSum` | 2,996 | 2,788 | 1,786 | 1,914 |
+
+    Le colonne gpu e stock non si confrontano. Durante il bench del server gpu l'altro Chrome era ancora sulla tab Lighting, e i due Chrome di chrome-devtools-mcp girano con `--disable-renderer-backgrounding` e `--disable-backgrounding-occluded-windows`: la sua scena lit continuava a disegnare sulla stessa GPU. Durante il bench dello stock, invece, il server gpu mostrava il mondo vuoto del bench. Per M8 l'altra istanza va lasciata su `about:blank`.
+  - **Console.** A parte gli avvisi del ring buffer qui sotto, in ogni run ci sono solo le righe di Vite, dell'adapter (`apple / metal-3 / 0x0000` con il flag, `apple / metal-3` senza) e del modo, quella di `?bench` sulle pagine del bench e, una volta sullo stock, il 404 di `favicon.ico`. Nessun errore di validazione WebGPU e nessuna chiusura della WebSocket di Vite. Nella scena del bench compaiono 19 (gpu) e 16 (stock) avvisi `Ring buffer full, dropping command N`, con N = 3, 5, 15 e 16 (`SetPosition`, `SetScale`, `SetTransparent`, `SetDepth`), durante lo spawn in blocco delle 10 000 entità. Il testo inganna: è la contropressione, e `drainTo` (`backpressure.ts`) lascia il comando in coda e lo riscrive al flush successivo. Il bench misura solo con `overflowCount` 0 e 10 000 entità sulla GPU.
 
 ### M10 — Crescita dei tier compressi
 
