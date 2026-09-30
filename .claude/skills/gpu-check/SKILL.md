@@ -50,13 +50,14 @@ the flag lifts Chrome's 65 536 ns timestamp quantization, and **chrome-devtools*
 user's Chrome does) for stock behaviour. Either one gives the pass/fail verdicts.
 
 `navigate_page` with `type: "url"`, `url: "http://localhost:5173/?mode=B"` and `ignoreCache: true`,
-WITHOUT an `initScript`. Quote the URL in any shell command (zsh: `?` is a glob). The adapter line
-must say Apple and not a fallback: `apple / metal-3 / 0x0000, subgroups 32-32` on the gpu server
-(the stock Chrome leaves the device out: `apple / metal-3, subgroups 32-32`). A reload after a TS
-edit is harmless: with one GPU and no initScript to reapply nothing is lost, so run the tabs again.
-Then run `?mode=C` and `?mode=A` too, each loaded the same way and with its own adapter line (in
-Mode A the render worker prints it, and `list_console_messages` shows worker messages: no DevTools
-context switch is needed).
+WITHOUT the low-power adapter initScript (Fedora-only); for the §4 runner pass the anti-reload
+initScript below. Quote the URL in any shell command (zsh: `?` is a glob). The adapter line must
+say Apple and not a fallback: `apple / metal-3 / 0x0000, subgroups 32-32` on the gpu server (the
+stock Chrome leaves the device out: `apple / metal-3, subgroups 32-32`). A reload after a TS edit
+keeps the adapter (one GPU, nothing to force) but drops the anti-reload initScript: navigate again
+with it before a long run. Then run `?mode=C` and `?mode=A` too, each loaded the same way and with
+its own adapter line (in Mode A the render worker prints it, and `list_console_messages` shows
+worker messages: no DevTools context switch is needed).
 
 Long `evaluate_script` runs (the all-tabs runner: 35 s with its 3.5 s waits per tab, more with the
 7 s the slow tabs want) start from a navigation that carries the anti-reload initScript. In the
