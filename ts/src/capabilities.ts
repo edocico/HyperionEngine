@@ -176,10 +176,18 @@ export function describeAdapter(info: GPUAdapterInfo | undefined): { message: st
     ? `, subgroups ${info.subgroupMinSize}-${info.subgroupMaxSize ?? '?'}`
     : '';
   if (info.isFallbackAdapter) {
+    // Linux is fixed by adding flags, macOS by dropping them. Measured on Chrome 154 /
+    // Apple M2 Pro (2026-09-30), default adapter: no flags gives Metal;
+    // `--use-webgpu-adapter=swiftshader` alone, `--disable-gpu` and `--use-gl=disabled`
+    // give NO adapter (createRenderer then throws, never reaching this line); SwiftShader
+    // is offered only under `--enable-unsafe-webgpu`, and is the default adapter only with
+    // `--use-webgpu-adapter=swiftshader` too.
     return {
       message: `[Hyperion] WebGPU adapter: ${name}${subgroups} — SOFTWARE FALLBACK: GPU timings and features `
         + 'are not the hardware\'s. On Linux Chrome needs --enable-unsafe-webgpu --enable-features=Vulkan '
-        + '--use-angle=vulkan for the real GPU.',
+        + '--use-angle=vulkan for the real GPU. On macOS Chrome needs no flag: it offers a software adapter '
+        + 'only under --enable-unsafe-webgpu, and makes it the default with --use-webgpu-adapter=swiftshader, '
+        + 'so drop that flag.',
       fallback: true,
     };
   }

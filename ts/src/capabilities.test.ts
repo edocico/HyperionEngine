@@ -213,6 +213,38 @@ describe("describeAdapter", () => {
     expect(d.message).toMatch(/software fallback/i);
   });
 
+  it("says what a fallback means on each platform: Linux needs flags, macOS needs none", () => {
+    // Measured on Chrome 154 / Apple M2 Pro (2026-09-30), one separate headless
+    // instance per row, asking for the default adapter:
+    //   no flags                                          -> Metal, not a fallback
+    //   --use-webgpu-adapter=swiftshader                  -> NO adapter at all
+    //   --use-webgpu-adapter=swiftshader
+    //     --enable-unsafe-webgpu                          -> SwiftShader, a fallback
+    //   --disable-gpu, --use-gl=disabled, ...             -> NO adapter at all
+    // So on the Mac a fallback is SwiftShader chosen by flags, and the cure there
+    // is to DROP flags, the opposite of Linux.
+    const d = describeAdapter(info({ vendor: "google", architecture: "swiftshader", isFallbackAdapter: true }));
+    expect(d.fallback).toBe(true);
+    // Linux: the flags that hand Chrome the real GPU (all the message named before).
+    for (const flag of ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=vulkan"]) {
+      expect(d.message).toContain(flag);
+    }
+    // macOS: no flag needed, and the two flags that select SwiftShader together.
+    expect(d.message).toMatch(/macOS[^.]*no flag/i);
+    const mac = d.message.slice(d.message.indexOf("macOS"));
+    expect(mac).toContain("--use-webgpu-adapter=swiftshader");
+    expect(mac).toContain("--enable-unsafe-webgpu");
+  });
+
+  it("keeps the platform hints off a hardware adapter's line", () => {
+    // The line every Mac session starts with (M0, stock Chrome: no device id).
+    const d = describeAdapter(info({
+      vendor: "apple", architecture: "metal-3", subgroupMinSize: 32, subgroupMaxSize: 32,
+    }));
+    expect(d.fallback).toBe(false);
+    expect(d.message).toBe("[Hyperion] WebGPU adapter: apple / metal-3, subgroups 32-32");
+  });
+
   it("an adapter without info is unknown, not assumed to be hardware or fallback", () => {
     const d = describeAdapter(undefined);
     expect(d.fallback).toBe(false);
