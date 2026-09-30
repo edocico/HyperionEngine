@@ -1,6 +1,6 @@
 ---
 name: gpu-check
-description: Verify rendering on real WebGPU in the verification harness — rebuild ts/wasm if stale, load the harness on the AMD adapter, run every tab (or the ones named), report N/M passed, pending checks and console errors, and optionally sample screenshot pixels at world coordinates. Use after any change to rendering, shaders, the render graph, the command queue or the Rust engine, before calling it done.
+description: Verify rendering on real WebGPU in the verification harness — rebuild ts/wasm if stale, load the harness on a hardware adapter (AMD iGPU on Fedora, Apple GPU on the Mac), run every tab (or the ones named), report N/M passed, pending checks and console errors, and optionally sample screenshot pixels at world coordinates. Use after any change to rendering, shaders, the render graph, the command queue or the Rust engine, before calling it done.
 ---
 
 Headless tests cannot see WebGPU errors; this is the check that can. Arguments (optional): the
