@@ -198,22 +198,21 @@ line and every GPU error come from the worker (`list_console_messages` shows the
 no probe, no bloom, no outlines, no particles and no texture loading on the main thread. Load it
 like §3, with the anti-reload initScript for a tab run.
 
-**Expected: no `fail` from Mode A itself.** A check that passes in B passes or skips in A. Measured
-on 2026-09-30 (M2 Pro, Chrome 154, `13d8c10`, the §4 runner, 35 s): Primitives 0/9 · 9 skipped,
-Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio 4/4, Particles 0/4 · 4
-skipped, Rendering FX 0/4 · 3 skipped · 1 failed, Lighting 4/6 · 2 skipped, Debug Tools 6/7 · 1
-skipped, Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped. The skips fall in a few classes:
-"pixel probe unavailable" (every check that reads pixels: the probe needs a main-thread renderer),
-"no renderer" (selection, particles, outlines), "no main-thread renderer" (test textures), the
-ones B has too (MSDF atlas, Tonemap stub, determinism hash) and 'Transparent sort under churn'
-(Mode C only).
+**Expected: no `fail` from Mode A itself.** A check that passes in B passes or skips in A, and a
+`fail` there is real. Measured on 2026-09-30 (M2 Pro, Chrome 154, `08e2a5d`, the §4 runner, 35 s):
+Primitives 0/9 · 9 skipped, Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio
+4/4, Particles 0/4 · 4 skipped, Rendering FX 0/4 · 4 skipped, Lighting 4/6 · 2 skipped, Debug Tools
+6/7 · 1 skipped, Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped. The skips fall in a few
+classes: "pixel probe unavailable" (every check that reads pixels: the probe needs a main-thread
+renderer), "no renderer" (selection, particles, bloom, outlines), "no main-thread renderer" (test
+textures), the ones B has too (MSDF atlas, Tonemap stub, determinism hash) and 'Transparent sort
+under churn' (Mode C only).
 
-The one fail is a harness bug, not Mode A: 'Bloom' reports
-`probe error: Cannot enable bloom: no renderer available`. Since `cd8e398` the check calls
-`engine.enableBloom()` before its first probe call, inside `pixelCheck`, which reports every throw
-but a probe-unavailable one as a fail; before, the probe threw first and the check skipped (the
-run of 2026-09-29: 0/4 · 4 skipped). It should skip in A: until it does, that one fail is expected
-there and any other is real.
+'Bloom' skips with `no renderer: Cannot enable bloom: no renderer available`: it turns the bloom
+graph on before its first probe, and `pixelCheck` (`demo/probe-checks.ts`) reports that throw as a
+skip. A check that calls a renderer-only API outside `pixelCheck` has to skip on "no renderer"
+itself, as the Outline check does. From `cd8e398`, which moved `enableBloom` ahead of the first
+probe, until `08e2a5d` 'Bloom' was a `fail` in A: on a build in that range that one is known.
 
 **Pixels: screenshots only.** No probe, so §6's screenshot path, with `vp` from the render
 worker's camera and not from `cam.viewProjection`: the worker has its own `Camera`
