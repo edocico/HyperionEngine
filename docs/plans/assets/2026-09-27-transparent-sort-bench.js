@@ -4,7 +4,8 @@ async () => {
   // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
   //
   // Page: the dev harness with ?bench (no section: an otherwise empty world),
-  // http://localhost:5173/?mode=B&bench (format /1: on the AMD low-power adapter).
+  // http://localhost:5173/?mode=B&bench, on a hardware adapter (no initScript
+  // on the Mac; format /1 ran on the AMD low-power adapter).
   // Scene: N = 1 000, 10 000 and 100 000 (= CAP, 98 full tiles) 2D quads,
   // .transparent(), 16x16 px, all inside the view of a 1920x1080 target;
   // depth all 0 ('same') or all distinct in [0, 999], in shuffled order
@@ -29,6 +30,10 @@ async () => {
   // The `frameTiming` read stays right under the `passes` read, before the
   // `await gpuCount()` in the results literal, so both cover the same frames.
   // Each batch is destroyed, and gone from the GPU rows, before the next one.
+  // No 'forward' sample after NO_SAMPLE_FRAMES frames of a case ends the run
+  // with an error instead of waiting out TIMEOUT_MS. The guard only aborts: it
+  // reads the value the wait already reads, so a run that finishes is measured
+  // exactly as before.
   //
   // Optional, set by an earlier evaluate_script:
   //   window.__benchOpts = { label: 'step0 <sha>', sizes: [100000], zModes: ['same'] }
@@ -39,6 +44,7 @@ async () => {
   const QUAD_PX = 16;
   const WINDOW = 120;
   const TIMEOUT_MS = 180000;
+  const NO_SAMPLE_FRAMES = 300;
   const STAGES = ['gather', 'upsweep', 'scan', 'scatter'];
 
   const engine = window.__hyperion;
@@ -131,7 +137,18 @@ async () => {
       await frames(8);
       if (!engine.enableGpuProfiling()) throw new Error('enableGpuProfiling() returned false');
       const forwardSamples = () => engine.getGpuTimings().find((t) => t.name === 'forward')?.sampleCount ?? 0;
-      await until(`the ${WINDOW}-frame window`, async () => forwardSamples() >= WINDOW);
+      // `until` calls the predicate once, then once per frame: `noSample` counts
+      // the frames without any sample. Same single read of forwardSamples() and
+      // same result as before, except that it can throw.
+      let noSample = 0;
+      await until(`the ${WINDOW}-frame window`, async () => {
+        const got = forwardSamples();
+        if (got >= WINDOW) return true;
+        if (got === 0 && noSample++ >= NO_SAMPLE_FRAMES) {
+          throw new Error(`no GPU timing sample for 'forward' after ${NO_SAMPLE_FRAMES} frames (N=${n}, ${zMode}): the profiler kept none (it warns in the console when it discards frames in a row, naming the reason), or the engine is not rendering. The quads stay spawned and the profiler stays on: reload the page before running again`);
+        }
+        return false;
+      });
       const passes = Object.fromEntries(engine.getGpuTimings().map((t) => [t.name, t.averageMs]));
       const frameTiming = engine.getGpuFrameTiming();
       const stages = Object.fromEntries(STAGES.map((s) => [s, passes[`transparent-sort/${s}`] ?? null]));

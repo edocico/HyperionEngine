@@ -3,7 +3,8 @@ async () => {
   // chrome-devtools `evaluate_script` call, reused UNCHANGED at steps 0-4.
   //
   // Page: the dev harness opened with ?bench (no section at load), e.g.
-  // http://localhost:5173/?mode=B&bench, 1920x1080, AMD low-power adapter.
+  // http://localhost:5173/?mode=B&bench, 1920x1080, on a hardware adapter (no
+  // initScript on the Mac).
   // Before each call an earlier evaluate_script sets
   //   window.__captureOpts = { tab: '<key>' }   one tab, in TAB_KEYS order, once per page load
   //   window.__captureOpts = { statuses: true } after the 10 tabs: the statuses of all of them
