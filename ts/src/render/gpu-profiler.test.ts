@@ -1,135 +1,8 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { GpuProfiler, nextSeal } from './gpu-profiler';
+import { installGpuGlobals, makeGpu, stampsOf, type FakeBuffer, type Gpu } from './gpu-profiler.fixture';
 
-beforeAll(() => {
-  if (typeof globalThis.GPUBufferUsage === 'undefined') {
-    (globalThis as any).GPUBufferUsage = {
-      MAP_READ: 0x0001, MAP_WRITE: 0x0002, COPY_SRC: 0x0004, COPY_DST: 0x0008,
-      INDEX: 0x0010, VERTEX: 0x0020, UNIFORM: 0x0040, STORAGE: 0x0080,
-      INDIRECT: 0x0100, QUERY_RESOLVE: 0x0200,
-    };
-  }
-  if (typeof globalThis.GPUMapMode === 'undefined') {
-    (globalThis as any).GPUMapMode = { READ: 0x0001, WRITE: 0x0002 };
-  }
-});
-
-interface FakeBuffer {
-  label?: string;
-  size: number;
-  usage: number;
-  bytes: Uint8Array;
-  destroyed: boolean;
-  mapped: boolean;
-  failMap: boolean;
-  failRange: boolean;
-  mapAsync(mode: number): Promise<void>;
-  getMappedRange(offset?: number, size?: number): ArrayBuffer;
-  unmap(): void;
-  destroy(): void;
-}
-
-/**
- * A fake device whose queue really moves bytes: queue.writeBuffer lands at
- * once, a submitted command buffer first "runs its passes" (the stamps the
- * test says they write land in the query set), then its resolve and copies in
- * order; a rejected one runs nothing, which is the case the seal is for.
- *
- * It is as strict as WebGPU about a mapped buffer: mapAsync marks `mapped` at
- * call time, so `mapped` also means "a map is pending", and writeBuffer, the
- * resolve and the copy throw when their DESTINATION is in that state. The real
- * code never does that to a readback, and a regression that recycled one
- * without unmapping it now shows here instead of as a silently lost frame.
- */
-function makeGpu() {
-  const buffers: FakeBuffer[] = [];
-  let values = new BigUint64Array(0);
-  const assertUnmapped = (buffer: FakeBuffer, op: string) => {
-    if (buffer.mapped) throw new Error(`ValidationError: ${op} into '${buffer.label}', which is mapped or has a map pending`);
-  };
-  const device = {
-    createQuerySet: vi.fn(({ count }: GPUQuerySetDescriptor) => {
-      values = new BigUint64Array(count);
-      return { count, destroy: vi.fn() };
-    }),
-    createBuffer: vi.fn(({ size, usage, label }: GPUBufferDescriptor) => {
-      const b: FakeBuffer = {
-        label, size, usage, bytes: new Uint8Array(size), destroyed: false, mapped: false, failMap: false, failRange: false,
-        async mapAsync() {
-          if (b.failMap) throw new Error('OperationError: device lost');
-          if (b.mapped) throw new Error('OperationError: buffer already mapped');
-          b.mapped = true;
-        },
-        getMappedRange: (offset = 0, size2?: number) => {
-          if (b.failRange) throw new Error('OperationError: mapped range unavailable');
-          return b.bytes.slice(offset, size2 === undefined ? undefined : offset + size2).buffer;
-        },
-        unmap() { b.mapped = false; },
-        destroy() { b.destroyed = true; },
-      };
-      buffers.push(b);
-      return b;
-    }),
-    queue: {
-      writeBuffer: vi.fn((buffer: FakeBuffer, offset: number, data: ArrayBufferView) => {
-        assertUnmapped(buffer, 'writeBuffer');
-        buffer.bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), offset);
-      }),
-    },
-  };
-
-  function encoder() {
-    const ops: Array<() => void> = [];
-    const pass = () => ({
-      draw() {}, drawIndexed() {}, drawIndirect() {}, drawIndexedIndirect() {}, executeBundles() {},
-      dispatchWorkgroups() {}, dispatchWorkgroupsIndirect() {}, end() {},
-    });
-    const enc = {
-      beginComputePass: (_desc?: GPUComputePassDescriptor) => pass(),
-      beginRenderPass: (_desc: GPURenderPassDescriptor) => pass(),
-      resolveQuerySet: (_qs: unknown, first: number, count: number, dst: FakeBuffer, offset: number) => {
-        ops.push(() => {
-          assertUnmapped(dst, 'resolveQuerySet');
-          dst.bytes.set(new Uint8Array(values.buffer, first * 8, count * 8), offset);
-        });
-      },
-      copyBufferToBuffer: (src: FakeBuffer, srcOffset: number, dst: FakeBuffer, dstOffset: number, size: number) => {
-        ops.push(() => {
-          assertUnmapped(dst, 'copyBufferToBuffer');
-          dst.bytes.set(src.bytes.slice(srcOffset, srcOffset + size), dstOffset);
-        });
-      },
-      finish: () => ({ ops }),
-    };
-    return enc as unknown as GPUCommandEncoder;
-  }
-
-  /** Submit: the passes write `stamps` into the query set, then the frame's resolve and copies run. */
-  function submit(enc: GPUCommandEncoder, opts: { stamps?: bigint[]; reject?: boolean } = {}) {
-    const { ops } = (enc.finish() as unknown) as { ops: Array<() => void> };
-    if (opts.reject) return;
-    if (opts.stamps) values.set(opts.stamps);
-    for (const op of ops) op();
-  }
-
-  return {
-    device: device as unknown as GPUDevice, buffers, encoder, submit,
-    createQuerySet: device.createQuerySet, createBuffer: device.createBuffer, writeBuffer: device.queue.writeBuffer,
-  };
-}
-
-type Gpu = ReturnType<typeof makeGpu>;
-
-/** Stamps for passes of `durationsMs`, one after the other, in frame `frame` (distinct frames never repeat a stamp). */
-function stampsOf(frame: number, ...durationsMs: number[]): bigint[] {
-  let t = 1_000_000_000n * BigInt(frame + 1);
-  const out: bigint[] = [];
-  for (const d of durationsMs) {
-    out.push(t, t + BigInt(Math.round(d * 1e6)));
-    t += 10_000_000n;
-  }
-  return out;
-}
+beforeAll(installGpuGlobals);
 
 /**
  * One measured frame: a compute pass with work per node, then submitted (or rejected) and, by default, polled.
@@ -415,7 +288,7 @@ describe('GpuProfiler', () => {
       expect(String(warn.mock.calls[0][0])).toMatch(/pass 'overlay' did work but its timestamps were not refreshed/);
     });
 
-    it('the zero-timestamp warning also names the pass whose only work was not sampled (an empty render bundle)', async () => {
+    it('the zero-timestamp warning names the pass that did work but read back zero, after 120 discarded frames in a row', async () => {
       const p = new GpuProfiler(gpu.device);
       // A pass with work whose stamps the GPU never wrote: on a fresh query set they read 0.
       for (let i = 0; i < 120; i++) await measure(p, gpu, ['bundle-only'], undefined);
@@ -435,14 +308,32 @@ describe('GpuProfiler', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('a truncated frame is discarded and warns once with the maxPairs value', async () => {
+    it('a truncated frame is discarded and warns once: how many passes, which node ran out of pairs, profile: false', async () => {
       const p = new GpuProfiler(gpu.device, 2);
-      await measure(p, gpu, ['a', 'b', 'c'], stampsOf(0, 1, 1));
-      await measure(p, gpu, ['a', 'b', 'c'], stampsOf(1, 1, 1));
+      // 'c' opens the first pass without a pair; 'd' is refused too, but 'c' is the one named.
+      await measure(p, gpu, ['a', 'b', 'c', 'd'], stampsOf(0, 1, 1));
+      await measure(p, gpu, ['a', 'b', 'c', 'd'], stampsOf(1, 1, 1));
       expect(p.truncatedFrames).toBe(2);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0][0])).toMatch(/more than 2 passes/);
-      expect(String(warn.mock.calls[0][0])).toMatch(/larger maxPairs \(at most 2048\)\./);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toBe(
+        '[Hyperion] GPU profiling: a frame opened more than 2 passes, so its timings were dropped; ' +
+        "the first untimed pass belonged to 'c'. Give the nodes that open many passes `profile: false`.",
+      );
+      // The class is not exported and the renderer builds it with the default: nobody could follow that advice.
+      expect(message).not.toMatch(/maxPairs/);
+    });
+
+    it('the streak warning for truncated frames names the first untimed pass too', async () => {
+      const p = new GpuProfiler(gpu.device, 2);
+      for (let i = 0; i < 120; i++) await measure(p, gpu, ['a', 'b', 'c'], stampsOf(i, 1, 1));
+      // The one-time truncation warning came with the first frame; the streak warning with the 120th.
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1][0])).toBe(
+        '[Hyperion] GPU profiling is enabled but the last 120 frames were discarded: ' +
+        "frames opened more passes than the profiler has query pairs for (the first untimed: pass 'c'). " +
+        'No timings will be reported until that changes.',
+      );
     });
 
     it('discard counts survive reset: they describe the browser', async () => {
@@ -489,6 +380,24 @@ describe('GpuProfiler', () => {
       expect(p.beginFrame()).toBe(false);
       expect(() => p.destroy()).not.toThrow();
       expect(querySet.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('a destroy() between a resolved map and the read is a quiet end: no error is logged for the lost frame', async () => {
+      // getMappedRange throws on a destroyed buffer, in WebGPU and in the fake. The one-time "reading a
+      // resolved frame failed" error is for a bug in the reading, not for tearing the renderer down.
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const p = new GpuProfiler(gpu.device);
+        await measure(p, gpu, ['a'], stampsOf(0, 1), { poll: false });
+        // The map resolves, and the profiler is destroyed before poll() continues from its await.
+        for (const b of gpu.buffers) b.onMap = () => p.destroy();
+        await p.poll();
+        expect(error).not.toHaveBeenCalled();
+        expect(p.timings()).toEqual([]);
+        expect(p.beginFrame()).toBe(false);
+      } finally {
+        error.mockRestore();
+      }
     });
   });
 });

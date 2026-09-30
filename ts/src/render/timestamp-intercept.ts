@@ -46,6 +46,12 @@ export class FrameRecorder {
   readonly pairs: TimedPair[] = [];
   /** A pass found every pair taken: the frame cannot be complete. */
   truncated = false;
+  /**
+   * The name (`node` or `node/stage`) of the first pass that found every pair
+   * taken; null until one does. The later ones are not recorded: it is the
+   * first that shows which node to opt out.
+   */
+  truncatedAt: string | null = null;
   private node: string | null = null;
   private current: string | null = null;
 
@@ -73,6 +79,7 @@ export class FrameRecorder {
     }
     if (this.pairs.length >= this.maxPairs) {
       this.truncated = true;
+      this.truncatedAt ??= this.current;
       return { desc, pair: null };
     }
     const k = this.pairs.length;

@@ -698,8 +698,10 @@ export class Hyperion implements Disposable {
    * it counts as 0 ms, so every `averageMs` is a mean per frame and every
    * entry has the same `sampleCount`. Empty when profiling is off,
    * unsupported, or still warming up — treat a `sampleCount` below ~30 as not
-   * yet meaningful. Passes can overlap on the GPU, so the entries can add up
-   * to more than the frame: the frame is {@link getGpuFrameTiming}.
+   * yet meaningful. Each entry is an interval, not a cost: on some GPUs (the
+   * Apple M2) passes overlap even along a dependency chain, so one entry can
+   * exceed the frame and the entries can add up to several frames. The frame
+   * is {@link getGpuFrameTiming}.
    */
   getGpuTimings(): PassTiming[] {
     return this.renderer?.getGpuTimings() ?? [];
@@ -708,10 +710,10 @@ export class Hyperion implements Disposable {
   /**
    * The GPU frame span, from the first measured pass beginning to the last
    * end, over the same frames as {@link getGpuTimings}. Passes can overlap on
-   * the GPU, so the span can be less than the sum of the getGpuTimings()
-   * entries. Quote `averageMs`, not `lastMs` (see {@link enableGpuProfiling}).
-   * Null when profiling is off, unsupported, without a local renderer, or
-   * before the first valid frame.
+   * the GPU, even along a dependency chain, so the span can be much less than
+   * the sum of the getGpuTimings() entries. Quote `averageMs`, not `lastMs`
+   * (see {@link enableGpuProfiling}). Null when profiling is off,
+   * unsupported, without a local renderer, or before the first valid frame.
    */
   getGpuFrameTiming(): GpuFrameTiming | null {
     return this.renderer?.getGpuFrameTiming() ?? null;

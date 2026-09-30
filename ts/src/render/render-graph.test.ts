@@ -257,6 +257,26 @@ describe('RenderGraph', () => {
       expect(profiler.enterStage.mock.calls).toEqual([['a'], ['b'], ['c']]);
     });
 
+    it('a node with profile: false gets no stage function even in a measured frame, a profiled node does', () => {
+      // A node that splits into stages (the sort opens 22 passes that way) would split in frames
+      // where nothing of it is timed, for no reason.
+      const graph = new RenderGraph();
+      const timed = mockPass('timed', [], ['timed-out']);
+      const optout = { ...mockPass('optout', ['timed-out'], ['swapchain']), profile: false };
+      const timedExecute = vi.fn();
+      const optoutExecute = vi.fn();
+      Object.assign(timed, { execute: timedExecute });
+      Object.assign(optout, { execute: optoutExecute });
+      graph.addPass(timed);
+      graph.addPass(optout);
+      const profiler = fakeProfiler(true);
+      graph.setProfiler(profiler as never);
+      graph.render(mockDevice().device, frame, resources);
+      expect(timedExecute.mock.calls[0][3]).toBeTypeOf('function');
+      expect(optoutExecute.mock.calls[0][3]).toBeUndefined();
+      expect(profiler.enterNode.mock.calls).toEqual([['timed', true], ['optout', false]]);
+    });
+
     it('no stage function, and no profiler call, when the frame is not measured', () => {
       const graph = new RenderGraph();
       const pass = mockPass('forward', [], ['swapchain']);

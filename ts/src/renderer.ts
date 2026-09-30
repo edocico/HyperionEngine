@@ -186,14 +186,15 @@ export interface Renderer {
   disableGpuProfiling(): void;
   /**
    * Per-pass (and per-stage) GPU timings over the last 120 resolved frames.
-   * Empty when profiling is off or still warming up.
+   * Empty when profiling is off or still warming up. Each entry is an
+   * interval, not a cost: passes can overlap, even dependent ones.
    */
   getGpuTimings(): PassTiming[];
   /**
    * The GPU frame span (first pass beginning to last pass end) over the same
-   * frames as getGpuTimings(). Passes can overlap on the GPU, so the entries of
-   * getGpuTimings() can add up to more. Null when profiling is off or before
-   * the first valid frame.
+   * frames as getGpuTimings(). Passes can overlap on the GPU, even along a
+   * dependency chain, so the entries of getGpuTimings() can add up to much
+   * more. Null when profiling is off or before the first valid frame.
    */
   getGpuFrameTiming(): GpuFrameTiming | null;
   /**
@@ -421,8 +422,10 @@ export async function createRenderer(
   // Constructed on the first enableGpuProfiling(), never here, so that the
   // "costs nothing when off" claim in gpu-profiler.ts holds literally: until
   // someone asks for timings there is no query set and no readback buffer.
-  // Once built it is re-attached on every graph swap (onSwap), so its rolling
-  // averages survive outline/bloom toggles and shader hot-reloads.
+  // Once built it is re-attached on every graph swap (onSwap) and reset there:
+  // the window restarts after an outline/bloom toggle or a shader hot-reload,
+  // so no mean mixes two graphs; only the object and its discard counters
+  // survive.
   let gpuProfiler: GpuProfiler | null = null;
   let gpuProfilingEnabled = false;
 

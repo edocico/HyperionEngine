@@ -279,6 +279,35 @@ describe('FrameRecorder names', () => {
     // a Proxy over an empty object equals {}.
     expect(fake.received[2]).toBe(third);
   });
+
+  it('remembers the pass that ran out of pairs first, and keeps it when later passes are refused too', () => {
+    const { encoder, recorder } = setUp(2);
+    expect(recorder.truncatedAt).toBeNull();
+    recorder.enterNode('cull', true);
+    encoder.beginComputePass({});
+    recorder.enterNode('light-groups', true);
+    encoder.beginComputePass({});
+    // Both passes got a pair: nothing was refused yet.
+    expect(recorder.truncatedAt).toBeNull();
+    recorder.enterStage('sdf');
+    encoder.beginComputePass({});
+    recorder.enterNode('forward', true);
+    encoder.beginComputePass({});
+    expect(recorder.truncated).toBe(true);
+    expect(recorder.truncatedAt).toBe('light-groups/sdf');
+  });
+
+  it('a pass that is not timed anyway is no refusal: no node, an opted-out node, a descriptor with its own writes', () => {
+    const { encoder, recorder } = setUp(1);
+    recorder.enterNode('a', true);
+    encoder.beginComputePass({});
+    // The pairs are all taken, but none of these would have got one.
+    encoder.beginComputePass({ timestampWrites: { querySet: {} as GPUQuerySet } } as GPUComputePassDescriptor);
+    recorder.enterNode('overlay', false);
+    encoder.beginComputePass({});
+    expect(recorder.truncated).toBe(false);
+    expect(recorder.truncatedAt).toBeNull();
+  });
 });
 
 describe('work', () => {

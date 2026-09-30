@@ -14,7 +14,7 @@ export interface PassTiming {
   name: string;
   /**
    * Rolling mean over the last valid frames (up to {@link WINDOW}), in ms.
-   * **This is the number to trust**: over the window, the timestamp
+   * **Quote this rather than `lastMs`**: over the window, the timestamp
    * quantization of Chrome without `--enable-webgpu-developer-features` or
    * `--enable-unsafe-webgpu` averages out.
    */

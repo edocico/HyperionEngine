@@ -47,9 +47,11 @@ export interface RenderPass {
   setup(device: GPUDevice, resources: import('./resource-pool').ResourcePool): void;
   prepare(device: GPUDevice, frame: FrameState): void;
   /**
-   * @param stage Only while the GPU profiler measures this frame: the passes
-   *   this pass opens after `stage('x')` are timed as `name/x`. A pass must
-   *   work the same without it.
+   * @param stage Only while the GPU profiler measures this frame, and never
+   *   for a node with `profile: false`: the passes this pass opens after
+   *   `stage('x')` are timed as `name/x`. It is undefined in an unmeasured
+   *   frame and for a node kept out of the profiler, so a pass must work the
+   *   same without it.
    */
   execute(encoder: GPUCommandEncoder, frame: FrameState,
           resources: import('./resource-pool').ResourcePool,

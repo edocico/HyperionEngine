@@ -36,8 +36,9 @@ export class RenderGraph {
   /**
    * Attach (or detach, with null) a GPU profiler. The profiler outlives the
    * graph — the renderer's RenderGraphHost constructs a new RenderGraph on
-   * every outline/bloom toggle and shader hot-reload, so keeping the profiler
-   * outside preserves its history across those rebuilds.
+   * every outline/bloom toggle and shader hot-reload, so the profiler lives
+   * outside it: the renderer re-attaches it to each new graph and resets it,
+   * and its window restarts with the new graph.
    */
   setProfiler(profiler: GpuProfiler | null): void {
     this.profiler = profiler;
@@ -209,8 +210,11 @@ export class RenderGraph {
     try {
       for (const name of this.executionOrder) {
         const pass = this.passes.get(name)!;
-        if (measuring) profiler!.enterNode(name, pass.profile !== false);
-        pass.execute(encoder, frame, resources, stage);
+        const timed = pass.profile !== false;
+        if (measuring) profiler!.enterNode(name, timed);
+        // A node kept out of the profiler gets no `stage` either: one that
+        // splits into stages would split in a frame where none is timed.
+        pass.execute(encoder, frame, resources, timed ? stage : undefined);
       }
     } catch (err) {
       // The encoder is abandoned unfinished, so the frame the profiler opened

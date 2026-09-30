@@ -19,18 +19,25 @@
  *
  * ## Three things that decide how much to trust a number
  *
- * 1. **The entries do not add up to the frame.** Independent passes overlap
- *    on some GPUs (the Apple M2 does), so a pass's duration includes time it
- *    shared with others. The frame is {@link GpuProfiler.frameTiming}: from
- *    the first beginning to the last end.
+ * 1. **An entry is an interval, not a cost.** It runs from its passes'
+ *    beginning stamps to their end stamps. On the Apple M2 a beginning is
+ *    stamped before the pass waits for its inputs, so passes overlap even
+ *    along a dependency chain: on the Lighting tab one SDF chain of about
+ *    1.37 ms per set summed to 20.1 ms, and all the entries to 8-9 times
+ *    the frame (Mac M2 tests, Task 8,
+ *    m7-profiler-diag-pass-timeline-gpu-B.json). One entry can exceed the
+ *    frame. The frame is {@link GpuProfiler.frameTiming}: from the first
+ *    beginning to the last end.
  * 2. **Quantization.** Chrome rounds timestamps to 65 536 ns on every
  *    backend unless it runs with `--enable-webgpu-developer-features` or
  *    `--enable-unsafe-webgpu` (Dawn's quantization mask; measured on
  *    macOS/Metal, Chrome 154: stock rounds, either flag does not,
  *    probe 6). The ~1.024 us steps seen on Linux/Vulkan on 2026-09-26 came
- *    from a Chrome that needs `--enable-unsafe-webgpu` for its adapter:
- *    unquantized. Quote `averageMs`: over {@link WINDOW} frames the
- *    rounding averages out.
+ *    from a Chrome that needs `--enable-unsafe-webgpu` for its adapter, so
+ *    they were most likely unquantized (inferred from probe 6, measured on
+ *    Metal, and from Chromium's source; to re-measure on the Fedora
+ *    machine). Quote `averageMs`: over {@link WINDOW} frames the rounding
+ *    averages out.
  * 3. **Only passes with work are measured.** On Metal a pass without
  *    sampled work leaves stale stamps: a compute pass both of its indices'
  *    previous values (0 on a fresh query set), a render pass its end, while
@@ -79,7 +86,9 @@ function describeDiscard(reason: DiscardReason, pass: string | undefined): strin
   const who = pass !== undefined ? `pass '${pass}'` : 'a pass';
   switch (reason) {
     case 'unexecuted': return "the frames' command buffers did not run (a GPU validation error in the frame)";
-    case 'truncated': return 'every frame opened more passes than the profiler has query pairs for';
+    case 'truncated':
+      return 'frames opened more passes than the profiler has query pairs for' +
+        (pass !== undefined ? ` (the first untimed: pass '${pass}')` : '');
     case 'zero':
       return `${who} did work but read back a zero timestamp (this browser does not serve timestamps, ` +
         `or the pass's only work was not sampled, like an empty render bundle)`;
@@ -93,6 +102,11 @@ interface PendingReadback {
   buffer: GPUBuffer;
   pairs: readonly TimedPair[];
   truncated: boolean;
+  /**
+   * The first pass that found every pair taken
+   * ({@link FrameRecorder.truncatedAt}); null unless truncated.
+   */
+  truncatedAt: string | null;
   seal: number;
   /**
    * Value of {@link GpuProfiler.generation} when the frame was queued
@@ -276,7 +290,8 @@ export class GpuProfiler {
     }
     encoder.copyBufferToBuffer(this.sealBuffer, 0, buffer, stampBytes, SEAL_BYTES);
     this.pending.push({
-      buffer, pairs: recorder.pairs, truncated: recorder.truncated, seal: this.seal, generation: this.generation,
+      buffer, pairs: recorder.pairs, truncated: recorder.truncated, truncatedAt: recorder.truncatedAt,
+      seal: this.seal, generation: this.generation,
     });
   }
 
@@ -296,6 +311,12 @@ export class GpuProfiler {
         try {
           await entry.buffer.mapAsync(GPUMapMode.READ);
           mapped = true;
+          // Destroyed while the map was resolving: the buffer is gone and so
+          // is the frame, a quiet end and not a failed read (getMappedRange
+          // would throw). The finally blocks still run: the inner one puts
+          // nothing of a destroyed profiler back, the outer one clears
+          // `polling`.
+          if (this.destroyed) return;
           // Unmapped whatever consume() does: a buffer back in the pool
           // still mapped would fail every later copy into it.
           try {
@@ -339,7 +360,10 @@ export class GpuProfiler {
     // Measured under a graph that has since been reset: no sample, no count.
     if (entry.generation !== this.generation) return;
     if (!verdict.ok) {
-      this.noteDiscard(verdict.reason, verdict.pass);
+      // evaluateFrame stops at the truncated flag and names no pass: the
+      // recorder's first refused pass is the one to blame.
+      const blamed = verdict.reason === 'truncated' ? entry.truncatedAt ?? undefined : verdict.pass;
+      this.noteDiscard(verdict.reason, blamed);
       return;
     }
     this.streak = 0;
@@ -351,9 +375,10 @@ export class GpuProfiler {
     this.discards[reason]++;
     if (reason === 'truncated' && !this.warnedTruncation) {
       this.warnedTruncation = true;
+      const where = pass !== undefined ? `; the first untimed pass belonged to '${pass}'` : '';
       console.warn(
         `[Hyperion] GPU profiling: a frame opened more than ${this.maxPairs} passes, so its timings ` +
-        `were dropped. Build the GpuProfiler with a larger maxPairs (at most ${MAX_PAIRS}).`,
+        `were dropped${where}. Give the nodes that open many passes \`profile: false\`.`,
       );
     }
     this.streak++;
