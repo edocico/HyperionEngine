@@ -10,7 +10,7 @@ Piano: `docs/handoff/2026-09-29-mac-m2-handoff.md`, sezione 4 (M0-M13). Regole: 
 | Macchina | MacBook Pro 14" (Mac14,9), Apple M2 Pro, GPU 16 core, Metal 4, 16 GB |
 | `sw_vers` | macOS 27.0.1 (26A434) |
 | Chrome | 154.0.8037.58 (stable, `/Applications`), avviato da chrome-devtools-mcp |
-| Safari | 27.0.1 |
+| Safari | 27.0.1 (build 22625.1.29.11.28), pilotato con `safaridriver` 27.0.1 in M12 |
 | Adapter | `[Hyperion] WebGPU adapter: apple / metal-3 / 0x0000, subgroups 32-32` — `description` "Apple M2 Pro", `isFallbackAdapter` false |
 | Subgroup | 32-32: il cancello `subgroupCullSupported` si apre, il renderer vivo usa il percorso cull a subgroup |
 | dpr / finestra CSS | dpr 2 · schermo 1512×982 · finestra CSS 1200×689 · canvas 1960×1248 (2026-09-29, 2.9) |
@@ -38,6 +38,7 @@ Server MCP: "gpu" = `chrome-devtools-gpu` (`--enable-webgpu-developer-features`,
 | M9 | **misurato** (2026-09-30, alimentatore 65 W) con l'A/B dello span del frame scelto dall'utente, a 1920×1080: la lighting della tab Lighting costa **4,06 ms** di span (coppie 4,00-4,10 ms; lit 4,84 contro off 0,79 ms), e il frame resta a 120 fps; 48 passi contro 24 +0,27 ms (5,6 %), dentro il rumore fra finestre (§ M9) | `lighting-cost.json` |
 | M10 | **bug confermato e corretto** (`f1b8ba9`): la crescita dei tier BC7/ASTC ora valida su Metal | `m10-tier-growth.json`, `m10-tier-growth-after-fix.json` |
 | M5 | **passa**: il cull a subgroup a 32 lane archivia ogni indice nel bucket giusto; i controlli negativi hanno i denti | `cull-subgroup-check.js`, `cull-subgroup-check.json` |
+| M12 | **passa** (2026-09-30, Safari 27.0.1 con `safaridriver`, alimentatore): WebKit compila i 7 moduli composti e i kernel del sort senza messaggi e accetta il `diagnostic(off, derivative_uniformity);` dell'uber, che anche lì serve (senza, l'uber viene rifiutato); B, C e A danno i verdetti di Chrome check per check, tranne 'Suspend/resume' di Audio, che senza un gesto vero resta appeso (con un click vero 4/4); il profiler dà tutte le voci con 0 scarti; il descrittore `Proxy` è accettato in tutti i casi. Due anomalie di WebKit sui timestamp, che il motore non subisce (§ M12) | `wgsl-validation-safari.json`, `adapter-safari.json`, `m12-tabs-B.json`, `m12-tabs-C.json`, `m12-tabs-A.json`, `m12-profiler-safari.json`, `m12-probe5-safari.json` |
 
 ### M0 — Adapter, feature, limiti
 
@@ -332,6 +333,93 @@ L'analisi dell'handoff regge. `texture-manager.ts:505-516` copia ogni mip con `M
   - `wrongWidthMax16` (lo stesso con `MAX_SUBGROUPS` 16, così nessun array sfora): fallisce 120/120 **con tutti i conteggi giusti e gli insiemi sbagliati**. È la classe di guasto vista sull'AMD (32-64 lane), riprodotta qui: il check la vede.
   - L'auto-test del comparatore coglie tutte e 6 le iniezioni: duplicato + buco, indice spostato, scambio, conteggio +1, indice oltre la finestra, `firstInstance` +1.
 - **Esito.** Sull'M2 il percorso cull a subgroup, che il renderer usa davvero, è corretto indice per indice. Il cancello `subgroupCullSupported` (esattamente 32-32) è giusto così com'è per Apple: nessuna domanda da fare. `CLAUDE.md:487` va aggiornato con questo esito (task 6.8).
+
+### M12 — Safari
+
+- **Ambiente.** 2026-09-30, HEAD `a4708c8`, dev server di `:5173` sul checkout principale. macOS 27.0.1 (26A434), Safari 27.0.1 (build 22625.1.29.11.28). `pmset -g batt`: "AC Power", batteria al 100 % carica; Low Power Mode 0; `caffeinate -dimsu` attivo. Tutte le pagine dei due server Chrome MCP su `about:blank` per tutta la prova. Safari pilotato con `safaridriver -p 4444` e uno script node con `fetch` sull'API W3C WebDriver (`POST /session`, `/timeouts`, `/url`, `/execute/async`). Finestra impostata via WebDriver a 1200×741, quindi viewport CSS 1200×689 come in Chrome: dpr 2, canvas 1960×1248 (CSS 980×624), la stessa inquadratura di M2/M3/M6. In Safari rAF va a **60 Hz**; Chrome sullo stesso display ProMotion va a 120.
+- **Safari deve stare in primo piano.** All'inizio la pagina era `hidden`: davanti c'era VS Code, la cui finestra (1512×949) copre tutto il display. Con la finestra coperta, Safari ferma rAF e con lui il motore; Chrome invece gira con `--disable-backgrounding-occluded-windows`. L'unico segno era `[Hyperion] Worker 1 heartbeat timeout`, e un'attesa di rAF è andata in timeout. `open -a Safari` riporta Safari davanti. VS Code è tornato in primo piano una volta, 138 s dopo il caricamento, insieme a una scrittura di Claude Code con il tool Write: la causa probabile, non verificata. Da lì, durante le prove, i file li ho scritti solo da Bash, e ogni run registra `visibilityState` e un log di `visibilitychange`: tutti i run sono rimasti `visible` dall'inizio alla fine.
+- **Niente console: come ho supplito.** WebDriver non legge la console di Safari.
+  - **BiDi.** Ho provato WebDriver BiDi. Con `safari:experimentalWebSocketUrl: true`, `safaridriver` dà un endpoint `ws://`, e `browsingContext.getTree` e `script.evaluate` funzionano. Però `session.subscribe` su `log.entryAdded` non consegna nessun evento, nemmeno per un `console.warn` lanciato con `script.evaluate`, e `script.addPreloadScript` risponde `{}` senza eseguire niente.
+  - **La cattura.** Subito dopo ogni navigazione uno script (`guard` nei JSON) avvolge `console.error/warn/info/log` in `window.__cap` e registra anche gli errori non gestiti. **Perde tutto ciò che viene prima**: è partito circa 0,1 s dopo il caricamento (91-153 ms dove l'ho annotato), quando `Hyperion.create` era già finita, quindi perde la riga dell'adapter e l'eventuale errore del grafo iniziale; e perde ogni messaggio dei worker, compreso il render worker di Mode A. In tutti i run `__cap` è rimasto vuoto.
+  - **Contro i reload di Vite.** Sotto WebDriver non c'è l'`initScript` anti-reload. Il client di Vite 6.4 ricarica la pagina solo dopo `waitForSuccessfulPing`, che apre `new WebSocket(url, 'vite-ping')` dal globale. Lo stesso script restituisce a quel ping un socket che non si apre mai, e annota la chiusura in `window.__viteWsCloses`. Non è mai successo: 0 chiusure, e `performance.timeOrigin` uguale all'inizio e alla fine di ogni run (in Safari due letture differiscono di qualche decimo di ms: …518,04 contro …518,3).
+  - **Gli errori GPU.** Li ho cercati attraverso il motore: i validatori WGSL dentro gli error scope, i getter che ricadono se un grafo viene rifiutato, e `discardReasons.unexecuted` del profiler.
+  - **Le righe di avvio.** Nella pagina viva di `?mode=B` ho costruito un **secondo renderer** con il `createRenderer` del motore, su un canvas staccato 1960×1248, con la console catturata; dopo 1,5 s l'ho distrutto. Ha scritto solo `[Hyperion] WebGPU adapter: apple / apple / apple`: nessun `SOFTWARE FALLBACK`, nessun `lacks 'indirect-first-instance'`, nessun `The initial render graph raised GPU errors`. Manca anche `Cull: atomic path`, perché senza `subgroups` il renderer non entra in quel ramo. Sono i punti (a)-(d) di M0, sullo stesso codice che ha costruito il renderer vivo (`adapter-safari.json`, `startupConsole`).
+- **Parte a, WGSL** (`wgsl-validation-safari.json`). I due script del 2026-09-27, invariati, via `execute/async`, su un device fresco: `ok: true` in entrambi.
+  - I 7 moduli composti compilano **senza nessun messaggio**, nemmeno warning.
+  - Le 19 pipeline (opaque, transparent e occluder per ciascuno dei 6 tipi, più l'uber transparent) hanno tutti gli error scope `null`, e ogni modulo coincide con quello pubblicato dal renderer.
+  - Gather e sort compilano senza messaggi, e `TransparentSortPass.setup()` costruisce le 4 pipeline compute senza errori.
+
+  **WebKit accetta il `diagnostic(off, derivative_uniformity);` globale dell'uber.** Poi i **controlli negativi**, nello stesso JSON con lo script, per sapere se i canali d'errore di Safari rispondono:
+  - un errore di sintassi dà `error 1:12 Expected a Identifier, but got a {` e, sulla pipeline, `Vertex module is not valid`;
+  - un entry point inesistente in una pipeline compute dà `Compute library failed creation`;
+  - l'uber sul layout a due gruppi degli occluder dà `Shader is incompatible with layout pipeline`;
+  - **l'uber senza la sua prima riga viene rifiutato**: `error 773:27 call to 'line_fs' requires uniform control flow`.
+
+  Il compilatore di WebKit fa quindi l'analisi di uniformità: un modulo minimo con `fwidth` sotto un `if` per frammento dà errore senza la direttiva e compila pulito con la direttiva. In Safari la direttiva è rispettata a livello di modulo e serve: il piano B del design 5b §10 non serve.
+- **Parte a, adapter** (`adapter-safari.json`). È la funzione di M0, invariata.
+  - `info`: vendor, architecture, device e description valgono tutti "apple", perché Safari nasconde i dettagli. `isFallbackAdapter` è false, e non c'è il range dei subgroup.
+  - Rispetto a Chrome **mancano** `subgroups`, `subgroup-size-control`, `dual-source-blending` e `texture-component-swizzle`, e **in più** ci sono `float16-renderable` e `float32-renderable`.
+  - **Ci sono `timestamp-query` e `indirect-first-instance`.** Safari però non applica la regola di `indirect-first-instance` (handoff 3.2), quindi un verde qui non prova quel percorso.
+  - I limiti del device di default coincidono voce per voce con quelli di Chrome, cioè con i default della specifica: 8 storage buffer per stage, 16384 B di workgroup memory, 256 layer, 16 variabili fra gli stage. L'unica differenza è `maxImmediateSize`, che espone solo Chrome. I budget verificati dai test valgono anche qui.
+  - Renderer vivo: il device ha `core-features-and-limits`, `indirect-first-instance`, `texture-compression-bc` e `timestamp-query`; `compressionFormat` è `bc7-rgba-unorm`, `gpuProfilingSupported` è true, `getPreferredCanvasFormat()` è `bgra8unorm`. `CullPass.SUBGROUP_CONFIG.useSubgroups` è false: il cull va per il percorso atomic, con la regione subgroup tolta dal testo.
+- **Parte b, harness** (`m12-tabs-B.json`, `m12-tabs-C.json`, `m12-tabs-A.json`).
+  - **Il runner.** È quello di SKILL.md §4, esteso come nei run Chrome di M2/M3/M6: stato, nome e dettaglio di ogni check, e 7 s su Lighting, Rendering FX, Lifecycle e 2D Twins. In più, per i 60 Hz, dopo l'attesa fissa continua a leggere finché un check resta ⏳, fino a 15 s. Non è mai servito: alla fine dell'attesa fissa nessun check era ⏳, tranne i 4 di Input.
+  - **Le pagine.** Una pagina nuova per modo, e `window.__hyperion.mode` è sempre uguale all'URL (B, C, A). Nessun reload, nessuna chiusura della WebSocket di Vite, pagina sempre visibile.
+  - **Audio blocca il runner.** Nel primo run di B, nell'ordine dei tab, da Audio in poi ogni tab mostrava il pannello di Audio con 3 check (`attempt1BlockedByAudio` in `m12-tabs-B.json`). Il `tab.click()` del runner non è un gesto dell'utente. Senza un gesto il `setup` di Audio non arriva mai al quarto check, quello che chiama `engine.audio.suspend()` e poi `resume()`: con ogni probabilità è `AudioContext.resume()`, che per la politica di autoplay di Safari aspetta un gesto (il punto esatto non l'ho misurato). Il `SectionSwitcher`, che esegue un cambio di tab alla volta, trattiene intanto tutti i tab successivi. Audio non crea entità, quindi ho eseguito tutti i tab tranne Audio e poi Audio da solo, nella stessa pagina; gli id delle entità dei tab successivi non cambiano. Con un click vero (Element Click di WebDriver sul tab) Audio fa **4/4** e l'AudioContext va in `running` (`audioWithTrustedClick`).
+  - **Verdetti.**
+
+    | Tab | B | C | A |
+    |---|---|---|---|
+    | Primitives | 8/9 · 1 skip | 8/9 · 1 skip | 0/9 · 9 skip |
+    | Scene Graph | 5/5 | 5/5 | 1/5 · 4 skip |
+    | Input | 2/6 (4 ⏳) | 2/6 (4 ⏳) | 1/6 · 1 skip (4 ⏳) |
+    | Audio | 3/3: 'Suspend/resume' appeso | 3/3, idem | 3/3, idem |
+    | Particles | 4/4 | 4/4 | 0/4 · 4 skip |
+    | Rendering FX | 3/4 · 1 skip | 3/4 · 1 skip | 0/4 · 4 skip |
+    | Lighting | 6/6 | 6/6 | 4/6 · 2 skip |
+    | Debug Tools | 6/7 · 1 skip | 6/7 · 1 skip | 6/7 · 1 skip |
+    | Lifecycle | 6/6 | 6/6 | 1/6 · 5 skip |
+    | 2D Twins | 5/6 · 1 skip | 6/6 | 0/6 · 6 skip |
+
+  - **Il confronto con Chrome.** Ho confrontato i verdetti check per check con `m2-tabs-B.json`, `m3-tabs-C.json` e `m6-tabs-A.json`, a macchina (`comparisonWithChrome` in ogni file). In ogni modo 53 check hanno lo stesso stato, e le differenze sono solo due.
+    - I 3 check delle bezier aggiunti dopo quei run ('Straight bezier', 'Near-straight bezier (35.26°)', 'Thin curved bezier (1024/2048 px)'): passano in B e in C e vanno in skip in A, come in Chrome dopo i fix (tabella "Fix fatti sul branch").
+    - 'Suspend/resume' di Audio, che non si risolve mai (sopra).
+
+    **Nessun `fail`** in nessun modo. Mode A coincide tab per tab con i numeri di §7 di `08e2a5d`, a parte Audio. La regola "ogni check verde in B è verde o in skip in A", controllata a macchina, dà 0 violazioni. Gli skip di A sono 36, tutti delle classi di §7:
+    - 23 "pixel probe unavailable";
+    - 7 "no renderer": selection, le 4 particelle, Bloom con `Cannot enable bloom`, outline;
+    - 2 "no main-thread renderer" (le texture);
+    - MSDF, Tonemap, l'hash di determinismo e il churn.
+  - **I valori.** In B e in C i valori letti dal probe sono quelli di Chrome alla terza cifra:
+    - Primitives: gradienti e box shadow ("sharp 0.187, 0.067"), e "horizontal covers 3 pixel rows (want 3)";
+    - Rendering FX: Bloom "0.027 at intensity 0, 0.043 at 0.5; quad centre 0.894", gli stessi valori di `cd8e398`, e l'outline arancione (0.961, 0.482, 0.004);
+    - Lighting: "lit 0.489, 0.101"; in 'Layer shadow on screen' il punto specchiato vale 1.097 contro 1.098;
+    - 2D Twins: 4749/4749 texel uguali.
+
+    In C, 'GPU rows of 2D entities' dà "12 frames, 12 via scatter (Mode C); worst GPU/CPU difference 1.2e-7" e 'Transparent sort under churn' dà "60 frames of churn, 60 read back, 59 with a scatter upload AND a new id column", come in Chrome. Cambiano solo 'Time-travel record', 45 voci contro 73 perché nei 200 ms della registrazione passano la metà dei frame, e i numeri di handle e di frame.
+  - **Mode A.** Con `?mode=A` forzato, `mode` vale `'A'` e non c'è un renderer sul main thread. Il difetto di fallback della 3.2 (canvas bianco dopo "Mode A failed") **non si presenta**: Safari 27 esegue WebGPU nel render worker, sull'OffscreenCanvas. Gli screenshot WebDriver non sono committati; le statistiche sono in `m12-tabs-A.json`:
+    - Primitives disegna gradienti, box shadow, la griglia di quad e le linee (84 % del canvas al clear 17, 5 % bianco);
+    - Lighting disegna la scena lit: la luce puntiforme, lo spot con le ombre dei muri, i gradienti illuminati e la luce blu del layer 1 (8 % al clear).
+
+    L'inquadratura è quella della camera del worker, come in Chrome (la lacuna nota della 3.2). La console del worker qui non si legge: un errore GPU nel render worker si vedrebbe solo nell'immagine.
+- **Parte c.1, profiler** (`m12-profiler-safari.json`). `?mode=B`, tab Lighting a 6/6 e poi 2 s di attesa, quindi lo snippet del Task 8, con in più il valore restituito da `enableGpuProfiling()` e tutti gli avvisi e gli errori della finestra.
+  - **Esito.** `enableGpuProfiling()` restituisce `true`. La finestra ha 120 frame validi in 2,01 s, a 60,2 fps; `skippedFrames` vale 0; `discardReasons` vale 0 per tutti e sei i motivi, quindi anche **`unexecuted` 0**; nessun avviso e nessun errore. Tutti i criteri del Task 8 passano.
+  - **Le voci**, in ms di media su 120 campioni: `cull` 0,024, `light-groups/seed` 3,313, `light-groups/sdf` 58,145, `light-groups/accum` 7,877, `forward` 4,927, `fxaa-tonemap` 0,060. Lo span vale 7,102 ms (7,000 due secondi dopo); fra le due letture `forward` cambia dell'1,7 %.
+  - **Come leggerle.** Come in Chrome gli intervalli si sovrappongono: seed + sdf + accum fanno 69 ms, contro uno span di 7,1 ms. Invece `fxaa-tonemap` vale 0,06 ms, contro 2-3 ms in Chrome: a quanto pare in WebKit l'intervallo di quel pass non comprende l'attesa dei pass prima (non l'ho verificato con una timeline). Come timing questi numeri non si confrontano con Chrome: rAF a 60 Hz, un altro driver, e uno span che dipende dallo stato della GPU. Nella stessa scena, in una finestra di 20 s, lo span vale 13,36 ms e ci sono 115 frame saltati perché nessun buffer di readback era libero.
+  - **Risoluzione.** Ogni `lastMs` è un numero intero di tick da 41,667 ns, cioè il contatore a 24 MHz della GPU Apple. Safari non quantizza, mentre Chrome stock arrotonda a 65 536 ns (M7).
+- **Parte c.2, il descrittore `Proxy`** (`m12-probe5-safari.json`). Lo script del probe 5 non era nel repo: l'ho ricostruito dal metodo scritto in `m7-probe5-derive-proxy-gpu.json`, e il JSON nuovo contiene lo script. Device fresco con `timestamp-query`. Tre insiemi, ciascuno sugli stessi 6 casi: in render una classe con un getter su `#private`, un letterale congelato con `timestampWrites: undefined` e un letterale con un getter che usa `this`; in compute `undefined`, `null` e `{label}`.
+  - **`run2`**, il `Proxy` del JSON di Chrome, identico: **6/6 ok**.
+  - **`engineDerive`**, il `FrameRecorder.derive` importato dal modulo vivo, cioè il codice del profiler: **6/6 ok**.
+  - **Il controllo `Object.create`**: la classe con `#private` lancia `TypeError: Cannot access invalid private field (evaluating 'this.#view')`, gli altri 5 casi passano. È lo stesso guasto C8 di Chrome.
+
+  Nessun errore di validazione né interno, l'originale congelato resta invariato, e nessun originale viene scritto. **WebKit legge il descrittore solo con [[Get]], come Chrome: il `Proxy` su un oggetto vuoto funziona, e il ripiego della spec §8.2 non serve.** Il profiler vivo della parte c.1 è la stessa prova, sui pass veri.
+- **Due anomalie di WebKit sui timestamp**, fuori dal motore. Le ho classificate ripetendo il probe; i dati sono nello stesso JSON.
+  1. Una coppia mai scritta di un query set **nuovo** restituisce gli stamp di un query set distrutto prima (12 casi su 12), non 0 come in Chrome (M7, probe 2): WebKit riusa la memoria senza azzerarla.
+  2. Con il resolve nello stesso command buffer dei pass, l'**ultimo compute pass** del command buffer a volte non ha ancora scritto la sua coppia. È successo in 6 insiemi su 18 con il compute per ultimo, e in 6 su 24 con tre render pass dopo di lui. Non succede mai a un render pass, mai a un compute pass precedente, e mai con il resolve in un submit successivo, dopo `onSubmittedWorkDone` (0 casi su 102). Il resolve non aspetta i campioni di quel pass.
+
+  **Per il motore.** Il profiler fa il resolve nello stesso command buffer, e nel grafo l'ultimo compute pass è `cull` (o l'ultimo pass del sort). Una coppia colpita da questa corsa varrebbe l'ultimo valore letto al suo indice, quindi il profiler scarterebbe il frame come `stale` (`StampHistory`) invece di dare un tempo sbagliato. Dal vivo non è successo: 0 scarti in 1200 frame di Lighting (20 s) e in 600 frame di una scena con un solo quad (10 s, 0,57 ms di render pass dopo `cull`). Non c'è niente da correggere; va tenuto a mente se un giorno il profiling in Safari mostra scarti `stale`.
+- **Domanda per l'utente (non urgente).** Il `setup` di una sezione che non finisce mai, come quello di Audio senza gesto, blocca tutti i tab successivi dell'harness. Per chi clicca i tab a mano non capita, perché ogni click è un gesto. Un run automatico in Safari lo incontra sempre. Serve un timeout sul `resume` di Audio, o sul `setup` delle sezioni? Non ho cambiato niente.
+- **File.** `wgsl-validation-safari.json` (i due validatori e i controlli negativi con il loro script), `adapter-safari.json` (M0, il renderer vivo, le righe di avvio del secondo renderer), `m12-tabs-B.json`, `m12-tabs-C.json` e `m12-tabs-A.json` (i verdetti, il confronto con Chrome, il runner e lo script di guardia; in B anche il primo run bloccato da Audio e il run di Audio con il click vero; in A le statistiche degli screenshot), `m12-profiler-safari.json`, `m12-probe5-safari.json`. Gli screenshot e gli script ausiliari restano nella scratchpad della sessione.
 
 ## Fix fatti sul branch (2026-09-29)
 

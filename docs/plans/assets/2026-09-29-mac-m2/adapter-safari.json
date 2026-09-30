@@ -1,0 +1,197 @@
+{
+ "info": {
+  "vendor": "apple",
+  "architecture": "apple",
+  "device": "apple",
+  "description": "apple",
+  "fallback": false
+ },
+ "features": [
+  "bgra8unorm-storage",
+  "clip-distances",
+  "core-features-and-limits",
+  "depth-clip-control",
+  "depth32float-stencil8",
+  "float16-renderable",
+  "float32-blendable",
+  "float32-filterable",
+  "float32-renderable",
+  "indirect-first-instance",
+  "primitive-index",
+  "rg11b10ufloat-renderable",
+  "shader-f16",
+  "texture-compression-astc",
+  "texture-compression-astc-sliced-3d",
+  "texture-compression-bc",
+  "texture-compression-bc-sliced-3d",
+  "texture-compression-etc2",
+  "texture-formats-tier1",
+  "texture-formats-tier2",
+  "timestamp-query"
+ ],
+ "adapterLimits": {
+  "maxTextureDimension1D": 16384,
+  "maxTextureDimension2D": 16384,
+  "maxTextureDimension3D": 2048,
+  "maxTextureArrayLayers": 2048,
+  "maxBindGroups": 11,
+  "maxBindGroupsPlusVertexBuffers": 30,
+  "maxBindingsPerBindGroup": 65535,
+  "maxDynamicUniformBuffersPerPipelineLayout": 65535,
+  "maxDynamicStorageBuffersPerPipelineLayout": 65535,
+  "maxSampledTexturesPerShaderStage": 44,
+  "maxSamplersPerShaderStage": 22,
+  "maxStorageBuffersPerShaderStage": 44,
+  "maxStorageTexturesPerShaderStage": 44,
+  "maxUniformBuffersPerShaderStage": 44,
+  "maxUniformBufferBindingSize": 2147483644,
+  "maxStorageBufferBindingSize": 2147483644,
+  "minUniformBufferOffsetAlignment": 32,
+  "minStorageBufferOffsetAlignment": 32,
+  "maxVertexBuffers": 12,
+  "maxBufferSize": 2147483644,
+  "maxVertexAttributes": 30,
+  "maxVertexBufferArrayStride": 65532,
+  "maxInterStageShaderVariables": 31,
+  "maxColorAttachments": 8,
+  "maxColorAttachmentBytesPerSample": 64,
+  "maxComputeWorkgroupStorageSize": 32768,
+  "maxComputeInvocationsPerWorkgroup": 1024,
+  "maxComputeWorkgroupSizeX": 1024,
+  "maxComputeWorkgroupSizeY": 1024,
+  "maxComputeWorkgroupSizeZ": 1024,
+  "maxComputeWorkgroupsPerDimension": 65535,
+  "maxStorageBuffersInFragmentStage": 44,
+  "maxStorageTexturesInFragmentStage": 44,
+  "maxStorageBuffersInVertexStage": 44,
+  "maxStorageTexturesInVertexStage": 44
+ },
+ "defaultDeviceLimits": {
+  "maxTextureDimension1D": 8192,
+  "maxTextureDimension2D": 8192,
+  "maxTextureDimension3D": 2048,
+  "maxTextureArrayLayers": 256,
+  "maxBindGroups": 4,
+  "maxBindGroupsPlusVertexBuffers": 24,
+  "maxBindingsPerBindGroup": 1000,
+  "maxDynamicUniformBuffersPerPipelineLayout": 8,
+  "maxDynamicStorageBuffersPerPipelineLayout": 4,
+  "maxSampledTexturesPerShaderStage": 16,
+  "maxSamplersPerShaderStage": 16,
+  "maxStorageBuffersPerShaderStage": 8,
+  "maxStorageTexturesPerShaderStage": 4,
+  "maxUniformBuffersPerShaderStage": 12,
+  "maxUniformBufferBindingSize": 65536,
+  "maxStorageBufferBindingSize": 134217728,
+  "minUniformBufferOffsetAlignment": 256,
+  "minStorageBufferOffsetAlignment": 256,
+  "maxVertexBuffers": 8,
+  "maxBufferSize": 268435456,
+  "maxVertexAttributes": 16,
+  "maxVertexBufferArrayStride": 2048,
+  "maxInterStageShaderVariables": 16,
+  "maxColorAttachments": 8,
+  "maxColorAttachmentBytesPerSample": 32,
+  "maxComputeWorkgroupStorageSize": 16384,
+  "maxComputeInvocationsPerWorkgroup": 256,
+  "maxComputeWorkgroupSizeX": 256,
+  "maxComputeWorkgroupSizeY": 256,
+  "maxComputeWorkgroupSizeZ": 64,
+  "maxComputeWorkgroupsPerDimension": 65535,
+  "maxStorageBuffersInFragmentStage": 8,
+  "maxStorageTexturesInFragmentStage": 4,
+  "maxStorageBuffersInVertexStage": 8,
+  "maxStorageTexturesInVertexStage": 4
+ },
+ "cull": {
+  "useSubgroups": false,
+  "subgroupSize": 32,
+  "useSubgroupId": false
+ },
+ "wgsl": [
+  "packed_4x8_integer_dot_product",
+  "pointer_composite_access",
+  "readonly_and_readwrite_storage_textures",
+  "texture_formats_tier1",
+  "unrestricted_pointer_parameters"
+ ],
+ "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15",
+ "env": {
+  "date": "2026-09-30",
+  "head": "a4708c8",
+  "browser": "Safari 27.0.1 (22625.1.29.11.28) (AppleWebKit/605.1.15), macOS 27.0.1 (26A434), MacBook Pro Mac14,9, Apple M2 Pro",
+  "driver": "safaridriver 27.0.1, W3C WebDriver (execute/async, script timeout 180000 ms)",
+  "page": "http://localhost:5173/?mode=B",
+  "window": "CSS inner 1200x689, dpr 2, canvas 1960x1248 (CSS 980x624), Safari frontmost, document visible, rAF 60 Hz",
+  "power": "AC Power, battery 100% charged, lowpowermode 0, caffeinate -dimsu running"
+ },
+ "source": "the M0 function of docs/handoff/2026-09-29-mac-m2-handoff.md (### M0), verbatim, run through WebDriver execute/async",
+ "liveRenderer": {
+  "what": "window.__hyperion on ?mode=B right after the part-a validators (not part of the M0 function)",
+  "mode": "B",
+  "compressionFormat": "bc7-rgba-unorm",
+  "gpuProfilingSupported": true,
+  "deviceFeatures": [
+   "core-features-and-limits",
+   "indirect-first-instance",
+   "texture-compression-bc",
+   "timestamp-query"
+  ],
+  "cullSubgroupConfig": {
+   "useSubgroups": false,
+   "subgroupSize": 32,
+   "useSubgroupId": false
+  },
+  "graphExecutionOrder": [
+   "scatter",
+   "cull",
+   "transparent-sort",
+   "forward",
+   "fxaa-tonemap"
+  ],
+  "bloomEnabled": false,
+  "outlinesEnabled": false,
+  "lightingEnabled": false,
+  "preferredCanvasFormat": "bgra8unorm",
+  "canvas": [
+   1960,
+   1248,
+   980,
+   624
+  ],
+  "dpr": 2,
+  "inner": [
+   1200,
+   689
+  ],
+  "fps": 60,
+  "visibility": "visible"
+ },
+ "startupConsole": {
+  "what": "the console lines of a SECOND renderer, built with the engine's createRenderer on a detached 1960x1248 canvas in the live ?mode=B page, with console.error/warn/info/log captured (under WebDriver the live page's startup lines are logged before any capture can run); 1.5 s for the initial graph's error scopes to settle, then renderer.destroy()",
+  "threw": null,
+  "lines": [
+   {
+    "level": "info",
+    "msg": "[Hyperion] WebGPU adapter: apple / apple / apple"
+   }
+  ],
+  "facts": {
+   "deviceFeatures": [
+    "core-features-and-limits",
+    "indirect-first-instance",
+    "texture-compression-bc",
+    "timestamp-query"
+   ],
+   "executionOrder": [
+    "scatter",
+    "cull",
+    "transparent-sort",
+    "forward",
+    "fxaa-tonemap"
+   ],
+   "gpuProfilingSupported": true
+  },
+  "reading": "M0 console items: (a) adapter line 'apple / apple / apple' with no subgroup range and no SOFTWARE FALLBACK; (b) no lacks 'indirect-first-instance'; (c) no 'Cull: atomic path' line, because the cull takes the atomic path without that branch (no subgroups feature); (d) no 'The initial render graph raised GPU errors'"
+ }
+}
