@@ -135,17 +135,29 @@ function record() {
   return { encoder, cmds, stage };
 }
 
-/** One entry per dispatch: its pipeline's entry point, its bind group, its size or indirect source. */
+/**
+ * One entry per dispatch: its pipeline's entry point, its bind group 0, its size or indirect source.
+ * A pass starts with nothing set, and a dispatch needs both set inside ITS OWN pass: carried across
+ * passes, the two would let a refactor that stopped setting them in each of the 22 measured passes
+ * go unseen headless, while on the GPU it drops every measured frame.
+ */
 function dispatches(cmds: Cmd[]) {
   const out: Array<{ entry: string; group: Group; x?: number; indirect?: { buffer: Buf; offset: number } }> = [];
   let entry = '';
   let group: Group | null = null;
-  for (const c of cmds) {
-    if (c.kind === 'pipeline') entry = c.entry;
-    else if (c.kind === 'group') group = c.group;
-    else if (c.kind === 'dispatch') out.push({ entry, group: group!, x: c.x });
-    else if (c.kind === 'indirect') out.push({ entry, group: group!, indirect: { buffer: c.buffer, offset: c.offset } });
-  }
+  const dispatchAt = (i: number) => {
+    if (entry === '' || group === null) {
+      throw new Error(`command ${i}: a dispatch with no pipeline and bind group 0 set in its own pass`);
+    }
+    return { entry, group };
+  };
+  cmds.forEach((c, i) => {
+    if (c.kind === 'pass') { entry = ''; group = null; }
+    else if (c.kind === 'pipeline') entry = c.entry;
+    else if (c.kind === 'group' && c.index === 0) group = c.group;
+    else if (c.kind === 'dispatch') out.push({ ...dispatchAt(i), x: c.x });
+    else if (c.kind === 'indirect') out.push({ ...dispatchAt(i), indirect: { buffer: c.buffer, offset: c.offset } });
+  });
   return out;
 }
 

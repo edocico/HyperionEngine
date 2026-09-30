@@ -4,9 +4,11 @@
  *
  * `instrumentEncoder` overrides `beginRenderPass`/`beginComputePass` as OWN
  * properties of one command encoder, never its prototype: every pass opened on
- * it gets a pair of timestamp queries, and the pass encoder it returns has its
- * work commands wrapped, so the frame knows which passes did work. On Metal a
- * pass without work is not sampled and keeps its indices' previous stamps
+ * it inside a profiled node, without `timestampWrites` of its own, gets a pair
+ * of timestamp queries while pairs last, and the pass encoder it returns has
+ * its work commands wrapped, so the frame knows which passes did work. On Metal
+ * a pass without sampled work leaves stale stamps: a compute pass both of its
+ * indices' previous values, a render pass its end (its beginning is fresh)
  * (Mac M2 tests, probes 2 and 4): a pair counts only if its pass did work.
  */
 
@@ -66,7 +68,7 @@ export class FrameRecorder {
    */
   derive<D extends object>(desc: D | undefined): { desc: D | undefined; pair: TimedPair | null } {
     if (this.current === null) return { desc, pair: null };
-    if (desc !== undefined && (desc as { timestampWrites?: unknown }).timestampWrites !== undefined) {
+    if (desc != null && (desc as { timestampWrites?: unknown }).timestampWrites !== undefined) {
       return { desc, pair: null };
     }
     if (this.pairs.length >= this.maxPairs) {
@@ -81,11 +83,18 @@ export class FrameRecorder {
       beginningOfPassWriteIndex: 2 * k,
       endOfPassWriteIndex: 2 * k + 1,
     };
-    // The original is never written: its members are read through the prototype
-    // (WebIDL reads dictionary members with [[Get]]; Chrome accepts it, probe 2).
-    const derived = Object.create(desc ?? {}, {
-      timestampWrites: { value: timestampWrites, enumerable: true },
-    }) as D;
+    // The original is never written, and each member is read from it with it
+    // as the receiver, as the browser would read it: WebIDL reads dictionary
+    // members with [[Get]] only, so a Proxy is read like any object (probe 5).
+    // Object.create made the original the prototype, and its accessors ran on
+    // the derived object: a class descriptor whose getter reads a #private
+    // field threw, only while profiling. The target stays empty, so no Proxy
+    // invariant binds (a frozen original with an own `timestampWrites:
+    // undefined` breaks a Proxy over itself).
+    const source: object = desc ?? {};
+    const derived = new Proxy({} as D, {
+      get: (_target, key) => (key === 'timestampWrites' ? timestampWrites : Reflect.get(source, key, source)),
+    });
     return { desc: derived, pair };
   }
 }

@@ -34,10 +34,19 @@ interface FakeBuffer {
  * once, a submitted command buffer first "runs its passes" (the stamps the
  * test says they write land in the query set), then its resolve and copies in
  * order; a rejected one runs nothing, which is the case the seal is for.
+ *
+ * It is as strict as WebGPU about a mapped buffer: mapAsync marks `mapped` at
+ * call time, so `mapped` also means "a map is pending", and writeBuffer, the
+ * resolve and the copy throw when their DESTINATION is in that state. The real
+ * code never does that to a readback, and a regression that recycled one
+ * without unmapping it now shows here instead of as a silently lost frame.
  */
 function makeGpu() {
   const buffers: FakeBuffer[] = [];
   let values = new BigUint64Array(0);
+  const assertUnmapped = (buffer: FakeBuffer, op: string) => {
+    if (buffer.mapped) throw new Error(`ValidationError: ${op} into '${buffer.label}', which is mapped or has a map pending`);
+  };
   const device = {
     createQuerySet: vi.fn(({ count }: GPUQuerySetDescriptor) => {
       values = new BigUint64Array(count);
@@ -63,6 +72,7 @@ function makeGpu() {
     }),
     queue: {
       writeBuffer: vi.fn((buffer: FakeBuffer, offset: number, data: ArrayBufferView) => {
+        assertUnmapped(buffer, 'writeBuffer');
         buffer.bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), offset);
       }),
     },
@@ -78,10 +88,16 @@ function makeGpu() {
       beginComputePass: (_desc?: GPUComputePassDescriptor) => pass(),
       beginRenderPass: (_desc: GPURenderPassDescriptor) => pass(),
       resolveQuerySet: (_qs: unknown, first: number, count: number, dst: FakeBuffer, offset: number) => {
-        ops.push(() => dst.bytes.set(new Uint8Array(values.buffer, first * 8, count * 8), offset));
+        ops.push(() => {
+          assertUnmapped(dst, 'resolveQuerySet');
+          dst.bytes.set(new Uint8Array(values.buffer, first * 8, count * 8), offset);
+        });
       },
       copyBufferToBuffer: (src: FakeBuffer, srcOffset: number, dst: FakeBuffer, dstOffset: number, size: number) => {
-        ops.push(() => dst.bytes.set(src.bytes.slice(srcOffset, srcOffset + size), dstOffset));
+        ops.push(() => {
+          assertUnmapped(dst, 'copyBufferToBuffer');
+          dst.bytes.set(src.bytes.slice(srcOffset, srcOffset + size), dstOffset);
+        });
       },
       finish: () => ({ ops }),
     };
@@ -169,6 +185,23 @@ describe('GpuProfiler', () => {
       expect(seal.usage).toBe(GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
       const resolve = gpu.buffers.find((b) => b.label === 'gpu-profiler-resolve')!;
       expect(resolve.size).toBe(1024 * 8);
+      expect(resolve.usage).toBe(GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC);
+    });
+
+    it.each([0, -1, 2049, 512.5, NaN, Infinity])(
+      'maxPairs %s is refused with a RangeError, before any GPU object exists',
+      (maxPairs) => {
+        expect(() => new GpuProfiler(gpu.device, maxPairs)).toThrow(RangeError);
+        expect(gpu.createQuerySet).not.toHaveBeenCalled();
+        expect(gpu.buffers).toEqual([]);
+      },
+    );
+
+    it('maxPairs 2048 fills the 4096 queries WebGPU allows a query set, and 1 is the smallest', () => {
+      new GpuProfiler(gpu.device, 2048);
+      expect(gpu.createQuerySet).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'timestamp', count: 4096 }));
+      new GpuProfiler(gpu.device, 1);
+      expect(gpu.createQuerySet).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'timestamp', count: 2 }));
     });
   });
 
@@ -328,10 +361,12 @@ describe('GpuProfiler', () => {
         const s = stampsOf(0, 1);
         await measure(p, gpu, ['a'], s);
         for (const b of gpu.buffers) b.failMap = true;
-        await expect(measure(p, gpu, ['a'], stampsOf(1, 1))).resolves.toBe(true);
+        // Three lost frames in a row: the pool is LIFO with three slots, so a buffer
+        // that failed to come back shows only when all three have been lost.
+        for (let i = 1; i <= 3; i++) await expect(measure(p, gpu, ['a'], stampsOf(i, 1))).resolves.toBe(true);
         for (const b of gpu.buffers) b.failMap = false;
         // Were the history kept, a frame repeating s would be stale.
-        await measure(p, gpu, ['a'], s);
+        await expect(measure(p, gpu, ['a'], s)).resolves.toBe(true);
         expect(p.getTimingsByName().get('a')?.sampleCount).toBe(2);
         expect(p.skippedFrames).toBe(0);
         // A lost device is expected, not a bug: only a failure AFTER the map is reported (see diagnostics).
@@ -382,6 +417,7 @@ describe('GpuProfiler', () => {
       expect(p.truncatedFrames).toBe(2);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0][0])).toMatch(/more than 2 passes/);
+      expect(String(warn.mock.calls[0][0])).toMatch(/larger maxPairs \(at most 2048\)\./);
     });
 
     it('discard counts survive reset: they describe the browser', async () => {
@@ -400,15 +436,17 @@ describe('GpuProfiler', () => {
         await measure(p, gpu, ['forward'], stampsOf(0, 1));
         expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(1);
         for (const b of gpu.buffers) b.failRange = true;
-        await measure(p, gpu, ['forward'], stampsOf(1, 1));
+        // Three failed reads in a row: the pool is LIFO with three slots, so a buffer
+        // that failed to come back shows only when all three have failed.
+        for (let i = 1; i <= 3; i++) await measure(p, gpu, ['forward'], stampsOf(i, 1));
         expect(error).toHaveBeenCalledTimes(1);
         expect(String(error.mock.calls[0][0])).toContain('GPU profiler');
         for (const b of gpu.buffers) b.failRange = false;
-        await measure(p, gpu, ['forward'], stampsOf(2, 1));
-        await measure(p, gpu, ['forward'], stampsOf(3, 1));
+        await expect(measure(p, gpu, ['forward'], stampsOf(4, 1))).resolves.toBe(true);
+        await measure(p, gpu, ['forward'], stampsOf(5, 1));
         expect(p.getTimingsByName().get('forward')?.sampleCount).toBe(3);
         for (const b of gpu.buffers) b.failRange = true;
-        await measure(p, gpu, ['forward'], stampsOf(4, 1));
+        await measure(p, gpu, ['forward'], stampsOf(6, 1));
         expect(error).toHaveBeenCalledTimes(1);
       } finally {
         error.mockRestore();

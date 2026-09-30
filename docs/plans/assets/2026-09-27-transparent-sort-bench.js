@@ -4,7 +4,7 @@ async () => {
   // AMD iGPU (marker profiler); /2 needs the timestampWrites profiler (2026-09-29).
   //
   // Page: the dev harness with ?bench (no section: an otherwise empty world),
-  // http://localhost:5173/?mode=B&bench, on the AMD low-power adapter.
+  // http://localhost:5173/?mode=B&bench, (format /1: on the AMD low-power adapter).
   // Scene: N = 1 000, 10 000 and 100 000 (= CAP, 98 full tiles) 2D quads,
   // .transparent(), 16x16 px, all inside the view of a 1920x1080 target;
   // depth all 0 ('same') or all distinct in [0, 999], in shuffled order
@@ -17,11 +17,17 @@ async () => {
   // beginning to last pass end). With the marker profiler of steps 0-4 the sum
   // of every pass telescoped to that same span, so `total` stays comparable
   // across machines. `passSum` is the sum of every pass: since 2026-09-29 each
-  // entry is its own pass's duration (timestampWrites), and on a GPU that
-  // overlaps passes (the Apple M2) passSum exceeds total. With the markers, part
-  // of a render pass's fragment work could land in the NEXT bracket (a trial at
-  // 100 000 on the AMD iGPU read forward 0.28 ms, fxaa-tonemap 6.9 ms); with
-  // pairs it stays in `forward`. Compare `total` between steps and machines.
+  // entry is the duration of the passes that carry its name (the sort's
+  // upsweep/scan/scatter entries sum 7 passes each) (timestampWrites), and
+  // passSum − total is the overlap minus the gaps between passes, so passSum
+  // can exceed total on a GPU that overlaps passes (the Apple M2). With the
+  // markers, part of a render pass's fragment work could land in the NEXT
+  // bracket (a trial at 100 000 on the AMD iGPU read forward 0.28 ms,
+  // fxaa-tonemap 6.9 ms); with pairs it stays in `forward`. Compare `total`
+  // between steps and machines.
+  // `total` is null if no frame span was read.
+  // The `frameTiming` read stays right under the `passes` read, before the
+  // `await gpuCount()` in the results literal, so both cover the same frames.
   // Each batch is destroyed, and gone from the GPU rows, before the next one.
   //
   // Optional, set by an earlier evaluate_script:
@@ -42,7 +48,7 @@ async () => {
   }
   if (!engine.gpuProfilingSupported) throw new Error('no timestamp-query on this device: no GPU timings');
   if (typeof engine.getGpuFrameTiming !== 'function') {
-    throw new Error('engine.getGpuFrameTiming() is missing: this build has the marker profiler, apply the timestampWrites profiler first');
+    throw new Error('engine.getGpuFrameTiming() is missing: this build has the marker profiler, apply the timestampWrites profiler first, or, if it was applied, restart the dev server and reload the page (Vite can serve a stale module)');
   }
   const opts = window.__benchOpts ?? {};
   const sizes = opts.sizes ?? [1000, 10000, 100000];

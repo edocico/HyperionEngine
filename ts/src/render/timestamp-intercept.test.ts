@@ -54,12 +54,20 @@ const own = (obj: object, key: string) => Object.prototype.hasOwnProperty.call(o
 
 describe('instrumentEncoder', () => {
   it('overrides begin*Pass as own properties of this encoder, never of its prototype or of another encoder', () => {
+    // Captured BEFORE instrumenting: reading the prototype slot afterwards
+    // would compare it with itself, and a write onto it would go unseen.
+    const protoRender = FakeEncoder.prototype.beginRenderPass;
+    const protoCompute = FakeEncoder.prototype.beginComputePass;
     const { fake } = setUp();
     expect(own(fake, 'beginRenderPass')).toBe(true);
     expect(own(fake, 'beginComputePass')).toBe(true);
+    expect(FakeEncoder.prototype.beginRenderPass).toBe(protoRender);
+    expect(FakeEncoder.prototype.beginComputePass).toBe(protoCompute);
     const other = new FakeEncoder();
     expect(own(other, 'beginRenderPass')).toBe(false);
-    expect(other.beginComputePass).toBe(FakeEncoder.prototype.beginComputePass);
+    expect(own(other, 'beginComputePass')).toBe(false);
+    expect(other.beginRenderPass).toBe(protoRender);
+    expect(other.beginComputePass).toBe(protoCompute);
   });
 
   it('gives each timed pass the next pair, through a descriptor derived from the original', () => {
@@ -74,7 +82,7 @@ describe('instrumentEncoder', () => {
       { querySet, beginningOfPassWriteIndex: 2, endOfPassWriteIndex: 3 },
     ]);
     expect(recorder.pairs.map((p) => p.name)).toEqual(['cull', 'forward']);
-    // The original is never written; its members are read through the prototype.
+    // The original is never written; its members are read from the original.
     expect(own(original, 'timestampWrites')).toBe(false);
     expect(fake.received[1]?.label).toBe('forward');
     expect(fake.received[1]?.colorAttachments).toBe(original.colorAttachments);
@@ -85,6 +93,74 @@ describe('instrumentEncoder', () => {
     recorder.enterNode('scatter', true);
     encoder.beginComputePass();
     expect(fake.received[0]?.timestampWrites).toEqual({ querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 });
+    // Only the pair: there is no original to read anything else from.
+    expect(fake.received[0]?.label).toBeUndefined();
+  });
+
+  it('a compute pass opened with no descriptor outside a timed node receives none: the call is forwarded untouched', () => {
+    const { encoder, fake, recorder } = setUp();
+    encoder.beginComputePass();
+    recorder.enterNode('overlay', false);
+    encoder.beginComputePass();
+    expect(fake.received).toEqual([undefined, undefined]);
+    expect(recorder.pairs).toEqual([]);
+  });
+
+  it('a class descriptor with a #private getter keeps its receiver: the browser reads its members from the original', () => {
+    class OverlayDesc {
+      #att = [] as unknown[];
+      get colorAttachments() { return this.#att; }
+    }
+    const { encoder, fake, recorder } = setUp();
+    recorder.enterNode('overlay', true);
+    const original = new OverlayDesc() as unknown as GPURenderPassDescriptor;
+    encoder.beginRenderPass(original);
+    const got = fake.received[0] as object;
+    // WebIDL reads each dictionary member with [[Get]] on the object it receives.
+    expect(() => Reflect.get(got, 'colorAttachments', got)).not.toThrow();
+    expect(Reflect.get(got, 'colorAttachments', got)).toBe(original.colorAttachments);
+    expect(Reflect.get(got, 'timestampWrites', got)).toEqual({ querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 });
+    expect(own(original, 'timestampWrites')).toBe(false);
+  });
+
+  it('a compute descriptor whose getter reads a #private field keeps its receiver too', () => {
+    class Desc {
+      #l = 'x';
+      get label() { return this.#l; }
+    }
+    const { encoder, fake, recorder } = setUp();
+    recorder.enterNode('overlay', true);
+    encoder.beginComputePass(new Desc() as unknown as GPUComputePassDescriptor);
+    const got = fake.received[0] as object;
+    expect(Reflect.get(got, 'label', got)).toBe('x');
+    expect(Reflect.get(got, 'timestampWrites', got)).toEqual({ querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 });
+  });
+
+  it('a null descriptor is an empty dictionary: it does not throw, and the pass is timed', () => {
+    const { encoder, fake, recorder } = setUp();
+    recorder.enterNode('plugin', true);
+    expect(() => encoder.beginComputePass(null as never)).not.toThrow();
+    expect(recorder.pairs.map((p) => p.name)).toEqual(['plugin']);
+    const got = fake.received[0] as object;
+    expect(Reflect.get(got, 'timestampWrites', got)).toEqual({ querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 });
+  });
+
+  it('a frozen descriptor with an own timestampWrites: undefined is timed, and stays frozen and unchanged', () => {
+    const { encoder, fake, recorder } = setUp();
+    recorder.enterNode('overlay', true);
+    const original = Object.freeze({
+      label: 'frozen', timestampWrites: undefined, colorAttachments: [],
+    }) as unknown as GPURenderPassDescriptor;
+    encoder.beginRenderPass(original);
+    const got = fake.received[0] as object;
+    expect(recorder.pairs).toHaveLength(1);
+    // A Proxy whose target were the frozen original would throw here: the get
+    // invariant of a read-only, non-configurable own property.
+    expect(Reflect.get(got, 'timestampWrites', got)).toEqual({ querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 });
+    expect(Reflect.get(got, 'label', got)).toBe('frozen');
+    expect(Reflect.get(got, 'colorAttachments', got)).toBe(original.colorAttachments);
+    expect(Object.isFrozen(original)).toBe(true);
+    expect(original.timestampWrites).toBeUndefined();
   });
 
   it('a descriptor with timestampWrites of its own passes through untouched and is not timed', () => {
@@ -115,6 +191,32 @@ describe('instrumentEncoder', () => {
     expect(recorder.pairs).toHaveLength(2);
     expect(fake.received[1]).toEqual({ label: 'bypass' });
     expect(fake.received[2]?.timestampWrites).toMatchObject({ beginningOfPassWriteIndex: 2 });
+  });
+
+  it('a pass encoder that lacks a work method is instrumented without it: nothing is invented, the others still mark work', () => {
+    const noop = () => {};
+    const renderPass = { draw: noop, drawIndexed: noop, drawIndirect: noop, drawIndexedIndirect: noop, end: noop };
+    const computePass = { dispatchWorkgroups: noop, end: noop };
+    const encoder = {
+      beginRenderPass: () => renderPass,
+      beginComputePass: () => computePass,
+    } as unknown as GPUCommandEncoder;
+    const recorder = new FrameRecorder(querySet, 8);
+    instrumentEncoder(encoder, recorder);
+    recorder.enterNode('n', true);
+    let render!: GPURenderPassEncoder;
+    let compute!: GPUComputePassEncoder;
+    expect(() => {
+      render = encoder.beginRenderPass(colour());
+      compute = encoder.beginComputePass({});
+    }).not.toThrow();
+    // wrap() skipped the absent methods: a wrapper installed for one would
+    // make the pass encoder answer to a command it never had.
+    expect('executeBundles' in render).toBe(false);
+    expect('dispatchWorkgroupsIndirect' in compute).toBe(false);
+    render.draw(3);
+    compute.dispatchWorkgroups(1);
+    expect(recorder.pairs.map((p) => p.work)).toEqual([true, true]);
   });
 
   it('forwards every call to the native pass encoder with the same arguments', () => {

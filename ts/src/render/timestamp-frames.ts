@@ -34,10 +34,14 @@ export interface GpuFrameTiming {
   sampleCount: number;
 }
 
-export type DiscardReason = 'unexecuted' | 'truncated' | 'zero' | 'reversed' | 'stale' | 'empty';
+/**
+ * A frame with several reasons counts under the first of these (design §6.4).
+ * The one source of the reasons: {@link DiscardReason} is derived from it, so a
+ * reason cannot be missing from the order (it would rank -1 and outrank all).
+ */
+export const DISCARD_ORDER = ['unexecuted', 'truncated', 'zero', 'reversed', 'stale', 'empty'] as const;
 
-/** A frame with several reasons counts under the first of these (design §6.4). */
-export const DISCARD_ORDER: readonly DiscardReason[] = ['unexecuted', 'truncated', 'zero', 'reversed', 'stale', 'empty'];
+export type DiscardReason = (typeof DISCARD_ORDER)[number];
 
 export interface ResolvedFrame {
   /** Pair k's stamps at 2k (beginning) and 2k + 1 (end), in nanoseconds. */
@@ -72,8 +76,15 @@ export class StampHistory {
     return this.known[index] === 1 && this.last[index] === value;
   }
 
-  /** The values of an executed frame, in submission order. */
+  /**
+   * The values of an executed frame, in submission order.
+   * @throws RangeError when there are more stamps than indices: a wiring bug,
+   *   and the tail would otherwise be dropped without a word.
+   */
   record(stamps: BigUint64Array): void {
+    if (stamps.length > this.last.length) {
+      throw new RangeError(`StampHistory.record: ${stamps.length} stamps for a history of ${this.last.length} indices`);
+    }
     for (let i = 0; i < stamps.length; i++) {
       this.last[i] = stamps[i];
       this.known[i] = 1;
@@ -92,8 +103,16 @@ export class StampHistory {
 
 const rank = (reason: DiscardReason) => DISCARD_ORDER.indexOf(reason);
 
-/** Keep or discard one frame (design §6.2-§6.5). Does not touch the history. */
+/**
+ * Keep or discard one frame (design §6.2-§6.5). Does not touch the history.
+ * @throws RangeError when the frame holds fewer stamps than two per pair: a
+ *   wiring bug, not a reason to discard, and the missing stamps would otherwise
+ *   be read as `undefined`.
+ */
 export function evaluateFrame(frame: ResolvedFrame, history: StampHistory): FrameVerdict {
+  if (frame.stamps.length < 2 * frame.pairs.length) {
+    throw new RangeError(`evaluateFrame: ${frame.stamps.length} stamps for ${frame.pairs.length} pairs (two per pair)`);
+  }
   if (!frame.executed) return { ok: false, reason: 'unexecuted' };
   if (frame.truncated) return { ok: false, reason: 'truncated' };
   let found: { reason: DiscardReason; pass: string } | null = null;

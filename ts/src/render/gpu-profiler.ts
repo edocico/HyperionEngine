@@ -23,17 +23,28 @@
  *    on some GPUs (the Apple M2 does), so a pass's duration includes time it
  *    shared with others. The frame is {@link GpuProfiler.frameTiming}: from
  *    the first beginning to the last end.
- * 2. **Quantization.** Chrome without `--enable-webgpu-developer-features`
- *    rounds timestamps: to 65 536 ns on macOS/Metal (Chrome 154, 2026-09-29),
- *    to about 1 us on Linux/Vulkan. Quote `averageMs`: over {@link WINDOW}
- *    frames the rounding averages out.
- * 3. **Only passes with work are measured.** A pass that recorded no draw or
- *    dispatch (a clear alone) is not sampled on Metal: its name counts 0 ms.
+ * 2. **Quantization.** Chrome rounds timestamps to 65 536 ns on every
+ *    backend unless it runs with `--enable-webgpu-developer-features` or
+ *    `--enable-unsafe-webgpu` (Dawn's quantization mask; measured on
+ *    macOS/Metal, Chrome 154, 2026-09-29). The ~1.024 us steps seen on
+ *    Linux/Vulkan on 2026-09-26 came from a Chrome that needs
+ *    `--enable-unsafe-webgpu` for its adapter: unquantized. Quote
+ *    `averageMs`: over {@link WINDOW} frames the rounding averages out.
+ * 3. **Only passes with work are measured.** On Metal a pass without
+ *    sampled work leaves stale stamps: a compute pass both of its indices'
+ *    previous values (0 on a fresh query set), a render pass its end, while
+ *    its beginning is fresh (probes 2 and 4). So a pass that recorded no
+ *    draw or dispatch counts 0 ms, whatever its stamps. A render pass whose
+ *    only command is an empty render bundle counts as work but is not
+ *    sampled: its frames are discarded as `reversed`. Give that node
+ *    `profile: false`.
  *
  * ## Cost when disabled
  *
  * Zero: `createRenderer` builds no GpuProfiler until `enableGpuProfiling()`,
- * and the graph calls nothing on an unmeasured frame.
+ * and the graph calls nothing on an unmeasured frame. After a disable, the
+ * query set and the buffers stay allocated, idle, until the renderer is
+ * destroyed.
  */
 import { FrameRecorder, instrumentEncoder, type TimedPair } from './timestamp-intercept';
 import {
@@ -54,6 +65,7 @@ const SEAL_BYTES = 4;
 const READBACK_TAIL = 8;
 /** Discarded frames in a row before the one warning: two seconds at 60 fps. */
 const WARN_AFTER = WINDOW;
+const MAX_PAIRS = 2048; // WebGPU caps a query set at 4096 queries: two per pair
 
 /** The next frame's seal: 1..0xFFFFFFFF, never 0, which is what a rejected frame reads. */
 export function nextSeal(previous: number): number {
@@ -127,11 +139,23 @@ export class GpuProfiler {
   private reportedReadFailure = false;
 
   /**
-   * @param maxPairs timestamp pairs per frame, one per measured pass. 512:
-   *   the worst frame the design estimates opens about 250 (§4.5). The query
-   *   set is 8 KB and exists only while profiling.
+   * @param maxPairs timestamp pairs per frame, one per measured pass, from 1
+   *   to 2048 (WebGPU caps a query set at 4096 queries). 512: the worst frame
+   *   the design estimates opens about 250 (§4.5). `createRenderer` builds the
+   *   profiler at the first `enableGpuProfiling()` and destroys it with the
+   *   renderer; `disableGpuProfiling()` only detaches it, so the query set
+   *   (8 KB) and the buffers stay allocated, idle.
+   * @throws RangeError when `maxPairs` is not an integer from 1 to 2048: the
+   *   query set would be invalid, and every measured frame, the scene
+   *   included, would be dropped.
    */
   constructor(private readonly device: GPUDevice, maxPairs = 512) {
+    if (!Number.isInteger(maxPairs) || maxPairs < 1 || maxPairs > MAX_PAIRS) {
+      throw new RangeError(
+        `GpuProfiler: maxPairs must be an integer from 1 to ${MAX_PAIRS} ` +
+        `(two queries per pair, at most 4096 per query set), got ${maxPairs}`,
+      );
+    }
     this.maxPairs = maxPairs;
     const queries = 2 * maxPairs;
     const stampBytes = queries * TIMESTAMP_SIZE;
@@ -323,7 +347,7 @@ export class GpuProfiler {
       this.warnedTruncation = true;
       console.warn(
         `[Hyperion] GPU profiling: a frame opened more than ${this.maxPairs} passes, so its timings ` +
-        `were dropped. Build the GpuProfiler with a larger maxPairs.`,
+        `were dropped. Build the GpuProfiler with a larger maxPairs (at most ${MAX_PAIRS}).`,
       );
     }
     this.streak++;

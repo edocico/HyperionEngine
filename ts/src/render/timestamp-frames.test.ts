@@ -109,6 +109,61 @@ describe('evaluateFrame', () => {
     expect(evaluateFrame({ ...all, truncated: true }, history)).toEqual({ ok: false, reason: 'truncated' });
     expect(evaluateFrame({ ...all, truncated: true, executed: false }, history)).toEqual({ ok: false, reason: 'unexecuted' });
   });
+
+  it('two pairs failing for the same reason: the verdict names the FIRST pair', () => {
+    const history = new StampHistory(4);
+    history.record(new BigUint64Array([100n, 200n, 300n, 400n]));
+    expect(evaluateFrame(frameOf([['first', true, 0n, 5n], ['second', true, 0n, 6n]]), new StampHistory(4)))
+      .toEqual({ ok: false, reason: 'zero', pass: 'first' });
+    expect(evaluateFrame(frameOf([['first', true, 9n, 5n], ['second', true, 8n, 6n]]), new StampHistory(4)))
+      .toEqual({ ok: false, reason: 'reversed', pass: 'first' });
+    expect(evaluateFrame(frameOf([['first', true, 100n, 200n], ['second', true, 300n, 400n]]), history))
+      .toEqual({ ok: false, reason: 'stale', pass: 'first' });
+  });
+
+  it('the span runs from the earliest begin to the latest end, whatever the order of the pairs', () => {
+    // Out of order: the second pair begins and ends before the first.
+    const outOfOrder = evaluateFrame(frameOf([
+      ['a', true, ms(5), ms(9)],
+      ['b', true, ms(1), ms(3)],
+    ]), new StampHistory(4));
+    expect(outOfOrder.ok).toBe(true);
+    if (outOfOrder.ok) expect(outOfOrder.spanMs).toBeCloseTo(8, 9);
+    // Nested: the last pair neither begins first nor ends last.
+    const nested = evaluateFrame(frameOf([
+      ['a', true, ms(1), ms(10)],
+      ['b', true, ms(2), ms(5)],
+    ]), new StampHistory(4));
+    expect(nested.ok).toBe(true);
+    if (nested.ok) expect(nested.spanMs).toBeCloseTo(9, 9);
+  });
+
+  it('a pair without work whose stamps repeat the RECORDED history does not discard the frame (Metal leaves them stale)', () => {
+    const history = new StampHistory(4);
+    const first = frameOf([['forward', true, 100n, 200n], ['idle', false, 300n, 400n]]);
+    expect(evaluateFrame(first, history).ok).toBe(true);
+    history.record(first.stamps);
+    // 'forward' is refreshed; 'idle' opened a pass without work and kept its indices' stamps.
+    const v = evaluateFrame(frameOf([['forward', true, 500n, 650n], ['idle', false, 300n, 400n]]), history);
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect(v.totalsMs.get('idle')).toBe(0);
+    expect(v.totalsMs.get('forward')).toBeCloseTo(150 / 1e6, 12);
+  });
+
+  it('a frame with fewer stamps than two per pair is a wiring bug: RangeError, not a verdict from missing stamps', () => {
+    const two = frameOf([['a', true, 1n, 2n], ['b', true, 3n, 4n]]);
+    // Plausible non-zero values for the stamps that exist: only the count is wrong.
+    const short = { ...two, stamps: new BigUint64Array([1n, 2n, 3n]) };
+    expect(() => evaluateFrame(short, new StampHistory(4))).toThrow(RangeError);
+    // Whatever the work: the stamps of a pair without work are never read, and this frame was accepted.
+    const idle = {
+      ...frameOf([['a', true, 1n, 2n], ['b', false, 0n, 0n]]),
+      stamps: new BigUint64Array([1n, 2n]),
+    };
+    expect(() => evaluateFrame(idle, new StampHistory(4))).toThrow(RangeError);
+    expect(() => evaluateFrame(two, new StampHistory(4))).not.toThrow();
+  });
 });
 
 describe('StampHistory', () => {
@@ -119,6 +174,14 @@ describe('StampHistory', () => {
     expect(h.isStale(0, 7n)).toBe(true);
     expect(h.isStale(1, 9n)).toBe(false);
     expect(h.isStale(2, 0n)).toBe(false);
+  });
+
+  it('record() of more stamps than its size is a wiring bug: RangeError, and nothing is recorded', () => {
+    const h = new StampHistory(2);
+    expect(() => h.record(new BigUint64Array([7n, 8n, 9n]))).toThrow(RangeError);
+    expect(h.isStale(0, 7n)).toBe(false);
+    expect(() => h.record(new BigUint64Array([7n, 8n]))).not.toThrow();
+    expect(h.isStale(1, 8n)).toBe(true);
   });
 
   it('forget(n) and forgetAll() make indices unknown again', () => {

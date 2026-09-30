@@ -178,7 +178,9 @@ export interface Renderer {
   /**
    * Start measuring per-pass GPU time. Returns false when unsupported.
    * Read the numbers with {@link getGpuTimings}; quote `averageMs`, not
-   * `lastMs`: Chrome quantizes timestamps without --enable-webgpu-developer-features (see render/gpu-profiler.ts).
+   * `lastMs`: Chrome rounds timestamps unless started with
+   * --enable-webgpu-developer-features or --enable-unsafe-webgpu (see
+   * render/gpu-profiler.ts).
    */
   enableGpuProfiling(): boolean;
   disableGpuProfiling(): void;
@@ -1150,6 +1152,7 @@ export async function createRenderer(
     },
 
     getGpuFrameTiming() {
+      // Same rule as getGpuTimings(): a disabled profiler's history is frozen.
       return gpuProfilingEnabled ? gpuProfiler?.frameTiming() ?? null : null;
     },
 
