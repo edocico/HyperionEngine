@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { Hyperion } from './hyperion';
 import type { EngineBridge } from './worker-bridge';
 import type { Renderer } from './renderer';
@@ -103,6 +104,28 @@ function defaultConfig(): ResolvedConfig {
     streamingBudgetBytesPerFrame: 256 * 1024,
   };
 }
+
+// Every engine a test builds is destroyed when the test ends. destroy() is
+// idempotent, so the tests that destroy theirs by hand are untouched. An engine
+// left alive keeps its LeakDetector armed: the handles it spawned then warn from
+// the FinalizationRegistry callback whenever V8 collects them, which can be
+// while the worker is torn down, and vitest exits 1 ("Closing rpc while
+// onUserConsoleLog was pending") with every test green.
+let fromPartsSpy: MockInstance<typeof Hyperion.fromParts>;
+
+beforeEach(() => {
+  fromPartsSpy = vi.spyOn(Hyperion, 'fromParts'); // calls through
+});
+
+afterEach(() => {
+  try {
+    for (const call of fromPartsSpy.mock.results) {
+      if (call.type === 'return') call.value.destroy();
+    }
+  } finally {
+    fromPartsSpy.mockRestore();
+  }
+});
 
 describe('Hyperion', () => {
   it('constructs from dependencies', () => {
@@ -217,6 +240,27 @@ describe('Hyperion', () => {
     e.destroy();
     expect(unregister).toHaveBeenCalledWith(e);
     unregister.mockRestore();
+  });
+
+  it('destroy() switches the leak detector off, once', () => {
+    const dispose = vi.spyOn(LeakDetector.prototype, 'dispose');
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), mockRenderer());
+    engine.spawn();
+    expect(dispose).not.toHaveBeenCalled();
+    engine.destroy();
+    engine.destroy();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    dispose.mockRestore();
+  });
+
+  it('destroy() switches the leak detector off before tearing anything down: a throwing bridge cannot leave it armed', () => {
+    const dispose = vi.spyOn(LeakDetector.prototype, 'dispose');
+    const bridge = mockBridge();
+    vi.mocked(bridge.destroy).mockImplementation(() => { throw new Error('worker gone'); });
+    const engine = Hyperion.fromParts(defaultConfig(), bridge, mockRenderer());
+    expect(() => engine.destroy()).toThrow('worker gone');
+    expect(dispose).toHaveBeenCalledTimes(1);
+    dispose.mockRestore();
   });
 
   it('spawn() refuses, loudly, when every id is live or in quarantine (WASM would drop it silently)', () => {

@@ -583,12 +583,16 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Tear down all resources: stop the loop, destroy the bridge and renderer.
-   * Idempotent -- calling more than once is safe.
+   * Tear down all resources: stop the loop, destroy the bridge and renderer,
+   * switch the leak detector off. Idempotent -- calling more than once is safe.
    */
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    // First, before anything below that can throw and leave it armed: an engine
+    // that is gone has no leak left to report, and the registry calls back
+    // whenever V8 collects, possibly while the host is closing.
+    this.leakDetector.dispose();
     this.disableProfiler();
     this.pluginRegistry.destroyAll();
     this.loop.stop();
