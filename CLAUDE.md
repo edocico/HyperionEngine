@@ -115,12 +115,12 @@ cd ts && npm install
 # Required global tools
 # - wasm-pack: cargo install wasm-pack
 # - Rust with wasm32-unknown-unknown target: rustup target add wasm32-unknown-unknown
-# - wasm-opt: cargo install wasm-opt (used by build:wasm:opt for --strip-debug --enable-simd)
+# - wasm-opt: binaryen's (Fedora: the `binaryen` package, 126; macOS: `brew install binaryen`, 133) (used by build:wasm:opt for --strip-debug --enable-simd)
 # - macOS setup (Apple Silicon, checked 2026-09-30): rustup, not `brew install rust` (only rustup honors rust-toolchain.toml);
 #   `cargo install wasm-pack --version 0.14.0 --locked` and `cargo install naga-cli --version 30.0.1 --locked`;
 #   `brew install binaryen` for wasm-opt (133 here), not `cargo install wasm-opt`; Node 24 (`brew install node@24` is
 #   keg-only, so put /opt/homebrew/opt/node@24/bin on PATH; any shim that resolves to 24 works, here the Vite+ one: v24.21.0);
-#   jq on PATH (every hook parses its payload with it; the /usr/bin/jq of macOS works); Pillow for scripts/pixels.py
+#   jq on PATH (every hook parses its payload with it; the /usr/bin/jq of macOS works); Pillow for .claude/skills/gpu-check/scripts/pixels.py
 #   (`brew install pillow`; `python3` must be Homebrew's to see it)
 
 # Pinned toolchains (do not use ad-hoc versions)
