@@ -859,7 +859,7 @@ Atteso: nessun errore, e colori entro l'errore di ASTC.
   - Nessun errore di compilazione e tutti gli scope `null`.
   - Gli stessi verdetti di Chrome in B e C, tranne Audio: l'AudioContext vuole un gesto vero e sotto automazione può restare in attesa.
   - `window.__hyperion.mode` uguale all'URL.
-  - Il profiler in Safari: `enableGpuProfiling()` su `?mode=B`, poi `getGpuTimings()` e `getGpuFrameTiming()` dopo circa 4 s. Voci non vuote e nessun errore di validazione in console: verifica il meccanismo della spec del profiler (override come proprietà proprie, membri ereditati del descrittore). Se Safari rifiuta i membri ereditati, il ripiego è nella spec, §8.2.
+  - Il profiler in Safari: `enableGpuProfiling()` su `?mode=B`, poi `getGpuTimings()` e `getGpuFrameTiming()` dopo circa 4 s. Voci non vuote e nessun errore di validazione in console: verifica il meccanismo del profiler: override come proprietà proprie dell'encoder, e un descrittore derivato come `Proxy` su un oggetto vuoto che legge ogni membro dall'originale (probe 5, `m7-probe5-derive-proxy-gpu.json`). Se Safari rifiuta il `Proxy`, il ripiego della spec §8.2 (`{ ...desc, timestampWrites }`) vale solo per i descrittori letterali: su un descrittore di classe perde i getter del prototipo.
 - **Se fallisce.**
   - `diagnostic` rifiutato: il piano B è nel design 5b §10, prima riga dei rischi (portare `fwidth(uv.y)`/`dpdx`/`dpdy` fuori dallo `switch` e riscrivere il `fwidth` della bezier con la regola della catena). È una modifica di design: chiedila.
   - `?mode=A` forzato con canvas bianco dopo `[Hyperion] Mode A failed, trying next fallback`: è il difetto di fallback descritto in 3.2, non un guasto della GPU. Annotalo e segnalalo come domanda.

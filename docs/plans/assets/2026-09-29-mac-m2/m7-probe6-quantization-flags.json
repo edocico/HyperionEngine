@@ -1,0 +1,116 @@
+{
+ "probe": "m7-probe6: does Chrome quantize timestamp-query results, per launch flag",
+ "date": "2026-09-30",
+ "machine": "Apple M2 Pro (16-core GPU) / Metal, Google Chrome 154 (headless=new, fresh profile per run)",
+ "method": "Per run: one device with timestamp-query; 5 submits of 8 compute passes, each with work (2000 LCG steps per invocation, 1..3585 workgroups) and its own timestampWrites pair; 80 stamps resolved and read back. A stamp that is a multiple of 65 536 ns in all 80 cases is quantized (Dawn kTimestampQuantizationMask = 0xFFFF0000).",
+ "script": "m7-probe6-quantization-flags.mjs (node, Chrome DevTools Protocol)",
+ "runs": [
+  {
+   "label": "stock",
+   "flags": [],
+   "adapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": "",
+    "isFallbackAdapter": false
+   },
+   "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+   "hasTimestampQuery": true,
+   "stamps": 80,
+   "nonzero": 80,
+   "multiplesOf65536": 80,
+   "durationsNs_submit0": [
+    196608,
+    458752,
+    1048576,
+    2031616,
+    2031616,
+    1966080,
+    1441792,
+    1769472
+   ],
+   "sampleRawLow16_submit0": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "label": "unsafe",
+   "flags": [
+    "--enable-unsafe-webgpu"
+   ],
+   "adapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": "",
+    "isFallbackAdapter": false
+   },
+   "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+   "hasTimestampQuery": true,
+   "stamps": 80,
+   "nonzero": 80,
+   "multiplesOf65536": 0,
+   "durationsNs_submit0": [
+    213334,
+    711125,
+    1115416,
+    1956500,
+    1408208,
+    1276250,
+    1507834,
+    1958667
+   ],
+   "sampleRawLow16_submit0": [
+    59866,
+    11056,
+    11972,
+    2201,
+    2785,
+    4089
+   ]
+  },
+  {
+   "label": "devfeatures",
+   "flags": [
+    "--enable-webgpu-developer-features"
+   ],
+   "adapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "0x0000",
+    "description": "Apple M2 Pro",
+    "isFallbackAdapter": false
+   },
+   "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+   "hasTimestampQuery": true,
+   "stamps": 80,
+   "nonzero": 80,
+   "multiplesOf65536": 0,
+   "durationsNs_submit0": [
+    56917,
+    164666,
+    359625,
+    694500,
+    707917,
+    980375,
+    965667,
+    1109459
+   ],
+   "sampleRawLow16_submit0": [
+    16345,
+    7726,
+    27351,
+    60945,
+    61237,
+    27646
+   ]
+  }
+ ],
+ "conclusion": "Stock Chrome quantizes to 65 536 ns (80/80 multiples); either --enable-unsafe-webgpu or --enable-webgpu-developer-features lifts it (0/80). Chromium source: gpu/command_buffer/service/webgpu_decoder_impl.cc enables the timestamp_quantization toggle only at SafetyLevel::kSafe, and --enable-unsafe-webgpu sets kUnsafe. So the ~1.024 us steps measured on Linux/Vulkan (2026-09-26), where Chrome needs --enable-unsafe-webgpu for an adapter, were unquantized."
+}
