@@ -243,11 +243,11 @@ export function main(argv) {
 
 /**
  * True when this file is the entry point. Node resolves the symlinks of an
- * entry module for import.meta.url but leaves process.argv[1] as typed, so
- * through a symlink (macOS: /tmp and /var are links into /private) the plain
- * comparison was false, main() never ran and the gate ended with exit 0 and no
- * output. Both sides go through realpathSync; a path that cannot be resolved
- * means "imported", never a throw.
+ * entry module for import.meta.url, while process.argv[1] is only made absolute
+ * (its symlinks stay), so through a symlink (macOS: /tmp and /var are links
+ * into /private) the plain comparison was false, main() never ran and the gate
+ * ended with exit 0 and no output. Both sides go through realpathSync; a path
+ * that cannot be resolved means "imported", never a throw.
  */
 function isEntryPoint() {
   if (!process.argv[1]) return false;
