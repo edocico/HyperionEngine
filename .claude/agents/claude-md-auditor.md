@@ -33,8 +33,8 @@ For constants mirrored across the Rust/TS seam, assert both sides agree **with e
 
 ### 2. Enum variant counts
 ```bash
-awk '/pub enum CommandType/,/^}/' crates/hyperion-core/src/ring_buffer.rs | grep -cE '^\s+[A-Z][A-Za-z0-9]*\s*=\s*[0-9]+,'
-awk '/const enum CommandType/,/^}/' ts/src/ring-buffer.ts | grep -cE '^\s+[A-Z][A-Za-z0-9]*\s*=\s*[0-9]+,'
+awk '/pub enum CommandType/,/^}/' crates/hyperion-core/src/ring_buffer.rs | grep -cE '^[[:space:]]+[A-Z][A-Za-z0-9]*[[:space:]]*=[[:space:]]*[0-9]+,'
+awk '/const enum CommandType/,/^}/' ts/src/ring-buffer.ts | grep -cE '^[[:space:]]+[A-Z][A-Za-z0-9]*[[:space:]]*=[[:space:]]*[0-9]+,'
 ```
 Diff the extracted `Name = value` lists in both directions to catch drift either way. Cross-check the highest discriminant against the `MAX_*` sentinel — it must be exactly last+1.
 
