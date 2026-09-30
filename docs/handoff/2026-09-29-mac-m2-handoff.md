@@ -424,7 +424,7 @@ L'ordine conta. `build:wasm` va prima di `preflight.sh`, perché `tsc --noEmit` 
 
 Cosa vuol dire uno scarto:
 - **`npm ci` si ferma con `EBADENGINE`**: la Node sul PATH non è la 24.
-- **`--full` scrive `ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.` ed esce con 0**: il file c'è, manca `wasm-opt`. `build:wasm:opt` in `ts/package.json:10` nasconde l'errore 127, quindi il gate ha misurato un binario non ottimizzato. Il physics release invece fallisce in modo esplicito, con "command not found".
+- **`--full` si ferma con `ERROR: wasm-opt not found on PATH. Install binaryen (macOS: brew install binaryen).` ed esce con 1**, al passo «WASM — build standard (release)»: manca `wasm-opt`. `build:wasm:opt` (`ts/package.json:10`) controlla prima `command -v wasm-opt`, poi il file, e il suo exit status è quello di `wasm-opt`. Prima del fix 6.22 stampava invece `ERROR: wasm/hyperion_core_bg.wasm not found. Run build:wasm first.` ed usciva con 0, anche con il file presente e anche quando `wasm-opt` falliva: il gate misurava un binario senza il secondo passaggio di `wasm-opt` (`--strip-debug --enable-simd`; il primo lo fa wasm-pack, vedi «wasm-opt runs twice» in `CLAUDE.md`). Il physics release fallisce in modo esplicito (`sh: wasm-opt: command not found`, exit 127), prima e dopo il fix.
 - **Un conteggio Rust diverso**: un test compilato fuori da un `#[cfg]`, oppure una configurazione della matrice sbagliata. Va indagato, e non dipende dalla piattaforma.
 - **Un test Rust che fallisce solo sul Mac con una differenza nell'ultima cifra di un float**: i test nativi girano su aarch64, con la libm di Apple, e la fisica si assesta su valori un po' diversi da x86_64 e wasm32 (`CLAUDE.md:518`). Il test sta fissando un float che dipende dalla piattaforma. Si corregge il test, passando a un invariante o a una tolleranza, con la procedura della sezione 5. Non è una regressione del motore. Non aggiungere hash d'oro presi dal Mac: il confronto tra macchine resta wasm contro wasm.
 - **vitest con un numero diverso di test o file**: `node_modules` non viene da `npm ci`, oppure la Node è sbagliata. I test che leggono sorgenti in `crates/` falliscono se vitest non parte dalla radice del repo.
@@ -513,7 +513,7 @@ Segna il risultato nel README delle prove, poi comincia la sezione 4 da M0.
 
 ### 3.3 Build e plugin
 
-- **`wasm-opt` mancante** dà un errore sbagliato con exit 0 (vedi 2.6). Prima di `preflight.sh --full` o di `/check-size`, controlla `command -v wasm-opt`.
+- **`wasm-opt` mancante** ferma `build:wasm:opt` con `ERROR: wasm-opt not found on PATH` ed exit 1 (dal fix 6.22: prima dava un errore sbagliato con exit 0, vedi 2.6). `command -v wasm-opt` dà la stessa risposta prima di lanciare `preflight.sh --full` o `/check-size`, senza aspettare la build.
 - **`tsc` ha bisogno di `ts/wasm`** (2.6). vitest invece no.
 - **L'harness carica `ts/wasm`** (`build:wasm`, senza `physics-2d`). La fisica è coperta solo da `cargo test` su aarch64, come su Linux.
 - **LSP.** `rust-analyzer-lsp` e `typescript-lsp` erano abilitati senza binario anche su Linux (1.6, 1.11).
