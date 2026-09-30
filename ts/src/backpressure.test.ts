@@ -28,7 +28,7 @@ describe('PrioritizedCommandQueue', () => {
     let budget = 0;
     const seen = new Set<number>();
     const rb = {
-      writeCommand(cmd: number, id: number) {
+      tryWriteCommand(cmd: number, id: number) {
         if (budget-- <= 0) return false;
         seen.add(cmd === CommandType.SetListenerPosition ? -1 : id);
         return true;
@@ -49,7 +49,7 @@ describe('PrioritizedCommandQueue', () => {
   function drainAll(q: PrioritizedCommandQueue): Array<{ cmd: number; id: number; first: number }> {
     const out: Array<{ cmd: number; id: number; first: number }> = [];
     q.drainTo({
-      writeCommand(cmd: number, id: number, payload?: Float32Array) {
+      tryWriteCommand(cmd: number, id: number, payload?: Float32Array) {
         out.push({ cmd, id, first: payload?.[0] ?? NaN });
         return true;
       },
@@ -94,7 +94,7 @@ describe('PrioritizedCommandQueue', () => {
     q.enqueue(CommandType.SpawnEntity, 2);
     const drained: Array<{ cmd: number; entityId: number }> = [];
     q.drainTo({
-      writeCommand(cmd: number, entityId: number) {
+      tryWriteCommand(cmd: number, entityId: number) {
         drained.push({ cmd, entityId });
         return true;
       },
@@ -103,13 +103,13 @@ describe('PrioritizedCommandQueue', () => {
     expect(drained[1].cmd).toBe(CommandType.SetPosition);
   });
 
-  it('should stop draining when writeCommand returns false', () => {
+  it('should stop draining when tryWriteCommand returns false', () => {
     const q = new PrioritizedCommandQueue();
     q.enqueue(CommandType.SpawnEntity, 1);
     q.enqueue(CommandType.SpawnEntity, 2);
     let count = 0;
     q.drainTo({
-      writeCommand() { count++; return count < 2; }, // reject second
+      tryWriteCommand() { count++; return count < 2; }, // reject second
     } as any);
     expect(q.criticalCount).toBe(1); // one remains
   });
@@ -120,7 +120,7 @@ describe('PrioritizedCommandQueue', () => {
     q.enqueue(CommandType.SetPosition, 1, new Float32Array([4, 5, 6]));
     const received: Float32Array[] = [];
     q.drainTo({
-      writeCommand(_cmd: number, _id: number, payload?: Float32Array) {
+      tryWriteCommand(_cmd: number, _id: number, payload?: Float32Array) {
         if (payload) received.push(payload);
         return true;
       },
@@ -135,7 +135,7 @@ describe('PrioritizedCommandQueue', () => {
     q.enqueue(CommandType.SetPosition, 2, new Float32Array([1, 2, 3]));
     const written: number[] = [];
     q.drainTo({
-      writeCommand(cmd: number) {
+      tryWriteCommand(cmd: number) {
         written.push(cmd);
         return false; // always reject
       },
@@ -149,7 +149,7 @@ describe('PrioritizedCommandQueue', () => {
     const q = new PrioritizedCommandQueue();
     q.enqueue(CommandType.SpawnEntity, 1);
     q.drainTo({
-      writeCommand() { return true; },
+      tryWriteCommand() { return true; },
     } as any);
     expect(q.criticalCount).toBe(0);
     expect(q.overwriteCount).toBe(0);
@@ -203,6 +203,35 @@ describe('BackpressuredProducer', () => {
     extractUnread(sab);
     bp.flush();
     expect(bp.pendingCount).toBeLessThan(pending);
+  });
+
+  it('says once per episode that a full ring buffer defers commands, never that it drops them', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { bp, sab } = createSmallProducer();
+      for (let i = 0; i < 20; i++) bp.setPosition(i, 1, 2, 3);
+      bp.flush();
+      expect(bp.pendingCount).toBeGreaterThan(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/deferred/);
+      expect(String(warn.mock.calls[0][0])).not.toMatch(/drop/);
+
+      // Still backed up: silent.
+      bp.flush();
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // Drained, then backed up again: a new episode, one more warning.
+      while (bp.pendingCount > 0) {
+        extractUnread(sab);
+        bp.flush();
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      for (let i = 0; i < 20; i++) bp.setPosition(i, 4, 5, 6);
+      bp.flush();
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('should be a no-op to flush an empty queue', () => {
