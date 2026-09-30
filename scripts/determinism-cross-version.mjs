@@ -24,8 +24,8 @@
 //   done
 //
 // Le due righe di ogni scenario devono coincidere carattere per carattere.
-// Il confronto è solo wasm contro wasm (out-old e out-new sono entrambi build
-// wasm32): mai contro un build nativo, vedi ATTENZIONE qui sotto.
+// Il confronto è solo wasm contro wasm (out-old e out-new sono entrambe build
+// wasm32): mai contro una build nativa, vedi ATTENZIONE qui sotto.
 //
 // ATTENZIONE — la bit-exactness vale PER TARGET, non fra target
 // -------------------------------------------------------------
