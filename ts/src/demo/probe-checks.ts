@@ -27,13 +27,21 @@ export const PROBE_TIMEOUT_MS = 3000;
 /** Probe rejections that mean "no probe here", not "wrong pixels". */
 const UNAVAILABLE = /main-thread renderer|DebugProbe destroyed|TransparentSortProbe destroyed/;
 
+/**
+ * What `Hyperion.enableBloom`, `enableOutlines` and `loadTexture` throw without
+ * a main-thread renderer (Mode A): an environment limit wherever it surfaces.
+ */
+const NO_RENDERER = /no renderer available/;
+
 class ProbeUnavailable extends Error {}
 
 /**
  * Runs one pixel check: `check` reads pixels with the given probe (or GPU rows
  * with `readTransforms`, the transparent sort with `readSort`) and returns the
  * verdict. Where the probe does not exist (Mode A, no renderer, a production
- * build) the check is skipped with the reason, never failed.
+ * build) the check is skipped with the reason, never failed. So is a check that
+ * reaches for the renderer itself before its first probe (the Bloom check turns
+ * the bloom graph on) and gets "no renderer available" from the engine.
  */
 export async function pixelCheck(
   reporter: TestReporter,
@@ -69,12 +77,10 @@ export async function pixelCheck(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (err instanceof ProbeUnavailable) reporter.skip(name, `pixel probe unavailable: ${msg}`);
+    else if (NO_RENDERER.test(msg)) reporter.skip(name, `no renderer: ${msg}`);
     else reporter.check(name, false, `probe error: ${msg}`);
   }
 }
-
-/** What `Hyperion.loadTexture` throws without a main-thread renderer (Mode A). */
-const NO_RENDERER = /no renderer available/;
 
 /**
  * Reports check `name` after its test texture `url` failed to load. Only a
