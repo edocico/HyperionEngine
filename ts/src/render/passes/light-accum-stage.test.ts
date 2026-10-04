@@ -284,6 +284,16 @@ describe('light-accum.wgsl', () => {
     const exit = body('exitDistance');
     expect(exit).toMatch(/select\(\s*vec2f\(\s*0\.0\s*\)\s*,\s*size\s*,\s*dir\s*>\s*vec2f\(\s*0\.0\s*\)\s*\)/);
     expect(exit).toMatch(/select\(\s*vec2f\(\s*1e30\s*\)/);
+    // The exit itself, a slab test: on each axis a FORWARD distance
+    // ((origin - side) would make every exit negative: no sun would ever
+    // shadow), and the NEARER crossing (max, the entering/leaving mix-up,
+    // would march on past the SDF, reading the clamped edge texels). Only an
+    // axis the ray moves along divides, and by its own component:
+    // select(f, t, cond) is easy to get backwards.
+    expect(exit).toMatch(/\(\s*side\s*-\s*origin\s*\)\s*\/\s*select\(/);
+    expect(exit).toMatch(/return\s+min\(\s*t\.x\s*,\s*t\.y\s*\)\s*;/);
+    expect(exit).toMatch(/let\s+moving\s*=\s*abs\(\s*dir\s*\)\s*>\s*vec2f\(\s*1e-6\s*\)\s*;/);
+    expect(exit).toMatch(/\/\s*select\(\s*vec2f\(\s*1\.0\s*\)\s*,\s*dir\s*,\s*moving\s*\)\s*,\s*moving\s*\)/);
   });
 
   it('a sun uses the fixed angle u.sourceFraction, not 1/k, and fades over its range', () => {
