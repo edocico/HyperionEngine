@@ -5,7 +5,8 @@ import { SCENE_HDR_FORMAT } from '../formats';
 import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
-import { callGraph, functionBody, functionParams, stripComments } from '../../shaders/wgsl-analysis';
+import { bindingDecls, callGraph, functionBody, functionParams, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
+import { structSize } from '../../shaders/uniform-layout';
 
 // LightAccumStage accumulates the visible Light2Ds of ONE light group into one
 // layer of the light buffer (design 2026-09-26). Every group has its own
@@ -21,6 +22,7 @@ function setUp() {
   const buffers: Array<{ size: number; usage: number; destroyed: boolean }> = [];
   const bindGroups: GPUBindGroupDescriptor[] = [];
   const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
+  const layouts: GPUBindGroupLayoutDescriptor[] = [];
   const device = {
     createBuffer: (d: GPUBufferDescriptor) => {
       const b = { size: d.size, usage: d.usage, destroyed: false, destroy() { b.destroyed = true; } };
@@ -28,7 +30,7 @@ function setUp() {
       return b;
     },
     createShaderModule: () => ({}),
-    createBindGroupLayout: () => ({}),
+    createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return {}; },
     createPipelineLayout: () => ({}),
     createRenderPipeline: (d: GPURenderPipelineDescriptor) => { pipelines.push(d); return {}; },
     createBindGroup: (d: GPUBindGroupDescriptor) => { bindGroups.push(d); return { d }; },
@@ -65,7 +67,7 @@ function setUp() {
     stage.encode(encoder, g, target, sdf, f);
     return passes[0];
   };
-  return { stage, device, pipelines, buffers, bindGroups, writes, frame, uniform, encode };
+  return { stage, device, pipelines, buffers, bindGroups, writes, layouts, frame, uniform, encode };
 }
 
 const view = (name: string) => ({ name }) as unknown as GPUTextureView;
@@ -241,5 +243,64 @@ describe('light-accum.wgsl', () => {
     expect(facing).toMatch(/\[0\]\.xy/);
     expect(facing).toMatch(/select\(\s*vec2f\(\s*1\.0\s*,\s*0\.0\s*\)\s*,\s*normalize\(\s*axis\s*\)\s*,\s*length\(\s*axis\s*\)\s*>\s*1e-6\s*\)/);
     expect(callGraph(lightShaderSource).get('fs_main')!.has('lightFacing')).toBe(true);
+  });
+
+  it('every binding an entry point reaches is visible to its stage: the SDF to vs_main too', () => {
+    // A binding the vertex stage uses but the layout hides fails
+    // createRenderPipeline; GPU validation then rejects the lit graph and
+    // lighting silently stays off. No mock device sees it.
+    LightAccumStage.SHADER_SOURCE = lightShaderSource;
+    const { layouts } = setUp();
+    const visibility = new Map([...layouts[0].entries].map((e) => [e.binding, e.visibility]));
+    for (const [entry, stage] of [['vs_main', GPUShaderStage.VERTEX], ['fs_main', GPUShaderStage.FRAGMENT]] as const) {
+      const reached = reachableFrom(lightShaderSource, entry);
+      for (const b of bindingDecls(lightShaderSource).filter((d) => reached.has(d.name))) {
+        expect((visibility.get(b.binding) ?? 0) & stage, `${entry} reaches ${b.name} (binding ${b.binding})`).not.toBe(0);
+      }
+    }
+    expect(reachableFrom(lightShaderSource, 'vs_main').has('sdf')).toBe(true);  // not vacuous
+  });
+
+  it('a directional light carries its shadow ray to the fragment stage: flat, computed once per light in vs_main', () => {
+    expect(lightShaderSource).toMatch(/@location\(3\)\s*@interpolate\(flat\)\s*sunRay:\s*vec3f/);
+    expect(body('vs_main')).toMatch(/if\s*\(\s*kind\s*==\s*DIRECTIONAL\s*\)\s*\{\s*out\.sunRay\s*=\s*directionalRay\(\s*e\s*\)\s*;/);
+  });
+
+  it('directionalRay: the facing TOWARD the light, projected as a vector (w = 0), y flipped like toScreenUV, range as the length, bounded without overflow', () => {
+    const ray = body('directionalRay');
+    expect(ray).toMatch(/vec4f\(\s*-lightFacing\(\s*transforms\[e\]\s*\)\s*,\s*0\.0\s*,\s*0\.0\s*\)/);
+    expect(ray).toMatch(/vec2f\(\s*clip\.x\s*,\s*-clip\.y\s*\)/);
+    expect(ray).toMatch(/textureDimensions\(\s*sdf\s*\)/);
+    // The PRODUCT range * texels stays finite, and is never computed first:
+    // CameraAPI.zoom has no upper bound, so texels can be huge.
+    expect(ray).toMatch(/min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)\s*,\s*1e30\s*\/\s*texels\s*\)\s*\*\s*texels/);
+    expect(reachableFrom(lightShaderSource, 'vs_main').has('lightFacing')).toBe(true);
+  });
+
+  it('a sun marches min(range, SDF exit): beyond the SDF counts as lit, never to infinity', () => {
+    const sun = body('sunShadow');
+    expect(sun).toMatch(/let\s+travel\s*=\s*min\(\s*ray\.z\s*,\s*exitDistance\(\s*origin\s*,\s*ray\.xy\s*,\s*fsize\s*\)\s*\)/);
+    expect(sun).toMatch(/if\s*\(\s*travel\s*<\s*1\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
+    const exit = body('exitDistance');
+    expect(exit).toMatch(/select\(\s*vec2f\(\s*0\.0\s*\)\s*,\s*size\s*,\s*dir\s*>\s*vec2f\(\s*0\.0\s*\)\s*\)/);
+    expect(exit).toMatch(/select\(\s*vec2f\(\s*1e30\s*\)/);
+  });
+
+  it('a sun uses the fixed angle u.sourceFraction, not 1/k, and fades over its range', () => {
+    const sun = body('sunShadow');
+    // Exact text: the angle A/B of docs/plans/assets/2026-09-30-step6-directional-bench.js patches it.
+    expect(sun).toMatch(/return shadow\(origin, ray\.xy, travel, u\.sourceFraction, ray\.z\);/);
+    expect(sun).not.toMatch(/shadowHardness/);
+  });
+
+  it('the shadow gate: slot 7 is read once, through shadowedLightType, and a directional light marches with it', () => {
+    const code = stripComments(lightShaderSource);
+    expect(code.match(/primParams\[p \+ 7u\]/g)).toHaveLength(1);
+    expect(code).toMatch(/let shadowStrength = select\(0\.0, clamp\(primParams\[p \+ 7u\], 0\.0, 1\.0\), shadowedLightType\(kind\)\);/);
+    expect(body('fs_main')).toMatch(/else if \(kind == DIRECTIONAL && shadowStrength > 0\.0\) \{\s*intensity \*= mix\(1\.0, sunShadow\(in\.screenUV, in\.sunRay\), shadowStrength\);/);
+  });
+
+  it('LightUniform stays 80 bytes: step 6 adds no uniform', () => {
+    expect(structSize(lightShaderSource, 'LightUniform')).toBe(80);
   });
 });

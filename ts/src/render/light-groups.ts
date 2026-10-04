@@ -61,6 +61,16 @@ const RECEIVES_LIGHT = 1 << 10;
 const LIGHT_TYPE_SHIFT = 11;
 const POINT = 0;
 const SPOT = 1;
+const DIRECTIONAL = 2;
+/**
+ * The light types whose shadowIntensity makes light-accum.wgsl march the SDF:
+ * its `shadowedLightType`, which light-groups.test.ts compares with this list.
+ * Never GLOBAL: a global light has no position and no direction to cast from.
+ * Sprite lights join in round step 8, on both sides in the same commit.
+ */
+export const SHADOWED_LIGHT_TYPES: readonly number[] = [POINT, SPOT, DIRECTIONAL];
+const SHADOWED = new Uint8Array(8);
+for (const type of SHADOWED_LIGHT_TYPES) SHADOWED[type] = 1;
 /**
  * The CPU keeps every light the GPU CullPass could draw, and a few more: the
  * same sphere-frustum test with a slightly larger radius. A light the GPU draws
@@ -109,10 +119,11 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     if (primType === LIGHT2D) {
       if (!inView(i)) continue;
       lightMasks.add(mask);
-      // The shader's test: point or spot, with a shadow strength above 0.
+      // The shader's gate (shadowedLightType in light-accum.wgsl): point, spot
+      // or directional, with a shadow strength above 0.
       const type = (word >>> LIGHT_TYPE_SHIFT) & 7;
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
-      if ((type === POINT || type === SPOT) && strength > 0) shadowedLayers |= mask;
+      if (SHADOWED[type] === 1 && strength > 0) shadowedLayers |= mask;
       continue;
     }
     // The SDF is screen-space: an occluder out of view contributes nothing,

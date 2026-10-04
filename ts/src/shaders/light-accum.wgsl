@@ -1,6 +1,7 @@
-// Light accumulation (Phase 17, Task 9): every visible Light2D, added into the
-// half-resolution light buffer. The buffer is cleared to the ambient light, and
-// ForwardPass multiplies lit sprites by it.
+// Light accumulation (Phase 17, Task 9; directional shadows: round 2026-09-27,
+// step 6): every visible Light2D, added into the half-resolution light buffer.
+// The buffer is cleared to the ambient light, and ForwardPass multiplies lit
+// sprites by it.
 //
 // Point and spot lights are a quad covering their range, around the light's
 // position. The transform's scale is ignored, because a light's extent IS its
@@ -8,15 +9,24 @@
 // cover the screen. Light2D primParams: [colorR, colorG, colorB] with energy
 // premultiplied, range, innerCos, outerCos, falloff, shadowIntensity.
 //
-// Not yet: the `sprite` light type (discarded), the `mix` blend mode (added
-// like `add`), and shadows from global/directional lights.
+// Spot and directional lights shine toward their local +x axis (lightFacing).
+// A directional light (a sun) has no position: each caster's shadow runs
+// along that axis, away from the light, for `range` world units and fades out
+// over the last quarter, at a fixed apparent angle, u.sourceFraction. Global
+// lights never cast shadows in the lit backend: their shadowIntensity is
+// ignored.
+//
+// Not yet: the `sprite` light type (discarded) and the `mix` blend mode (added
+// like `add`).
 
 // Scalars after the matrix only: see src/shaders/uniform-layout.test.ts.
 struct LightUniform {
     viewProjection: mat4x4f,
     shadowSteps: u32,
     shadowHardness: f32,
-    // A light's source radius as a fraction of its range (LIGHT_SOURCE_FRACTION).
+    // A light's source radius as a fraction of its range (LIGHT_SOURCE_FRACTION),
+    // and a directional light's penumbra angle in radians (sunShadow): the
+    // penumbra's width per unit of distance, about the source's angular diameter.
     sourceFraction: f32,
     // The light group being accumulated (design 2026-09-26): a light draws only
     // if its mask (renderMeta bits 16-31) meets these layers.
@@ -29,6 +39,7 @@ struct LightUniform {
 @group(0) @binding(3) var<storage, read> primParams: array<f32>;
 @group(0) @binding(4) var<storage, read> renderMeta: array<u32>;
 // The signed SDF: (nearest-opposite u, v, valid, inside), see sdf-jfa.wgsl.
+// Visible to the vertex stage too: directionalRay reads its size.
 @group(0) @binding(5) var sdf: texture_2d<f32>;
 
 // Light fields of renderMeta[slot*2+1] (RENDER_META_LIGHT_* in components.rs).
@@ -50,6 +61,8 @@ struct VertexOutput {
     @location(0) world: vec2f,
     @location(1) screenUV: vec2f,
     @location(2) @interpolate(flat) entityIdx: u32,
+    // A directional light's shadow ray (directionalRay), once per light.
+    @location(3) @interpolate(flat) sunRay: vec3f,
 };
 
 fn lightType(e: u32) -> u32 {
@@ -70,6 +83,27 @@ fn lightFacing(m: mat4x4f) -> vec2f {
     return select(vec2f(1.0, 0.0), normalize(axis), length(axis) > 1e-6);
 }
 
+// A directional light's shadow ray, computed once per light in vs_main: the
+// unit direction TOWARD the light in texels of the bound SDF (xy), and the
+// shadow's length, `range` world units, in those texels (z). The facing is
+// projected as a vector (w = 0), so the camera's translation drops out; the y
+// flip is toScreenUV's (the world is y-up, the texture y-down).
+fn directionalRay(e: u32) -> vec3f {
+    let size = vec2f(textureDimensions(sdf));
+    let clip = (u.viewProjection * vec4f(-lightFacing(transforms[e]), 0.0, 0.0)).xy;
+    let perUnit = vec2f(clip.x, -clip.y) * 0.5 * size;  // one world unit toward the light, in texels
+    let texels = length(perUnit);
+    if (texels < 1e-6) {
+        return vec3f(0.0);  // a degenerate camera: no shadow
+    }
+    // The shadow's length in texels. Rust accepts any finite range, and
+    // CameraAPI.zoom has no upper bound: bound the PRODUCT without computing it
+    // first (1e30 / texels is finite for texels >= 1e-6). A range of 0 or less
+    // casts no shadow.
+    let reach = min(max(primParams[e * 8u + 3u], 0.0), 1e30 / texels) * texels;
+    return vec3f(perUnit / texels, reach);
+}
+
 @vertex
 fn vs_main(
     @location(0) position: vec3f,
@@ -87,6 +121,9 @@ fn vs_main(
     let kind = lightType(e);
     if (kind == GLOBAL || kind == DIRECTIONAL) {
         out.position = vec4f(position.xy * 2.0, 0.0, 1.0);
+        if (kind == DIRECTIONAL) {
+            out.sunRay = directionalRay(e);
+        }
     } else {
         let center = transforms[e][3].xy;
         let range = primParams[e * 8u + 3u];
@@ -218,6 +255,43 @@ fn pointShadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     return shadow(origin, dir, travel, angle, 0.0);
 }
 
+// Texels from `origin` (inside the texture) to where a ray along the unit
+// `dir` leaves the size.x x size.y rectangle: a slab test. An axis the ray
+// does not move along never ends it; a unit dir moves along at least one.
+fn exitDistance(origin: vec2f, dir: vec2f, size: vec2f) -> f32 {
+    let moving = abs(dir) > vec2f(1e-6);
+    let side = select(vec2f(0.0), size, dir > vec2f(0.0));
+    let t = select(vec2f(1e30), (side - origin) / select(vec2f(1.0), dir, moving), moving);
+    return min(t.x, t.y);
+}
+
+// A directional light: from the pixel toward the light, for the shadow's
+// length (`ray.z`, its range) or until the ray leaves the SDF, whichever comes
+// first. Beyond the SDF nothing is known, and it counts as lit: the clamped
+// read would repeat the edge texel forever, and a light at infinity would make
+// the out-of-steps rule 0. A light at infinity has a constant apparent size:
+// u.sourceFraction (0.02 rad, about 1.15 degrees), the penumbra's width per
+// unit of distance, i.e. about the source's angular diameter; the same angle
+// every point light has at the edge of its range (not 1/k: 0.125 rad is 13x
+// the real sun's diameter, 0.0093 rad).
+fn sunShadow(fromUV: vec2f, ray: vec3f) -> f32 {
+    let fsize = vec2f(textureDimensions(sdf));
+    let origin = fromUV * fsize;
+    let travel = min(ray.z, exitDistance(origin, ray.xy, fsize));
+    if (travel < 1.0) {
+        return 1.0;
+    }
+    return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z);
+}
+
+// The light types that cast shadows in the lit backend. Never GLOBAL: it has
+// no position and no direction to cast from, and its shadowIntensity is
+// ignored. light-groups.ts counts exactly these as shadowed
+// (SHADOWED_LIGHT_TYPES); light-groups.test.ts ties the two lists.
+fn shadowedLightType(kind: u32) -> bool {
+    return kind == POINT || kind == SPOT || kind == DIRECTIONAL;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let e = in.entityIdx;
@@ -227,6 +301,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         discard;
     }
     let color = vec3f(primParams[p], primParams[p + 1u], primParams[p + 2u]);
+    // The one read of shadowIntensity (slot 7), through the type gate.
+    let shadowStrength = select(0.0, clamp(primParams[p + 7u], 0.0, 1.0), shadowedLightType(kind));
 
     var intensity = 1.0;
     if (kind == POINT || kind == SPOT) {
@@ -250,7 +326,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             intensity *= cone;
         }
 
-        let shadowStrength = clamp(primParams[p + 7u], 0.0, 1.0);
         if (shadowStrength > 0.0 && intensity > 0.0) {
             let lightUV = toScreenUV(u.viewProjection * vec4f(center, 0.0, 1.0));
             // The source radius in SDF texels: a fraction of the range, so it
@@ -260,6 +335,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             let sourceRadius = max(1.0, distance(lightUV * size, edgeUV * size) * u.sourceFraction);
             intensity *= mix(1.0, pointShadow(in.screenUV, lightUV, sourceRadius), shadowStrength);
         }
+    } else if (kind == DIRECTIONAL && shadowStrength > 0.0) {
+        intensity *= mix(1.0, sunShadow(in.screenUV, in.sunRay), shadowStrength);
     }
 
     var c = color * intensity;

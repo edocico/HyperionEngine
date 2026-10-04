@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, type LightGroupsInput } from './light-groups';
+import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, type LightGroupsInput } from './light-groups';
 import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
 import { loadPrimitivePieces } from './primitive-pieces.fixture';
-import { bindingDecls, reachableFrom, stripComments } from '../shaders/wgsl-analysis';
+import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../shaders/wgsl-analysis';
 
 // Light layers (design 2026-09-26): layers with the same lights and, where a
 // shadowed light reaches them, the same casters share a light buffer. Unity
@@ -15,9 +15,26 @@ import { bindingDecls, reachableFrom, stripComments } from '../shaders/wgsl-anal
 //   occluder — the layers it shadows; 0 is every layer
 
 const LIGHT = 6, CAST = 1 << 9, RECV = 1 << 10;
-const POINT = 0, GLOBAL = 3;
+const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3;
 
 type E = { kind: 'light' | 'drawable'; mask?: number; flags?: number; type?: number; shadow?: number; x?: number; r?: number };
+
+/** Every `if (cond) { block }` of a comment-blanked WGSL body, `else if` and nested ones included. */
+function branches(body: string): { cond: string; block: string }[] {
+  const close = (s: string, from: number, open: string, shut: string): number => {
+    for (let i = from, depth = 0; i < s.length; i++) {
+      if (s[i] === open) depth++;
+      else if (s[i] === shut && --depth === 0) return i;
+    }
+    return s.length;
+  };
+  return [...body.matchAll(/\bif\s*\(/g)].map((m) => {
+    const p0 = m.index! + m[0].length - 1;
+    const p1 = close(body, p0, '(', ')');
+    const b0 = body.indexOf('{', p1);
+    return { cond: body.slice(p0 + 1, p1), block: body.slice(b0, close(body, b0, '{', '}') + 1) };
+  });
+}
 
 /** A scene in the SoA layout of GPURenderState. The view spans x, y in [-10, 10]. */
 function scene(es: E[]): LightGroupsInput {
@@ -246,5 +263,58 @@ describe('deriveLightGroups', () => {
     expect(receiverLayer(0b1000)).toBe(3);
     expect(receiverLayer(0b1010)).toBe(1);
     expect(receiverLayer(0x8000)).toBe(15);
+  });
+
+  it('a shadowed directional light gets an SDF set like a point, wherever its transform is', () => {
+    const sun = (shadow: number) => light(0xffff, shadow, { type: DIRECTIONAL, x: 100, r: 3.4e38 });
+    const on = deriveLightGroups(scene([sun(1), drawable(CAST | RECV)]));
+    expect(on.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
+    expect(on.sdfSets).toEqual([{ occluderLayers: 1 }]);
+    expect(deriveLightGroups(scene([sun(0), drawable(CAST | RECV)])).groups).toEqual([{ layers: 1, sdfSet: -1 }]);
+  });
+
+  it('a sun shadows only the layers in its mask', () => {
+    const g = deriveLightGroups(scene([
+      light(0b10, 1, { type: DIRECTIONAL, r: 3.4e38 }), light(0b01), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(CAST, 0),
+    ]));
+    expect(g.groups).toEqual([{ layers: 0b01, sdfSet: -1 }, { layers: 0b10, sdfSet: 0 }]);
+  });
+
+  it('counts as shadowed exactly the light types light-accum.wgsl marches (shadowedLightType ↔ SHADOWED_LIGHT_TYPES)', () => {
+    // The shader gate and this one must change together: a type the shader
+    // shadows but the grouping does not count gets no SDF set and never
+    // shadows; the other way round, a flood nobody reads (~1.8 ms).
+    const wgsl = stripComments(readFileSync(new URL('../shaders/light-accum.wgsl', import.meta.url), 'utf8'));
+    const ids = new Map([...wgsl.matchAll(/const\s+([A-Z_]+)\s*:\s*u32\s*=\s*(\d+)u\s*;/g)].map((m) => [m[1], Number(m[2])]));
+    expect(ids.get('LIGHT_TYPE_SHIFT')).toBe(11);
+    const gate = functionBody(wgsl, 'shadowedLightType');
+    expect(gate, 'fn shadowedLightType in light-accum.wgsl').not.toBeNull();
+    const types = [...gate!.matchAll(/kind\s*==\s*([A-Z_]+)/g)].map((m) => ids.get(m[1]));
+    expect(types.every((t) => t !== undefined)).toBe(true);
+    expect([...types].sort()).toEqual([...SHADOWED_LIGHT_TYPES].sort());
+    expect(types).not.toContain(ids.get('GLOBAL'));
+    // Each gated type reaches a march in fs_main. A type both lists count but
+    // no branch marches (a sprite light added to the gates in step 8 without
+    // its branch) floods an SDF set nothing reads, and never shadows.
+    const main = functionBody(wgsl, 'fs_main')!;
+    const marched = new Set<number | undefined>();
+    for (const { cond, block } of branches(main)) {
+      if (!/\b(?:pointShadow|sunShadow)\(/.test(block)) continue;
+      for (const m of cond.matchAll(/kind\s*==\s*([A-Z_]+)/g)) marched.add(ids.get(m[1]));
+    }
+    expect([...marched].sort()).toEqual([...types].sort());
+    // …and no other march: one call of each, from fs_main only.
+    expect(main.match(/\b(?:pointShadow|sunShadow)\(/g)).toHaveLength(2);
+    for (const [fn, callees] of callGraph(wgsl)) {
+      if (fn !== 'fs_main') expect(callees.has('pointShadow') || callees.has('sunShadow'), `${fn} calls a march`).toBe(false);
+    }
+    // One road to a shadow: slot 7 read once, through the gate.
+    expect(wgsl.match(/primParams\[p \+ 7u\]/g)).toHaveLength(1);
+    expect(wgsl).toMatch(/select\(0\.0, clamp\(primParams\[p \+ 7u\], 0\.0, 1\.0\), shadowedLightType\(kind\)\)/);
+    // And in behaviour, over all eight wire values of the type field.
+    for (let t = 0; t < 8; t++) {
+      const g = deriveLightGroups(scene([light(0xffff, 1, { type: t, r: 3.4e38 }), drawable(CAST | RECV)]));
+      expect(g.sdfSets.length, `light type ${t}`).toBe(types.includes(t) ? 1 : 0);
+    }
   });
 });

@@ -17,9 +17,10 @@ export const LIGHT2D_ARG_SLOTS = [0, TRANSPARENT_BUCKET_OFFSET].flatMap((blend) 
   Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => blend + LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b));
 
 /**
- * Soft-shadow hardness k: the light's apparent angle is at most 1/k. With h
- * and t in texels of the half-resolution SDF, 8 gives a visible, not blurry,
- * penumbra.
+ * Soft-shadow hardness k of point and spot lights: their apparent angle is at
+ * most 1/k. A directional light uses LIGHT_SOURCE_FRACTION instead (round
+ * step 6). With h and t in texels of the half-resolution SDF, 8 gives a
+ * visible, not blurry, penumbra.
  */
 export const SHADOW_HARDNESS = 8;
 
@@ -29,6 +30,10 @@ export const SHADOW_HARDNESS = 8;
  * cap the light's radius grows with the pixel's distance (D/k), and a light
  * beside a wall darkens the pixels on the far side of it too. 0.02 keeps a
  * light that is range/50 or more away from a wall unoccluded on the open side.
+ * It is also a directional light's penumbra angle, in radians, fixed
+ * engine-wide (round step 6): the penumbra's width per unit of distance, i.e.
+ * about the source's angular diameter (0.02 rad, about 1.15°). A sun gets the
+ * penumbra a point light has at the edge of its range.
  */
 export const LIGHT_SOURCE_FRACTION = 0.02;
 
@@ -49,7 +54,7 @@ const LIGHT_UNIFORM_SIZE = 80;
  * the counts); the vertex stage drops every light whose mask misses the
  * group's layers. A point or spot light is a quad of its range; a global or
  * directional light covers the screen. See light-accum.wgsl for the falloff,
- * the spot cone and the shadow march.
+ * the spot cone, the sun's direction and the shadow march.
  *
  * Every group has its own 256-byte uniform slice, all written once in
  * `prepare()`: a writeBuffer between the render passes of one frame would land
@@ -99,7 +104,7 @@ export class LightAccumStage {
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, // visibleIndices
         { binding: 3, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // primParams
         { binding: 4, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // renderMeta
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // signed SDF
+        { binding: 5, visibility: vsFs, texture: { sampleType: 'unfilterable-float' } }, // signed SDF (vs_main reads its size: directionalRay)
       ],
     });
 
