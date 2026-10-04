@@ -676,6 +676,26 @@ describe('EntityHandle — lighting (Phase 17)', () => {
     expect([r, g, b, range]).toEqual([1, 1, 1, 100]);
   });
 
+  it('a directional light carries its shadow length in range (slot 3)', () => {
+    const p = mockProducer();
+    new EntityHandle(1, p).light({ type: 'directional', range: 40, shadowIntensity: 1 });
+    expect(p.setLightFlags).toHaveBeenCalledWith(1, 2, 0, 0xffff);
+    expect((p.setPrimParams0 as any).mock.calls[0][4]).toBe(40);
+    expect((p.setPrimParams1 as any).mock.calls[0].slice(1)).toEqual([-1, -1, 1, 1]);
+  });
+
+  it('a global light still sends its shadowIntensity: the renderer ignores it and warns, not the handle', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = mockProducer();
+      new EntityHandle(1, p).light({ type: 'global', shadowIntensity: 1 });
+      expect((p.setPrimParams1 as any).mock.calls[0][4]).toBe(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('rejects a malformed colour instead of emitting garbage', () => {
     const p = mockProducer();
     expect(() => new EntityHandle(1, p).light({ color: '#xyz' })).toThrow(/Invalid light color/);

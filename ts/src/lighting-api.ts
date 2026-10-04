@@ -158,8 +158,10 @@ export class LightingAPI {
   }
 
   /**
-   * Global ambient light — the light every surface receives regardless of any
-   * light entity.
+   * The engine's ambient light: the clear colour of every light group's light
+   * buffer, which every lit surface receives whatever the light entities do.
+   * Not a `global` light, which is an entity added on top of it and limited to
+   * its layers (a per-layer ambient).
    *
    * It becomes the clear colour of the accumulation buffer, so unlike every
    * other light in the scene it is genuinely free: the clear happens anyway.

@@ -59,8 +59,11 @@ export const PRIM_PARAMS_SCHEMA: Partial<Record<RenderPrimitiveType, Record<stri
   },
   // Light2D. `colorR/G/B` are HDR with energy already premultiplied — that
   // premultiplication happens at the API boundary, not here, which is what
-  // frees slot 7 for `shadowIntensity`. `range` (slot 3) is also the single
-  // source of truth for the light's culling radius.
+  // frees slot 7 for `shadowIntensity`. `range` (slot 3) is the single source
+  // of truth for a point or spot light's culling radius; on a directional
+  // light it is the length of its shadows (global and directional lights are
+  // never culled). `shadowIntensity` is ignored on a global light (lit
+  // backend).
   [RenderPrimitiveType.Light2D]: {
     colorR: 0, colorG: 1, colorB: 2, range: 3,
     innerCos: 4, outerCos: 5, falloff: 6, shadowIntensity: 7,

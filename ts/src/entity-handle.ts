@@ -32,7 +32,33 @@ export const enum RenderPrimitiveType {
   Light2D = 6,
 }
 
-/** Light shape. `directional` and `global` ignore position. */
+/**
+ * Light shape.
+ * - `point`: lights a disc of radius `range` around its position.
+ * - `spot`: a point light cut to a cone (`innerAngle`/`outerAngle`) around
+ *   its axis.
+ * - `directional`: a sun, infinitely far away. It lights every pixel of the
+ *   layers in its mask, shining along its axis; its position is ignored. With
+ *   `shadowIntensity` > 0 each caster throws a shadow along the axis, `range`
+ *   world units long and fading out toward its end, with a fixed engine-wide
+ *   penumbra. A caster casts only while it is on screen, so a shadow can
+ *   appear at the edge the light comes from as the view pans. A shadowed sun
+ *   marches every texel of the light buffer once per light group its layers
+ *   reach.
+ * - `global`: a uniform light over the layers in its mask, added on top of
+ *   `engine.lighting.setAmbient()` (a masked one is a per-layer ambient). No
+ *   position, no direction and no shadows in the lit backend:
+ *   `shadowIntensity` is ignored (the renderer warns once in dev builds). Use
+ *   `directional` for a sun.
+ * - `sprite`: not drawn yet.
+ *
+ * The axis of a spot or directional light is its local +x in world space, and
+ * the light shines TOWARD it: `rotation(angle)` aims it. 0 shines right,
+ * `rotation(-Math.PI / 2)` shines down the screen (the world is y-up), and
+ * `rotation(Math.atan2(dy, dx))` shines along (dx, dy). A parent's rotation
+ * composes into it and a negative x-scale mirrors it; the size of the scale
+ * is ignored, because a light's extent is its range.
+ */
 export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
 
 /** How a light combines into the accumulation buffer. */
@@ -58,15 +84,35 @@ export interface LightOptions {
   color?: string | readonly [number, number, number];
   /** Multiplier applied to `color` on the way to the GPU. Default 1. */
   energy?: number;
-  /** Radius in world units. Also becomes the light's culling radius. Default 100. */
+  /**
+   * World units. Default 100.
+   * - `point`, `spot`: the light's radius, which is also its culling radius.
+   * - `directional`: the length of its shadows, which fade out toward the end
+   *   (0 or less casts none). It does not limit what the light lights: a sun
+   *   covers the whole view and is never culled.
+   * - `global`: unused (never culled either).
+   */
   range?: number;
-  /** Spot inner cone half-angle in degrees. Default 30. Ignored by other types. */
+  /**
+   * Spot inner cone half-angle in degrees, around the light's axis (its local
+   * +x, see {@link LightType}). Default 30. Ignored by other types.
+   */
   innerAngle?: number;
-  /** Spot outer cone half-angle in degrees. Default 45. Ignored by other types. */
+  /**
+   * Spot outer cone half-angle in degrees, around the light's axis (its local
+   * +x, see {@link LightType}). Default 45. Ignored by other types.
+   */
   outerAngle?: number;
-  /** Attenuation exponent. Default 1 (linear). */
+  /**
+   * Attenuation exponent of a point or spot light: (1 − d/range)^falloff.
+   * Default 1 (linear). Ignored by other types.
+   */
   falloff?: number;
-  /** 0 = no shadow. See {@link EntityHandle.shadows}. Default 0. */
+  /**
+   * Shadow strength: 0 = none (default), 1 = fully opaque. Point, spot and
+   * directional lights; ignored on a global light in the lit backend (a dev
+   * warning, once). See {@link EntityHandle.shadows}.
+   */
   shadowIntensity?: number;
   /** Default `'add'`. */
   blend?: LightBlendMode;
@@ -247,6 +293,8 @@ export class EntityHandle implements Disposable {
    * `position()`, also in the frame that creates it. Rapier is 2D: it keeps
    * only the angle about Z, so a tilt from the quaternion form is dropped at
    * the next physics step.
+   *
+   * On a spot or directional light it aims the light (see {@link LightType}).
    */
   rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
@@ -514,8 +562,10 @@ export class EntityHandle implements Disposable {
    *
    * A light is an ordinary ECS entity, so it inherits position, hierarchy
    * (a torch parented to a character), spawn/despawn, GPU frustum culling,
-   * snapshot and replay for free — which is why `range` also drives its
-   * culling radius rather than needing a separate call.
+   * snapshot and replay for free — which is why a point or spot light's
+   * `range` also drives its culling radius rather than needing a separate
+   * call (global and directional lights light the whole view and are never
+   * culled). Aim a spot or a sun with `rotation()` (see {@link LightType}).
    *
    * `color` and `energy` stay separate here on purpose. The GPU buffer gets
    * them premultiplied (that is what frees a `primParams` slot for
@@ -559,6 +609,13 @@ export class EntityHandle implements Disposable {
   /**
    * Shadow strength for this light: 0 casts none, 1 is fully opaque.
    *
+   * Point, spot and directional lights (a sun's shadows are `range` world
+   * units long, see {@link LightType}). A shadowed directional light marches
+   * every texel of the light buffer once per light group its layers reach. A
+   * global light never casts shadows in the lit backend: the value is stored
+   * and ignored, and the renderer warns once in dev builds. Use a directional
+   * light for a sun.
+   *
    * Kept separate from `light()` because it is the one light parameter with a
    * real per-frame cost — `shadowIntensity > 0` is what switches on the sphere
    * march in the accumulation shader, so it is the knob you reach for.
@@ -580,7 +637,8 @@ export class EntityHandle implements Disposable {
 
   /**
    * Whether this entity is rasterised into the occluder seed, i.e. whether it
-   * casts a shadow. Independent of `receivesLight()`.
+   * casts a shadow. Independent of `receivesLight()`. A light entity never
+   * casts: a light's own shadows are {@link EntityHandle.shadows}.
    */
   castsShadow(enabled = true): this {
     this.check();
