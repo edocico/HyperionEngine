@@ -5,6 +5,7 @@ import { SCENE_HDR_FORMAT } from '../formats';
 import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
+import { callGraph, functionBody, functionParams, stripComments } from '../../shaders/wgsl-analysis';
 
 // LightAccumStage accumulates the visible Light2Ds of ONE light group into one
 // layer of the light buffer (design 2026-09-26). Every group has its own
@@ -165,6 +166,13 @@ describe('light-accum.wgsl: the group filter', () => {
   });
 });
 
+/** The comment-blanked body of `fn name` in light-accum.wgsl; fails the test when the function is missing. */
+function body(name: string): string {
+  const text = functionBody(lightShaderSource, name);
+  expect(text, `fn ${name} in light-accum.wgsl`).not.toBeNull();
+  return text!;
+}
+
 describe('light-accum.wgsl', () => {
   it('reads the SDF with textureLoad: filtering would blend seed coordinates', () => {
     expect(lightShaderSource).toMatch(/textureLoad\s*\(\s*sdf\b/);
@@ -174,40 +182,60 @@ describe('light-accum.wgsl', () => {
   it('uses the original Quilez soft-shadow term, not the Aaltonen correction', () => {
     // The correction assumes an exact SDF. A jump-flood field over-estimates,
     // and y = h*h / (2*ph) amplifies that (design §7.3, A2).
-    expect(lightShaderSource).toMatch(/res\s*=\s*min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*t\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
+    expect(body('shadow')).toMatch(/let\s+q\s*=\s*h\s*\/\s*\(\s*\(\s*t\s*-\s*start\s*\)\s*\*\s*angle\s*\)/);
     expect(lightShaderSource).not.toMatch(/h\s*\*\s*h\s*\/\s*\(\s*2\.0\s*\*/);
   });
 
-  it('a march that runs out of steps extrapolates its last clearance to the light, never assumes "lit"', () => {
+  it('a march that runs out of steps extrapolates its last clearance to the end of the ray, never assumes "lit"', () => {
     // A ray hugging a long wall advances by 1-2 texels and can spend all its
-    // steps before it proves anything. Returning the running `res` then lit
-    // pixels squarely behind the wall (a leak above its top, at 24 steps).
-    // Returning 0 would darken long rays through open space instead. Assume
-    // the clearance stays the last one seen, all the way to the light.
-    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
-    const afterLoop = fn.slice(fn.indexOf('t += h;'));  // the loop's last statement onwards
+    // steps before it proves anything (a leak above its top, at 24 steps).
+    const march = body('shadow');
+    const afterLoop = march.slice(march.indexOf('t += h;'));  // the loop's last statement onwards
     expect(afterLoop).toMatch(/if\s*\(\s*t\s*<\s*travel\s*\)/);
-    expect(afterLoop).toMatch(/min\(\s*res\s*,\s*h\s*\/\s*\(\s*\(\s*travel\s*-\s*start\s*\)\s*\*\s*angle\s*\)\s*\)/);
+    expect(afterLoop).toMatch(/h\s*\/\s*\(\s*\(\s*travel\s*-\s*start\s*\)\s*\*\s*angle\s*\)/);
   });
 
   it('a pixel inside an occluder leaves it and keeps marching: only its OWN occluder does not shadow it', () => {
-    // A sprite that both casts and receives (a character, a crate) is inside
-    // the SDF. Returning "lit" there skipped every other occluder too: the
-    // character stood fully lit in a wall's shadow (review 2026-09-26). Inside,
-    // |h| is a lower bound on the way out, so stepping by it never overshoots.
-    const fn = lightShaderSource.slice(lightShaderSource.indexOf('fn shadow'), lightShaderSource.indexOf('@fragment'));
-    expect(fn).not.toMatch(/if\s*\(\s*h0\s*<=\s*0\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
-    expect(fn).toMatch(/while\s*\(\s*h\s*<=\s*0\.0/);
-    // Penumbra distances are measured from where the ray leaves, or a sprite
-    // would go dark along its own outline.
-    expect(fn).toMatch(/let\s+start\s*=\s*t\s*;/);
+    const march = body('shadow');
+    expect(march).not.toMatch(/if\s*\(\s*h0\s*<=\s*0\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
+    expect(march).toMatch(/while\s*\(\s*h\s*<=\s*0\.0/);
+    expect(march).toMatch(/let\s+start\s*=\s*t\s*;/);
   });
 
-  it("caps the light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
-    // k alone makes the light's ANGULAR size constant, i.e. a light whose
-    // radius grows with the pixel's distance (R = D/k). A light beside a wall
-    // then darkened pixels on the far side: the last steps of their march pass
-    // within h of the wall. Measured 2026-09-26: free rays 23-42% darker.
-    expect(lightShaderSource).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
+  it("caps a point or spot light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
+    expect(body('pointShadow')).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
+  });
+
+  it('the march is shared: shadow(origin, dir, travel, angle, fadeReach), and pointShadow hands it no fade', () => {
+    expect(functionParams(lightShaderSource, 'shadow')).toEqual(['origin', 'dir', 'travel', 'angle', 'fadeReach']);
+    expect(body('pointShadow')).toMatch(/return\s+shadow\(\s*origin\s*,\s*dir\s*,\s*travel\s*,\s*angle\s*,\s*0\.0\s*\)/);
+    const calls = callGraph(lightShaderSource).get('fs_main')!;
+    expect(calls.has('pointShadow')).toBe(true);
+    expect(calls.has('shadow')).toBe(false);
+  });
+
+  it('a march without fade is the arithmetic of before step 6: every select on `fading` keeps q (or 0.0) as its false operand', () => {
+    // 1 - w*(1 - q) with w = 1 is not q in f32 (q = 0.1f gives 0.10000002f):
+    // point and spot must take the select's false operand, never a blend.
+    const march = body('shadow');
+    expect(march).toMatch(/let\s+fading\s*=\s*fadeReach\s*>\s*0\.0\s*;/);
+    const falseOperands = [...march.matchAll(/select\(\s*([^,]+?)\s*,[^;]*?,\s*fading\s*\)/g)].map((m) => m[1]);
+    expect(falseOperands.sort()).toEqual(['0.0', 'q', 'q']);
+    expect(march.match(/\bfading\b/g)).toHaveLength(4);  // the let and the three selects
+  });
+
+  it('sunFade: full strength without a reach; with one, a smoothstep over the last quarter', () => {
+    expect(stripComments(lightShaderSource)).toMatch(/const\s+SUN_FADE_START\s*:\s*f32\s*=\s*0\.75\s*;/);
+    const fade = body('sunFade');
+    expect(fade).toMatch(/if\s*\(\s*reach\s*<=\s*0\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);  // smoothstep never sees equal edges
+    expect(fade).toMatch(/1\.0\s*-\s*smoothstep\(\s*SUN_FADE_START\s*\*\s*reach\s*,\s*reach\s*,\s*t\s*\)/);
+  });
+
+  it('spot and directional lights share one facing rule: lightFacing is the only reader of the world matrix column 0', () => {
+    expect(stripComments(lightShaderSource).match(/\[0\]\.xy/g)).toHaveLength(1);
+    const facing = body('lightFacing');
+    expect(facing).toMatch(/\[0\]\.xy/);
+    expect(facing).toMatch(/select\(\s*vec2f\(\s*1\.0\s*,\s*0\.0\s*\)\s*,\s*normalize\(\s*axis\s*\)\s*,\s*length\(\s*axis\s*\)\s*>\s*1e-6\s*\)/);
+    expect(callGraph(lightShaderSource).get('fs_main')!.has('lightFacing')).toBe(true);
   });
 });
