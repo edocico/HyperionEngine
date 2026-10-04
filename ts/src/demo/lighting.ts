@@ -3,7 +3,8 @@ import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
 import type { HookFn } from '../game-loop';
-import { pixelCheck, fmt } from './probe-checks';
+import { pixelCheck, fmt, fitView, frames } from './probe-checks';
+import { checkDirectional } from './lighting-directional';
 
 const entities: EntityHandle[] = [];
 const hooks: HookFn[] = [];
@@ -12,13 +13,10 @@ let panel: HTMLElement | null = null;
 /** The scene's right edge (the layer-1 sprite) in world units, plus a margin. */
 const SCENE_HALF_WIDTH = 17.6;
 
-/** Resolves after `frames` animation frames: long enough for a command to reach WASM and come back. */
-function frames(n: number): Promise<void> {
-  return new Promise((resolve) => {
-    const step = (left: number) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)));
-    step(n);
-  });
-}
+/** The ambient light, intensity 1. */
+const AMBIENT: [number, number, number] = [0.06, 0.07, 0.12];
+/** The weak global light: with the ambient, the light buffer where no other light reaches. */
+const GLOBAL_LIGHT = { color: [0.25, 0.2, 0.35] as [number, number, number], energy: 0.5 };
 
 /**
  * A small DOM panel over the canvas: shadow strength of the moving lights,
@@ -51,7 +49,7 @@ function buildPanel(onShadow: (v: number) => void, onLit: (on: boolean) => void)
 
 const section: DemoSection = {
   name: 'lighting',
-  label: 'Lighting (point / spot / global, shadows, lit vs unlit)',
+  label: 'Lighting (point / spot / directional / global, shadows, lit vs unlit)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
     const lighting = engine.lighting;
@@ -59,10 +57,7 @@ const section: DemoSection = {
     // Frame the whole scene whatever the canvas aspect: the "Light layers"
     // check reads the groups of what is in view, and at a narrow aspect the
     // layer-1 sprite used to fall off screen and fail it. Zoom 1 at 16:9.
-    engine.cam.position(0, 0, 0);
-    engine.cam.zoom(1);
-    const halfWidth = 1 / engine.cam.viewProjection[0];
-    engine.cam.zoom(Math.min(1, halfWidth / SCENE_HALF_WIDTH));
+    fitView(engine, 0, 0, SCENE_HALF_WIDTH);
 
     // ── Scene ──────────────────────────────────────────────────────────
     // A white floor that receives light shows the light buffer itself: the
@@ -103,12 +98,12 @@ const section: DemoSection = {
         .light({ type: 'spot', color: '#88bbff', energy: 1.6, range: 18, innerAngle: 18, outerAngle: 30, shadowIntensity: 1, layers: 0b01 });
       // A weak global light, placed off-screen on purpose: it must never be culled.
       global = engine.spawn().position(500, 500, 0)
-        .light({ type: 'global', color: [0.25, 0.2, 0.35], energy: 0.5 });
+        .light({ type: 'global', color: GLOBAL_LIGHT.color, energy: GLOBAL_LIGHT.energy });
       entities.push(point, spot, global);
     });
 
     // ── 1. Backend 'lit', read back from WASM ─────────────────────────
-    lighting.setAmbient([0.06, 0.07, 0.12], 1);
+    lighting.setAmbient(AMBIENT, 1);
     lighting.setBackend('lit');
     reporter.pending('Backend lit');
     await frames(3);
@@ -171,6 +166,12 @@ const section: DemoSection = {
       const [shadow, open] = await probe('light-buffer', [[15, 2], [15, 6]], groupOf(1));
       return { ok: open[2] > 2 * shadow[2], detail: `blue: in the band ${fmt([shadow[2]])}, mirrored point ${fmt([open[2]])}` };
     });
+
+    // ── 6. A directional light's shadow, on a sub-scene far from this one ──
+    // (round step 6): the sun is never culled, so it must not light this scene
+    // or its checks. The view comes back before the lights start moving.
+    const floor = AMBIENT.map((c, i) => c + GLOBAL_LIGHT.color[i] * GLOBAL_LIGHT.energy) as [number, number, number];
+    await checkDirectional(engine, reporter, entities, floor, () => fitView(engine, 0, 0, SCENE_HALF_WIDTH));
 
     // ── Motion: the point light circles, the spot sweeps ──────────────
     let t = 0;

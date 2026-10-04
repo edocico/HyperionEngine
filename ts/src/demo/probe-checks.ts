@@ -120,6 +120,11 @@ export function fitView(engine: Hyperion, cx: number, cy: number, halfWidth: num
   engine.cam.zoom(Math.min(1, visibleHalfWidth / halfWidth));
 }
 
+/** The world rectangle an orthographic, unrotated view-projection shows: [xMin, xMax, yMin, yMax]. */
+export function viewBounds(vp: Float32Array): [number, number, number, number] {
+  return [(-1 - vp[12]) / vp[0], (1 - vp[12]) / vp[0], (-1 - vp[13]) / vp[5], (1 - vp[13]) / vp[5]];
+}
+
 /** Waits `n` animation frames: what was just spawned reaches the GPU (Mode B lags one or two). */
 export function frames(n: number): Promise<void> {
   return new Promise((resolve) => {
