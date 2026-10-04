@@ -40,6 +40,12 @@ export interface LightGroups {
   layerToGroup: [number, number];
   /** A receiver had more than one layer bit: only its lowest counts. */
   multiBitReceiver: boolean;
+  /**
+   * A global light in view has shadowIntensity > 0. The lit backend ignores it:
+   * a global light has no position and no direction to cast from. The renderer
+   * warns once (dev builds); use a directional light for a sun.
+   */
+  shadowedGlobalLight: boolean;
   /** The distinct light mask values in view: what splits the groups. */
   lightMasks: number[];
   /** The distinct occluder mask values in view, 0 normalised to 0xFFFF. */
@@ -62,6 +68,7 @@ const LIGHT_TYPE_SHIFT = 11;
 const POINT = 0;
 const SPOT = 1;
 const DIRECTIONAL = 2;
+const GLOBAL = 3;
 /**
  * The light types whose shadowIntensity makes light-accum.wgsl march the SDF:
  * its `shadowedLightType`, which light-groups.test.ts compares with this list.
@@ -108,6 +115,7 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
   let shadowedLayers = 0;
   let receiverLayers = 0;
   let multiBitReceiver = false;
+  let shadowedGlobalLight = false;
 
   for (let i = 0; i < entityCount; i++) {
     const word = renderMeta[i * 2 + 1];
@@ -120,10 +128,14 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
       if (!inView(i)) continue;
       lightMasks.add(mask);
       // The shader's gate (shadowedLightType in light-accum.wgsl): point, spot
-      // or directional, with a shadow strength above 0.
+      // or directional, with a shadow strength above 0. A global light's
+      // strength is ignored there: flag it for the renderer's warning.
       const type = (word >>> LIGHT_TYPE_SHIFT) & 7;
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
-      if (SHADOWED[type] === 1 && strength > 0) shadowedLayers |= mask;
+      if (strength > 0) {
+        if (SHADOWED[type] === 1) shadowedLayers |= mask;
+        else if (type === GLOBAL) shadowedGlobalLight = true;
+      }
       continue;
     }
     // The SDF is screen-space: an occluder out of view contributes nothing,
@@ -189,6 +201,7 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     sdfSets,
     layerToGroup: [table[0] >>> 0, table[1] >>> 0],
     multiBitReceiver,
+    shadowedGlobalLight,
     lightMasks: lights,
     occluderMasks: occluders,
   };

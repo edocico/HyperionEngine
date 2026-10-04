@@ -60,6 +60,7 @@ describe('deriveLightGroups', () => {
     expect(g.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
     expect(g.sdfSets).toEqual([{ occluderLayers: 1 }]);
     expect(g.layerToGroup).toEqual([0, 0]);
+    expect(g.shadowedGlobalLight).toBe(false);
   });
 
   it('no shadowed light: no SDF set at all', () => {
@@ -316,5 +317,26 @@ describe('deriveLightGroups', () => {
       const g = deriveLightGroups(scene([light(0xffff, 1, { type: t, r: 3.4e38 }), drawable(CAST | RECV)]));
       expect(g.sdfSets.length, `light type ${t}`).toBe(types.includes(t) ? 1 : 0);
     }
+  });
+
+  it('a global light never shadows: its shadowIntensity makes no SDF set and raises shadowedGlobalLight', () => {
+    const glob = (shadow: number) => light(0xffff, shadow, { type: GLOBAL, r: 3.4e38 });
+    const g = deriveLightGroups(scene([glob(1), drawable(CAST | RECV)]));
+    expect(g.groups).toEqual([{ layers: 1, sdfSet: -1 }]);
+    expect(g.sdfSets).toEqual([]);
+    expect(g.shadowedGlobalLight).toBe(true);
+    expect(deriveLightGroups(scene([glob(0), drawable(CAST | RECV)])).shadowedGlobalLight).toBe(false);
+    const withPoint = deriveLightGroups(scene([glob(1), light(0xffff, 1), drawable(CAST | RECV)]));
+    expect(withPoint.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
+    expect(withPoint.shadowedGlobalLight).toBe(true);
+  });
+
+  it('renderer.ts warns once, in dev builds, about a shadowed global light', () => {
+    // createRenderer needs a GPU: the wiring is pinned on the text, like the
+    // piece registration above.
+    const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+    expect(renderer).toMatch(/let warnedShadowedGlobalLight = false;/);
+    const block = renderer.slice(renderer.indexOf('frameState.lightGroups = deriveLightGroups(frameState);'));
+    expect(block).toMatch(/if \(dev && frameState\.lightGroups\.shadowedGlobalLight && !warnedShadowedGlobalLight\) \{\s*warnedShadowedGlobalLight = true;\s*console\.warn\(/);
   });
 });

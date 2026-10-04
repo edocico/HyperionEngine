@@ -114,6 +114,10 @@ export class LightingAPI {
    * and the distinct mask values that split them. The renderer forms them
    * the same way every frame while the backend is `'lit'`.
    *
+   * It also reports `shadowedGlobalLight`: a global light in view asks for
+   * shadows, which the lit backend never casts from a global light (the
+   * renderer warns once in dev builds).
+   *
    * Every distinct SDF set costs a full SDF flood — about 1.8 ms at 1080p on
    * an integrated GPU — and there is no cap, so this is where to look when a
    * `lightLayers()` call made lighting slower. `null` before the first frame.

@@ -541,6 +541,7 @@ export async function createRenderer(
   let lightingQuality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
   const reportedQuality = new Set<keyof LightingQuality>();
   let warnedMultiBitReceiver = false;
+  let warnedShadowedGlobalLight = false;
 
   // --- 8b''. Transparent sort inputs (phase 5b §4.2-4.3) ---
   // Closure locals, not pass state: they must survive graph swaps and the
@@ -1058,6 +1059,10 @@ export async function createRenderer(
         if (frameState.lightGroups.multiBitReceiver && !warnedMultiBitReceiver) {
           warnedMultiBitReceiver = true;
           console.warn('[Hyperion] A light receiver has more than one layer bit: it belongs to its lowest one (see lightLayers()).');
+        }
+        if (dev && frameState.lightGroups.shadowedGlobalLight && !warnedShadowedGlobalLight) {
+          warnedShadowedGlobalLight = true;
+          console.warn("[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun.");
         }
       }
 

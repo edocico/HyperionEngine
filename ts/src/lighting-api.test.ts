@@ -218,4 +218,15 @@ describe('LightingAPI — groups (light layers)', () => {
     expect(groups.groups).toEqual([{ layers: 0b01, sdfSet: -1 }, { layers: 0b10, sdfSet: -1 }]);
     expect(groups.lightMasks.sort()).toEqual([0b01, 0b10]);
   });
+
+  it('reports a shadowed global light (shadowedGlobalLight), which the lit backend ignores', () => {
+    const GLOBAL = 3;
+    const renderMeta = new Uint32Array([0, (LIGHT | (GLOBAL << 11) | (0xffff << 16)) >>> 0, 0, RECV]);
+    const bounds = new Float32Array([0, 0, 0, 3.4e38, 0, 0, 0, 1]);
+    const primParams = new Float32Array(16);
+    primParams[7] = 1;
+    const groups = withState(emptyRenderState({ entityCount: 2, renderMeta, bounds, primParams }), () => view).groups!;
+    expect(groups.shadowedGlobalLight).toBe(true);
+    expect(groups.sdfSets).toEqual([]);
+  });
 });
