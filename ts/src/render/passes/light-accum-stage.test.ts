@@ -222,6 +222,10 @@ describe('light-accum.wgsl', () => {
     const falseOperands = [...march.matchAll(/select\(\s*([^,]+?)\s*,[^;]*?,\s*fading\s*\)/g)].map((m) => m[1]);
     expect(falseOperands.sort()).toEqual(['0.0', 'q', 'q']);
     expect(march.match(/\bfading\b/g)).toHaveLength(4);  // the let and the three selects
+    // Both q selects (the loop's and the out-of-steps one) still accumulate
+    // into the running minimum, as before step 6. A plain `res = select(...)`
+    // or a max keeps every false operand above and still changes the pixels.
+    expect(march.match(/res\s*=\s*min\(\s*res\s*,\s*select\(\s*q\s*,/g)).toHaveLength(2);
   });
 
   it('sunFade: full strength without a reach; with one, a smoothstep over the last quarter', () => {
