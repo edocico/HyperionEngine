@@ -133,8 +133,13 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
       const type = (word >>> LIGHT_TYPE_SHIFT) & 7;
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
       if (strength > 0) {
-        if (SHADOWED[type] === 1) shadowedLayers |= mask;
-        else if (type === GLOBAL) shadowedGlobalLight = true;
+        if (SHADOWED[type] === 1) {
+          // A sun's shadow is `range` long: at 0 or less sunShadow returns
+          // before its first SDF read, so its flood would be read by nobody.
+          if (type !== DIRECTIONAL || primParams[i * 8 + 3] > 0) shadowedLayers |= mask;
+        } else if (type === GLOBAL) {
+          shadowedGlobalLight = true;
+        }
       }
       continue;
     }

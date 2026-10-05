@@ -17,7 +17,7 @@ import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } f
 const LIGHT = 6, CAST = 1 << 9, RECV = 1 << 10;
 const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3;
 
-type E = { kind: 'light' | 'drawable'; mask?: number; flags?: number; type?: number; shadow?: number; x?: number; r?: number };
+type E = { kind: 'light' | 'drawable'; mask?: number; flags?: number; type?: number; shadow?: number; range?: number; x?: number; r?: number };
 
 /** Every `if (cond) { block }` of a comment-blanked WGSL body, `else if` and nested ones included. */
 function branches(body: string): { cond: string; block: string }[] {
@@ -36,13 +36,14 @@ function branches(body: string): { cond: string; block: string }[] {
   });
 }
 
-/** A scene in the SoA layout of GPURenderState. The view spans x, y in [-10, 10]. */
+/** A scene in the SoA layout of GPURenderState. The view spans x, y in [-10, 10]. A light's range defaults to light()'s 100. */
 function scene(es: E[]): LightGroupsInput {
   const n = es.length;
   const renderMeta = new Uint32Array(n * 2), primParams = new Float32Array(n * 8), bounds = new Float32Array(n * 4);
   es.forEach((e, i) => {
     const mask = (e.mask ?? (e.kind === 'light' ? 0xffff : 0)) << 16;
     renderMeta[i * 2 + 1] = ((e.kind === 'light' ? LIGHT | ((e.type ?? POINT) << 11) : e.flags ?? 0) | mask) >>> 0;
+    if (e.kind === 'light') primParams[i * 8 + 3] = e.range ?? 100;
     primParams[i * 8 + 7] = e.shadow ?? 0;
     bounds[i * 4] = e.x ?? 0;
     bounds[i * 4 + 3] = e.r ?? 1;
@@ -272,6 +273,23 @@ describe('deriveLightGroups', () => {
     expect(on.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
     expect(on.sdfSets).toEqual([{ occluderLayers: 1 }]);
     expect(deriveLightGroups(scene([sun(0), drawable(CAST | RECV)])).groups).toEqual([{ layers: 1, sdfSet: -1 }]);
+  });
+
+  it('a sun whose shadow has no length (range <= 0) gets no SDF set: nothing would read the flood', () => {
+    // Review wf_cf354af4-c53 [5]: such a sun cost a seed and a full flood
+    // (~1.8 ms at 1080p) every frame for an image identical to shadow 0.
+    const sun = (range: number) => light(0xffff, 1, { type: DIRECTIONAL, x: 100, r: 3.4e38, range });
+    for (const range of [0, -5]) {
+      const g = deriveLightGroups(scene([sun(range), drawable(CAST | RECV)]));
+      expect(g.sdfSets, `range ${range}`).toEqual([]);
+      expect(g.groups, `range ${range}`).toEqual([{ layers: 1, sdfSet: -1 }]);
+    }
+    expect(deriveLightGroups(scene([sun(0.5), drawable(CAST | RECV)])).sdfSets).toEqual([{ occluderLayers: 1 }]);
+    // Why the shader reads no SDF for it: the range is clamped at 0, so the
+    // ray's length is 0, and sunShadow returns before its first read.
+    const wgsl = stripComments(readFileSync(new URL('../shaders/light-accum.wgsl', import.meta.url), 'utf8'));
+    expect(functionBody(wgsl, 'directionalRay')).toMatch(/min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)/);
+    expect(functionBody(wgsl, 'sunShadow')).toMatch(/if\s*\(\s*travel\s*<\s*1\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
   });
 
   it('a sun shadows only the layers in its mask', () => {
