@@ -2,11 +2,14 @@
 // directional light's shadow (round 2026-09-27, step 6)
 //
 // They run on a sub-scene of their own, centred on SUN_SCENE, out of reach of
-// every light of the tab, where the shadowed sun is the only shadowed light in
-// view. On the tab's scene the shadowed point light already gives the floor's
-// light group an SDF set, so a light-groups gate that did not count a shadowed
-// directional light would go unseen: the sun would march that set anyway. Here
-// the sun's group has no SDF set without the gate, and no shadow.
+// the tab's point and spot lights, where the shadowed sun is the only shadowed
+// light in view. The tab's global light, never culled, lights it too: it is
+// part of `floor`, the light buffer where the sun does not reach (ambient +
+// global light). On the tab's scene the shadowed point light already gives
+// the floor's light group an SDF set, so a light-groups gate that did not
+// count a shadowed directional light would go unseen: the sun would march
+// that set anyway. Here the sun's group has no SDF set without the gate, and
+// no shadow.
 //
 // - 'Directional shadow': a wall thin along a sun at -30 degrees darkens the
 //   point behind it (S) and none of the three points where a sign error would
@@ -37,7 +40,11 @@ import type { Rgb } from './blend-expect';
 import { halfResolution } from '../render/passes/occluder-seed-stage';
 import { pixelCheck, fmt, fitView, frames, luminance, viewBounds, type Rgba } from './probe-checks';
 
-/** The sub-scene's centre. The tab's lights stay below y ≈ 16, and the view above y ≈ 140 even at an aspect of 0.3. */
+/**
+ * The sub-scene's centre. The spheres of the tab's point and spot lights stay
+ * below y ≈ 16 (its global light reaches everywhere, and is part of `floor`),
+ * and the view above y ≈ 140 even at an aspect of 0.3.
+ */
 const SUN_SCENE: [number, number] = [0, 200];
 /** The sun's colour, at energy 1: what it adds to the light buffer where nothing shadows it. */
 const SUN_COLOR: Rgb = [1, 0.9, 0.7];

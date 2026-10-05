@@ -65,8 +65,8 @@ export interface LightingQuality {
    * budget (round step 6): an axis-aligned sun over casters about 2 world
    * units or more along its rays (at 1080p and zoom 1) spends it along the
    * faces parallel to its rays. Casters longer than about 7 units along the
-   * rays can still exhaust it: at `rotation(0)`, about 0.1 % of the light
-   * buffer is off by more than a tenth of the sun
+   * rays can still exhaust it: at `rotation(0)`, about 0.1 % of the step-6
+   * bench scene's light buffer is off by more than a tenth of the sun
    * (docs/plans/assets/2026-09-30-step6/grid-x4-m2.json).
    *
    * Honoured by the lit backend, and read every frame (`FrameState.shadowSteps`

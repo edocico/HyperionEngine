@@ -295,7 +295,7 @@ describe('light-accum.wgsl', () => {
     expect(reachableFrom(lightShaderSource, 'vs_main').has('sdf')).toBe(true);  // not vacuous
   });
 
-  it('a directional light carries its shadow ray to the fragment stage: flat, computed once per light in vs_main', () => {
+  it('a directional light carries its shadow ray to the fragment stage: flat, computed in vs_main (the same at every vertex of the light)', () => {
     expect(lightShaderSource).toMatch(/@location\(3\)\s*@interpolate\(flat\)\s*sunRay:\s*vec3f/);
     expect(body('vs_main')).toMatch(/if\s*\(\s*kind\s*==\s*DIRECTIONAL\s*\)\s*\{\s*out\.sunRay\s*=\s*directionalRay\(\s*e\s*\)\s*;/);
   });

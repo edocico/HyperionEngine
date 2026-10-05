@@ -11,8 +11,12 @@ async () => {
   // but `cost`; ?mode=A&bench for `scene` only), on chrome-devtools-gpu, the
   // server whose timestamps are not quantized, navigated with ignoreCache and
   // the anti-reload initScript of .claude/skills/gpu-check/SKILL.md §3: a run
-  // lasts minutes, and a Vite reload kills it. Restart the dev server after a
-  // checkout that rewrote a shader.
+  // lasts minutes, and a Vite reload kills it. Restart the dev server after
+  // ANY edit to an app module since it started, not only a checkout: Vite
+  // then serves the app the edited module as `?t=…`, and this bench's
+  // `import('/src/…')` gets a second instance of it (LightAccumStage's
+  // SHADER_SOURCE is '' there, so no shader swap is ever seen to go live), as
+  // CLAUDE.md's dev-server gotcha says.
   //
   // Configured by an earlier evaluate_script:
   //   window.__benchOpts = { task: '<task>', label: '<short sha>', ...options }

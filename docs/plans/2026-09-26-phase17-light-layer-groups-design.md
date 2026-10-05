@@ -71,6 +71,8 @@ interface LightGroups {
   sdfSets: Array<{ occluderLayers: number /* u16: the layers of its groups */ }>;
   layerToGroup: [lo: number, hi: number];  // 16 × 4 bits, bit b → group index
   multiBitReceiver: boolean;
+  /** Una luce globale in vista chiede ombre (shadowIntensity > 0): il backend `lit` la ignora, e il renderer avvisa una volta in dev. */
+  shadowedGlobalLight: boolean;
   /** For the debug readout: the distinct values that split the groups. */
   lightMasks: number[]; occluderMasks: number[];
 }

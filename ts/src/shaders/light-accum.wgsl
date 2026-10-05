@@ -62,7 +62,8 @@ struct VertexOutput {
     @location(0) world: vec2f,
     @location(1) screenUV: vec2f,
     @location(2) @interpolate(flat) entityIdx: u32,
-    // A directional light's shadow ray (directionalRay), once per light.
+    // A directional light's shadow ray (directionalRay): the same at every
+    // vertex of the light, hence flat.
     @location(3) @interpolate(flat) sunRay: vec3f,
 };
 
@@ -84,11 +85,14 @@ fn lightFacing(m: mat4x4f) -> vec2f {
     return select(vec2f(1.0, 0.0), normalize(axis), length(axis) > 1e-6);
 }
 
-// A directional light's shadow ray, computed once per light in vs_main: the
-// unit direction TOWARD the light in texels of the bound SDF (xy), and the
-// shadow's length, `range` world units, in those texels (z). The facing is
-// projected as a vector (w = 0), so the camera's translation drops out; the y
-// flip is toScreenUV's (the world is y-up, the texture y-down).
+// A directional light's shadow ray, computed by vs_main at every vertex of the
+// light (the same value at each: one per light): the unit direction TOWARD
+// the light in texels of the bound SDF (xy), and the shadow's length, `range`
+// world units, in those texels (z). The facing is projected as a vector
+// (w = 0), so the camera's translation drops out. That is exact only for an
+// orthographic camera, whose clip w is the same at every point, and the only
+// kind the engine builds (camera.ts). The y flip is toScreenUV's (the world is
+// y-up, the texture y-down).
 fn directionalRay(e: u32) -> vec3f {
     let size = vec2f(textureDimensions(sdf));
     let clip = (u.viewProjection * vec4f(-lightFacing(transforms[e]), 0.0, 0.0)).xy;
