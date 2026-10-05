@@ -89,6 +89,32 @@ describe('LightAccumStage', () => {
     });
   });
 
+  it("caps shadowSteps at 2^30 - 1: the sun's budget 4u * u.shadowSteps never wraps in u32", () => {
+    // Wrapped, the sun got 0 steps at 2^30 (review wf_cf354af4-c53 [1]): its
+    // shadows vanished, and every pixel near a caster darkened, upwind too.
+    // The multiplier comes from the shader, so the cap and the 4x stay tied.
+    const { stage, device, writes, uniform, frame } = setUp();
+    const sunMultiplier = Number(/(\d+)u \* u\.shadowSteps/.exec(body('sunShadow'))?.[1]);
+    expect(sunMultiplier).toBe(4);
+    const written = (shadowSteps: number) => {
+      stage.prepare(device, frame({ shadowSteps }), groups3);
+      return new Uint32Array(writes.filter((w) => w.buffer === uniform()).at(-1)!.data, 64, 1)[0];
+    };
+    for (const s of [2 ** 30, 2 ** 31, 3 * 2 ** 30, 2 ** 30 + 5, 2 ** 32 + 7, 0x3fffffff]) {
+      const v = written(s);
+      expect(v, `shadowSteps ${s}`).toBe(0x3fffffff);
+      expect(sunMultiplier * v, `the sun's budget at shadowSteps ${s}`).toBeLessThanOrEqual(0xffffffff);
+    }
+    expect(written(48)).toBe(48);
+    expect(written(48.5)).toBe(48);  // a whole number of steps
+  });
+
+  it('binding 0 declares minBindingSize = sizeof(LightUniform): a buffer too small fails at bind-group creation, not at draw time', () => {
+    const { layouts } = setUp();
+    const entry = [...layouts[0].entries].find((e) => e.binding === 0)!;
+    expect(entry.buffer?.minBindingSize).toBe(structSize(lightShaderSource, 'LightUniform'));
+  });
+
   it('binds slice g: offset g * 256, the 80 bytes of LightUniform', () => {
     const { stage, device, frame, bindGroups, encode } = setUp();
     stage.prepare(device, frame(), groups3);

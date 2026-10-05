@@ -20,6 +20,7 @@ export interface FrameState {
    * Sphere-march step budget per shadowed light pixel
    * (`LightingQuality.shadowSteps`), as point and spot lights use it; a
    * directional light marches 4x it (`sunShadow` in light-accum.wgsl).
+   * `LightAccumStage` writes it capped at 2^30 − 1, so that 4x fits a u32.
    */
   shadowSteps?: number;
   /**

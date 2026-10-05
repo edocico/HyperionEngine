@@ -46,6 +46,14 @@ export const SLICE = 256;
 const LIGHT_UNIFORM_SIZE = 80;
 
 /**
+ * The largest step budget the uniform carries: a sun marches
+ * `4u * u.shadowSteps` (light-accum.wgsl sunShadow), which wraps in u32 from
+ * 2^30 and would give the sun 0 steps. A budget this large is unbounded
+ * anyway: every ray stops at the end of its travel.
+ */
+const MAX_SHADOW_STEPS = 0x3fffffff;
+
+/**
  * Accumulates the visible Light2Ds of ONE light group into one layer of the
  * light buffer (Phase 17; light layers, design 2026-09-26). A stage of
  * LightGroupsPass, not a graph node.
@@ -134,11 +142,14 @@ export class LightAccumStage {
       this.slices = count;
       this.bindGroups.clear();
     }
+    // LightingQuality.shadowSteps is finite and >= 1 (setQuality): written as
+    // a whole number, capped so that the sun's 4x cannot wrap.
+    const steps = Math.min(Math.trunc(frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps), MAX_SHADOW_STEPS);
     const data = new ArrayBuffer(count * SLICE);
     for (let g = 0; g < count; g++) {
       const base = g * SLICE;
       new Float32Array(data, base, 16).set(frame.cameraViewProjection);
-      new Uint32Array(data, base + 64, 1)[0] = frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps;
+      new Uint32Array(data, base + 64, 1)[0] = steps;
       new Float32Array(data, base + 68, 1)[0] = SHADOW_HARDNESS;
       new Float32Array(data, base + 72, 1)[0] = LIGHT_SOURCE_FRACTION;
       new Uint32Array(data, base + 76, 1)[0] = groups[g]?.layers ?? 0;
