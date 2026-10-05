@@ -128,6 +128,10 @@ async () => {
   // shadowSteps 48 is the sun's 192 steps; the angle A/B and the grid of
   // 795b066 (docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json) were read
   // with the shader of before that rule, where a sun marched shadowSteps.
+  // Every penumbra result records the multiplier of the shader it was read
+  // with, `sunStepMultiplier` (sunStepMultiplier below): step6-stats reports
+  // the sun's steps (budget x multiplier) and judges sub-decision 2 only on a
+  // grid read at x1.
   //
   // A wait on the engine (a frame, a frameEnd hook, a probe) gives up after
   // WAIT_MS (20 s) with 'timed out … waiting for …' instead of hanging when
@@ -380,6 +384,25 @@ async () => {
     }
     return parts.join(by);
   };
+  /**
+   * The sun's step multiplier of `source`, a light-accum.wgsl: the N of
+   * `Nu * u.shadowSteps` in sunShadow's `return shadow(…)`, 4 at HEAD
+   * (sub-decision 2 (b)); 1 where it hands shadow() u.shadowSteps itself or
+   * no step count (the text of before 7e7be7d, whose march read
+   * u.shadowSteps). Recorded with every penumbra result as
+   * `sunStepMultiplier`: step6-stats reads a grid's budgets as the sun's own
+   * only at 1. Self-contained: step6-stats.test.mjs evaluates this definition.
+   */
+  const sunStepMultiplier = (source) => {
+    const start = source.indexOf('fn sunShadow(');
+    const call = start < 0 ? null : /return shadow\(([^;]*)\);/.exec(source.slice(start));
+    if (!call) throw new Error('light-accum.wgsl has no `return shadow(…);` in fn sunShadow: update the bench with the shader');
+    const args = call[1].split(',').map((a) => a.trim());
+    if (args.length === 5) return 1;
+    const steps = args.length === 6 ? /^(?:(\d+)u\s*\*\s*)?u\.shadowSteps$/.exec(args[5]) : null;
+    if (!steps) throw new Error(`sunShadow hands shadow() \`${call[1]}\`: update the bench with the shader`);
+    return steps[1] === undefined ? 1 : Number(steps[1]);
+  };
   /** HEAD's light-accum.wgsl with the sun's angle and/or the fade's start replaced by literals. */
   const patchAccum = ({ angle, fadeStart }) => {
     let source = HEAD_ACCUM;
@@ -604,7 +627,10 @@ async () => {
     const range = finite(opts.range ?? 100, 'range');
     const shader = patchAccum({ angle, fadeStart });
     const what = angle === undefined && fadeStart === undefined ? 'HEAD' : `angle ${angle ?? 'HEAD'}, fade start ${fadeStart ?? 'HEAD'}`;
-    const common = { task: 'penumbra', kind, label, angle: angle ?? 0.02, patched: shader !== HEAD_ACCUM, shader: fnv1a(shader) };
+    const common = {
+      task: 'penumbra', kind, label, angle: angle ?? 0.02, patched: shader !== HEAD_ACCUM, shader: fnv1a(shader),
+      sunStepMultiplier: sunStepMultiplier(shader),
+    };
     await clearEntities();
 
     if (kind === 'restore') {
@@ -614,7 +640,9 @@ async () => {
       if (accum.SHADER_SOURCE !== HEAD_ACCUM || engine.lighting.quality.shadowSteps !== STEPS) {
         throw new Error("restore failed: HEAD's light-accum.wgsl or 48 steps did not come back");
       }
-      results.push({ ...common, angle: 0.02, patched: false, shader: fnv1a(HEAD_ACCUM), shadowSteps: STEPS });
+      results.push({
+        ...common, angle: 0.02, patched: false, shader: fnv1a(HEAD_ACCUM), sunStepMultiplier: sunStepMultiplier(HEAD_ACCUM), shadowSteps: STEPS,
+      });
       return;
     }
 

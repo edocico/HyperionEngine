@@ -7,17 +7,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  T975, STEP3_CHECKS, luminance, numbersIn, detailsDiff, abbaEffects, tSummary, width1090,
+  T975, STEP3_CHECKS, LEGACY_SUN_STEP_MULTIPLIERS, luminance, numbersIn, detailsDiff, abbaEffects, tSummary, width1090,
   maxRelDiff, countAbove, gridSummary, popSummary, fp16Ulp, compareGrids, decodeGrid,
   summarizeCost, summarizePenumbra, summarizeRegress, summarizeEdgepop,
 } from './step6-stats.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./step6-stats.mjs', import.meta.url));
+const BENCH = new URL('../2026-09-30-step6-directional-bench.js', import.meta.url);
+const SHADER = new URL('../../../../ts/src/shaders/light-accum.wgsl', import.meta.url);
+
+/**
+ * One function of the bench, evaluated. The bench is the body of an
+ * evaluate_script call, not a module, so the definition is read from the
+ * file: `const <name> = (<arg>) => { … };` at its indentation. It must be
+ * self-contained (no free name but globals).
+ */
+function benchFunction(name) {
+  const text = readFileSync(BENCH, 'utf8');
+  const m = new RegExp(`\\n  const ${name} = (\\(\\w+\\) => \\{\\n[\\s\\S]*?\\n  \\});\\n`).exec(text);
+  assert.ok(m, `the bench defines ${name}`);
+  return new Function(`return ${m[1]};`)();
+}
 
 function close(actual, want, eps, what) {
   assert.ok(Math.abs(actual - want) <= eps, `${what}: ${actual} is not within ${eps} of ${want}`);
@@ -358,8 +373,9 @@ test('summarizePenumbra: the convergence of the reference, and the grids per sun
   const at48 = ref.map((v, k) => (k < 4 ? lit(0.4) : v));   // 4 of 2000 = 0.2 % off by 0.6 sun
   const at96 = ref.map((v, k) => (k < 1 ? lit(0.95) : v));  // 0.05 sun: none above 0.1
   const encoded = (values) => ({ encoding: 'f32-rgba-base64', count: values.length, data: Buffer.from(new Float32Array(values.flat()).buffer).toString('base64') });
+  // Read while a sun marched shadowSteps: its budgets are the sun's (x1).
   const grid = {
-    task: 'penumbra', kind: 'grid', label: 'test', angle: 0.02, patched: false, ref: 1024, conv: 2048,
+    task: 'penumbra', kind: 'grid', label: 'test', angle: 0.02, patched: false, sunStepMultiplier: 1, ref: 1024, conv: 2048,
     budgets: [48, 96, 192, 1024, 2048], gridSize: [50, 40], ambient: AMBIENT, sun: { color: SUN, energy: 1, range: 100 },
     suns: [
       { name: 'rotation(0)', rotation: 0, grids: { 48: ref, 96: ref, 192: ref, 1024: ref, 2048: ref } },
@@ -391,6 +407,91 @@ test('summarizePenumbra: the convergence of the reference, and the grids per sun
   const contradicted = summarizePenumbra({ results: [grid] });
   assert.equal(contradicted.subDecision2.confirmsModel, false);
   assert.match(contradicted.subDecision2.verdict, /ask sub-decision 2 again/);
+});
+
+/** A `penumbra` grid of 2000 points at rotation(-PI/2): `off` of them 0.6 sun darker at 48, the rest exact. */
+function gridEntry(fields = {}, off = 4) {
+  const ref = Array.from({ length: 2000 }, () => lit(1));
+  return {
+    task: 'penumbra', kind: 'grid', label: 'test', angle: 0.02, patched: false, shader: '0badc0de', ref: 1024, conv: 2048,
+    budgets: [48, 96, 1024, 2048], gridSize: [50, 40], ambient: AMBIENT, sun: { color: SUN, energy: 1, range: 100 },
+    suns: [{ name: 'rotation(-PI/2)', rotation: -Math.PI / 2, grids: { 48: ref.map((v, k) => (k < off ? lit(0.4) : v)), 96: ref, 1024: ref, 2048: ref } }],
+    ...fields,
+  };
+}
+
+test("summarizePenumbra: a grid's sun steps are its budgets times the sun's step multiplier the bench recorded, and sub-decision 2 is judged on a x1 grid only", () => {
+  // x1 (the shader of before 7e7be7d): the budgets are the sun's own.
+  const x1 = summarizePenumbra({ results: [gridEntry({ sunStepMultiplier: 1 })] });
+  assert.equal(x1.grids[0].sunStepMultiplier, 1);
+  assert.deepEqual(x1.grids[0].suns[0].budgets.map((b) => [b.steps, b.sunSteps]), [[48, 48], [96, 96]]);
+  assert.equal(x1.subDecision2.sunSteps, 48);
+  assert.equal(x1.subDecision2.confirmsModel, true);
+  assert.match(x1.subDecision2.verdict, /^the GPU confirms the model/);
+  const clean = summarizePenumbra({ results: [gridEntry({ sunStepMultiplier: 1 }, 0)] });
+  assert.equal(clean.subDecision2.confirmsModel, false);
+  assert.match(clean.subDecision2.verdict, /ask sub-decision 2 again/);
+  // x4 (HEAD's sunShadow): the grid's 48 is the sun's 192, never the 48 the decision was taken on.
+  for (const off of [0, 4]) {
+    const x4 = summarizePenumbra({ results: [gridEntry({ sunStepMultiplier: 4 }, off)] });
+    assert.deepEqual(x4.grids[0].suns[0].budgets.map((b) => [b.steps, b.sunSteps]), [[48, 192], [96, 384]]);
+    assert.equal(x4.subDecision2.sunSteps, 192);
+    assert.equal(x4.subDecision2.confirmsModel, null);
+    assert.match(x4.subDecision2.verdict, /^not applicable: grid read with the x4 sun budget/);
+  }
+  // No record, and a shader the stats do not know: no verdict on the model at all.
+  const unknown = summarizePenumbra({ results: [gridEntry({}, 0)] });
+  assert.equal(unknown.grids[0].sunStepMultiplier, null);
+  assert.equal(unknown.grids[0].suns[0].budgets[0].sunSteps, null);
+  assert.equal(unknown.subDecision2.confirmsModel, null);
+  assert.match(unknown.subDecision2.verdict, /^unknown multiplier/);
+  assert.doesNotMatch(unknown.subDecision2.verdict, /contradicts|ask sub-decision 2 again/);
+  assert.throws(() => summarizePenumbra({ results: [gridEntry({ sunStepMultiplier: 0 })] }), /sunStepMultiplier must be a whole number >= 1/);
+});
+
+test('the committed evidence: penumbra-ab-m2.json, a x1 grid by its shader, confirms the model; grid-x4-m2.json records no multiplier, and never contradicts it', () => {
+  // Review wf_cf354af4-c53 [10]: grid-x4-m2.json, read with the x4 shader,
+  // printed "the GPU contradicts the model ... stop and ask sub-decision 2 again".
+  const evidence = (name) => summarizePenumbra(JSON.parse(readFileSync(new URL(`./${name}`, import.meta.url), 'utf8')));
+  const ab = evidence('penumbra-ab-m2.json');
+  assert.equal(ab.grids[0].shader, '8e68370e');
+  assert.equal(ab.grids[0].sunStepMultiplier, 1);
+  assert.equal(ab.subDecision2.confirmsModel, true);
+  assert.match(ab.subDecision2.verdict, /^the GPU confirms the model at rotation\(-PI\/2\), 48 steps: 0\.86% /);
+  const x4 = evidence('grid-x4-m2.json');
+  assert.equal(x4.grids[0].sunStepMultiplier, null);
+  assert.equal(x4.subDecision2.confirmsModel, null);
+  assert.match(x4.subDecision2.verdict, /^unknown multiplier/);
+  assert.doesNotMatch(x4.subDecision2.verdict, /contradicts|ask sub-decision 2 again/);
+});
+
+test("the bench's sunStepMultiplier: the N of `Nu * u.shadowSteps` in sunShadow's return line, 1 where it hands shadow() no step count", () => {
+  const multiplier = benchFunction('sunStepMultiplier');
+  const head = readFileSync(SHADER, 'utf8');
+  assert.equal(multiplier(head), 4);  // sub-decision 2 (b)
+  const line = 'return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z, 4u * u.shadowSteps);';
+  assert.equal(head.split(line).length, 2, "sunShadow's return line, once");
+  const returning = (args) => head.replace(line, `return shadow(${args});`);
+  // Before 7e7be7d the march read u.shadowSteps itself: a sun marched shadowSteps.
+  assert.equal(multiplier(returning('origin, ray.xy, travel, u.sourceFraction, ray.z')), 1);
+  assert.equal(multiplier(returning('origin, ray.xy, travel, u.sourceFraction, ray.z, u.shadowSteps')), 1);
+  assert.equal(multiplier(returning('origin, ray.xy, travel, 0.01, ray.z, 8u * u.shadowSteps')), 8);
+  assert.throws(() => multiplier(returning('origin, ray.xy, travel, u.sourceFraction, ray.z, u.shadowSteps * 4u')), /update the bench/);
+  assert.throws(() => multiplier(head.replace('fn sunShadow(', 'fn sunShadowElsewhere(')), /update the bench/);
+});
+
+test("LEGACY_SUN_STEP_MULTIPLIERS: 8e68370e is the bench's fnv1a of f61654d's light-accum.wgsl, whose sunShadow the bench reads as x1", (t) => {
+  // penumbra-ab-m2.json predates the bench's sunStepMultiplier: its shader
+  // says what its grid's budgets were. Needs the history (a shallow clone skips).
+  const git = spawnSync('git', ['show', 'f61654d:ts/src/shaders/light-accum.wgsl'],
+    { cwd: fileURLToPath(new URL('../../../../', import.meta.url)), encoding: 'utf8' });
+  if (git.status !== 0) {
+    t.skip(`git show f61654d failed: ${String(git.stderr ?? git.error).trim()}`);
+    return;
+  }
+  assert.deepEqual({ ...LEGACY_SUN_STEP_MULTIPLIERS }, { '8e68370e': 1 });
+  assert.equal(benchFunction('fnv1a')(git.stdout), '8e68370e');
+  assert.equal(benchFunction('sunStepMultiplier')(git.stdout), 1);
 });
 
 test('summarizeRegress: the old and the new light buffer, point by point, on rgba16float values', () => {

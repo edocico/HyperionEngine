@@ -18,7 +18,11 @@
 //
 // A step budget in the bench's output is a LightingQuality.shadowSteps value.
 // The evidence of 795b066 was read while a sun marched shadowSteps; with
-// HEAD's light-accum.wgsl a sun marches 4x it (sub-decision 2 (b)).
+// HEAD's light-accum.wgsl a sun marches 4x it (sub-decision 2 (b)). A
+// penumbra result records that multiplier (`sunStepMultiplier`; for older
+// results, LEGACY_SUN_STEP_MULTIPLIERS knows some shaders by their hash): a
+// grid reports its budgets as the sun's steps too, and sub-decision 2 is
+// judged on a x1 grid only.
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -32,6 +36,15 @@ export const T975 = Object.freeze({
 
 /** The Lighting tab's checks of step 3, whose details must not move (Task 10). */
 export const STEP3_CHECKS = ['Lit vs unlit', 'Layer shadow on screen', 'Light layers'];
+
+/**
+ * The sun's step multiplier of the shaders, by the bench's fnv1a of them
+ * (a result's `shader`), for the results recorded before the bench wrote
+ * `sunStepMultiplier`: f61654d's light-accum.wgsl, whose sunShadow handed
+ * shadow() no step count, so a sun marched u.shadowSteps (the grid and the
+ * convergence run of penumbra-ab-m2.json).
+ */
+export const LEGACY_SUN_STEP_MULTIPLIERS = Object.freeze({ '8e68370e': 1 });
 
 /** Rec. 709 luminance of an RGB(A) value; a number is taken as a luminance already. */
 export function luminance(v) {
@@ -447,14 +460,33 @@ function summarizeConvergence(r) {
   };
 }
 
-/** A `grid` run: per sun, gridSummary at every budget below the reference, and the reference against its check. */
+/**
+ * The sun's step multiplier of a penumbra result: `sunStepMultiplier`, which
+ * the bench records from the live shader, else the one of a shader the stats
+ * know by its hash (LEGACY_SUN_STEP_MULTIPLIERS); null when neither says.
+ */
+function sunStepMultiplierOf(r) {
+  const m = r.sunStepMultiplier;
+  if (m !== undefined) {
+    if (!Number.isInteger(m) || m < 1) throw new Error(`sunStepMultiplier must be a whole number >= 1, got ${JSON.stringify(m)}`);
+    return m;
+  }
+  return Object.hasOwn(LEGACY_SUN_STEP_MULTIPLIERS, r.shader) ? LEGACY_SUN_STEP_MULTIPLIERS[r.shader] : null;
+}
+
+/**
+ * A `grid` run: per sun, gridSummary at every budget below the reference
+ * (with `sunSteps`, the budget times the sun's step multiplier, or null when
+ * the multiplier is unknown), and the reference against its check.
+ */
 function summarizeGrid(r) {
   const sunLum = sunLumOf(r.sun);
+  const multiplier = sunStepMultiplierOf(r);
   const suns = r.suns.map((sun) => {
     const ref = decodeGrid(sun.grids[String(r.ref)]);
     const conv = decodeGrid(sun.grids[String(r.conv)]);
     const budgets = r.budgets.filter((s) => s !== r.ref && s !== r.conv)
-      .map((steps) => ({ steps, ...gridSummary(decodeGrid(sun.grids[String(steps)]), ref, sunLum) }));
+      .map((steps) => ({ steps, sunSteps: multiplier === null ? null : steps * multiplier, ...gridSummary(decodeGrid(sun.grids[String(steps)]), ref, sunLum) }));
     const max = maxRelDiff(conv, ref, sunLum);
     return {
       name: sun.name,
@@ -463,27 +495,46 @@ function summarizeGrid(r) {
       convergence: { ref: r.ref, conv: r.conv, max, above001: countAbove(conv, ref, sunLum, 0.01), ok: max <= 0.01 },
     };
   });
-  return { label: r.label ?? null, angle: r.angle, ref: r.ref, conv: r.conv, gridSize: r.gridSize ?? null, suns };
+  return {
+    label: r.label ?? null, angle: r.angle, shader: r.shader ?? null, sunStepMultiplier: multiplier,
+    ref: r.ref, conv: r.conv, gridSize: r.gridSize ?? null, suns,
+  };
 }
 
 /**
  * Sub-decision 2, decided on the model's numbers at rotation(-PI/2), the
- * JSDoc's example: the GPU confirms the model when, at 48 steps, more than
- * 0.1 % of the grid is off by more than 0.1 sun (model: 0.84 %). It reads the
- * grid's budgets as the sun's: true of a grid read with the shader of before
- * the x4 rule (penumbra-ab-m2.json, 795b066). With HEAD's, a sun marches
- * 4 x shadowSteps, and the grid's 48 is the sun's 192.
+ * JSDoc's example: the GPU confirms the model when, at the sun's 48 steps,
+ * more than 0.1 % of the grid is off by more than 0.1 sun (model: 0.84 %).
+ * Judged only on a grid whose budgets are the sun's own (sun step multiplier
+ * 1: the shader of before the x4 rule, penumbra-ab-m2.json). With HEAD's a
+ * sun marches 4 x shadowSteps, and the grid's 48 is the sun's 192: not
+ * applicable. A grid whose multiplier is unknown gets no verdict on the model.
  */
 function subDecision2(grids) {
-  const down = grids.at(-1)?.suns.find((s) => Math.abs(s.rotation + Math.PI / 2) < 1e-9);
+  const grid = grids.at(-1);
+  const down = grid?.suns.find((s) => Math.abs(s.rotation + Math.PI / 2) < 1e-9);
   const at48 = down?.budgets.find((b) => b.steps === 48);
   if (!at48) return null;
+  const m = grid.sunStepMultiplier;
   const pct = `${(100 * at48.fracAbove01).toFixed(2)}%`;
+  const read = { sun: down.name, steps: 48, sunStepMultiplier: m, sunSteps: at48.sunSteps, fracAbove01: at48.fracAbove01 };
+  if (m === null) {
+    return {
+      ...read,
+      confirmsModel: null,
+      verdict: `unknown multiplier: the grid records no sunStepMultiplier, and the stats do not know its shader (${grid.shader}), so its 48 may not be the sun's 48 steps: no verdict on sub-decision 2 (${pct} of the grid off by more than 0.1 sun at ${down.name}, 48 steps)`,
+    };
+  }
+  if (m !== 1) {
+    return {
+      ...read,
+      confirmsModel: null,
+      verdict: `not applicable: grid read with the x${m} sun budget (its 48 is the sun's ${48 * m} steps), while sub-decision 2 was decided on the sun's own 48 (penumbra-ab-m2.json); ${pct} of the grid off by more than 0.1 sun at ${down.name}`,
+    };
+  }
   const confirmsModel = at48.fracAbove01 > 0.001;
   return {
-    sun: down.name,
-    steps: 48,
-    fracAbove01: at48.fracAbove01,
+    ...read,
     confirmsModel,
     verdict: confirmsModel
       ? `the GPU confirms the model at ${down.name}, 48 steps: ${pct} of the grid off by more than 0.1 sun (> 0.1%; model 0.84%): step 6 runs the branch chosen for sub-decision 2`
