@@ -77,6 +77,15 @@ const LIGHT_TYPE_IDS: Record<LightType, number> = {
 /** Wire values for `renderMeta` bits 14-15. */
 const LIGHT_BLEND_IDS: Record<LightBlendMode, number> = { add: 0, sub: 1, mix: 2 };
 
+/**
+ * The largest finite f32. A directional light's range past it can reach the
+ * wire as +inf (`Infinity` does, and so does `Number.MAX_VALUE`), and Rust
+ * rejects a non-finite `SetPrimParams0` whole, the light's colour with it. At
+ * this value the shadows are endless already: light-accum.wgsl
+ * `directionalRay` bounds range × texels.
+ */
+const F32_MAX = 3.4028234663852886e38;
+
 /** Options for {@link EntityHandle.light}. */
 export interface LightOptions {
   /** Default `'point'`. */
@@ -89,8 +98,9 @@ export interface LightOptions {
    * World units. Default 100.
    * - `point`, `spot`: the light's radius, which is also its culling radius.
    * - `directional`: the length of its shadows, which fade out toward the end
-   *   (0 or less casts none). It does not limit what the light lights: a sun
-   *   covers the whole view and is never culled.
+   *   (0 or less casts none; `Infinity` casts endless ones, sent as the
+   *   largest finite f32, like any range past it). It does not limit what the
+   *   light lights: a sun covers the whole view and is never culled.
    * - `global`: unused (never culled either).
    */
   range?: number;
@@ -578,12 +588,15 @@ export class EntityHandle implements Disposable {
     this.check();
     const [r, g, b] = normalizeColor(options.color ?? '#ffffff');
     const energy = options.energy ?? 1;
-    const range = options.range ?? 100;
+    const type = options.type ?? 'point';
+    // A sun's `range` is its shadows' length: Infinity means endless ones,
+    // sent as the largest finite f32 (see F32_MAX).
+    const range = type === 'directional' ? Math.min(options.range ?? 100, F32_MAX) : options.range ?? 100;
 
     this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Light2D);
     this._producer!.setLightFlags(
       this._id,
-      LIGHT_TYPE_IDS[options.type ?? 'point'],
+      LIGHT_TYPE_IDS[type],
       LIGHT_BLEND_IDS[options.blend ?? 'add'],
       options.layers ?? 0xffff,
     );
@@ -592,7 +605,7 @@ export class EntityHandle implements Disposable {
     // Cone angles are stored as cosines: the shader compares against a dot
     // product, so converting here keeps a trig call out of the fragment loop.
     // A point light gets inner=outer=-1, i.e. "every direction is inside".
-    const isSpot = (options.type ?? 'point') === 'spot';
+    const isSpot = type === 'spot';
     const innerCos = isSpot ? Math.cos(((options.innerAngle ?? 30) * Math.PI) / 180) : -1;
     const outerCos = isSpot ? Math.cos(((options.outerAngle ?? 45) * Math.PI) / 180) : -1;
     const falloff = options.falloff ?? 1;
