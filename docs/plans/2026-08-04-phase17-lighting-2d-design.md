@@ -872,8 +872,8 @@ const sole = engine.spawn()
 engine.lighting.setBackend('lit');      // 'off' | 'lit' | 'gi'
 engine.lighting.setAmbient('#101828', 1.0);
 engine.lighting.setQuality({
-  bufferScale: 0.5,        // risoluzione del light buffer e della SDF (non ancora onorato: il renderer avvisa una volta)
-  sdfOversize: 1.0,        // 1.0 = nessun padding; 1.2 costa +96% di pixel (§6.2) (non ancora onorato: il renderer avvisa una volta)
+  bufferScale: 0.5,        // risoluzione del light buffer e della SDF (fisso a 0,5 per ora: un altro valore non cambia nulla e il renderer avvisa una volta)
+  sdfOversize: 1.0,        // 1.0 = nessun padding; 1.2 costa +96% di pixel (§6.2) (fisso a 1.0 per ora: un altro valore non cambia nulla e il renderer avvisa una volta)
   shadowSteps: 48,
   cascades: 6,             // solo backend 'gi'
   deterministic: true,     // vieta reproiezione, merge stocastico, ammortizzazione
