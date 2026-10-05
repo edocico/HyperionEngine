@@ -73,12 +73,29 @@ describe('directionalShadowVerdict', () => {
 });
 
 describe('shadowLengthVerdict', () => {
-  it('shadowLengthVerdict: dark at the caster, lit past the range, never darker farther away', () => {
-    for (const f of [[0.08, 0.33, 0.67, 0.88, 1], [0, 0, 0, 0.5, 1]]) {
+  it('shadowLengthVerdict: dark at the caster, half faded 5.25 past it, lit past the range, never darker farther away', () => {
+    // The march model (march-model.test.mjs, check 2) and the M2's read (step 6).
+    for (const f of [[0, 0, 0, 0.503, 1], [0, 0, 0, 0.508, 1]]) {
       const v = shadowLengthVerdict(f.map(at), lit, sun);
       expect(v.ok, v.detail).toBe(true);
       expect(v.detail).toContain('range 6');
+      expect(v.detail).toContain(`the sun's share 5.25 past the caster ${f[3].toFixed(3)}`);
     }
+  });
+
+  it('shadowLengthVerdict fails a shadow half its range long, a hard cut, a fade from the caster, and a shadow twice its range', () => {
+    // Review wf_cf354af4-c53 [7], [9]: the first two passed every rule. The
+    // profiles are the march model's at a reach of 3 (directionalRay's
+    // `* 0.25 * size` mutant) and of 12 (`size` without its 0.5); a hard cut
+    // and a linear fade from the caster (SUN_FADE_START 0, not 0.75) by hand.
+    const short = shadowLengthVerdict([0, 0, 1, 1, 1].map(at), lit, sun);
+    expect(short.ok).toBe(false);
+    expect(short.detail).toContain('shorter than its range');
+    const hardCut = shadowLengthVerdict([0, 0, 0, 0, 1].map(at), lit, sun);
+    expect(hardCut.ok).toBe(false);
+    expect(hardCut.detail).toContain('no fade');
+    expect(shadowLengthVerdict([0.08, 0.33, 0.67, 0.88, 1].map(at), lit, sun).ok).toBe(false);
+    expect(shadowLengthVerdict([0, 0, 0, 0, 0].map(at), lit, sun).ok).toBe(false);
   });
 
   it('shadowLengthVerdict fails a shadow that never ends, or ends too early', () => {

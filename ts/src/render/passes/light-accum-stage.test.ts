@@ -300,11 +300,18 @@ describe('light-accum.wgsl', () => {
     expect(body('vs_main')).toMatch(/if\s*\(\s*kind\s*==\s*DIRECTIONAL\s*\)\s*\{\s*out\.sunRay\s*=\s*directionalRay\(\s*e\s*\)\s*;/);
   });
 
-  it('directionalRay: the facing TOWARD the light, projected as a vector (w = 0), y flipped like toScreenUV, range as the length, bounded without overflow', () => {
+  it('directionalRay: the facing TOWARD the light, projected as a vector (w = 0), y flipped like toScreenUV, 0.5 * size texels per NDC unit, normalised, range as the length, bounded without overflow', () => {
     const ray = body('directionalRay');
     expect(ray).toMatch(/vec4f\(\s*-lightFacing\(\s*transforms\[e\]\s*\)\s*,\s*0\.0\s*,\s*0\.0\s*\)/);
-    expect(ray).toMatch(/vec2f\(\s*clip\.x\s*,\s*-clip\.y\s*\)/);
-    expect(ray).toMatch(/textureDimensions\(\s*sdf\s*\)/);
+    // One world unit toward the light, in texels: NDC spans 2 across the
+    // view and the texture `size` texels, hence 0.5 * size. Its length, the
+    // texels per unit, normalises the direction and scales the range: without
+    // the 0.5 every sun shadow is twice its range, with 0.25 half of it, and
+    // headless only these lines see it (review wf_cf354af4-c53 [9]).
+    expect(ray).toMatch(/let\s+perUnit\s*=\s*vec2f\(\s*clip\.x\s*,\s*-clip\.y\s*\)\s*\*\s*0\.5\s*\*\s*size\s*;/);
+    expect(ray).toMatch(/let\s+texels\s*=\s*length\(\s*perUnit\s*\)\s*;/);
+    expect(ray).toMatch(/return\s+vec3f\(\s*perUnit\s*\/\s*texels\s*,\s*reach\s*\)\s*;/);
+    expect(ray).toMatch(/let\s+size\s*=\s*vec2f\(\s*textureDimensions\(\s*sdf\s*\)\s*\)\s*;/);
     // The PRODUCT range * texels stays finite, and is never computed first:
     // CameraAPI.zoom has no upper bound, so texels can be huge.
     expect(ray).toMatch(/min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)\s*,\s*1e30\s*\/\s*texels\s*\)\s*\*\s*texels/);

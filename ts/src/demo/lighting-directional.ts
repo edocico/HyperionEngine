@@ -12,8 +12,9 @@
 //   point behind it (S) and none of the three points where a sign error would
 //   put the shadow: U in front (a reversed march), Ry and Rx, the mirrors of S
 //   across the axes (the texel ray's y or x negated).
-// - 'Directional shadow length': at range 6 the shadow keeps its strength for
-//   three quarters of its length and has faded out by its end.
+// - 'Directional shadow length': at range 6 the shadow is dark past the
+//   caster, half faded 5.25 past it (the middle of its last quarter, where
+//   it fades) and gone past its end.
 // - 'Directional edge pop (measured)': a caster casts only while it is on
 //   screen (the occluder seed rasterises what is in view), so the shadow of
 //   one entering from the sun's side appears across the view at once. The
@@ -51,6 +52,15 @@ const PROBE_DISTANCE = 2.5;
 const SHORT_RANGE = 6;
 /** The length check's points, world units past wall A's far face: the fade runs from 4.5 to 6. */
 const LENGTH_DISTANCES = [0.5, 2, 4, 5.25, 7.5];
+/** The length check's point inside the fade, 5.25 past the caster: the middle of the last quarter. */
+const FADE_POINT = 3;
+/**
+ * The sun's share of the light allowed at FADE_POINT: the march model gives
+ * 0.503 there (march-model.test.mjs), and the M2 read 0.508 (round step 6). A
+ * shadow half its range long is gone by then (1); a hard cut, or a shadow
+ * longer than its range, is still whole (0).
+ */
+const FADE_SHARE: readonly [number, number] = [0.4, 0.6];
 /** The edge check's sun keeps LightOptions' default range. */
 const DEFAULT_RANGE = 100;
 /** The tab's own framing: the same zoom, so the same texels per unit as the CPU model at 16:9. */
@@ -122,8 +132,10 @@ export function directionalShadowVerdict(
 
 /**
  * 'Directional shadow length', on the points LENGTH_DISTANCES past the caster
- * at range 6: dark at the first, `lit` at the last, and never darker than the
- * point before (by more than 0.02 in luminance).
+ * at range 6: dark at the first, `lit` at the last, never darker than the
+ * point before (by more than 0.02 in luminance), and half faded at FADE_POINT:
+ * there the sun's share of the light, (lum − lum(floor)) / lum(sun) with
+ * floor = lit − sun, lies in FADE_SHARE.
  */
 export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly number[], sun: Rgb): Verdict {
   const lums = profile.map(lum);
@@ -135,9 +147,18 @@ export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly numb
   if (!(lums[0] < lum(lit) - 0.5 * lum(sun))) {
     problems.push(`not in shadow ${LENGTH_DISTANCES[0]} past the caster: no shadow, or one much shorter than its range`);
   }
+  // `lit` is U, read in the same frame: floor + sun.
+  const share = (lums[FADE_POINT] - (lum(lit) - lum(sun))) / lum(sun);
+  if (!(share >= FADE_SHARE[0] && share <= FADE_SHARE[1])) {
+    problems.push(`the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster is not ${FADE_SHARE.join('-')} (the model: 0.503): `
+      + (share > FADE_SHARE[1]
+        ? 'the shadow is shorter than its range, or fades before its last quarter'
+        : 'no fade, or a shadow longer than its range'));
+  }
   const last = profile.length - 1;
   if (!close(profile[last], lit)) problems.push(`still shadowed ${LENGTH_DISTANCES[last]} past the caster: the shadow runs past its range`);
-  const detail = `luminance at ${LENGTH_DISTANCES.join(', ')} past the caster: ${fmt(lums)}; lit ${fmt([lum(lit)])}; range ${SHORT_RANGE}`;
+  const detail = `luminance at ${LENGTH_DISTANCES.join(', ')} past the caster: ${fmt(lums)}; `
+    + `the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster ${fmt([share])}; lit ${fmt([lum(lit)])}; range ${SHORT_RANGE}`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
 
