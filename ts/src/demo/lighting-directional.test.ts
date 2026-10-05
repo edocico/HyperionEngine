@@ -137,6 +137,34 @@ describe('edgePopVerdict', () => {
     expect(nothing.ok).toBe(false);
     expect(nothing.detail).toContain('casts nothing');
   });
+
+  it("edgePopVerdict passes correct code on a 4:1 canvas, where W_in's penumbra reaches the open row (the march model's rows)", () => {
+    // Review wf_cf354af4-c53 [8]: 3840x960, a view 80 units wide (d = 1 to
+    // 79), the sun's 192 steps; march-model.test.mjs pins these values. W_in's
+    // penumbra, about 0.02·d wide, reaches the open row 1.5 below it from
+    // d = 76, while W_out's row, 4 below, stays lit: compared both ways, the
+    // rows differed by 0.033 and 0.043 at d = 78 and 79, and the check failed.
+    const wide = Array.from({ length: 79 }, (_, i) => i + 1);
+    const refAt: Record<number, number> = { 76: 0.9921, 77: 0.9795, 78: 0.9673, 79: 0.9566 };
+    const innAt: Record<number, number> = { 76: 0.0014, 77: 0.0107, 78: 0.0287, 79: 0.055 };
+    const v = edgePopVerdict(
+      { out: wide.map(() => at(1)), inn: wide.map((d) => at(innAt[d] ?? 0)), ref: wide.map((d) => at(refAt[d] ?? 1)), e: at(1) },
+      wide,
+      sun,
+      { viewWidth: 80, zoom: 1, canvas: [3840, 960] },
+    );
+    expect(v.ok, v.detail).toBe(true);
+  });
+
+  it('edgePopVerdict on a march that reads past the SDF names that defect alone: the open row is no reference then', () => {
+    // The march model's rows for that defect (1080p, the sun's 192 steps): E
+    // 0.256, the open row 0.931 along the clamped edge, W_out's row lit. The
+    // step-8c message about off-screen casters used to ride along.
+    const v = edgePopVerdict({ out: ds.map(() => at(1)), inn: ds.map(() => at(0)), ref: ds.map(() => at(0.931)), e: at(0.256) }, ds, sun, meta);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('past the SDF');
+    expect(v.detail).not.toContain('off-screen caster');
+  });
 });
 
 /** A handle of the fake engine: every builder call chains, `destroy` is recorded. */

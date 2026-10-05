@@ -136,6 +136,46 @@ test('check 3: a caster at the sun-side edge casts across the view only once on 
   near(toRange(xL + 1, rows.ref, SUN_STEPS), 0.931, 'the open row at d = 1, marching to the range, 192 steps');
 });
 
+test("check 3 on wide canvases, the sun's 192 steps: W_out's row stays lit at every d up to 5:1, while W_in's penumbra darkens the open row from d = 76", () => {
+  // Review wf_cf354af4-c53 [8]. The view is 20·aspect units wide (fitView
+  // never zooms in), so d reaches about 4·20 on a 4:1 canvas, where W_in's
+  // penumbra, about 0.02·d wide, reaches the open row 1.5 below it. W_out's
+  // row is 4 below W_in, and W_out, wholly off screen, casts nothing. So the
+  // tab's off-screen rule is one-sided: W_out's row darker than the open row.
+  // `lighter` is how much lighter W_out's row gets, at most: above the tab's
+  // tolerance of 0.03 on every one of these canvases (the two real ones of
+  // the review are 4.11:1: half a 1440p screen, a 32:9 monitor).
+  const cases = [[3840, 960, 79, 0.0434], [4800, 960, 99, 0.0762], [2340, 569, 81, 0.0735], [3620, 881, 81, 0.0616]];
+  for (const [w, h, lastD, lighter] of cases) {
+    const cam = makeCamera(C[0], C[1], w, h);
+    const { xL } = cam;
+    const sdf = buildSdf(cam, [WALL_A, rect(xL - 0.55, C[1] + 3, 0.6, 2), rect(xL + 0.2, C[1] + 8, 0.6, 2)]);
+    assert.equal(Math.floor(2 * cam.hw - 0.5), lastD);
+    const at = (x, y) => sunShadowAt(cam, sdf, x, y, 0, 100, ANGLE, SUN_STEPS);
+    let most = 0;
+    for (let d = 1; d <= lastD; d++) {
+      const out = at(xL + d, C[1] + 3);
+      near(out, 1, `${w}x${h}: W_out's row at d = ${d}`);
+      most = Math.max(most, out - at(xL + d, C[1] + 5.5));
+    }
+    near(most, lighter, `${w}x${h}: W_out's row lighter than the open row, at most`);
+    near(at(xL + 1, C[1] + 3) - at(xL + 1, C[1] + 8), 1, `${w}x${h}: the pop at d = 1`);
+    near(at(xL + 1, C[1] + 6.6), 1, `${w}x${h}: E`);
+  }
+  // The 3840x960 rows of lighting-directional.test.ts: the open row 1 and
+  // W_in's row 0, but at d = 76 to 79.
+  const cam = makeCamera(C[0], C[1], 3840, 960);
+  const { xL } = cam;
+  const sdf = buildSdf(cam, [WALL_A, rect(xL - 0.55, C[1] + 3, 0.6, 2), rect(xL + 0.2, C[1] + 8, 0.6, 2)]);
+  const at = (x, y) => sunShadowAt(cam, sdf, x, y, 0, 100, ANGLE, SUN_STEPS);
+  const ref = { 76: 0.9921, 77: 0.9795, 78: 0.9673, 79: 0.9566 };
+  const inn = { 76: 0.0014, 77: 0.0107, 78: 0.0287, 79: 0.055 };
+  for (let d = 1; d <= 79; d++) {
+    near(at(xL + d, C[1] + 5.5), ref[d] ?? 1, `3840x960: the open row at d = ${d}`);
+    near(at(xL + d, C[1] + 8), inn[d] ?? 0, `3840x960: W_in's row at d = ${d}`);
+  }
+});
+
 // ── Task 6: the `penumbra` scene, the sun at rotation(0) ───────────────────
 // The wall's far face is x = -11.7 and its shadow band's upper edge y = -1;
 // the platform's top face is y = 5.25 and its upwind end x = -12.

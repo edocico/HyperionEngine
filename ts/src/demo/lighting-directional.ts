@@ -186,19 +186,29 @@ export interface EdgeMeta {
 /**
  * 'Directional edge pop (measured)': pop[i] = (lum(out[i]) − lum(inn[i])) /
  * lum(sun), how much of the sun W_in's shadow takes at `ds[i]` from the edge.
- * It measures the pop, and it fails on the step-6 rule only: the off-screen
- * caster casts nothing (out = ref), E is lit like the open row, and the caster
- * in view does cast (pop ≥ 0.5 at the first d).
+ * It measures the pop, and it fails on the step-6 rule only: E is lit like
+ * the open row (the march stops at the SDF's exit), the off-screen caster
+ * casts nothing (its row is not darker than the open row), and the caster in
+ * view does cast (pop ≥ 0.5 at the first d).
+ *
+ * The off-screen rule is one-sided because the open row darkens by itself:
+ * 1.5 below W_in, it lies in W_in's penumbra, about 0.02·d wide, from d ≈ 76
+ * (a 4:1 canvas: the view is 20·aspect wide), and along the clamped edge
+ * when the march reads past the SDF; W_out's row, 4 below W_in, does neither
+ * (march-model.test.mjs, up to 5:1). When E fails the open row is no
+ * reference, and the off-screen rule is not read.
  */
 export function edgePopVerdict(rows: EdgeRows, ds: readonly number[], sun: Rgb, meta: EdgeMeta): Verdict & { pop: number[] } {
   const pop = ds.map((_, i) => (lum(rows.out[i]) - lum(rows.inn[i])) / lum(sun));
   const problems: string[] = [];
-  const casting = ds.filter((_, i) => !close(rows.out[i], rows.ref[i]));
-  if (casting.length > 0) {
-    problems.push(`an off-screen caster already casts (d = ${casting.join(', ')}): padding? update this check in step 8c`);
-  }
-  if (!close(rows.e, rows.ref[0])) {
+  const pastSdf = !close(rows.e, rows.ref[0]);
+  if (pastSdf) {
     problems.push('the march reads past the SDF: E, beside the caster at the edge, is darker than the open row');
+  } else {
+    const casting = ds.filter((_, i) => [0, 1, 2].some((c) => rows.out[i][c] < rows.ref[i][c] - TOL));
+    if (casting.length > 0) {
+      problems.push(`an off-screen caster already casts (d = ${casting.join(', ')}): padding? update this check in step 8c`);
+    }
   }
   if (!(pop[0] >= 0.5)) problems.push('the caster in view casts nothing');
   const last = pop.length - 1;
