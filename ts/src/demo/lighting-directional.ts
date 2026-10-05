@@ -199,11 +199,11 @@ export interface EdgeMeta {
  * view does cast (pop ≥ 0.5 at the first d).
  *
  * The off-screen rule is one-sided because the open row darkens by itself:
- * 1.5 below W_in, it lies in W_in's penumbra, about 0.02·d wide, from d ≈ 76
- * (a 4:1 canvas: the view is 20·aspect wide), and along the clamped edge
- * when the march reads past the SDF; W_out's row, 4 below W_in, does neither
- * (march-model.test.mjs, up to 5:1). When E fails the open row is no
- * reference, and the off-screen rule is not read.
+ * 1.5 below W_in, it lies in W_in's penumbra, about 0.02·d wide, from d ≈ 76,
+ * which a canvas of about 4:1 reaches (the view is 20·aspect units wide), and
+ * along the clamped edge when the march reads past the SDF; W_out's row, 4
+ * below W_in, does neither (march-model.test.mjs, up to 5:1). When E fails
+ * the open row is no reference, and the off-screen rule is not read.
  */
 export function edgePopVerdict(rows: EdgeRows, ds: readonly number[], sun: Rgb, meta: EdgeMeta): Verdict & { pop: number[] } {
   const pop = ds.map((_, i) => (lum(rows.out[i]) - lum(rows.inn[i])) / lum(sun));
