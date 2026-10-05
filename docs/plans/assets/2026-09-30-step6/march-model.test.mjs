@@ -122,9 +122,10 @@ test('check 3: a caster at the sun-side edge casts across the view only once on 
   }
   // E, 0.4 below W_in: its ray leaves the SDF after one unit. Marched on to the
   // range instead, it reads the clamped edge column beside W_in until it runs
-  // out of steps, and the out-of-steps rule darkens it. At the sun's 192 steps
-  // the open row's ray at d = 1, which the tab's check compares E with, runs
-  // out of steps too, but stays far lighter than E.
+  // out of steps, and the out-of-steps rule darkens it. The open row's ray at
+  // d = 1, which the tab's check compares E with, reaches the range at the
+  // sun's 192 steps (0.93); only at 48 does it run out of steps too (0.76),
+  // still far lighter than E.
   const reach = 100 * cam.texPerUnit;
   const toRange = (x, y, steps) => {
     const [u, v] = cam.toTexel(x, y);

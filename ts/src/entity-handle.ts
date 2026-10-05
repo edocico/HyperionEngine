@@ -56,8 +56,9 @@ export const enum RenderPrimitiveType {
  * the light shines TOWARD it: `rotation(angle)` aims it. 0 shines right,
  * `rotation(-Math.PI / 2)` shines down the screen (the world is y-up), and
  * `rotation(Math.atan2(dy, dx))` shines along (dx, dy). A parent's rotation
- * composes into it and a negative x-scale mirrors it; the size of the scale
- * is ignored, because a light's extent is its range.
+ * composes into it and a negative x-scale mirrors it in its own frame (it
+ * then shines along its −x); the size of the scale is ignored, because a
+ * light's extent is its range.
  */
 export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
 

@@ -16,7 +16,11 @@ export interface FrameState {
    * to rgb × intensity. From `GPURenderState`, i.e. from WASM.
    */
   ambient?: readonly [number, number, number, number];
-  /** Sphere-march steps per shadowed light pixel (`LightingQuality.shadowSteps`). */
+  /**
+   * Sphere-march step budget per shadowed light pixel
+   * (`LightingQuality.shadowSteps`), as point and spot lights use it; a
+   * directional light marches 4x it (`sunShadow` in light-accum.wgsl).
+   */
   shadowSteps?: number;
   /**
    * Light layers (design 2026-09-26): the light groups and SDF sets of this
