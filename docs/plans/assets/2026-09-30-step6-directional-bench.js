@@ -128,6 +128,14 @@ async () => {
   // shadowSteps 48 is the sun's 192 steps; the angle A/B and the grid of
   // 795b066 (docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json) were read
   // with the shader of before that rule, where a sun marched shadowSteps.
+  //
+  // A wait on the engine (a frame, a frameEnd hook, a probe) gives up after
+  // WAIT_MS (20 s) with 'timed out … waiting for …' instead of hanging when
+  // the engine loop stops. A cleanup in a `finally` (HEAD's shader, the
+  // committed libraries, the profiler) that fails is logged with
+  // console.error and, where the task has a result, recorded in its
+  // `cleanupErrors`: it never replaces the error in flight, and without one it
+  // still fails the run.
   const FORMAT = 'hyperion-step6-bench/1';
   const TASKS = ['scene', 'regress', 'penumbra', 'edgepop', 'cost'];
   const PAIRS = ['march', 'set', 'pointspot', 'uber'];
@@ -220,11 +228,42 @@ async () => {
     const step = (left) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)));
     step(n);
   });
+  /**
+   * `promise`, or the error 'timed out after `timeoutMs` ms waiting for
+   * `what`' once `deadline` (a performance.now() time) passes. An engine whose
+   * loop stopped never runs a frameEnd hook nor serves a probe: unraced, the
+   * run would hang instead of failing (the harness's pixelCheck times its
+   * probes out for the same reason).
+   */
+  const byDeadline = (promise, deadline, timeoutMs, what) => {
+    let timer;
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs} ms waiting for ${what}`)),
+        Math.max(0, deadline - performance.now()));
+    });
+    return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+  };
   const until = async (what, predicate, timeoutMs = WAIT_MS) => {
-    const start = performance.now();
-    while (!(await predicate())) {
-      if (performance.now() - start > timeoutMs) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
-      await frames(1);
+    const deadline = performance.now() + timeoutMs;
+    while (!(await byDeadline(Promise.resolve(predicate()), deadline, timeoutMs, what))) {
+      if (performance.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
+      await byDeadline(frames(1), deadline, timeoutMs, what);
+    }
+  };
+  /**
+   * The cleanup of a `finally` block. A failure is logged with console.error
+   * and recorded in `into.cleanupErrors` (`into` null: logged only), never
+   * thrown: thrown from a finally, it would replace the error in flight (a
+   * mandated stop, a timeout). Without an error in flight, the caller throws
+   * on `into.cleanupErrors` once past the finally.
+   */
+  const cleanUp = async (into, what, step) => {
+    try {
+      await step();
+    } catch (err) {
+      const message = `${what} failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`step6 bench: ${message}`);
+      if (into) (into.cleanupErrors ??= []).push(message);
     }
   };
   // Entities on the GPU rows of the current frame (SystemViews of frameEnd).
@@ -284,13 +323,15 @@ async () => {
   };
   /** The light buffer, layer 0, at the next rendered frame. */
   const readLight = async (request) => {
+    const what = 'a light-buffer probe (only a rendered frame serves one: did the engine loop stop?)';
+    const deadline = performance.now() + WAIT_MS;
     // The lit graph goes live a frame or two after setBackend('lit'), once the GPU validated it.
     for (let tries = 0; ; tries++) {
       try {
-        return await engine.debug.probe({ target: 'light-buffer', layer: 0, ...request });
+        return await byDeadline(engine.debug.probe({ target: 'light-buffer', layer: 0, ...request }), deadline, WAIT_MS, what);
       } catch (err) {
         if (tries >= 30 || !/not in the live render graph/.test(String(err))) throw err;
-        await frames(2);
+        await byDeadline(frames(2), deadline, WAIT_MS, what);
       }
     }
   };
@@ -384,7 +425,8 @@ async () => {
     engine.cam.position(0, 0, 0);
     engine.cam.zoom(1);
     if (!resize) return null;
-    const r = await engine.debug.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] });
+    const r = await byDeadline(engine.debug.probe({ target: 'scene-hdr', uv: [[0.5, 0.5]] }), performance.now() + WAIT_MS, WAIT_MS,
+      'the scene-hdr probe of the view check (only a rendered frame serves one: did the engine loop stop?)');
     if (r.targetSize[0] !== WIDTH || r.targetSize[1] !== HEIGHT) {
       throw new Error(`scene-hdr is ${r.targetSize.join('x')}, want ${WIDTH}x${HEIGHT}: does the page resize the canvas behind engine.resize?`);
     }
@@ -492,6 +534,7 @@ async () => {
     const s = buildRegress(true);
     await lightUp(s);
     const uv = uvGrid(64, 36);
+    const failures = {};
     let fresh;
     let before;
     try {
@@ -499,16 +542,20 @@ async () => {
       await swapAccum(old, 'the shader of 2f43e42');
       before = await readLight({ uv });
     } finally {
-      await swapAccum(HEAD_ACCUM, 'HEAD');
+      await cleanUp(failures, "restoring HEAD's light-accum.wgsl", () => swapAccum(HEAD_ACCUM, 'HEAD'));
     }
-    if (accum.SHADER_SOURCE !== HEAD_ACCUM) throw new Error("HEAD's light-accum.wgsl did not come back");
+    // Both reads came before the restore: the result stands, with the restore's failure if any.
     results.push({
       task: 'regress', label, sceneHdr: size, gridSize: [64, 36],
       shaders: { old: fnv1a(old), new: fnv1a(HEAD_ACCUM) },
       lights: REGRESS_LIGHTS, casters: REGRESS_CASTERS, ambient: AMBIENT, shadowSteps: STEPS, groups: groupsNow(),
       lightBuffer: fresh.targetSize, canvas: fresh.canvasSize,
       old: encodeGrid(before.values), new: encodeGrid(fresh.values),
+      ...failures,
     });
+    if (failures.cleanupErrors || accum.SHADER_SOURCE !== HEAD_ACCUM) {
+      throw new Error(`HEAD's light-accum.wgsl did not come back${failures.cleanupErrors ? `: ${failures.cleanupErrors.join('; ')}` : ''}`);
+    }
   };
 
   // ── penumbra ───────────────────────────────────────────────────────────
@@ -720,7 +767,7 @@ async () => {
       const info = await device.createShaderModule({ code }).getCompilationInfo();
       return info.messages.map((m) => `${m.type} ${m.lineNum}:${m.linePos} ${m.message}`);
     } finally {
-      device.destroy();
+      await cleanUp(null, 'destroying the throwaway device', () => device.destroy());
     }
   };
 
@@ -893,9 +940,18 @@ async () => {
       try {
         await ctx.uber.setLibraries(true);
         record.stubCompile = await compileMessages(ctx.uber.ForwardPass.UBER_SOURCE);
+      } catch (err) {
+        record.stopped = `error: ${err instanceof Error ? err.message : String(err)}`;
+        throw err;
       } finally {
-        await ctx.uber.setLibraries(false);
+        await cleanUp(record, 'restoring the committed libraries', () => ctx.uber.setLibraries(false));
+        if (record.cleanupErrors) {
+          // The stubs may still be live: the run ends, and its record, not in the results yet, says why.
+          record.stopped ??= record.cleanupErrors.join('; ');
+          results.push(record);
+        }
       }
+      if (record.cleanupErrors) throw new Error(record.stopped);
       if (record.stubCompile.length > 0) {
         throw new Error(`the uber module with the stubs does not compile cleanly: ${record.stubCompile.join('; ')}`);
       }
@@ -938,10 +994,17 @@ async () => {
       record.stopped ??= `error: ${err instanceof Error ? err.message : String(err)}`;
       throw err;
     } finally {
-      engine.disableGpuProfiling();
       // HEAD's shader and the committed libraries come back whatever happened.
-      if (pair === 'pointspot') await swapAccum(HEAD_ACCUM, 'HEAD');
-      if (pair === 'uber') await ctx.uber.setLibraries(false);
+      // Nothing here throws: it would replace the error in flight (the
+      // quantized-timestamps stop, say); a failure is logged and recorded.
+      await cleanUp(record, 'disabling GPU profiling', () => engine.disableGpuProfiling());
+      if (pair === 'pointspot') await cleanUp(record, "restoring HEAD's light-accum.wgsl", () => swapAccum(HEAD_ACCUM, 'HEAD'));
+      if (pair === 'uber') await cleanUp(record, 'restoring the committed libraries', () => ctx.uber.setLibraries(false));
+    }
+    // Reached without an error in flight: a failed cleanup still ends the run.
+    if (record.cleanupErrors) {
+      record.stopped ??= record.cleanupErrors.join('; ');
+      throw new Error(record.cleanupErrors.join('; '));
     }
     return record;
   };

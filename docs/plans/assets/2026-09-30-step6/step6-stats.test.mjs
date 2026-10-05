@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,11 @@ const SUN_LUM = 0.2126 + 0.7152 * 0.95 + 0.0722 * 0.85;
 const AMBIENT = [0.06, 0.07, 0.12];
 /** ambient + f * sun, alpha 1: the light buffer where the sun's shadow factor is f. */
 const lit = (f) => [AMBIENT[0] + f * SUN[0], AMBIENT[1] + f * SUN[1], AMBIENT[2] + f * SUN[2], 1];
+/** `x`, checked to be an fp16 value (what an rgba16float texel holds): a whole number of fp16 ULPs. */
+const half = (x) => {
+  assert.ok(Number.isInteger(x / fp16Ulp(x)), `${x} is not an fp16 value`);
+  return x;
+};
 
 // ── The functions of the brief ─────────────────────────────────────────────
 
@@ -75,6 +80,13 @@ test('tSummary: effects straddling 0 are below resolution, bounded by the upper 
   assert.ok(s.lo <= 0 && s.hi > 0);
   assert.ok(s.verdict.startsWith(`below resolution: < ${s.hi.toFixed(3)} ms (mean 0.004 ± `), s.verdict);
   assert.match(s.verdict, /95% CI \[-0\.\d{3}, 0\.\d{3}\], n = 8\)$/);
+});
+
+test('tSummary: a CI wholly below 0 is a negative effect, not "below resolution": the ON/OFF conditions are suspect', () => {
+  const s = tSummary([-0.30, -0.25, -0.40, -0.35, -0.20, -0.30, -0.45, -0.35]);
+  close(s.mean, -0.325, 1e-12, 'mean');
+  assert.ok(s.hi < 0);
+  assert.equal(s.verdict, 'negative effect: -0.325 ± 0.028 ms (95% CI [-0.392, -0.258], n = 8): check the ON/OFF conditions');
 });
 
 test('tSummary: a single block has no interval', () => {
@@ -167,6 +179,19 @@ test('gridSummary: one point 0.2 sun darker, one 0.2 lighter, one 0.05 off: 2 ab
   close(s.max, 0.2, 1e-12, 'max');
   assert.equal(s.darker, 1);
   assert.equal(s.lighter, 1);
+  assert.equal(s.nonFinite, 0);
+});
+
+test('gridSummary: a NaN point is counted (nonFinite) and above the threshold, and the max stays over the finite points', () => {
+  const ref = [lit(0.5), lit(0.5), lit(0.5), lit(0.5)];
+  const steps = [lit(0.3), [NaN, NaN, NaN, 1], lit(0.55), lit(0.5)];
+  const s = gridSummary(steps, ref, SUN_LUM);
+  assert.equal(s.nonFinite, 1);
+  assert.equal(s.above01, 2);
+  assert.equal(s.fracAbove01, 0.5);
+  close(s.max, 0.2, 1e-12, 'max over the finite points');
+  assert.equal(s.darker, 1);
+  assert.equal(s.lighter, 0);
 });
 
 test('popSummary: the largest pop, the pop at the far edge and its d, the share of the d where it is at least 0.1', () => {
@@ -202,6 +227,29 @@ test('compareGrids: identical; 1 fp16 ULP apart (withinUlp); 3 ULP apart (out)',
   // A NaN is never within a ULP of a number.
   assert.equal(compareGrids([[NaN]], [[0.5]]).withinUlp, 0);
   assert.throws(() => compareGrids(a, [a[0]]), /2 points against 1/);
+});
+
+test('compareGrids: exact across a power of two, where the fp16 step halves below it (0.5 is 2^-12 above its lower neighbour, 2^-11 below its upper one)', () => {
+  // 0.5 - 2^-11 is two fp16 steps below 0.5 (the step is 2^-12 there),
+  // although 2^-11 is the step above 0.5: out.
+  const twoBelow = compareGrids([[half(0.5)]], [[half(0.5 - 2 ** -11)]]);
+  assert.equal(twoBelow.withinUlp, 0);
+  assert.equal(twoBelow.worst.ulps, 2);
+  // One step below, one step above: in.
+  const oneBelow = compareGrids([[0.5]], [[half(0.5 - 2 ** -12)]]);
+  assert.equal(oneBelow.withinUlp, 1);
+  assert.equal(oneBelow.worst.ulps, 1);
+  const oneAbove = compareGrids([[0.5]], [[half(0.5 + 2 ** -11)]]);
+  assert.equal(oneAbove.withinUlp, 1);
+  assert.equal(oneAbove.worst.ulps, 1);
+  // The steps between two fp16 values are the difference of their bit
+  // patterns: 1 is 0x3c00 and 0.5 0x3800; 2^-14, the smallest normal, is
+  // 0x0400 (every subnormal lies below it); the largest finite, 65504, 0x7bff.
+  // Opposite signs count through zero.
+  assert.equal(compareGrids([[1]], [[0.5]]).worst.ulps, 0x3c00 - 0x3800);
+  assert.equal(compareGrids([[2 ** -14]], [[0]]).worst.ulps, 0x0400);
+  assert.equal(compareGrids([[65504]], [[1]]).worst.ulps, 0x7bff - 0x3c00);
+  assert.equal(compareGrids([[-(2 ** -24)]], [[2 ** -24]]).worst.ulps, 2);
 });
 
 test('decodeGrid: the bench\'s base64 float32 RGBA grids, and plain arrays as they are', () => {
@@ -260,10 +308,16 @@ test('summarizePenumbra: per angle the w10-90 slope against 0.8·angle·d, the e
   const a = s.angles[1];
   assert.equal(a.angle, 0.02);
   assert.deepEqual(a.wall.widths.map((w) => w.d), [2, 12, 26]);
+  // The fixture's ramp rises from y = -1 over 0.02·d. Its 10 % and 90 %
+  // crossings, interpolated between samples 0.05 apart, by hand: at d = 12 the
+  // 90 % one falls in [-0.80, -0.75], the interval that holds the ramp's top
+  // (-0.76), so it is -0.78, not -0.784, and w10-90 is 0.196 (against
+  // 0.8·0.24 = 0.192); at d = 26 both fall inside the ramp: 0.416 = 0.8·0.52.
+  const want = { 12: 0.196, 26: 0.416 };
   for (const w of a.wall.widths.filter((x) => x.d !== 2)) {
-    // The 10 % and 90 % crossings of a linear ramp 0.02·d wide, sampled every 0.05.
     close(w.ratio, 1, 0.1, `d = ${w.d}: w10-90 / (0.8·angle·d)`);
-    close(w.slope, w.ratio * 0.8 * 0.02, 1e-12, 'slope = ratio · 0.8·angle');
+    close(w.w48, want[w.d], 1e-9, `d = ${w.d}: w10-90`);
+    close(w.slope, want[w.d] / w.d, 1e-9, `d = ${w.d}: slope = w10-90 / d`);
   }
   close(a.wall.max, 0, 1e-12, 'wall error');
   close(a.diagonal.max, 0, 1e-12, 'diagonal error');
@@ -339,16 +393,22 @@ test('summarizePenumbra: the convergence of the reference, and the grids per sun
   assert.match(contradicted.subDecision2.verdict, /ask sub-decision 2 again/);
 });
 
-test('summarizeRegress: the old and the new light buffer, point by point', () => {
-  const grid = [lit(0.2), lit(0.9)];
+test('summarizeRegress: the old and the new light buffer, point by point, on rgba16float values', () => {
+  // Q = 1065·2^-12 (0.260009765625) and its upper fp16 neighbour, one step (2^-12) away.
+  const Q = half(1065 * 2 ** -12);
+  const grid = [[Q, 0.25, 0.5, 1], [0.9375, 0.875, 0.75, 1]].map((p) => p.map(half));
+  const at = (x) => [[x, 0.25, 0.5, 1], grid[1]];
   const s = summarizeRegress({ results: [
     { task: 'regress', label: 'same', old: grid, new: grid.map((v) => [...v]) },
-    { task: 'regress', label: 'one ulp', old: grid, new: [[grid[0][0] + 2 ** -14, ...grid[0].slice(1)], grid[1]] },
-    { task: 'regress', label: 'off', old: grid, new: [lit(0.3), grid[1]] },
+    { task: 'regress', label: 'one fp16 step', old: grid, new: at(half(Q + 2 ** -12)) },
+    // The gate at a power of two: 0.5 - 2^-11 is two fp16 steps below 0.5.
+    { task: 'regress', label: 'two fp16 steps below 0.5', old: at(0.5), new: at(half(0.5 - 2 ** -11)) },
+    { task: 'regress', label: 'off', old: grid, new: at(half(0.3125)) },
     { task: 'scene' },
   ] });
-  assert.deepEqual(s.map((r) => r.verdict), ['identical', 'within 1 fp16 ULP', '1 of 2 points beyond 1 fp16 ULP: investigate before going on']);
-  assert.deepEqual(s.map((r) => r.ok), [true, true, false]);
+  const beyond = '1 of 2 points beyond 1 fp16 ULP: investigate before going on';
+  assert.deepEqual(s.map((r) => r.verdict), ['identical', 'within 1 fp16 ULP', beyond, beyond]);
+  assert.deepEqual(s.map((r) => r.ok), [true, true, false, false]);
 });
 
 test('summarizeEdgepop: per range the pop of W_in\'s shadow, where it ends, and the step-6 rule (W_out and E lit like the open row)', () => {
@@ -434,6 +494,23 @@ test('CLI: `regress <file>` prints the summary as JSON, `details` compares the s
     const usage = spawnSync(process.execPath, [SCRIPT, 'nonsense'], { encoding: 'utf8' });
     assert.equal(usage.status, 2);
     assert.match(usage.stderr, /usage/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI: run through a symlink, the gate still runs and still fails out of tolerance (never a silent exit 0)', () => {
+  // node runs the script under its real path (import.meta.url), while
+  // process.argv[1] keeps the symlink's.
+  const dir = mkdtempSync(join(tmpdir(), 'step6-stats-link-'));
+  try {
+    const link = join(dir, 'step6-stats-link.mjs');
+    symlinkSync(SCRIPT, link);
+    const regressFile = join(dir, 'regress.json');
+    writeFileSync(regressFile, JSON.stringify({ format: 'hyperion-step6-bench/1', results: [{ task: 'regress', old: [lit(0.5)], new: [lit(0.6)] }] }));
+    const off = spawnSync(process.execPath, [link, 'regress', regressFile], { encoding: 'utf8' });
+    assert.equal(off.status, 1, `exit ${off.status}, stdout ${JSON.stringify(off.stdout)}, stderr ${JSON.stringify(off.stderr)}`);
+    assert.equal(JSON.parse(off.stdout)[0].ok, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

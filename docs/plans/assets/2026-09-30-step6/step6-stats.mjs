@@ -20,7 +20,7 @@
 // The evidence of 795b066 was read while a sun marched shadowSteps; with
 // HEAD's light-accum.wgsl a sun marches 4x it (sub-decision 2 (b)).
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -97,8 +97,9 @@ export function abbaEffects(blocks) {
 
 /**
  * Mean, sample SD, SE and the 95 % t interval of the block effects (ms).
- * The verdict: the cost with its SE when the interval is above 0; otherwise
- * "below resolution", bounded by the interval's upper end.
+ * The verdict: the cost with its SE when the interval is above 0; a negative
+ * effect when it is below 0 (ON cheaper than OFF: the conditions are suspect);
+ * otherwise "below resolution", bounded by the interval's upper end.
  */
 export function tSummary(effects) {
   const n = effects.length;
@@ -114,6 +115,8 @@ export function tSummary(effects) {
     verdict = `no 95% interval: n = ${n} (the t table covers 2 to 13 blocks)`;
   } else if (lo > 0) {
     verdict = `${ms(mean)} ± ${ms(se)} ms (95% CI [${ms(lo)}, ${ms(hi)}], n = ${n})`;
+  } else if (hi < 0) {
+    verdict = `negative effect: ${ms(mean)} ± ${ms(se)} ms (95% CI [${ms(lo)}, ${ms(hi)}], n = ${n}): check the ON/OFF conditions`;
   } else {
     verdict = `below resolution: < ${ms(hi)} ms (mean ${ms(mean)} ± ${ms(se)}, 95% CI [${ms(lo)}, ${ms(hi)}], n = ${n})`;
   }
@@ -168,16 +171,25 @@ export function countAbove(a, b, scale, thr) {
  * A grid read at one step budget (`steps`) against the reference grid: the
  * points off by more than 0.1 sun in luminance (`above01`, and their share),
  * the largest difference in sun, and how many of the points off are darker or
- * lighter than the reference (lighter: light leaking past a caster).
+ * lighter than the reference (lighter: light leaking past a caster). A point
+ * whose difference is not finite (a NaN or an infinity on either side) counts
+ * in `nonFinite` and as off by more than 0.1, never in `max`: above01 =
+ * darker + lighter + nonFinite.
  */
 export function gridSummary(steps, ref, sunLum) {
   sameLength(steps, ref);
   let above01 = 0;
   let darker = 0;
   let lighter = 0;
+  let nonFinite = 0;
   let max = 0;
   for (let i = 0; i < steps.length; i++) {
     const e = (luminance(steps[i]) - luminance(ref[i])) / sunLum;
+    if (!Number.isFinite(e)) {
+      nonFinite++;
+      above01++;
+      continue;
+    }
     max = Math.max(max, Math.abs(e));
     if (Math.abs(e) > 0.1) {
       above01++;
@@ -185,7 +197,7 @@ export function gridSummary(steps, ref, sunLum) {
       else lighter++;
     }
   }
-  return { n: steps.length, above01, fracAbove01: above01 / steps.length, max, darker, lighter };
+  return { n: steps.length, above01, fracAbove01: above01 / steps.length, max, darker, lighter, nonFinite };
 }
 
 /**
@@ -206,17 +218,51 @@ export function popSummary(ds, pop) {
 }
 
 /**
- * One fp16 ULP at `v`: 2^(floor(log2|v|) − 10) for a normal fp16 value, and
- * the subnormal spacing 2^-24 below 2^-14 (zero included).
+ * The fp16 exponent of the magnitude `a` (>= 0): floor(log2 a) from the
+ * smallest normal, 2^-14, up; -14 below it, where the subnormals share the
+ * smallest normal's spacing (zero included).
  */
-export function fp16Ulp(v) {
-  const a = Math.abs(v);
-  if (!(a >= 2 ** -14)) return 2 ** -24;
+function fp16Exponent(a) {
+  if (!(a >= 2 ** -14)) return -14;
   let e = Math.floor(Math.log2(a));
   // log2 can round across a power of two: settle the exponent exactly.
   if (2 ** e > a) e--;
   else if (2 ** (e + 1) <= a) e++;
-  return 2 ** (e - 10);
+  return e;
+}
+
+/**
+ * One fp16 ULP at `v`: 2^(floor(log2|v|) − 10) for a normal fp16 value, and
+ * the subnormal spacing 2^-24 below 2^-14 (zero included).
+ */
+export function fp16Ulp(v) {
+  return 2 ** (fp16Exponent(Math.abs(v)) - 10);
+}
+
+/**
+ * Where a finite `v` sits on the fp16 line: for an fp16 value, its bit
+ * pattern read as an integer (a subnormal's is a / 2^-24, a normal value's
+ * (e + 15)·1024 + (a / 2^e − 1)·1024), negated below zero, so -0 and +0 are
+ * both 0; linear in between.
+ */
+function fp16Position(v) {
+  const a = Math.abs(v);
+  const e = fp16Exponent(a);
+  const p = a < 2 ** -14 ? a * 2 ** 24 : 1024 * (e + 15) + (a / 2 ** e - 1) * 1024;
+  return v < 0 ? -p : p;
+}
+
+/**
+ * How many fp16 steps lie between `a` and `b`: between two fp16 values, the
+ * difference of their bit patterns, through zero when their signs differ.
+ * Exact where the step changes at a power of two (0.5 − 2^-11 is two steps
+ * below 0.5, 0.5 + 2^-11 one above it). Infinity when the two differ and
+ * either is not finite.
+ */
+function fp16Steps(a, b) {
+  if (a === b) return 0;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return Infinity;
+  return Math.abs(fp16Position(a) - fp16Position(b));
 }
 
 /** The channels of a grid point: an RGBA array, or one number. */
@@ -225,9 +271,10 @@ const channels = (p) => (typeof p === 'number' ? [p] : p);
 /**
  * Two light-buffer grids point by point, channel by channel: how many points
  * are identical, how many are within 1 fp16 ULP on every channel (identical
- * ones included; the ULP of the larger magnitude of the two), the largest
- * absolute difference, and the channel furthest out in ULPs (null when every
- * point is identical). A NaN is identical only to a NaN.
+ * ones included): at most one fp16 step apart, counted exactly (fp16Steps),
+ * the largest absolute difference, and the channel furthest out in fp16
+ * steps (`ulps`; null when every point is identical). A NaN is identical only
+ * to a NaN, and never within a step of anything else.
  */
 export function compareGrids(a, b) {
   sameLength(a, b);
@@ -247,7 +294,7 @@ export function compareGrids(a, b) {
       if (x === y || (Number.isNaN(x) && Number.isNaN(y))) continue;
       same = false;
       const abs = Math.abs(x - y);
-      const ulps = abs / fp16Ulp(Math.max(Math.abs(x), Math.abs(y)));
+      const ulps = fp16Steps(x, y);
       if (!(ulps <= 1)) within = false;
       if (abs > maxAbs) maxAbs = abs;
       if (worst === null || !(ulps <= worst.ulps)) worst = { index: i, channel: c, a: x, b: y, abs, ulps };
@@ -520,6 +567,20 @@ function main(argv) {
   return 2;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * Whether node was started with this file, under any path: node runs a script
+ * under its real path (import.meta.url) and leaves process.argv[1] as given,
+ * so a symlink would otherwise skip main() and exit 0, a gate passing silently.
+ */
+function isMain() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
   process.exitCode = main(process.argv.slice(2));
 }
