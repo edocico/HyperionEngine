@@ -15,6 +15,10 @@
 // Light-buffer values are linear RGBA (the probe's). "Luminance" is Rec. 709,
 // as the harness's probe checks weigh a colour (ts/src/demo/probe-checks.ts),
 // and a difference "in sun" is a difference in luminance over the sun's.
+//
+// A step budget in the bench's output is a LightingQuality.shadowSteps value.
+// The evidence of 795b066 was read while a sun marched shadowSteps; with
+// HEAD's light-accum.wgsl a sun marches 4x it (sub-decision 2 (b)).
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -418,7 +422,10 @@ function summarizeGrid(r) {
 /**
  * Sub-decision 2, decided on the model's numbers at rotation(-PI/2), the
  * JSDoc's example: the GPU confirms the model when, at 48 steps, more than
- * 0.1 % of the grid is off by more than 0.1 sun (model: 0.84 %).
+ * 0.1 % of the grid is off by more than 0.1 sun (model: 0.84 %). It reads the
+ * grid's budgets as the sun's: true of a grid read with the shader of before
+ * the x4 rule (penumbra-ab-m2.json, 795b066). With HEAD's, a sun marches
+ * 4 x shadowSteps, and the grid's 48 is the sun's 192.
  */
 function subDecision2(grids) {
   const down = grids.at(-1)?.suns.find((s) => Math.abs(s.rotation + Math.PI / 2) < 1e-9);

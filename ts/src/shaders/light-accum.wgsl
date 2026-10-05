@@ -12,7 +12,8 @@
 // Spot and directional lights shine toward their local +x axis (lightFacing).
 // A directional light (a sun) has no position: each caster's shadow runs
 // along that axis, away from the light, for `range` world units and fades out
-// over the last quarter, at a fixed apparent angle, u.sourceFraction. Global
+// over the last quarter, at a fixed apparent angle, u.sourceFraction. Its
+// march gets 4x the step budget of a point or spot light (sunShadow). Global
 // lights never cast shadows in the lit backend: their shadowIntensity is
 // ignored.
 //
@@ -168,17 +169,20 @@ fn sunFade(t: f32, reach: f32) -> f32 {
 // the edge, the width a source of angular DIAMETER `angle` would give (the
 // penumbra's width per texel of distance).
 //
-// pointShadow and sunShadow choose origin, dir, travel and angle; everything
-// below is shared. `fadeReach` > 0 (a sun): a caster t texels away casts at
-// strength sunFade(t, fadeReach). 0 (point, spot): every select below takes its
-// false operand, exactly the arithmetic of before step 6.
+// pointShadow and sunShadow choose origin, dir, travel, angle and the step
+// budget; everything below is shared. `fadeReach` > 0 (a sun): a caster t
+// texels away casts at strength sunFade(t, fadeReach). 0 (point, spot): every
+// select below takes its false operand, exactly the arithmetic of before step
+// 6. `steps`: the SDF reads after the first, both loops together:
+// u.shadowSteps for a point or spot light, as before step 6; 4x that for a
+// sun (sunShadow).
 //
 // This is deliberately the ORIGINAL form, not the Aaltonen correction
 // (y = h*h / (2*ph), d = sqrt(h*h - y*y), ...). That correction assumes an
 // exact SDF, and a jump-flood field only ever over-estimates h (design §6.2,
 // A1). The y term amplifies exactly that error, so the "better" formula would
 // make shadows worse here (§7.3, A2).
-fn shadow(origin: vec2f, dir: vec2f, travel: f32, angle: f32, fadeReach: f32) -> f32 {
+fn shadow(origin: vec2f, dir: vec2f, travel: f32, angle: f32, fadeReach: f32, steps: u32) -> f32 {
     let size = vec2i(textureDimensions(sdf));
     let fading = fadeReach > 0.0;
     var t = 0.0;
@@ -190,7 +194,7 @@ fn shadow(origin: vec2f, dir: vec2f, travel: f32, angle: f32, fadeReach: f32) ->
     // free texel, a lower bound on the way out in any direction, so a step of
     // |h| never overshoots the exit. Returning "lit" here instead left every
     // such sprite fully lit inside a wall's shadow.
-    while (h <= 0.0 && i < u.shadowSteps) {
+    while (h <= 0.0 && i < steps) {
         t += max(-h, 1.0);
         if (t >= travel) {
             return 1.0;  // the light (a sun: the end of the ray) is inside the same occluder
@@ -207,7 +211,7 @@ fn shadow(origin: vec2f, dir: vec2f, travel: f32, angle: f32, fadeReach: f32) ->
     let start = t;
     var res = 1.0;
     t += max(h, 1.0);
-    for (; i < u.shadowSteps; i++) {
+    for (; i < steps; i++) {
         if (t >= travel) {
             break;
         }
@@ -252,7 +256,7 @@ fn pointShadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     }
     let dir = (lightPos - origin) / travel;
     let angle = min(1.0 / u.shadowHardness, sourceRadius / travel);
-    return shadow(origin, dir, travel, angle, 0.0);
+    return shadow(origin, dir, travel, angle, 0.0, u.shadowSteps);
 }
 
 // Texels from `origin` (inside the texture) to where a ray along the unit
@@ -274,6 +278,14 @@ fn exitDistance(origin: vec2f, dir: vec2f, size: vec2f) -> f32 {
 // unit of distance, i.e. about the source's angular diameter; the same angle
 // every point light has at the edge of its range (not 1/k: 0.125 rad is 13x
 // the real sun's diameter, 0.0093 rad).
+//
+// A sun marches 4x the budget of a point or spot light (sub-decision 2 (b) of
+// round step 6). An axis-aligned sun's rays graze the faces parallel to them
+// (an unrotated caster's) for their whole length, 1-2 texels a step: at the
+// default 48 steps they ran out of steps over ~1% of the step-6 bench's light
+// buffer (off by more than 0.1 sun), at 192 over 0.1% at most (GPU A/B,
+// docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json). Point and spot
+// lights keep u.shadowSteps: their pixels are those of before step 6.
 fn sunShadow(fromUV: vec2f, ray: vec3f) -> f32 {
     let fsize = vec2f(textureDimensions(sdf));
     let origin = fromUV * fsize;
@@ -281,7 +293,7 @@ fn sunShadow(fromUV: vec2f, ray: vec3f) -> f32 {
     if (travel < 1.0) {
         return 1.0;
     }
-    return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z);
+    return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z, 4u * u.shadowSteps);
 }
 
 // The light types that cast shadows in the lit backend. Never GLOBAL: it has

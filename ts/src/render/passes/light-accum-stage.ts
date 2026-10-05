@@ -32,7 +32,9 @@ export const SHADOW_HARDNESS = 8;
  * light that is range/50 or more away from a wall unoccluded on the open side.
  * It is also a directional light's penumbra angle, in radians, fixed
  * engine-wide (round step 6): the penumbra's width per unit of distance, i.e.
- * about the source's angular diameter (0.02 rad, about 1.15°). A sun gets the
+ * about the source's angular diameter (0.02 rad, about 1.15°) (confirmed by
+ * the GPU A/B of round step 6:
+ * docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json). A sun gets the
  * penumbra a point light has at the edge of its range.
  */
 export const LIGHT_SOURCE_FRACTION = 0.02;

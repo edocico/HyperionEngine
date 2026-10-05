@@ -24,6 +24,11 @@ const rect = (x, y, w, h, rot = 0) => ({ x, y, hx: w / 2, hy: h / 2, rot });
 const ANGLE = 0.02;
 /** The harness's shadowSteps. */
 const STEPS = 48;
+/**
+ * The sun's march budget in the harness: light-accum.wgsl sunShadow marches
+ * 4u * u.shadowSteps (sub-decision 2 (b)), 4 x the harness's 48.
+ */
+const SUN_STEPS = 4 * STEPS;
 
 test('the camera: 20 world units tall at zoom 1, on the half-resolution light buffer, y flipped like toScreenUV', () => {
   const cam = makeCamera(0, 200);
@@ -45,6 +50,14 @@ test('FADE_START is the shader constant SUN_FADE_START', () => {
   assert.equal(Number(constant[1]), FADE_START);
 });
 
+test("SUN_STEPS is the shader's rule: sunShadow marches 4u * u.shadowSteps, 192 at the harness's 48", () => {
+  assert.equal(SUN_STEPS, 192);
+  const wgsl = readFileSync(new URL('../../../../ts/src/shaders/light-accum.wgsl', import.meta.url), 'utf8');
+  const rule = /return shadow\(origin, ray\.xy, travel, u\.sourceFraction, ray\.z, (\d+)u \* u\.shadowSteps\);/.exec(wgsl);
+  assert.ok(rule, 'sunShadow hands shadow() a multiple of u.shadowSteps');
+  assert.equal(Number(rule[1]) * STEPS, SUN_STEPS);
+});
+
 // ── Task 5: the Lighting tab's sub-scene, centred on C = (0, 200) ──────────
 // Wall A (0.5 x 2.4, thin along the sun), the sun at rotation(-PI/6), range 100.
 
@@ -53,7 +66,7 @@ const SUN = -Math.PI / 6;
 const WALL_A = rect(C[0], C[1], 0.5, 2.4, SUN);
 const DIR = [Math.cos(SUN), Math.sin(SUN)];
 
-test('check 1: behind wall A S is dark and U, Ry, Rx are lit; each sign mutant darkens only its own point', () => {
+test("check 1: behind wall A S is dark and U, Ry, Rx are lit, at 48 steps and at the sun's 192; each sign mutant darkens only its own point", () => {
   const cam = makeCamera(...C);
   const sdf = buildSdf(cam, [WALL_A]);
   const at = (a, b) => [C[0] + 2.5 * a, C[1] + 2.5 * b];
@@ -66,47 +79,60 @@ test('check 1: behind wall A S is dark and U, Ry, Rx are lit; each sign mutant d
     ['a y of the wrong sign', -SUN, { S: 1, U: 1, Ry: 0, Rx: 1 }],
     ['an x of the wrong sign', Math.PI - SUN, { S: 1, U: 1, Ry: 1, Rx: 0 }],
   ];
-  for (const [what, theta, want] of cases) {
-    for (const [k, [x, y]] of Object.entries(points)) {
-      near(sunShadowAt(cam, sdf, x, y, theta, 100, ANGLE, STEPS), want[k], `${what}, ${k}`);
+  for (const steps of [STEPS, SUN_STEPS]) {
+    for (const [what, theta, want] of cases) {
+      for (const [k, [x, y]] of Object.entries(points)) {
+        near(sunShadowAt(cam, sdf, x, y, theta, 100, ANGLE, steps), want[k], `${what}, ${k}, ${steps} steps`);
+      }
     }
   }
 });
 
-test('check 2 (range 6): full strength for three quarters of the length, faded out by its end', () => {
+test("check 2 (range 6): full strength for three quarters of the length, faded out by its end, at 48 steps and at the sun's 192", () => {
   const cam = makeCamera(...C);
   const sdf = buildSdf(cam, [WALL_A]);
   // Distances past wall A's far face, which is 0.25 from C along the sun.
-  for (const [d, want] of [[0.5, 0], [2, 0], [4, 0], [5.25, 0.503], [7.5, 1]]) {
-    const s = 0.25 + d;
-    near(sunShadowAt(cam, sdf, C[0] + DIR[0] * s, C[1] + DIR[1] * s, SUN, 6, ANGLE, STEPS), want, `${d} past the face`);
+  for (const steps of [STEPS, SUN_STEPS]) {
+    for (const [d, want] of [[0.5, 0], [2, 0], [4, 0], [5.25, 0.503], [7.5, 1]]) {
+      const s = 0.25 + d;
+      near(sunShadowAt(cam, sdf, C[0] + DIR[0] * s, C[1] + DIR[1] * s, SUN, 6, ANGLE, steps), want, `${d} past the face, ${steps} steps`);
+    }
   }
 });
 
-test('check 3: a caster at the sun-side edge casts across the view only once on screen, and E needs the SDF exit', () => {
+test('check 3: a caster at the sun-side edge casts across the view only once on screen, and E needs the SDF exit (48 steps and the sun\'s 192)', () => {
   const cam = makeCamera(...C);
   const { xL } = cam;
   // W_out wholly off screen (right face 0.25 out), W_in 0.5 in; the sun at rotation(0).
   const sdf = buildSdf(cam, [WALL_A, rect(xL - 0.55, C[1] + 3, 0.6, 2), rect(xL + 0.2, C[1] + 8, 0.6, 2)]);
-  const at = (x, y, range) => sunShadowAt(cam, sdf, x, y, 0, range, ANGLE, STEPS);
   const rows = { out: C[1] + 3, inn: C[1] + 8, ref: C[1] + 5.5 };
-  const pop = (d, range) => at(xL + d, rows.out, range) - at(xL + d, rows.inn, range);
   const lastD = Math.floor(2 * cam.hw - 0.5);
   assert.equal(lastD, 35);
-  for (let d = 1; d <= lastD; d++) {
-    near(pop(d, 100), 1, `pop at d = ${d}, range 100`);
-    near(at(xL + d, rows.out, 100), at(xL + d, rows.ref, 100), `L_out against L_ref at d = ${d}`);
+  const [ex, ey] = [xL + 1, C[1] + 6.6];
+  for (const steps of [STEPS, SUN_STEPS]) {
+    const at = (x, y, range) => sunShadowAt(cam, sdf, x, y, 0, range, ANGLE, steps);
+    const pop = (d, range) => at(xL + d, rows.out, range) - at(xL + d, rows.inn, range);
+    for (let d = 1; d <= lastD; d++) {
+      near(pop(d, 100), 1, `pop at d = ${d}, range 100, ${steps} steps`);
+      near(at(xL + d, rows.out, 100), at(xL + d, rows.ref, 100), `L_out against L_ref at d = ${d}, ${steps} steps`);
+    }
+    near(pop(8, 10), 1, `pop at d = 8, range 10, ${steps} steps`);
+    near(pop(12, 10), 0, `pop at d = 12, range 10, ${steps} steps`);
+    near(at(ex, ey, 100), 1, `E, marching to the SDF exit, ${steps} steps`);
   }
-  near(pop(8, 10), 1, 'pop at d = 8, range 10');
-  near(pop(12, 10), 0, 'pop at d = 12, range 10');
   // E, 0.4 below W_in: its ray leaves the SDF after one unit. Marched on to the
   // range instead, it reads the clamped edge column beside W_in until it runs
-  // out of steps, and the out-of-steps rule darkens it.
-  const [ex, ey] = [xL + 1, C[1] + 6.6];
-  near(at(ex, ey, 100), 1, 'E, marching to the SDF exit');
-  const [u, v] = cam.toTexel(ex, ey);
+  // out of steps, and the out-of-steps rule darkens it. At the sun's 192 steps
+  // the open row's ray at d = 1, which the tab's check compares E with, runs
+  // out of steps too, but stays far lighter than E.
   const reach = 100 * cam.texPerUnit;
-  near(shadow(sdf, Math.floor(u) + 0.5, Math.floor(v) + 0.5, -1, 0, reach, ANGLE, reach, STEPS), 0.204, 'E, marching to the range');
+  const toRange = (x, y, steps) => {
+    const [u, v] = cam.toTexel(x, y);
+    return shadow(sdf, Math.floor(u) + 0.5, Math.floor(v) + 0.5, -1, 0, reach, ANGLE, reach, steps);
+  };
+  near(toRange(ex, ey, STEPS), 0.204, 'E, marching to the range, 48 steps');
+  near(toRange(ex, ey, SUN_STEPS), 0.256, 'E, marching to the range, 192 steps');
+  near(toRange(xL + 1, rows.ref, SUN_STEPS), 0.931, 'the open row at d = 1, marching to the range, 192 steps');
 });
 
 // ── Task 6: the `penumbra` scene, the sun at rotation(0) ───────────────────

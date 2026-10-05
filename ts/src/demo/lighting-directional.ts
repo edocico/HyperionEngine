@@ -22,10 +22,13 @@
 //
 // The geometry and the thresholds come from the CPU model of the march,
 // docs/plans/assets/2026-09-30-step6/march-model.mjs, whose node:test pins
-// what it predicts here: S 0 and U, Rx, Ry 1; 0, 0, 0, 0.50 and 1 along the
-// short shadow; a pop of 1 over the whole width, E 1 (0.20 if the march read
-// past the SDF). The sub-scene's five entities take fresh ids: the tabs after
-// Lighting see ids 5 higher than before step 6.
+// what it predicts here, the same at the 192 steps the sun marches (4 x the
+// tab's shadowSteps 48, light-accum.wgsl sunShadow) as at 48: S 0 and U, Rx,
+// Ry 1; 0, 0, 0, 0.50 and 1 along the short shadow; a pop of 1 over the whole
+// width, E 1. If the march read past the SDF, at the sun's 192 steps E would
+// read 0.26 and the open row it is compared with 0.93 (E 0.20 at 48 steps).
+// The sub-scene's five entities take fresh ids: the tabs after Lighting see
+// ids 5 higher than before step 6.
 import type { Hyperion } from '../hyperion';
 import type { EntityHandle, LightOptions } from '../entity-handle';
 import type { TestReporter } from './types';

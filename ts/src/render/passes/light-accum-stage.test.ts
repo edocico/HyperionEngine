@@ -208,12 +208,20 @@ describe('light-accum.wgsl', () => {
     expect(body('pointShadow')).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
   });
 
-  it('the march is shared: shadow(origin, dir, travel, angle, fadeReach), and pointShadow hands it no fade', () => {
-    expect(functionParams(lightShaderSource, 'shadow')).toEqual(['origin', 'dir', 'travel', 'angle', 'fadeReach']);
-    expect(body('pointShadow')).toMatch(/return\s+shadow\(\s*origin\s*,\s*dir\s*,\s*travel\s*,\s*angle\s*,\s*0\.0\s*\)/);
+  it('the march is shared: shadow(origin, dir, travel, angle, fadeReach, steps), and pointShadow hands it no fade and the plain budget', () => {
+    expect(functionParams(lightShaderSource, 'shadow')).toEqual(['origin', 'dir', 'travel', 'angle', 'fadeReach', 'steps']);
+    // u.shadowSteps, as before step 6: point and spot lights march exactly as they did.
+    expect(body('pointShadow')).toMatch(/return\s+shadow\(\s*origin\s*,\s*dir\s*,\s*travel\s*,\s*angle\s*,\s*0\.0\s*,\s*u\.shadowSteps\s*\)/);
     const calls = callGraph(lightShaderSource).get('fs_main')!;
     expect(calls.has('pointShadow')).toBe(true);
     expect(calls.has('shadow')).toBe(false);
+  });
+
+  it('the budget is the caller\'s: both loops of the march stop at `steps`, never at u.shadowSteps', () => {
+    const march = body('shadow');
+    expect(march).not.toMatch(/shadowSteps/);
+    expect(march).toMatch(/while\s*\(\s*h\s*<=\s*0\.0\s*&&\s*i\s*<\s*steps\s*\)/);
+    expect(march).toMatch(/for\s*\(\s*;\s*i\s*<\s*steps\s*;\s*i\+\+\s*\)/);
   });
 
   it('a march without fade is the arithmetic of before step 6: every select on `fading` keeps q (or 0.0) as its false operand', () => {
@@ -296,10 +304,12 @@ describe('light-accum.wgsl', () => {
     expect(exit).toMatch(/\/\s*select\(\s*vec2f\(\s*1\.0\s*\)\s*,\s*dir\s*,\s*moving\s*\)\s*,\s*moving\s*\)/);
   });
 
-  it('a sun uses the fixed angle u.sourceFraction, not 1/k, and fades over its range', () => {
+  it('a sun uses the fixed angle u.sourceFraction, not 1/k, fades over its range, and marches 4x the budget', () => {
     const sun = body('sunShadow');
-    // Exact text: the angle A/B of docs/plans/assets/2026-09-30-step6-directional-bench.js patches it.
-    expect(sun).toMatch(/return shadow\(origin, ray\.xy, travel, u\.sourceFraction, ray\.z\);/);
+    // Exact text: the angle A/B of docs/plans/assets/2026-09-30-step6-directional-bench.js
+    // patches it (ANGLE_LINE). 4x: an axis-aligned sun's rays graze the faces
+    // parallel to them for their whole length (sub-decision 2 (b)).
+    expect(sun).toMatch(/return shadow\(origin, ray\.xy, travel, u\.sourceFraction, ray\.z, 4u \* u\.shadowSteps\);/);
     expect(sun).not.toMatch(/shadowHardness/);
   });
 

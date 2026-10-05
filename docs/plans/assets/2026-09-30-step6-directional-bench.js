@@ -76,10 +76,10 @@ async () => {
   //   { grid: true }: the `scene` scene, point shadow 0 (so only the sun
   //     depends on the budget) and sun shadow 1; for rotation(0),
   //     rotation(-PI/2) and rotation(-PI/6), the whole light buffer on a
-  //     128x72 UV grid of cell centres (9216 points, one probe) at 48, 96, 192
-  //     (the sun's x4 budget of sub-decision 2), `refSteps` and `convSteps`
-  //     steps; HEAD's shader unless `angle` is given. The grids are float32
-  //     RGBA in base64 (step6-stats.mjs decodeGrid).
+  //     128x72 UV grid of cell centres (9216 points, one probe) at shadowSteps
+  //     48, 96, 192, `refSteps` and `convSteps`; HEAD's shader unless `angle`
+  //     is given. The grids are float32 RGBA in base64 (step6-stats.mjs
+  //     decodeGrid).
   //   { fadeStart, range: 12 }: SUN_FADE_START replaced by the float literal
   //     `fadeStart` (FADE_LINE below), for the screenshot of the fade; no read.
   //   { restore: true }: HEAD's shader and 48 steps back, checked.
@@ -122,6 +122,12 @@ async () => {
   // Shared options: refSteps (1024) and convSteps (2048), the A/B's reference
   // budget and its check; if they differ by more than 0.01 sun, run again with
   // refSteps: 4096 (the plan's rule).
+  //
+  // Every budget here is a LightingQuality.shadowSteps value. HEAD's
+  // light-accum.wgsl marches a sun 4x it (sunShadow, sub-decision 2 (b)), so
+  // shadowSteps 48 is the sun's 192 steps; the angle A/B and the grid of
+  // 795b066 (docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json) were read
+  // with the shader of before that rule, where a sun marched shadowSteps.
   const FORMAT = 'hyperion-step6-bench/1';
   const TASKS = ['scene', 'regress', 'penumbra', 'edgepop', 'cost'];
   const PAIRS = ['march', 'set', 'pointspot', 'uber'];
@@ -131,7 +137,10 @@ async () => {
   const SUN_COLOR = [1, 0.95, 0.85];
   /** LightingQuality.shadowSteps' default: the budget that ships. */
   const STEPS = 48;
-  /** The budgets of the grid below the reference: 192 is the sun's x4 budget of sub-decision 2 (b). */
+  /**
+   * The grid's shadowSteps below the reference. 192 was the sun's x4 budget of
+   * sub-decision 2 (b) while a sun marched shadowSteps; with HEAD's shader, 48 is.
+   */
   const GRID_BUDGETS = [48, 96, 192];
   const WAIT_MS = 20000;
   const LIFE_FRAMES = 60;
@@ -143,7 +152,7 @@ async () => {
   // The texts the A/B patches in light-accum.wgsl, each exactly once:
   // sunShadow's last line (the angle) and the fade constant. A commit that
   // changes either line in the shader changes it here too.
-  const ANGLE_LINE = 'return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z);';
+  const ANGLE_LINE = 'return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z, 4u * u.shadowSteps);';
   const FADE_LINE = 'const SUN_FADE_START: f32 = 0.75;';
   const STUB_MARK = '// step6-uber-stub';
   /** Casters as [x, y, width, height]. */
@@ -333,7 +342,7 @@ async () => {
   /** HEAD's light-accum.wgsl with the sun's angle and/or the fade's start replaced by literals. */
   const patchAccum = ({ angle, fadeStart }) => {
     let source = HEAD_ACCUM;
-    if (angle !== undefined) source = replaceOnce(source, ANGLE_LINE, `return shadow(origin, ray.xy, travel, ${wgslFloat(angle)}, ray.z);`);
+    if (angle !== undefined) source = replaceOnce(source, ANGLE_LINE, `return shadow(origin, ray.xy, travel, ${wgslFloat(angle)}, ray.z, 4u * u.shadowSteps);`);
     if (fadeStart !== undefined) source = replaceOnce(source, FADE_LINE, `const SUN_FADE_START: f32 = ${wgslFloat(fadeStart)};`);
     return source;
   };
