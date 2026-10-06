@@ -313,8 +313,10 @@ describe('light-accum.wgsl', () => {
     expect(ray).toMatch(/return\s+vec3f\(\s*perUnit\s*\/\s*texels\s*,\s*reach\s*\)\s*;/);
     expect(ray).toMatch(/let\s+size\s*=\s*vec2f\(\s*textureDimensions\(\s*sdf\s*\)\s*\)\s*;/);
     // The PRODUCT range * texels stays finite, and is never computed first:
-    // CameraAPI.zoom has no upper bound, so texels can be huge.
-    expect(ray).toMatch(/min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)\s*,\s*1e30\s*\/\s*texels\s*\)\s*\*\s*texels/);
+    // CameraAPI.zoom has no upper bound, so texels can be huge. It is the
+    // whole reach, anchored at both ends: a `* 0.5` or `/ 2.0` after it would
+    // make every sun shadow half its range (review of Task 9fix, Minor 1).
+    expect(ray).toMatch(/let\s+reach\s*=\s*min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)\s*,\s*1e30\s*\/\s*texels\s*\)\s*\*\s*texels\s*;/);
     expect(reachableFrom(lightShaderSource, 'vs_main').has('lightFacing')).toBe(true);
   });
 
