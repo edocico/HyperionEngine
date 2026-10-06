@@ -83,6 +83,36 @@ describe('shadowLengthVerdict', () => {
     }
   });
 
+  it('shadowLengthVerdict passes correct code on coarse canvases, where the share 5.25 past the caster drifts with the texels', () => {
+    // Review of Task 9fix (Important 1): the march model's profiles on the
+    // tab's framing (fitView) at 8 to 16 light-buffer texels per unit,
+    // against 27 at 1080p: an 800x600 canvas (0.635), then the highest
+    // (576x320, 0.709) and the lowest (588x420, 0.448) share of its sweeps
+    // from 8 texels per unit up, the window's domain (march-model.test.mjs).
+    // With FADE_SHARE at [0.40, 0.60] the first two failed as a shadow
+    // shorter than its range.
+    for (const f of [[0, 0, 0, 0.635, 1], [0, 0, 0, 0.709, 1], [0, 0, 0, 0.448, 1]]) {
+      const v = shadowLengthVerdict(f.map(at), lit, sun);
+      expect(v.ok, v.detail).toBe(true);
+    }
+  });
+
+  it('shadowLengthVerdict fails a range 0.5 off: the march model at 1080p, and nearest the window from 8 texels per unit up', () => {
+    // Ranges 5.5 and 6.5 at range 6's points: 0.915 and 0.137 at 1080p;
+    // 0.877 (588x420) and 0.300 (576x320), the closest to FADE_SHARE of the
+    // model's sweeps from 8 texels per unit up.
+    for (const share of [0.915, 0.877]) {
+      const v = shadowLengthVerdict([0, 0, 0, share, 1].map(at), lit, sun);
+      expect(v.ok).toBe(false);
+      expect(v.detail).toContain('shorter than its range');
+    }
+    for (const share of [0.137, 0.3]) {
+      const v = shadowLengthVerdict([0, 0, 0, share, 1].map(at), lit, sun);
+      expect(v.ok).toBe(false);
+      expect(v.detail).toContain('longer than its range');
+    }
+  });
+
   it('shadowLengthVerdict fails a shadow half its range long, a hard cut, a fade from the caster, and a shadow twice its range', () => {
     // Review wf_cf354af4-c53 [7], [9]: the first two passed every rule. The
     // profiles are the march model's at a reach of 3 (directionalRay's

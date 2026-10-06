@@ -9,7 +9,8 @@
 // - The camera: orthographic, 20 world units tall at zoom 1 (the harness's
 //   camera, and Mode A's render worker), on the light buffer at half the
 //   canvas resolution (halfResolution in occluder-seed-stage.ts: 960x540 and
-//   27 texels per unit at 1080p).
+//   27 texels per unit at 1080p). fitViewCamera frames a view the way the
+//   harness's fitView does, zooming out on narrow canvases.
 // - The SDF: signed, in texels, the EXACT distance transform (Felzenszwalb)
 //   between texel centres inside and outside the casters, seeded only inside
 //   the view, the way the occluder seed rasterises only the on-screen part of
@@ -28,19 +29,20 @@ export const FADE_START = 0.75;
 const VIEW_HEIGHT = 20;
 
 /**
- * An orthographic camera centred on (cx, cy), 20 world units tall, over a
- * canvas of canvasW x canvasH pixels. `w` x `h` is the light buffer (and the
- * SDF): half the canvas, as halfResolution sizes it. `toTexel(x, y)` is
- * toScreenUV(viewProjection * world) times that size: the texture's y runs
- * down. `texPerUnit`: texels per world unit (27 at 1080p).
+ * An orthographic camera centred on (cx, cy), 20 / zoom world units tall
+ * (CameraAPI.zoom divides the view), over a canvas of canvasW x canvasH
+ * pixels. `w` x `h` is the light buffer (and the SDF): half the canvas, as
+ * halfResolution sizes it. `toTexel(x, y)` is toScreenUV(viewProjection *
+ * world) times that size: the texture's y runs down. `texPerUnit`: texels per
+ * world unit (27 at 1080p, zoom 1).
  */
-export function makeCamera(cx, cy, canvasW = 1920, canvasH = 1080) {
+export function makeCamera(cx, cy, canvasW = 1920, canvasH = 1080, zoom = 1) {
   const w = Math.max(1, Math.floor(canvasW / 2));
   const h = Math.max(1, Math.floor(canvasH / 2));
-  const hh = VIEW_HEIGHT / 2;
+  const hh = VIEW_HEIGHT / 2 / zoom;
   const hw = (hh * canvasW) / canvasH;
   return {
-    cx, cy, hw, hh, w, h,
+    cx, cy, hw, hh, w, h, zoom,
     // Texels per world unit along x and y: equal unless a canvas side is odd.
     sx: w / (2 * hw),
     sy: h / (2 * hh),
@@ -49,6 +51,23 @@ export function makeCamera(cx, cy, canvasW = 1920, canvasH = 1080) {
     xR: cx + hw,
     toTexel: (x, y) => [((x - cx) / hw * 0.5 + 0.5) * w, (0.5 - (y - cy) / hh * 0.5) * h],
   };
+}
+
+/**
+ * The camera of probe-checks.ts fitView(engine, cx, cy, halfWidth) on a
+ * canvasW x canvasH canvas (the backing store the harness hands
+ * engine.resize): centred on (cx, cy); at zoom 1 the view is 20 units tall
+ * and 20 · aspect wide (hyperion.ts resize), and fitView zooms out, never in,
+ * until halfWidth world units fit on each side, so zoom = min(1, 10 · aspect
+ * / halfWidth), through CameraAPI.zoom's floor of 0.01. fitView reads the half
+ * width back from the f32 view-projection, so its zoom can differ from this
+ * one by that rounding (under 1e-7). The Lighting tab frames its sun sub-scene
+ * this way (half width 17.6): below an aspect of 1.76 the view is 35.2 units
+ * wide, and the texels per unit fall with the canvas' width.
+ */
+export function fitViewCamera(cx, cy, canvasW, canvasH, halfWidth) {
+  const visibleHalfWidth = (VIEW_HEIGHT / 2) * (canvasW / canvasH);
+  return makeCamera(cx, cy, canvasW, canvasH, Math.max(0.01, Math.min(1, visibleHalfWidth / halfWidth)));
 }
 
 /** Signed distance from (px, py) to the rectangle r = {x, y, hx, hy, rot}, world units: negative inside. */
@@ -240,8 +259,11 @@ function sunAtTexel(cam, sdf, ox, oy, theta, range, angle, steps) {
 /**
  * The sun's shadow factor (1 = lit) in the light buffer's texel under the
  * world point (x, y): the texel the probe reads there (pixel-probe.wgsl
- * texelAt), marched from its centre like its fragment. A point outside the
- * view throws, as the probe rejects it.
+ * texelAt), marched from its centre like its fragment. A point on a texel's
+ * edge, to rounding, can land in either texel: here the f64 arithmetic picks
+ * one, on the GPU the f32 of worldToUv and texelAt, and the two can differ
+ * (march-model.test.mjs reads both where a check depends on it). A point
+ * outside the view throws, as the probe rejects it.
  */
 export function sunShadowAt(cam, sdf, x, y, theta, range, angle, steps) {
   const [u, v] = cam.toTexel(x, y);

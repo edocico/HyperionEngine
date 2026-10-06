@@ -28,9 +28,10 @@
 // docs/plans/assets/2026-09-30-step6/march-model.mjs, whose node:test pins
 // what it predicts here, the same at the 192 steps the sun marches (4 x the
 // tab's shadowSteps 48, light-accum.wgsl sunShadow) as at 48: S 0 and U, Rx,
-// Ry 1; 0, 0, 0, 0.50 and 1 along the short shadow; a pop of 1 over the whole
-// width, E 1. If the march read past the SDF, at the sun's 192 steps E would
-// read 0.26 and the open row it is compared with 0.93 (E 0.20 at 48 steps).
+// Ry 1; 0, 0, 0, 0.50 and 1 along the short shadow at 1080p (the 0.50 moves
+// on coarser canvases: FADE_SHARE); a pop of 1 over the whole width, E 1. If
+// the march read past the SDF, at the sun's 192 steps E would read 0.26 and
+// the open row it is compared with 0.93 (E 0.20 at 48 steps).
 // The sub-scene's five entities take fresh ids: the tabs after Lighting see
 // ids 5 higher than before step 6.
 import type { Hyperion } from '../hyperion';
@@ -62,12 +63,28 @@ const LENGTH_DISTANCES = [0.5, 2, 4, 5.25, 7.5];
 /** The length check's point inside the fade, 5.25 past the caster: the middle of the last quarter. */
 const FADE_POINT = 3;
 /**
- * The sun's share of the light allowed at FADE_POINT: the march model gives
- * 0.503 there (march-model.test.mjs), and the M2 read 0.508 (round step 6). A
+ * The sun's share of the light allowed at FADE_POINT. The march model gives
+ * 0.503 there at 1080p, 27 light-buffer texels per world unit (the M2 read
+ * 0.508 on a 1960x1248 canvas, 28 per unit, where the model gives 0.499;
+ * round step 6). The share moves with where the point falls in its texel and
+ * with the SDF's quantisation, both larger as the texels per unit fall:
+ * march-model.test.mjs puts correct code at 0.448 to 0.709 from 8 to 16
+ * texels per unit and at 0.470 to 0.599 above, in either texel where the
+ * point lies on a texel's edge.
+ *
+ * The window is validated from 8 light-buffer texels per world unit up. With
+ * this tab's framing that is a canvas (its backing store) at least 320 px
+ * tall where fitView keeps zoom 1 (an aspect of 1.76 or more), or about 564
+ * px wide or more where it zooms out. Below that the window no longer holds:
+ * at 290x580 (4.1 per unit) correct code reads 0.85, and a range 0.5 too
+ * long 0.45. A failure on such a canvas may mean the canvas, not a bug.
+ *
+ * From 8 texels per unit up every defect the check names lies outside: a
  * shadow half its range long is gone by then (1); a hard cut, or a shadow
- * longer than its range, is still whole (0).
+ * twice its range, is still whole (0); a range 0.5 off reads 0.300 or less,
+ * or 0.877 or more; a fade from the caster about 0.9.
  */
-const FADE_SHARE: readonly [number, number] = [0.4, 0.6];
+const FADE_SHARE: readonly [number, number] = [0.4, 0.75];
 /** The edge check's sun keeps LightOptions' default range. */
 const DEFAULT_RANGE = 100;
 /** The tab's own framing: the same zoom, so the same texels per unit as the CPU model at 16:9. */
@@ -157,7 +174,8 @@ export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly numb
   // `lit` is U, read in the same frame: floor + sun.
   const share = (lums[FADE_POINT] - (lum(lit) - lum(sun))) / lum(sun);
   if (!(share >= FADE_SHARE[0] && share <= FADE_SHARE[1])) {
-    problems.push(`the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster is not ${FADE_SHARE.join('-')} (the model: 0.503): `
+    problems.push(`the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster is not ${FADE_SHARE.join('-')} `
+      + '(the march model: 0.503 at 1080p, 0.448-0.709 from 8 light-buffer texels per unit up; a coarser canvas can fail it): '
       + (share > FADE_SHARE[1]
         ? 'the shadow is shorter than its range, or fades before its last quarter'
         : 'no fade, or a shadow longer than its range'));
