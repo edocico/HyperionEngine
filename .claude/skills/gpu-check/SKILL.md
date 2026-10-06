@@ -206,14 +206,15 @@ no probe, no bloom, no outlines, no particles and no texture loading on the main
 like §3, with the anti-reload initScript for a tab run.
 
 **Expected: no `fail` from Mode A itself.** A check that passes in B passes or skips in A, and a
-`fail` there is real. Measured on 2026-09-30 (M2 Pro, Chrome 154, `08e2a5d`, the §4 runner, 35 s):
-Primitives 0/9 · 9 skipped, Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio
-4/4, Particles 0/4 · 4 skipped, Rendering FX 0/4 · 4 skipped, Lighting 4/6 · 2 skipped, Debug Tools
-6/7 · 1 skipped, Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped. The skips fall in a few
-classes: "pixel probe unavailable" (every check that reads pixels: the probe needs a main-thread
-renderer), "no renderer" (selection, particles, bloom, outlines), "no main-thread renderer" (test
-textures), the ones B has too (MSDF atlas, Tonemap stub, determinism hash) and 'Transparent sort
-under churn' (Mode C only).
+`fail` there is real. Measured on 2026-10-06 (M2 Pro, Chrome 155, `c19cc6a`, `?mode=A&bench`, the
+§4 runner waiting for the end of each tab's setup instead of 3.5 s): Primitives 0/9 · 9 skipped,
+Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio 4/4, Particles 0/4 · 4
+skipped, Rendering FX 0/4 · 4 skipped, Lighting 4/9 · 5 skipped, Debug Tools 6/7 · 1 skipped,
+Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped: 17 pass, 39 skips and 4 pending over the 60
+checks, no `fail`. The skips fall in a few classes: "pixel probe unavailable" (every check that
+reads pixels: the probe needs a main-thread renderer), "no renderer" (selection, particles, bloom,
+outlines), "no main-thread renderer" (test textures), the ones B has too (MSDF atlas, Tonemap stub,
+determinism hash) and 'Transparent sort under churn' (Mode C only).
 
 'Bloom' skips with `no renderer: Cannot enable bloom: no renderer available`: it turns the bloom
 graph on before its first probe, and `pixelCheck` (`demo/probe-checks.ts`) reports that throw as a

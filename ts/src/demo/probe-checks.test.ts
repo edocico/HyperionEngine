@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure } from './probe-checks';
+import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure, viewBounds } from './probe-checks';
 import { createTestReporter } from './types';
+import { mat4Multiply, orthographic } from '../camera';
 import type { Hyperion } from '../hyperion';
 
 function engineWith(probe: (req: unknown) => Promise<unknown>): Hyperion {
@@ -87,6 +88,16 @@ describe('pixelCheck timeout', () => {
     await done;
     vi.useRealTimers();
     expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: expect.stringMatching(/no frame served/) });
+  });
+});
+
+describe('view helpers', () => {
+  it('viewBounds: the world rectangle of an orthographic view-projection, camera offset included', () => {
+    // The camera at (3, 200): the view matrix translates by its opposite.
+    const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -3, -200, 0, 1]);
+    const vp = mat4Multiply(orthographic(-17.78, 17.78, -10, 10, -1, 1000), view);
+    const want = [-14.78, 20.78, 190, 210];
+    viewBounds(vp).forEach((v, i) => expect(Math.abs(v - want[i])).toBeLessThan(1e-4));
   });
 });
 

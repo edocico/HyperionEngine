@@ -32,7 +32,34 @@ export const enum RenderPrimitiveType {
   Light2D = 6,
 }
 
-/** Light shape. `directional` and `global` ignore position. */
+/**
+ * Light shape.
+ * - `point`: lights a disc of radius `range` around its position.
+ * - `spot`: a point light cut to a cone (`innerAngle`/`outerAngle`) around
+ *   its axis.
+ * - `directional`: a sun, infinitely far away. It lights every pixel of the
+ *   layers in its mask, shining along its axis; its position is ignored. With
+ *   `shadowIntensity` > 0 each caster throws a shadow along the axis, `range`
+ *   world units long and fading out toward its end, with a fixed engine-wide
+ *   penumbra. A caster casts only while it is on screen, so a shadow can
+ *   appear at the edge the light comes from as the view pans. A shadowed sun
+ *   marches every texel of the light buffer once per light group its layers
+ *   reach.
+ * - `global`: a uniform light over the layers in its mask, added on top of
+ *   `engine.lighting.setAmbient()` (a masked one is a per-layer ambient). No
+ *   position, no direction and no shadows in the lit backend:
+ *   `shadowIntensity` is ignored (the renderer warns once in dev builds). Use
+ *   `directional` for a sun.
+ * - `sprite`: not drawn yet.
+ *
+ * The axis of a spot or directional light is its local +x in world space, and
+ * the light shines TOWARD it: `rotation(angle)` aims it. 0 shines right,
+ * `rotation(-Math.PI / 2)` shines down the screen (the world is y-up), and
+ * `rotation(Math.atan2(dy, dx))` shines along (dx, dy). A parent's rotation
+ * composes into it and a negative x-scale mirrors it in its own frame (it
+ * then shines along its −x); the size of the scale is ignored, because a
+ * light's extent is its range.
+ */
 export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
 
 /** How a light combines into the accumulation buffer. */
@@ -50,6 +77,16 @@ const LIGHT_TYPE_IDS: Record<LightType, number> = {
 /** Wire values for `renderMeta` bits 14-15. */
 const LIGHT_BLEND_IDS: Record<LightBlendMode, number> = { add: 0, sub: 1, mix: 2 };
 
+/**
+ * The largest finite f32. A directional light's range beyond ±F32_MAX can
+ * reach the wire as ±inf (`±Infinity` does, and so does `±Number.MAX_VALUE`),
+ * and Rust rejects a non-finite `SetPrimParams0` whole, the light's colour
+ * with it. At F32_MAX the shadows are endless already (light-accum.wgsl
+ * `directionalRay` bounds range × texels); at −F32_MAX there are none (it
+ * clamps the range at 0).
+ */
+const F32_MAX = 3.4028234663852886e38;
+
 /** Options for {@link EntityHandle.light}. */
 export interface LightOptions {
   /** Default `'point'`. */
@@ -58,15 +95,42 @@ export interface LightOptions {
   color?: string | readonly [number, number, number];
   /** Multiplier applied to `color` on the way to the GPU. Default 1. */
   energy?: number;
-  /** Radius in world units. Also becomes the light's culling radius. Default 100. */
+  /**
+   * World units. Default 100. Within ±3.4e38 (a finite f32), except on a
+   * directional light (which is clamped), and never NaN: `light()` does not
+   * check, a value past the f32 range reaches the wire as ±inf (the
+   * `Float32Array` write: 1e39 is finite in JS, not in f32), and Rust rejects
+   * a non-finite `SetPrimParams0` whole, so the light loses its colour too and
+   * lights nothing.
+   * - `point`, `spot`: the light's radius, which is also its culling radius.
+   * - `directional`: the length of its shadows, which fade out toward the end
+   *   (0 or less casts none, `-Infinity` included; `Infinity` casts endless
+   *   ones). Sent clamped to the finite f32 range, so any number but NaN
+   *   reaches the GPU. It does not limit what the light lights: a sun covers
+   *   the whole view and is never culled.
+   * - `global`: unused (never culled either).
+   */
   range?: number;
-  /** Spot inner cone half-angle in degrees. Default 30. Ignored by other types. */
+  /**
+   * Spot inner cone half-angle in degrees, around the light's axis (its local
+   * +x, see {@link LightType}). Default 30. Ignored by other types.
+   */
   innerAngle?: number;
-  /** Spot outer cone half-angle in degrees. Default 45. Ignored by other types. */
+  /**
+   * Spot outer cone half-angle in degrees, around the light's axis (its local
+   * +x, see {@link LightType}). Default 45. Ignored by other types.
+   */
   outerAngle?: number;
-  /** Attenuation exponent. Default 1 (linear). */
+  /**
+   * Attenuation exponent of a point or spot light: (1 − d/range)^falloff.
+   * Default 1 (linear). Ignored by other types.
+   */
   falloff?: number;
-  /** 0 = no shadow. See {@link EntityHandle.shadows}. Default 0. */
+  /**
+   * Shadow strength: 0 = none (default), 1 = fully opaque. Point, spot and
+   * directional lights; ignored on a global light in the lit backend (a dev
+   * warning, once). See {@link EntityHandle.shadows}.
+   */
   shadowIntensity?: number;
   /** Default `'add'`. */
   blend?: LightBlendMode;
@@ -247,6 +311,8 @@ export class EntityHandle implements Disposable {
    * `position()`, also in the frame that creates it. Rapier is 2D: it keeps
    * only the angle about Z, so a tilt from the quaternion form is dropped at
    * the next physics step.
+   *
+   * On a spot or directional light it aims the light (see {@link LightType}).
    */
   rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
@@ -514,8 +580,10 @@ export class EntityHandle implements Disposable {
    *
    * A light is an ordinary ECS entity, so it inherits position, hierarchy
    * (a torch parented to a character), spawn/despawn, GPU frustum culling,
-   * snapshot and replay for free — which is why `range` also drives its
-   * culling radius rather than needing a separate call.
+   * snapshot and replay for free — which is why a point or spot light's
+   * `range` also drives its culling radius rather than needing a separate
+   * call (global and directional lights light the whole view and are never
+   * culled). Aim a spot or a sun with `rotation()` (see {@link LightType}).
    *
    * `color` and `energy` stay separate here on purpose. The GPU buffer gets
    * them premultiplied (that is what frees a `primParams` slot for
@@ -527,12 +595,18 @@ export class EntityHandle implements Disposable {
     this.check();
     const [r, g, b] = normalizeColor(options.color ?? '#ffffff');
     const energy = options.energy ?? 1;
-    const range = options.range ?? 100;
+    const type = options.type ?? 'point';
+    // A sun's `range` is its shadows' length, sent clamped to the finite f32
+    // range (see F32_MAX): Infinity means endless ones, -Infinity none. NaN
+    // passes through, as any range of the other types does.
+    const range = type === 'directional'
+      ? Math.max(-F32_MAX, Math.min(options.range ?? 100, F32_MAX))
+      : options.range ?? 100;
 
     this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Light2D);
     this._producer!.setLightFlags(
       this._id,
-      LIGHT_TYPE_IDS[options.type ?? 'point'],
+      LIGHT_TYPE_IDS[type],
       LIGHT_BLEND_IDS[options.blend ?? 'add'],
       options.layers ?? 0xffff,
     );
@@ -541,7 +615,7 @@ export class EntityHandle implements Disposable {
     // Cone angles are stored as cosines: the shader compares against a dot
     // product, so converting here keeps a trig call out of the fragment loop.
     // A point light gets inner=outer=-1, i.e. "every direction is inside".
-    const isSpot = (options.type ?? 'point') === 'spot';
+    const isSpot = type === 'spot';
     const innerCos = isSpot ? Math.cos(((options.innerAngle ?? 30) * Math.PI) / 180) : -1;
     const outerCos = isSpot ? Math.cos(((options.outerAngle ?? 45) * Math.PI) / 180) : -1;
     const falloff = options.falloff ?? 1;
@@ -558,6 +632,13 @@ export class EntityHandle implements Disposable {
 
   /**
    * Shadow strength for this light: 0 casts none, 1 is fully opaque.
+   *
+   * Point, spot and directional lights (a sun's shadows are `range` world
+   * units long, see {@link LightType}). A shadowed directional light marches
+   * every texel of the light buffer once per light group its layers reach. A
+   * global light never casts shadows in the lit backend: the value is stored
+   * and ignored, and the renderer warns once in dev builds. Use a directional
+   * light for a sun.
    *
    * Kept separate from `light()` because it is the one light parameter with a
    * real per-frame cost — `shadowIntensity > 0` is what switches on the sphere
@@ -580,7 +661,8 @@ export class EntityHandle implements Disposable {
 
   /**
    * Whether this entity is rasterised into the occluder seed, i.e. whether it
-   * casts a shadow. Independent of `receivesLight()`.
+   * casts a shadow. Independent of `receivesLight()`. A light entity never
+   * casts: a light's own shadows are {@link EntityHandle.shadows}.
    */
   castsShadow(enabled = true): this {
     this.check();

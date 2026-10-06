@@ -61,7 +61,13 @@ export interface LightingQuality {
    * 16-32 leaks light behind walls, from rays that graze a sprite's face and
    * spend their budget 1-2 texels at a time. Most rays end long before the
    * budget, so it costs little: 24 -> 48 was +2% of light-accum on the AMD
-   * iGPU (2026-09-26).
+   * iGPU (2026-09-26). A directional light marches up to four times this
+   * budget (round step 6): an axis-aligned sun over casters about 2 world
+   * units or more along its rays (at 1080p and zoom 1) spends it along the
+   * faces parallel to its rays. Casters longer than about 7 units along the
+   * rays can still exhaust it: at `rotation(0)`, about 0.1 % of the step-6
+   * bench scene's light buffer is off by more than a tenth of the sun
+   * (docs/plans/assets/2026-09-30-step6/grid-x4-m2.json).
    *
    * Honoured by the lit backend, and read every frame (`FrameState.shadowSteps`
    * goes into the light-accumulation uniform): it applies from the next frame,
@@ -114,6 +120,10 @@ export class LightingAPI {
    * and the distinct mask values that split them. The renderer forms them
    * the same way every frame while the backend is `'lit'`.
    *
+   * It also reports `shadowedGlobalLight`: a global light in view asks for
+   * shadows, which the lit backend never casts from a global light (the
+   * renderer warns once in dev builds).
+   *
    * Every distinct SDF set costs a full SDF flood — about 1.8 ms at 1080p on
    * an integrated GPU — and there is no cap, so this is where to look when a
    * `lightLayers()` call made lighting slower. `null` before the first frame.
@@ -154,11 +164,12 @@ export class LightingAPI {
   }
 
   /**
-   * Global ambient light — the light every surface receives regardless of any
-   * light entity.
-   *
-   * It becomes the clear colour of the accumulation buffer, so unlike every
-   * other light in the scene it is genuinely free: the clear happens anyway.
+   * The engine's ambient light: the clear colour of every light group's light
+   * buffer, the base every lit surface receives before the light entities add
+   * to it (a `sub` light takes from it). Not a `global` light, which is an
+   * entity added on top of it and limited to its layers (a per-layer ambient).
+   * Unlike every other light in the scene it is genuinely free: the clear
+   * happens anyway.
    *
    * @param color `'#rrggbb'`, `'#rgb'`, or `[r, g, b]` in 0-1.
    * @param intensity Multiplier applied on the GPU side. Default 1.

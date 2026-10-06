@@ -16,6 +16,7 @@ const EVERYTHING: LightGroups = {
   sdfSets: [{ occluderLayers: 0xffff }],
   layerToGroup: [0, 0],
   multiBitReceiver: false,
+  shadowedGlobalLight: false,
   lightMasks: [],
   occluderMasks: [],
 };

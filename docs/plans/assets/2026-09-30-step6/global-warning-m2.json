@@ -1,0 +1,30 @@
+{
+  "format": "hyperion-step6-global-warning/1",
+  "head": "c19cc6a",
+  "date": "2026-10-06T19:44:07.816Z",
+  "adapterLine": "[Hyperion] WebGPU adapter: apple / metal-3 / 0x0000, subgroups 32-32",
+  "runs": [
+    {
+      "mode": "B",
+      "afterFirst10": [
+        "[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun."
+      ],
+      "after60More": [
+        "[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun."
+      ],
+      "count10": 1,
+      "count70": 1
+    },
+    {
+      "mode": "A",
+      "afterFirst10": [
+        "[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun."
+      ],
+      "after60More": [
+        "[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun."
+      ],
+      "count10": 1,
+      "count70": 1
+    }
+  ]
+}

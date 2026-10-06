@@ -50,7 +50,7 @@ Limiti accettati, da documentare:
 
 **Passo 1, raccolta.** Una scansione di `renderMeta` parola 1:
 - **luci**: i valori distinti di maschera delle luci che **possono raggiungere lo schermo**. Si usa lo stesso test sfera-frustum del CullPass, con il raggio *ingrandito* (×1,01 + 1e-3) in modo che l'insieme CPU sia un sovrainsieme di quello GPU. Una globale o direzionale ha raggio f32::MAX ed è sempre dentro.
-- **`shadowedLayers`**: l'OR delle maschere delle luci visibili che proiettano ombra. È lo stesso test dello shader: point o spot con `clamp(primParams[7], 0, 1) > 0`. Globali e direzionali per ora non proiettano ombre.
+- **`shadowedLayers`**: l'OR delle maschere delle luci visibili che proiettano ombra. È lo stesso test dello shader (`shadowedLightType`): point, spot o directional con `clamp(primParams[7], 0, 1) > 0`. Una directional conta solo con `range` (`primParams[3]`) > 0: a 0 o meno `sunShadow` esce prima di leggere l'SDF, e nessuno leggerebbe il suo flood (review wf_cf354af4-c53). Le globali non proiettano ombre nel backend `lit`: `shadowIntensity` è ignorata, e il renderer avvisa una volta in dev (`shadowedGlobalLight`).
 - **occluder**: i valori distinti di maschera normalizzati (0 → 0xFFFF) degli occluder che possono raggiungere lo schermo, con lo stesso test conservativo. L'SDF è screen-space, quindi un occluder fuori schermo non conta niente. Non filtrarli invece creerebbe set inutili da 1,8 ms.
 - **`receiverLayers`**: l'OR di `1 << layerOf(mask)` sui ricevitori delle primitive che campionano il light buffer (quad e gradient, `LIT_PRIMITIVE_TYPES`; review 2026-09-26) ~~senza filtro frustum. Un gruppo in più costa poco.~~ **in vista, con lo stesso test conservativo delle luci** (review 2026-09-26: un layer fuori schermo i cui caster in vista differiscono riceve un SDF set tutto suo, +1,84 ms per pixel che nessuno campiona). `layerOf(0) = 0`, altrimenti il bit più basso. Se un ricevitore ha più di un bit si alza il flag `multiBitReceiver`.
 
@@ -71,6 +71,8 @@ interface LightGroups {
   sdfSets: Array<{ occluderLayers: number /* u16: the layers of its groups */ }>;
   layerToGroup: [lo: number, hi: number];  // 16 × 4 bits, bit b → group index
   multiBitReceiver: boolean;
+  /** Una luce globale in vista chiede ombre (shadowIntensity > 0): il backend `lit` la ignora, e il renderer avvisa una volta in dev. */
+  shadowedGlobalLight: boolean;
   /** For the debug readout: the distinct values that split the groups. */
   lightMasks: number[]; occluderMasks: number[];
 }
@@ -221,4 +223,4 @@ Restano fuori:
 - l'ambient per layer, oltre a quello già ottenibile con globali mascherate;
 - l'MRT per accumulare una luce su più gruppi in un pass;
 - `TRANSIENT_ATTACHMENT`;
-- le ombre delle luci globali e direzionali.
+- le ombre delle luci globali: mai, nel backend `lit` (le directional le proiettano dal passo 6 del giro).

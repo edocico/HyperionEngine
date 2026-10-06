@@ -98,9 +98,12 @@ pub struct RenderPrimitive(pub u8);
 /// the GPU buffer only: the TypeScript API keeps `color` and `energy` separate,
 /// because a 3D light will need them apart.
 ///
-/// Slot 3 (`range`) is the single source of truth for a light's extent and
-/// drives `BoundingRadius` through `systems::update_bounding_radii`; slot 4
-/// doubles as `height` for point lights once normal maps land.
+/// Slot 3 (`range`) lives here and nowhere else. On a point or spot light it
+/// is the light's extent; on a directional light, the length of its shadows.
+/// It drives `BoundingRadius` through `systems::update_bounding_radii`, except
+/// on global and directional lights, which light the whole screen and get
+/// `f32::MAX`. Slot 4 doubles as `height` for point lights once normal maps
+/// land.
 ///
 /// Flags are deliberately NOT bit-packed into a spare `f32` here: the
 /// `SetPrimParams0/1` handlers validate every float with `is_finite()`, and an

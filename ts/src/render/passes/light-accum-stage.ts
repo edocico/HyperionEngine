@@ -17,9 +17,10 @@ export const LIGHT2D_ARG_SLOTS = [0, TRANSPARENT_BUCKET_OFFSET].flatMap((blend) 
   Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => blend + LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b));
 
 /**
- * Soft-shadow hardness k: the light's apparent angle is at most 1/k. With h
- * and t in texels of the half-resolution SDF, 8 gives a visible, not blurry,
- * penumbra.
+ * Soft-shadow hardness k of point and spot lights: their apparent angle is at
+ * most 1/k. A directional light uses LIGHT_SOURCE_FRACTION instead (round
+ * step 6). With h and t in texels of the half-resolution SDF, 8 gives a
+ * visible, not blurry, penumbra.
  */
 export const SHADOW_HARDNESS = 8;
 
@@ -29,6 +30,12 @@ export const SHADOW_HARDNESS = 8;
  * cap the light's radius grows with the pixel's distance (D/k), and a light
  * beside a wall darkens the pixels on the far side of it too. 0.02 keeps a
  * light that is range/50 or more away from a wall unoccluded on the open side.
+ * It is also a directional light's penumbra angle, in radians, fixed
+ * engine-wide (round step 6): the penumbra's width per unit of distance, i.e.
+ * about the source's angular diameter (0.02 rad, about 1.15°) (confirmed by
+ * the GPU A/B of round step 6:
+ * docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json). A sun gets the
+ * penumbra a point light has at the edge of its range.
  */
 export const LIGHT_SOURCE_FRACTION = 0.02;
 
@@ -37,6 +44,14 @@ export const SLICE = 256;
 
 /** LightUniform: viewProjection (64) + shadowSteps, hardness, sourceFraction, groupLayers (16). */
 const LIGHT_UNIFORM_SIZE = 80;
+
+/**
+ * The largest step budget the uniform carries: a sun marches
+ * `4u * u.shadowSteps` (light-accum.wgsl sunShadow), which wraps in u32 from
+ * 2^30 and would give the sun 0 steps. A budget this large is unbounded
+ * anyway: every ray stops at the end of its travel.
+ */
+const MAX_SHADOW_STEPS = 0x3fffffff;
 
 /**
  * Accumulates the visible Light2Ds of ONE light group into one layer of the
@@ -49,7 +64,7 @@ const LIGHT_UNIFORM_SIZE = 80;
  * the counts); the vertex stage drops every light whose mask misses the
  * group's layers. A point or spot light is a quad of its range; a global or
  * directional light covers the screen. See light-accum.wgsl for the falloff,
- * the spot cone and the shadow march.
+ * the spot cone, the sun's direction and the shadow march.
  *
  * Every group has its own 256-byte uniform slice, all written once in
  * `prepare()`: a writeBuffer between the render passes of one frame would land
@@ -99,7 +114,7 @@ export class LightAccumStage {
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, // visibleIndices
         { binding: 3, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // primParams
         { binding: 4, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // renderMeta
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }, // signed SDF
+        { binding: 5, visibility: vsFs, texture: { sampleType: 'unfilterable-float' } }, // signed SDF (vs_main reads its size: directionalRay)
       ],
     });
 
@@ -127,11 +142,14 @@ export class LightAccumStage {
       this.slices = count;
       this.bindGroups.clear();
     }
+    // LightingQuality.shadowSteps is finite and >= 1 (setQuality): written as
+    // a whole number, capped so that the sun's 4x cannot wrap.
+    const steps = Math.min(Math.trunc(frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps), MAX_SHADOW_STEPS);
     const data = new ArrayBuffer(count * SLICE);
     for (let g = 0; g < count; g++) {
       const base = g * SLICE;
       new Float32Array(data, base, 16).set(frame.cameraViewProjection);
-      new Uint32Array(data, base + 64, 1)[0] = frame.shadowSteps ?? DEFAULT_LIGHTING_QUALITY.shadowSteps;
+      new Uint32Array(data, base + 64, 1)[0] = steps;
       new Float32Array(data, base + 68, 1)[0] = SHADOW_HARDNESS;
       new Float32Array(data, base + 72, 1)[0] = LIGHT_SOURCE_FRACTION;
       new Uint32Array(data, base + 76, 1)[0] = groups[g]?.layers ?? 0;

@@ -676,6 +676,57 @@ describe('EntityHandle — lighting (Phase 17)', () => {
     expect([r, g, b, range]).toEqual([1, 1, 1, 100]);
   });
 
+  it('a directional light carries its shadow length in range (slot 3)', () => {
+    const p = mockProducer();
+    new EntityHandle(1, p).light({ type: 'directional', range: 40, shadowIntensity: 1 });
+    expect(p.setLightFlags).toHaveBeenCalledWith(1, 2, 0, 0xffff);
+    expect((p.setPrimParams0 as any).mock.calls[0][4]).toBe(40);
+    expect((p.setPrimParams1 as any).mock.calls[0].slice(1)).toEqual([-1, -1, 1, 1]);
+  });
+
+  it('a directional light with range Infinity sends the largest finite f32: endless shadows, and the colour still arrives', () => {
+    // Review wf_cf354af4-c53 [6]: +inf reached the wire, where Rust rejects a
+    // non-finite SetPrimParams0 whole: the sun lost its colour and lit nothing.
+    // Number.MAX_VALUE rounds to +inf in the f32 command the same way.
+    const F32_MAX = 3.4028234663852886e38;
+    for (const range of [Infinity, Number.MAX_VALUE]) {
+      const p = mockProducer();
+      new EntityHandle(1, p).light({ type: 'directional', color: [1, 0.5, 0.25], energy: 2, range, shadowIntensity: 1 });
+      const [, r, g, b, wire] = (p.setPrimParams0 as any).mock.calls[0];
+      expect(wire, `range ${range}`).toBe(F32_MAX);
+      expect(Number.isFinite(Math.fround(wire)), `range ${range} as an f32`).toBe(true);
+      expect([r, g, b]).toEqual([2, 1, 0.5]);
+    }
+  });
+
+  it('a directional light with range -Infinity sends the most negative finite f32: no shadow, and the colour still arrives', () => {
+    // Review of Task 9fix (Minor 2): -inf reached the wire as +inf did before
+    // [6], and Rust rejected the whole SetPrimParams0, the colour with it. At
+    // -F32_MAX directionalRay clamps the range to 0 (no shadow), and
+    // deriveLightGroups gives the sun no SDF set. A finite f32 range stays.
+    const F32_MAX = 3.4028234663852886e38;
+    for (const [range, sent] of [[-Infinity, -F32_MAX], [-Number.MAX_VALUE, -F32_MAX], [-5, -5]]) {
+      const p = mockProducer();
+      new EntityHandle(1, p).light({ type: 'directional', color: [1, 0.5, 0.25], energy: 2, range, shadowIntensity: 1 });
+      const [, r, g, b, wire] = (p.setPrimParams0 as any).mock.calls[0];
+      expect(wire, `range ${range}`).toBe(sent);
+      expect(Number.isFinite(Math.fround(wire)), `range ${range} as an f32`).toBe(true);
+      expect([r, g, b]).toEqual([2, 1, 0.5]);
+    }
+  });
+
+  it('a global light still sends its shadowIntensity: the renderer ignores it and warns, not the handle', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = mockProducer();
+      new EntityHandle(1, p).light({ type: 'global', shadowIntensity: 1 });
+      expect((p.setPrimParams1 as any).mock.calls[0][4]).toBe(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('rejects a malformed colour instead of emitting garbage', () => {
     const p = mockProducer();
     expect(() => new EntityHandle(1, p).light({ color: '#xyz' })).toThrow(/Invalid light color/);

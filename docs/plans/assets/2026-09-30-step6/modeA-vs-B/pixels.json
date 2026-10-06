@@ -1,0 +1,511 @@
+{
+  "format": "hyperion-step6-modeA-vs-B-pixels/1",
+  "head": "c19cc6a",
+  "date": "2026-10-06T19:53:25.091Z",
+  "task": "Task 10 Step 4 (Mode A), points 2-4: the static `scene` (resize: false) in ?mode=A&bench and ?mode=B&bench",
+  "adapterLine": "[Hyperion] WebGPU adapter: apple / metal-3 / 0x0000, subgroups 32-32",
+  "files": {
+    "A": {
+      "screenshot": "A.png",
+      "map": "map-A.json",
+      "scene": "scene-A.json",
+      "vp": "the render worker camera, .claude/skills/gpu-check/SKILL.md §7 (map-modeA.js)"
+    },
+    "B": {
+      "screenshot": "B.png",
+      "map": "map-B.json",
+      "scene": "scene-B.json",
+      "vp": "engine.cam.viewProjection (map-modeB.js)"
+    }
+  },
+  "maps": {
+    "A": {
+      "rect": [
+        0,
+        40,
+        980,
+        623.5
+      ],
+      "vp": [
+        0.0636734693877551,
+        0,
+        0,
+        0,
+        0,
+        0.1,
+        0,
+        0,
+        0,
+        0,
+        -0.000999000999000999,
+        0,
+        0,
+        0,
+        0.000999000999000999,
+        1
+      ],
+      "dpr": 2
+    },
+    "B": {
+      "rect": [
+        0,
+        40,
+        980,
+        623.5
+      ],
+      "vp": [
+        0.0636734664440155,
+        0,
+        0,
+        0,
+        0,
+        0.10000000149011612,
+        0,
+        0,
+        0,
+        0,
+        -0.0009990009712055326,
+        0,
+        0,
+        0,
+        0.0009990009712055326,
+        1
+      ],
+      "vpFormulaZoom1": [
+        0.0636734693877551,
+        0,
+        0,
+        0,
+        0,
+        0.1,
+        0,
+        0,
+        0,
+        0,
+        -0.000999000999000999,
+        0,
+        0,
+        0,
+        0.000999000999000999,
+        1
+      ],
+      "dpr": 2
+    }
+  },
+  "sceneIds": {
+    "floor": 0,
+    "walls": [
+      1,
+      2,
+      3
+    ],
+    "platforms": [
+      4,
+      5
+    ],
+    "boxes": [
+      6,
+      7
+    ],
+    "point": 8,
+    "sun": 9
+  },
+  "sceneGroups": {
+    "A": [
+      1,
+      1
+    ],
+    "B": [
+      1,
+      1
+    ]
+  },
+  "tool": ".claude/skills/gpu-check/scripts/pixels.py",
+  "commands": {
+    "A": "python3 .claude/skills/gpu-check/scripts/pixels.py docs/plans/assets/2026-09-30-step6/modeA-vs-B/A.png docs/plans/assets/2026-09-30-step6/modeA-vs-B/map-A.json -8.7,-1 -15.3,-1 1.2999999999999998,-4 -5.3,-4 12.3,5 5.7,5",
+    "B": "python3 .claude/skills/gpu-check/scripts/pixels.py docs/plans/assets/2026-09-30-step6/modeA-vs-B/B.png docs/plans/assets/2026-09-30-step6/modeA-vs-B/map-B.json -8.7,-1 -15.3,-1 1.2999999999999998,-4 -5.3,-4 12.3,5 5.7,5"
+  },
+  "rawOutput": {
+    "A": [
+      "world (  -8.70,   -1.00) -> px (  437,   766)  rgb (15, 18, 31)  lum   18.3",
+      "world ( -15.30,   -1.00) -> px (   25,   766)  rgb (255, 255, 255)  lum  255.0",
+      "world (   1.30,   -4.00) -> px ( 1061,   953)  rgb (15, 18, 31)  lum   18.3",
+      "world (  -5.30,   -4.00) -> px (  649,   953)  rgb (255, 255, 247)  lum  254.4",
+      "world (  12.30,    5.00) -> px ( 1748,   392)  rgb (15, 18, 31)  lum   18.3",
+      "world (   5.70,    5.00) -> px ( 1336,   392)  rgb (255, 255, 247)  lum  254.4"
+    ],
+    "B": [
+      "world (  -8.70,   -1.00) -> px (  437,   766)  rgb (15, 18, 31)  lum   18.3",
+      "world ( -15.30,   -1.00) -> px (   25,   766)  rgb (255, 255, 255)  lum  255.0",
+      "world (   1.30,   -4.00) -> px ( 1061,   953)  rgb (15, 18, 31)  lum   18.3",
+      "world (  -5.30,   -4.00) -> px (  649,   953)  rgb (255, 255, 247)  lum  254.4",
+      "world (  12.30,    5.00) -> px ( 1748,   392)  rgb (15, 18, 31)  lum   18.3",
+      "world (   5.70,    5.00) -> px ( 1336,   392)  rgb (255, 255, 247)  lum  254.4"
+    ]
+  },
+  "points": [
+    {
+      "wall": [
+        -12,
+        -1
+      ],
+      "role": "downwind",
+      "world": [
+        -8.7,
+        -1
+      ],
+      "A": {
+        "px": [
+          437,
+          766
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "B": {
+        "px": [
+          437,
+          766
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    },
+    {
+      "wall": [
+        -12,
+        -1
+      ],
+      "role": "upwind",
+      "world": [
+        -15.3,
+        -1
+      ],
+      "A": {
+        "px": [
+          25,
+          766
+        ],
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "lum": 255
+      },
+      "B": {
+        "px": [
+          25,
+          766
+        ],
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "lum": 255
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    },
+    {
+      "wall": [
+        -2,
+        -4
+      ],
+      "role": "downwind",
+      "world": [
+        1.2999999999999998,
+        -4
+      ],
+      "A": {
+        "px": [
+          1061,
+          953
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "B": {
+        "px": [
+          1061,
+          953
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    },
+    {
+      "wall": [
+        -2,
+        -4
+      ],
+      "role": "upwind",
+      "world": [
+        -5.3,
+        -4
+      ],
+      "A": {
+        "px": [
+          649,
+          953
+        ],
+        "rgb": [
+          255,
+          255,
+          247
+        ],
+        "lum": 254.4
+      },
+      "B": {
+        "px": [
+          649,
+          953
+        ],
+        "rgb": [
+          255,
+          255,
+          247
+        ],
+        "lum": 254.4
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    },
+    {
+      "wall": [
+        9,
+        5
+      ],
+      "role": "downwind",
+      "world": [
+        12.3,
+        5
+      ],
+      "A": {
+        "px": [
+          1748,
+          392
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "B": {
+        "px": [
+          1748,
+          392
+        ],
+        "rgb": [
+          15,
+          18,
+          31
+        ],
+        "lum": 18.3
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    },
+    {
+      "wall": [
+        9,
+        5
+      ],
+      "role": "upwind",
+      "world": [
+        5.7,
+        5
+      ],
+      "A": {
+        "px": [
+          1336,
+          392
+        ],
+        "rgb": [
+          255,
+          255,
+          247
+        ],
+        "lum": 254.4
+      },
+      "B": {
+        "px": [
+          1336,
+          392
+        ],
+        "rgb": [
+          255,
+          255,
+          247
+        ],
+        "lum": 254.4
+      },
+      "absDiffAB": [
+        0,
+        0,
+        0
+      ],
+      "maxChannelDiffAB": 0
+    }
+  ],
+  "walls": [
+    {
+      "wall": [
+        -12,
+        -1
+      ],
+      "downwind": [
+        -8.7,
+        -1
+      ],
+      "upwind": [
+        -15.3,
+        -1
+      ],
+      "A": {
+        "downwindLum": 18.3,
+        "upwindLum": 255,
+        "downwindDarker": true
+      },
+      "B": {
+        "downwindLum": 18.3,
+        "upwindLum": 255,
+        "downwindDarker": true
+      }
+    },
+    {
+      "wall": [
+        -2,
+        -4
+      ],
+      "downwind": [
+        1.2999999999999998,
+        -4
+      ],
+      "upwind": [
+        -5.3,
+        -4
+      ],
+      "A": {
+        "downwindLum": 18.3,
+        "upwindLum": 254.4,
+        "downwindDarker": true
+      },
+      "B": {
+        "downwindLum": 18.3,
+        "upwindLum": 254.4,
+        "downwindDarker": true
+      }
+    },
+    {
+      "wall": [
+        9,
+        5
+      ],
+      "downwind": [
+        12.3,
+        5
+      ],
+      "upwind": [
+        5.7,
+        5
+      ],
+      "A": {
+        "downwindLum": 18.3,
+        "upwindLum": 254.4,
+        "downwindDarker": true
+      },
+      "B": {
+        "downwindLum": 18.3,
+        "upwindLum": 254.4,
+        "downwindDarker": true
+      }
+    }
+  ],
+  "verdicts": {
+    "everyPointInsideBothScreenshots": true,
+    "downwindDarkerThanUpwindA": true,
+    "downwindDarkerThanUpwindB": true,
+    "maxChannelDiffAB": 0,
+    "toleranceAB": 2,
+    "equalWithinToleranceAB": true
+  },
+  "supplementary": {
+    "note": "Not asked by the plan: every pixel of the canvas region of the two screenshots, A against B (max channel |A - B| per pixel, Pillow ImageChops.difference); outsideOverlay leaves out the #overlay DOM box, which prints the mode letter and the FPS.",
+    "size": [
+      2400,
+      1378
+    ],
+    "canvasPx": [
+      0,
+      80,
+      1960,
+      1327
+    ],
+    "overlayPx": [
+      18,
+      98,
+      618,
+      211
+    ],
+    "pixels": 2444120,
+    "changed": 133,
+    "over2": 132,
+    "max": 164,
+    "changedBBox": [
+      130,
+      165,
+      144,
+      178
+    ],
+    "outsideOverlay": {
+      "total": 2376320,
+      "changed": 0,
+      "over2": 0,
+      "max": 0
+    }
+  }
+}

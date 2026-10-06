@@ -218,7 +218,7 @@ finalOutput = _HDREmulationScale * (color * finalModulate + finalAdditve);
 
 - ✅ **Nessun limite al numero di luci per oggetto.** La sovrapposizione diventa fill rate, non branching.
 - ✅ Il costo per luce è **fill rate sull'area coperta**, indipendente da quanti sprite illumina — l'opposto di A.
-- ✅ La **luce globale è letteralmente il clear color** del light buffer. Costa zero.
+- ✅ In Unity la **luce globale è letteralmente il clear color** del light buffer: costa zero. (In Hyperion il clear è l'ambient del motore, `setAmbient`; una luce `global` è un'entità additiva e mascherata, un ambient per layer, e nel backend `lit` non proietta ombre.)
 - ✅ Half-res dimezza il costo con perdita accettabile: Unity lo documenta come *"good performance with almost no noticeable artifact in most situations"*.
 - ⚠️ Vincolo dal sorgente Unity: *"Normals and Light textures have to be of the same renderTextureScale, to prevent any sampling artifacts"*.
 - ❌ Perde i dettagli fini della luce sui bordi.
@@ -467,7 +467,7 @@ Nota compensativa: la magnitudine dell'errore in distanza è minuscola proprio d
 
 #### 🆕 E2 — Risoluzione e oversize: il conto vero
 
-Godot usa `rendering/2d/sdf/scale = 50%` (25% dei pixel) e `rendering/2d/sdf/oversize = 120%`. L'oversize serve a evitare che occluder appena fuori schermo smettano di proiettare ombra — artefatto reale e visibile.
+Godot usa `rendering/2d/sdf/scale = 50%` (25% dei pixel) e `rendering/2d/sdf/oversize = 120%`. In Godot l'oversize allarga l'SDF 2D, che le ombre integrate delle `Light2D` non leggono (usano l'atlante d'ombra 1D, E1): serve a `texture_sdf()` dei canvas_item, alle collisioni delle particelle e alle ombre marciate su SDF, per le quali evita che occluder appena fuori schermo smettano di proiettare ombra — artefatto reale e visibile. Le ombre di Hyperion sono marciate sull'SDF: il caso è il nostro (misura al §17, punto 1).
 
 **Ma il naming inganna.** Dal sorgente (`_render_target_get_sdf_rect`):
 ```cpp
@@ -485,7 +485,7 @@ Conseguenza sul budget a 1080p:
 | **Half-res + oversize 120%** | **1344×756** | **1,02 Mpx** | **49%** |
 | Full-res + oversize 120% | 2688×1512 | 4,06 Mpx | 196% |
 
-La combinazione di default di Godot costa **quasi quanto un viewport pieno**. Va scelta consapevolmente: partire senza oversize, misurare quanto si vede l'artefatto ai bordi, e salire solo se necessario — oppure oversize 110% (1,21× i pixel) come compromesso.
+La combinazione di default di Godot costa **quasi quanto un viewport pieno**. Va scelta consapevolmente: partire senza oversize, misurare quanto si vede l'artefatto ai bordi, e salire solo se necessario — oppure oversize 110% (1,2× per asse, **1,44× i pixel**, con la semantica di Godot e del codice: il margine va su entrambi i lati) come compromesso.
 
 ### 6.3 Il buffer di emissività
 
@@ -568,7 +568,7 @@ Tile 16×16 (`@workgroup_size(16,16)` = 256 invocazioni, esattamente il default 
 
 Target: `light-buffer`, `rgba16float`, **metà risoluzione per asse**. Blend `{operation:'add', srcFactor:'one', dstFactor:'one'}` — renderabile e blendabile in **core**.
 
-**Clear color = luce ambientale globale.** Come Unity: costa zero.
+**Clear color = l'ambient del motore** (`setAmbient`), per ogni gruppo: costa zero. Una luce `global` non è il clear: è un quad a schermo intero additivo e mascherato (un ambient per layer), e nel backend `lit` non proietta ombre.
 
 Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (`drawIndexedIndirect` sul bucket del tipo 6 — l'`instanceCount` l'ha già scritto il `CullPass`). Nel fragment, per ciascun pixel:
 
@@ -598,6 +598,8 @@ ph = h;
 ⚠️ **Non usarla con un SDF da JFA.** La correzione assume che `map()` sia un SDF **esatto**; con un campo da jump flood `h` è già una sovrastima (A1), e il termine `y = h²/(2·ph)` **amplifica l'errore**. Nessuna fonte analizza questa interazione — l'ho verificato esplicitamente. **Partire dalla forma originale `k·h/t`**, che è anche quella che Ronja usa in 2D.
 
 > 🆕 **Implementato 2026-09-26, con due correzioni misurate.** Resta il termine originale `h/t` (non Aaltonen), ma confrontato con l'angolo **reale** della luce: `min(1/k, sourceRadius / D)`. Con `k` da solo la luce ha un raggio che cresce con la distanza del pixel (`D/k`). Una luce accanto a un muro oscurava così anche il lato aperto, del 23-42% e a bande radiali. Inoltre un pixel dentro un occluder prima ne esce, poi marcia, e la penombra si misura dal punto d'uscita. Infine un raggio che finisce i passi estrapola l'ultima distanza libera fino alla luce. Dettagli in `light-accum.wgsl` e nei commit `2c77d87` e `1675a92`. Il budget di default è **48 passi**, non 16-32: a 24 i raggi che radono una faccia finivano i passi e facevano filtrare luce dietro i muri, mentre 48 costa il 2% in più di `light-accum` (commit `0815e58`).
+
+> 🆕 **Ombre directional, passo 6 del giro (implementate 2026-10-04 e 2026-10-05).** Una luce directional splende verso il suo asse +x locale (`lightFacing`, lo stesso helper dello spot): `rotation(-Math.PI/2)` la fa splendere verso il basso dello schermo, perché il mondo è y-up. `vs_main` calcola il raggio verso la luce in texel dell'SDF (a ogni vertice, uguale per tutti i vertici della luce; proiezione come vettore, w = 0, esatta perché il motore costruisce solo camere ortografiche) e la lunghezza dell'ombra, il `range` della luce in texel. Il fragment marcia (`sunShadow`) fino a min(range, uscita dall'SDF), e oltre l'SDF conta come illuminato: la lettura clampata ripeterebbe il bordo all'infinito, e la regola dei passi finiti, estrapolata all'infinito, darebbe 0. L'angolo è fisso, `u.sourceFraction`: 0,02 rad (circa 1,15°), la larghezza della penombra per unità di distanza, cioè circa il **diametro** angolare della sorgente; è l'angolo di ogni point al bordo del suo range (1/k = 0,125 rad sarebbe 13 volte il diametro del sole vero, 0,0093 rad). Un caster a distanza t dal pixel ombreggia a forza piena fino a 3/4 del range, poi sfuma con una smoothstep fino a 0. Il sole marcia con un budget di passi quadruplo, `4u * u.shadowSteps` (192 al default di 48; sotto-decisione 2 (b) del proprietario): i raggi di un sole allineato agli assi strisciano lungo le facce dei caster parallele a loro per tutta la loro lunghezza, 1-2 texel a passo. Resta un residuo per i caster lunghi più di circa 7 unità (a 1080p, zoom 1) lungo quei raggi: a `rotation(0)` circa lo 0,1 % del light buffer della scena del banco del passo 6 sbaglia di più di 0,1 del sole (`assets/2026-09-30-step6/grid-x4-m2.json`). Un caster fuori schermo non proietta nulla; la comparsa al bordo dal lato del sole è al §17, punto 1. Le luci `global` non proiettano ombre nel backend `lit`. Costo nel §13.2; A/B dell'angolo in `assets/2026-09-30-step6/penumbra-ab-m2.json`.
 
 **Step count**: `bevy_light_2d` usa 32, jason.today 32, Yaazarai indica *"the optimal case seems to be 32-64 steps"*, davidtme (marzo 2026) *"approximately 10-20 steps per pixel"* con SDF. **16–32 è la fascia di lavoro.**
 
@@ -759,11 +761,11 @@ Esattamente 32 bit. **Zero nuove colonne SoA, zero nuovi export WASM, stride del
 | slot | nome | note |
 |---|---|---|
 | 0-2 | `colorR/G/B` | HDR — **energy premoltiplicata nel colore** |
-| 3 | `range` | raggio in unità mondo |
+| 3 | `range` | raggio in unità mondo (point, spot); per una directional, la lunghezza dell'ombra |
 | 4 | `innerCos` | coseno angolo interno (Spot) / `height` (Point, per normal map) |
 | 5 | `outerCos` | coseno angolo esterno (Spot) |
 | 6 | `falloff` | esponente di attenuazione |
-| 7 | `shadowIntensity` | `0` = nessuna ombra |
+| 7 | `shadowIntensity` | `0` = nessuna ombra; ignorata sulle `global` nel backend `lit` |
 
 8 su 8. Premoltiplicare l'energy libera lo slot per `shadowIntensity`.
 
@@ -858,22 +860,27 @@ const torcia = engine.spawn()
   .shadows(0.8)
   .lightLayers(0b0000_0000_0000_0011);
 
-torcia.setParent(personaggio);          // gerarchia gratis
+torcia.parent(personaggio.id);          // gerarchia gratis
 
 muro.castsShadow(true).receivesLight(true).lightLayers(0b11);
+
+// Un sole: splende verso il suo +x locale; l'ombra è lunga `range` e sfuma verso la fine
+const sole = engine.spawn()
+  .rotation(-Math.PI / 3)                 // da in alto a sinistra verso in basso a destra (mondo y-up)
+  .light({ type: 'directional', color: '#fff4e0', energy: 1.2, range: 40, shadowIntensity: 1 });
 
 engine.lighting.setBackend('lit');      // 'off' | 'lit' | 'gi'
 engine.lighting.setAmbient('#101828', 1.0);
 engine.lighting.setQuality({
-  bufferScale: 0.5,        // risoluzione del light buffer e della SDF
-  sdfOversize: 1.0,        // 1.0 = nessun padding; 1.2 costa +96% di pixel (§6.2)
-  shadowSteps: 24,
+  bufferScale: 0.5,        // risoluzione del light buffer e della SDF (fisso a 0.5 per ora: un altro valore non cambia nulla e il renderer avvisa una volta)
+  sdfOversize: 1.0,        // 1.0 = nessun padding; 1.2 costerebbe +96% di pixel (§6.2) (fisso a 1.0 per ora: un altro valore non cambia nulla e il renderer avvisa una volta)
+  shadowSteps: 48,
   cascades: 6,             // solo backend 'gi'
   deterministic: true,     // vieta reproiezione, merge stocastico, ammortizzazione
 });
 ```
 
-`setBackend()` provoca un `rebuildGraph()`. Stessa meccanica di `enableBloom` / `enableOutlines`.
+Al cambio del backend `setBackend()` fa richiedere al renderer il grafo lit (`followLightingBackend`), che va live dopo la validazione GPU, come i grafi di `enableBloom` / `enableOutlines`.
 
 ---
 
@@ -941,15 +948,17 @@ Estrapolazione dal per-pass (**aritmetica, non misura**):
 |---|---|---|
 | 1920×1080 full res | 11 | ~0,77 ms |
 | 960×540 half res | 10 | **~0,18 ms** |
-| 🆕 1344×756 (half + oversize 120%) | 11 | **~0,35 ms** |
+| 🆕 1344×756 (half + oversize 120%) | 11 (12 con il load pass di 1+JFA) | **~0,35 ms** |
 | 480×270 quarter | 9 | ~0,04 ms |
+
+> I conteggi di questa tabella sono pass di JFA puro: la catena di Hyperion (1+JFA, §6.2 A1) ne aggiunge uno.
 
 Su GPU integrata attendersi **3-5×**, più l'overhead WebGPU di §3.1.
 
 | Pass | Backend | Stima @1080p, GPU discreta |
 |---|---|---|
 | `OccluderSeedPass` | entrambi | ~ come `SelectionSeedPass` ma su tutti i bucket |
-| **`JFAPass ×11`** (half + oversize) | entrambi | **~0,35 ms** 🆕 (era "non misurato") |
+| **catena 1+JFA, 12 pass** (half + oversize) | entrambi | **~0,35 ms** 🆕 (era "non misurato") |
 | `LightAccumPass` (20 luci r=300) | `lit` | ~34 M campionamenti SDF → frazioni di ms |
 | `RadianceCascadePass ×6` | `gi` | ~4 ms su RTX 3080-class; 12-20 ms su integrata |
 
@@ -1007,6 +1016,17 @@ MacBook Pro 14", GPU a 16 core; alimentatore collegato (65 W), Low Power Mode 0.
 - Con la lighting accesa il frame resta a 120 fps: 4,84 ms su un budget di 8,33.
 - Una finestra `lit` presa da sola ha una dispersione più larga di quella delle tre coppie (deviazione standard 0,056 ms). Le 4 finestre a 48 passi del controllo, che comincia 79 s dopo la fine dei giri, vanno da 4,375 a 4,799 ms (0,42 ms di ampiezza); tutte e 7 le finestre a 48 passi (3 dei giri, 4 del controllo) da 4,375 a 4,869 ms (0,49 ms, deviazione standard 0,19), e le 7 a 24 passi da 4,202 a 4,796 ms (0,59 ms). L'errore standard della media di tre coppie è quindi circa 0,11 ms. Dentro una finestra lo span `lit` oscilla fra circa 3 e 6,5 ms, a tratti di decine di frame; la causa non è misurata.
 - 48 contro 24 passi: in media +0,2-0,3 ms (4-6 % del frame) nei giri e nel controllo, ma i singoli confronti vanno da −0,08 a +0,47 ms, cioè lo stesso ordine del rumore fra finestre. Il +2 % del §7.3 è tempo di `light-accum` sull'AMD, non tempo del frame, e sull'M2 `light-accum` da solo non si misura.
+
+#### 🆕 Ombre directional (passo 6 del giro) — Apple M2 Pro / Metal, Chrome 155.0.8059.40 — misurato 2026-10-06
+
+Stesse condizioni della riga M9 (alimentatore, `chrome-devtools-gpu` con timestamp non quantizzati, altro browser fermo, controllato prima e dopo ogni coppia), ma **scena statica committata** (`assets/2026-09-30-step6-directional-bench.js`, task `scene`: pavimento, tre muri, due piattaforme parallele ai raggi, due scatole, una point di range 5; il sole a `rotation(0)`, range 100, cioè raggi fino all'uscita dall'SDF, i più lunghi della marcia), 1920×1080, `shadowSteps` 48 (192 per il sole), **1 gruppo di luci**. Metodo: 8 blocchi ABBA `[ON, OFF, OFF, ON]` di finestre da 120 frame per coppia; effetto per blocco `(ON1 + ON2 − OFF1 − OFF2) / 2`; media ± SE, IC 95 % con t a 7 gradi di libertà. Non si confronta con le righe AMD (marker per pass) né con M9 (tab animato). Un sole ombreggiato marcia ogni texel del light buffer una volta per gruppo di luci che la sua maschera raggiunge, e ogni set di caster distinto fra quei gruppi aggiunge un flood: con più gruppi il costo si moltiplica.
+
+| Coppia | Cosa isola | Span ON | Span OFF | Costo ± SE (n) | IC 95 % (t, n−1 gdl) |
+|---|---|---|---|---|---|
+| marcia | ombra del sole on/off, con una point ombreggiata che tiene vivo l'SDF set | 3,533 ms | 3,189 ms | 0,344 ± 0,070 ms (8) | [0,179, 0,509] ms |
+| set | il sole unica luce ombreggiata: seed + flood + marcia | 3,458 ms | 0,906 ms | 2,552 ± 0,056 ms (8) | [2,421, 2,684] ms |
+
+P2 − P1 = 2,208 ms: circa il costo di un SDF set (seed + flood) a 1920×1080. L'A/B dell'angolo (`assets/2026-09-30-step6/penumbra-ab-m2.json`) ha cambiato solo l'angolo della penombra, mai il numero di passi, e la marcia avanza di h a ogni passo qualunque sia l'angolo: non ha una riga di costo sua. Fuori dal criterio, point e spot senza sole, `light-accum.wgsl` nuovo contro quello di `2f43e42` (coppia `pointspot`, n = 4): sotto la risoluzione, < 0,325 ms (media 0,011 ± 0,099 ms, IC 95 % con t a 3 gradi di libertà [−0,303, 0,325]). Nessun blocco rifatto e nessuna finestra scartata. Dati in `assets/2026-09-30-step6/cost-m2.json`.
 
 ---
 
@@ -1081,7 +1101,7 @@ I passi 1-5 producono un sistema di illuminazione 2D completo. Il passo 6 è un 
 
 ### Ancora aperte
 
-1. **Oversize della SDF: quanto?** 🆕 Ora che sappiamo che il 120% costa +96% di pixel, la scelta non è ovvia. Proposta: default `1.0` (nessun padding), esporlo come parametro, e alzarlo solo se l'artefatto ai bordi si rivela visibile nei test. Godot lo dà a 120% di default, ma Godot non paga anche un light buffer.
+1. **Oversize della SDF: quanto?** 🆕 Ora che sappiamo che il 120% costa +96% di pixel, la scelta non è ovvia. Proposta: default `1.0` (nessun padding), esporlo come parametro, e alzarlo solo se l'artefatto ai bordi si rivela visibile nei test. Godot lo dà a 120% di default, ma Godot non paga anche un light buffer. 🆕 **Misurato al passo 6 del giro (2026-10-06):** con un sole a range 100 un caster che entra dal bordo dal lato del sole porta in un frame tutta la sua ombra: pop 0,9995 sul 100 % della larghezza della vista (35,56 unità; `assets/2026-09-30-step6/edge-pop-m2-*.json`); a range 30 e 10 la banda è lunga circa quanto il range (il pop resta ≥ 0,1 fino a 29 e 9,5 unità dal bordo). Un rettangolo dell'SDF guidato dalla luce, per toglierla, dovrebbe allargarsi controvento di almeno il range e di traverso di circa range·`u.sourceFraction`, per la penombra laterale; la scelta fra padding simmetrico e rettangolo guidato dalle luci resta al passo 8c.
 2. **Il light buffer a metà risoluzione è accettabile per il caso Canvas/design tool?** Unity lo usa nei giochi, ma per un tool tipo Figma i bordi morbidi potrebbero essere visibili su UI ad alta densità. Con desktop-first, `bufferScale: 1.0` è ragionevole come default per quel prodotto — ma raddoppia il costo dell'accumulo.
 3. **Le normal map sono un requisito o un nice-to-have?** 🆕 §4.5 le colloca nelle table stakes: chi arriva da Godot, Unity, Phaser o PixiJS se le aspetta. Sono anche l'unica parte che tocca invasivamente la pipeline dati. Il costo di introdurle dopo è identico a introdurle ora — quindi la decisione è rinviabile senza penalità tecnica, ma non senza penalità di percezione.
 4. **16 light layer bastano?** Godot ne espone 20, Unity usa i sorting layer. 16 è quanto entra in `renderMeta` senza nuove colonne.
