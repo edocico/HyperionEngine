@@ -96,10 +96,12 @@ export interface LightOptions {
   /** Multiplier applied to `color` on the way to the GPU. Default 1. */
   energy?: number;
   /**
-   * World units. Default 100. Finite, except on a directional light, and
-   * never NaN: `light()` does not check, and Rust rejects a non-finite
-   * `SetPrimParams0` whole, so the light loses its colour too and lights
-   * nothing.
+   * World units. Default 100. Within ±3.4e38 (a finite f32), except on a
+   * directional light (which is clamped), and never NaN: `light()` does not
+   * check, a value past the f32 range reaches the wire as ±inf (the
+   * `Float32Array` write: 1e39 is finite in JS, not in f32), and Rust rejects
+   * a non-finite `SetPrimParams0` whole, so the light loses its colour too and
+   * lights nothing.
    * - `point`, `spot`: the light's radius, which is also its culling radius.
    * - `directional`: the length of its shadows, which fade out toward the end
    *   (0 or less casts none, `-Infinity` included; `Infinity` casts endless
