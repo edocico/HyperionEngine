@@ -76,6 +76,10 @@ const FADE_POINT = 3;
  * texels per unit, read 0.455 to 0.655, among them 1960x1248 0.508, 800x600
  * 0.655, 699x349 0.455 and 565x320 0.534; the full readings go into
  * docs/plans/assets/2026-09-30-step6/length-canvases-m2.json (step 6, Task 10).
+ * On those canvases the GPU read between -0.064 and +0.040 of the march model
+ * at its nearest texel (999x999 -0.064, 3840x960 +0.040, +0.002 to +0.024
+ * elsewhere), so near the model's bounds, about 0.44 and 0.72, a coarse canvas
+ * keeps only a few hundredths of margin.
  *
  * The window is validated from 8 light-buffer texels per world unit up. With
  * this tab's framing that is a canvas (its backing store) at least 320 px

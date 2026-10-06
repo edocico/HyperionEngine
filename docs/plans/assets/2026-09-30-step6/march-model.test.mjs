@@ -37,10 +37,13 @@ test('the camera: 20 world units tall at zoom 1, on the half-resolution light bu
   near(cam.xL, -160 / 9, 'xL (17.78 units each side at 16:9)');
   assert.deepEqual(cam.toTexel(0, 200), [480, 270]);
   assert.deepEqual(cam.toTexel(cam.xL, 210), [0, 0]); // the top-left texel: the texture's y runs down
-  // The M4 window (1200x689 CSS at dpr 2): halfResolution of the canvas.
-  const m4 = makeCamera(0, 0, 2400, 1378);
-  assert.deepEqual([m4.w, m4.h], [1200, 689]);
-  near(m4.texPerUnit, 34.45, 'texels per unit in the M4 window');
+  // The M4 canvas, 1960x1248 (980x624 CSS at dpr 2, inside the 1200x689 CSS
+  // window; docs/plans/assets/2026-09-29-mac-m2/README.md, M4): its light buffer
+  // is halfResolution of the canvas, 31.2 texels per unit at zoom 1. (At the sun
+  // sub-scene's fitView zoom, 0.89234, check 2's named canvases pin 27.841.)
+  const m4 = makeCamera(0, 0, 1960, 1248);
+  assert.deepEqual([m4.w, m4.h], [980, 624]);
+  near(m4.texPerUnit, 31.2, 'texels per unit on the M4 canvas at zoom 1');
 });
 
 test('FADE_START is the shader constant SUN_FADE_START', () => {
