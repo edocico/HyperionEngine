@@ -85,7 +85,8 @@ const FADE_POINT = 3;
  * reads 0.85, and a range 0.5 too long 0.45; at zoom 1 correct code first
  * leaves it between 5 and 6 per unit (425x212: 0.754). A failure on such a
  * canvas may mean the canvas, not a bug, and a pass there does not rule one
- * out.
+ * out. The check's detail prints the run's texels per unit, and marks a run
+ * below VALIDATED_TEXELS_PER_UNIT.
  *
  * From 8 texels per unit up every defect the check names lies outside: a
  * shadow half its range long is gone by then (1); a hard cut, or a shadow
@@ -94,6 +95,8 @@ const FADE_POINT = 3;
  * about 0.9.
  */
 const FADE_SHARE: readonly [number, number] = [0.4, 0.75];
+/** The light-buffer texels per world unit from which FADE_SHARE is validated (see FADE_SHARE). */
+const VALIDATED_TEXELS_PER_UNIT = 8;
 /** The edge check's sun keeps LightOptions' default range. */
 const DEFAULT_RANGE = 100;
 /** The tab's own framing: the same zoom, so the same texels per unit as the CPU model at 16:9. */
@@ -169,8 +172,13 @@ export function directionalShadowVerdict(
  * point before (by more than 0.02 in luminance), and half faded at FADE_POINT:
  * there the sun's share of the light, (lum − lum(floor)) / lum(sun) with
  * floor = lit − sun, lies in FADE_SHARE.
+ *
+ * `texelsPerUnit`, the run's light-buffer texels per world unit
+ * (lightBufferTexelsPerUnit), only adds a part to the detail: the value, and
+ * below VALIDATED_TEXELS_PER_UNIT a mark that the run is outside the window's
+ * validated domain. The verdict never reads it.
  */
-export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly number[], sun: Rgb): Verdict {
+export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly number[], sun: Rgb, texelsPerUnit?: number): Verdict {
   const lums = profile.map(lum);
   const problems: string[] = [];
   const darker = lums.findIndex((l, i) => i > 0 && l < lums[i - 1] - 0.02);
@@ -191,9 +199,31 @@ export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly numb
   }
   const last = profile.length - 1;
   if (!close(profile[last], lit)) problems.push(`still shadowed ${LENGTH_DISTANCES[last]} past the caster: the shadow runs past its range`);
+  // One part, without a ';' of its own: the tests strip it to compare the rest.
+  const density = texelsPerUnit === undefined
+    ? ''
+    : `; light buffer ${fmt([texelsPerUnit])} texels per world unit`
+      + (texelsPerUnit < VALIDATED_TEXELS_PER_UNIT
+        ? `, below the window's validated domain (${VALIDATED_TEXELS_PER_UNIT} and up), where it can fail correct code or pass a wrong range`
+        : '');
   const detail = `luminance at ${LENGTH_DISTANCES.join(', ')} past the caster: ${fmt(lums)}; `
-    + `the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster ${fmt([share])}; lit ${fmt([lum(lit)])}; range ${SHORT_RANGE}`;
+    + `the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster ${fmt([share])}; lit ${fmt([lum(lit)])}; range ${SHORT_RANGE}`
+    + density;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
+}
+
+/**
+ * The light buffer's texels per world unit in this run: its rows
+ * (halfResolution of the canvas' backing store, as edgePopVerdict sizes it)
+ * over the view's height in world units (viewBounds of the camera's
+ * view-projection). It is march-model.mjs's `texPerUnit`, the density
+ * FADE_SHARE is validated against.
+ */
+function lightBufferTexelsPerUnit(engine: Hyperion): number {
+  const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
+  const [, rows] = halfResolution(canvas?.width ?? 0, canvas?.height ?? 0);
+  const [, , yMin, yMax] = viewBounds(engine.cam.viewProjection);
+  return rows / (yMax - yMin);
 }
 
 /** The three rows of the edge check, read at the same d, and E. */
@@ -316,7 +346,7 @@ export async function checkDirectional(
       const along = LENGTH_DISTANCES.map((d): [number, number] => [cx + dx * (FAR_FACE + d), cy + dy * (FAR_FACE + d)]);
       // U, lit in the same frame: what "lit" is.
       const read = await probe('light-buffer', [...along, points.U], floorGroup());
-      return shadowLengthVerdict(read.slice(0, along.length), read[along.length], SUN_COLOR);
+      return shadowLengthVerdict(read.slice(0, along.length), read[along.length], SUN_COLOR, lightBufferTexelsPerUnit(engine));
     });
 
     // ── 3. A caster entering from the sun's side ────────────────────────

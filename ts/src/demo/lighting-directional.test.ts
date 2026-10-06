@@ -145,6 +145,42 @@ describe('shadowLengthVerdict', () => {
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('darker at 4 than at 2');
   });
+
+  it("shadowLengthVerdict prints the run's light-buffer texels per world unit, and marks a run below 8, the window's validated domain", () => {
+    // The march model's texPerUnit at 1080p (27), at 565x320 (8, the domain's
+    // edge, inside it) and at 290x580 (4.119, fitView zoomed out).
+    const profile = [0, 0, 0, 0.503, 1].map(at);
+    const below = "below the window's validated domain";
+    const dense = shadowLengthVerdict(profile, lit, sun, 27);
+    expect(dense.detail).toContain('light buffer 27.000 texels per world unit');
+    expect(dense.detail).not.toContain(below);
+    const edge = shadowLengthVerdict(profile, lit, sun, 8);
+    expect(edge.detail).toContain('light buffer 8.000 texels per world unit');
+    expect(edge.detail).not.toContain(below);
+    const coarse = shadowLengthVerdict(profile, lit, sun, 4.119);
+    expect(coarse.detail).toContain('light buffer 4.119 texels per world unit');
+    expect(coarse.detail).toContain(below);
+    // Without the parameter, the detail of before.
+    expect(shadowLengthVerdict(profile, lit, sun).detail).not.toContain('texels per world unit');
+  });
+
+  it('shadowLengthVerdict: the texels per unit change no verdict, on every profile these tests judge, and only add their part to the detail', () => {
+    const profiles = [
+      [0, 0, 0, 0.503, 1], [0, 0, 0, 0.508, 1], [0, 0, 0, 0.5, 1], // 1080p, the M2, checkDirectional's fake
+      [0, 0, 0, 0.635, 1], [0, 0, 0, 0.709, 1], [0, 0, 0, 0.448, 1], // coarse canvases
+      [0, 0, 0, 0.915, 1], [0, 0, 0, 0.877, 1], [0, 0, 0, 0.137, 1], [0, 0, 0, 0.3, 1], // a range 0.5 off
+      [0, 0, 1, 1, 1], [0, 0, 0, 0, 1], [0.08, 0.33, 0.67, 0.88, 1], // half the range, a hard cut, a fade from the caster
+      [0, 0, 0, 0, 0], [1, 1, 1, 1, 1], [0, 0.5, 0.2, 0.8, 1], // never ends, no shadow, darker farther away
+    ];
+    for (const f of profiles) {
+      const without = shadowLengthVerdict(f.map(at), lit, sun);
+      for (const texelsPerUnit of [27, 8, 7.99, 4.119]) {
+        const v = shadowLengthVerdict(f.map(at), lit, sun, texelsPerUnit);
+        expect(v.ok, `${f.join(', ')} at ${texelsPerUnit} texels per unit`).toBe(without.ok);
+        expect(v.detail.replace(/; light buffer [^;]*/, ''), `${f.join(', ')} at ${texelsPerUnit} texels per unit`).toBe(without.detail);
+      }
+    }
+  });
 });
 
 describe('edgePopVerdict', () => {
@@ -337,7 +373,37 @@ describe('checkDirectional', () => {
     near(edge[70], [xL + 1, 205.5]);
     near(edge[105], [xL + 1, 206.6]);
     expect(reporter.results()[2].detail).toContain('canvas 1920×1080, light buffer 960×540');
+    // The light buffer's 540 rows over the view's 20 units: the march model's 27 at 1080p.
+    expect(reporter.results()[1].detail).toContain('light buffer 27.000 texels per world unit');
+    expect(reporter.results()[1].detail).not.toContain('below the window');
     expect(handles.every((h) => h.destroyed)).toBe(true);
     expect(restoreView).toHaveBeenCalledTimes(1);
+  });
+
+  it("checkDirectional on a 290x580 canvas: 'Directional shadow length' prints 4.119 texels per world unit and marks the run below the window's domain, with the same verdict", async () => {
+    // engine.resize(290, 580) makes the view 10 x 20 units at zoom 1; fitView
+    // zooms out to 0.284 so that 17.6 units fit on each side, a view 70.4
+    // units tall over halfResolution's 290 rows: the march model's 4.119
+    // (march-model.test.mjs, below 8 texels per unit).
+    vi.stubGlobal('document', { getElementById: () => ({ width: 290, height: 580 }) });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
+    const answers = [
+      () => [at(0), at(1), at(1), at(1)],
+      () => [at(0), at(0), at(0), at(0.5), at(1), at(1)],
+      (n: number) => [...Array(n).fill(at(1)), ...Array(n).fill(at(0)), ...Array(n).fill(at(1)), at(1)],
+    ];
+    let reads = 0;
+    const probe = async (request: ProbeRequest) => ({ values: answers[reads++]((request.world.length - 1) / 3) });
+    const { engine } = fakeEngine(probe, { groups: [{ layers: 1, sdfSet: 0 }], sdfSets: [{ occluderLayers: 1 }], layerToGroup: [0, 0] });
+    engine.cam.setOrthographic(20 * (290 / 580), 20);
+    const reporter = createTestReporter();
+    await checkDirectional(engine, reporter, [], floor, vi.fn());
+
+    expect(reporter.results().map(({ name, status }) => [name, status])).toEqual([
+      ['Directional shadow', 'pass'],
+      ['Directional shadow length', 'pass'],
+      ['Directional edge pop (measured)', 'pass'],
+    ]);
+    expect(reporter.results()[1].detail).toContain("light buffer 4.119 texels per world unit, below the window's validated domain");
   });
 });
