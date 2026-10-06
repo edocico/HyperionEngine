@@ -449,9 +449,11 @@ test("summarizePenumbra: a grid's sun steps are its budgets times the sun's step
   assert.throws(() => summarizePenumbra({ results: [gridEntry({ sunStepMultiplier: 0 })] }), /sunStepMultiplier must be a whole number >= 1/);
 });
 
-test('the committed evidence: penumbra-ab-m2.json, a x1 grid by its shader, confirms the model; grid-x4-m2.json records no multiplier, and never contradicts it', () => {
+test('the committed evidence: penumbra-ab-m2.json, a x1 grid by its shader, confirms the model; grid-x4-m2.json, a x4 grid by its record, is not applicable, and never contradicts it', () => {
   // Review wf_cf354af4-c53 [10]: grid-x4-m2.json, read with the x4 shader,
   // printed "the GPU contradicts the model ... stop and ask sub-decision 2 again".
+  // Re-captured at c19cc6a (Task 10), it records the bench's sunStepMultiplier:
+  // its budgets 48, 96 and 192 are the sun's 192, 384 and 768 steps.
   const evidence = (name) => summarizePenumbra(JSON.parse(readFileSync(new URL(`./${name}`, import.meta.url), 'utf8')));
   const ab = evidence('penumbra-ab-m2.json');
   assert.equal(ab.grids[0].shader, '8e68370e');
@@ -459,9 +461,13 @@ test('the committed evidence: penumbra-ab-m2.json, a x1 grid by its shader, conf
   assert.equal(ab.subDecision2.confirmsModel, true);
   assert.match(ab.subDecision2.verdict, /^the GPU confirms the model at rotation\(-PI\/2\), 48 steps: 0\.86% /);
   const x4 = evidence('grid-x4-m2.json');
-  assert.equal(x4.grids[0].sunStepMultiplier, null);
+  assert.equal(x4.grids[0].shader, '407a7243');
+  assert.equal(x4.grids[0].sunStepMultiplier, 4);
+  for (const sun of x4.grids[0].suns) {
+    assert.deepEqual(sun.budgets.map((b) => [b.steps, b.sunSteps]), [[48, 192], [96, 384], [192, 768]], `${sun.name}: the sun's steps`);
+  }
   assert.equal(x4.subDecision2.confirmsModel, null);
-  assert.match(x4.subDecision2.verdict, /^unknown multiplier/);
+  assert.match(x4.subDecision2.verdict, /^not applicable: grid read with the x4 sun budget/);
   assert.doesNotMatch(x4.subDecision2.verdict, /contradicts|ask sub-decision 2 again/);
 });
 
