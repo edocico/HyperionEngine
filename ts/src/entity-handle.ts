@@ -78,11 +78,12 @@ const LIGHT_TYPE_IDS: Record<LightType, number> = {
 const LIGHT_BLEND_IDS: Record<LightBlendMode, number> = { add: 0, sub: 1, mix: 2 };
 
 /**
- * The largest finite f32. A directional light's range past it can reach the
- * wire as +inf (`Infinity` does, and so does `Number.MAX_VALUE`), and Rust
- * rejects a non-finite `SetPrimParams0` whole, the light's colour with it. At
- * this value the shadows are endless already: light-accum.wgsl
- * `directionalRay` bounds range × texels.
+ * The largest finite f32. A directional light's range beyond ±F32_MAX can
+ * reach the wire as ±inf (`±Infinity` does, and so does `±Number.MAX_VALUE`),
+ * and Rust rejects a non-finite `SetPrimParams0` whole, the light's colour
+ * with it. At F32_MAX the shadows are endless already (light-accum.wgsl
+ * `directionalRay` bounds range × texels); at −F32_MAX there are none (it
+ * clamps the range at 0).
  */
 const F32_MAX = 3.4028234663852886e38;
 
@@ -95,12 +96,16 @@ export interface LightOptions {
   /** Multiplier applied to `color` on the way to the GPU. Default 1. */
   energy?: number;
   /**
-   * World units. Default 100.
+   * World units. Default 100. Finite, except on a directional light, and
+   * never NaN: `light()` does not check, and Rust rejects a non-finite
+   * `SetPrimParams0` whole, so the light loses its colour too and lights
+   * nothing.
    * - `point`, `spot`: the light's radius, which is also its culling radius.
    * - `directional`: the length of its shadows, which fade out toward the end
-   *   (0 or less casts none; `Infinity` casts endless ones, sent as the
-   *   largest finite f32, like any range past it). It does not limit what the
-   *   light lights: a sun covers the whole view and is never culled.
+   *   (0 or less casts none, `-Infinity` included; `Infinity` casts endless
+   *   ones). Sent clamped to the finite f32 range, so any number but NaN
+   *   reaches the GPU. It does not limit what the light lights: a sun covers
+   *   the whole view and is never culled.
    * - `global`: unused (never culled either).
    */
   range?: number;
@@ -589,9 +594,12 @@ export class EntityHandle implements Disposable {
     const [r, g, b] = normalizeColor(options.color ?? '#ffffff');
     const energy = options.energy ?? 1;
     const type = options.type ?? 'point';
-    // A sun's `range` is its shadows' length: Infinity means endless ones,
-    // sent as the largest finite f32 (see F32_MAX).
-    const range = type === 'directional' ? Math.min(options.range ?? 100, F32_MAX) : options.range ?? 100;
+    // A sun's `range` is its shadows' length, sent clamped to the finite f32
+    // range (see F32_MAX): Infinity means endless ones, -Infinity none. NaN
+    // passes through, as any range of the other types does.
+    const range = type === 'directional'
+      ? Math.max(-F32_MAX, Math.min(options.range ?? 100, F32_MAX))
+      : options.range ?? 100;
 
     this._producer!.setRenderPrimitive(this._id, RenderPrimitiveType.Light2D);
     this._producer!.setLightFlags(
