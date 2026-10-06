@@ -87,20 +87,27 @@ describe('shadowLengthVerdict', () => {
     // Review of Task 9fix (Important 1): the march model's profiles on the
     // tab's framing (fitView) at 8 to 16 light-buffer texels per unit,
     // against 27 at 1080p: an 800x600 canvas (0.635), then the highest
-    // (576x320, 0.709) and the lowest (588x420, 0.448) share of its sweeps
-    // from 8 texels per unit up, the window's domain (march-model.test.mjs).
-    // With FADE_SHARE at [0.40, 0.60] the first two failed as a shadow
-    // shorter than its range.
+    // (576x320, 0.709) and the lowest (588x420, 0.448) share on the grid of
+    // march-model.test.mjs's 8-16 sweep (heights every 20 px, aspects in
+    // tenths). Those are that grid's extremes, not the domain's: over a finer
+    // sweep of canvases from 8 texels per unit up the model puts correct code
+    // at about 0.44 to 0.72 (0.716 at 565x320, 0.437 at 699x349). With
+    // FADE_SHARE at [0.40, 0.60] the first two failed as a shadow shorter
+    // than its range.
     for (const f of [[0, 0, 0, 0.635, 1], [0, 0, 0, 0.709, 1], [0, 0, 0, 0.448, 1]]) {
       const v = shadowLengthVerdict(f.map(at), lit, sun);
       expect(v.ok, v.detail).toBe(true);
     }
   });
 
-  it('shadowLengthVerdict fails a range 0.5 off: the march model at 1080p, and nearest the window from 8 texels per unit up', () => {
+  it("shadowLengthVerdict fails a range 0.5 off: the march model at 1080p, and nearest the window on the 8-16 sweep's grid", () => {
     // Ranges 5.5 and 6.5 at range 6's points: 0.915 and 0.137 at 1080p;
-    // 0.877 (588x420) and 0.300 (576x320), the closest to FADE_SHARE of the
-    // model's sweeps from 8 texels per unit up.
+    // 0.877 (588x420) and 0.300 (576x320), the closest to FADE_SHARE on the
+    // grids of march-model.test.mjs's sweeps, both on the 8-16 one (heights
+    // every 20 px, aspects in tenths). Those are the grid's: over a finer
+    // sweep of canvases from 8 texels per unit up the model puts a range 0.5
+    // off at about 0.31 or less, or 0.87 or more (0.306 at 565x320, 0.868 at
+    // 699x349).
     for (const share of [0.915, 0.877]) {
       const v = shadowLengthVerdict([0, 0, 0, share, 1].map(at), lit, sun);
       expect(v.ok).toBe(false);

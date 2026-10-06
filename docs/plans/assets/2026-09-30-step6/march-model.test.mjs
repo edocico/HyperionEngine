@@ -109,7 +109,12 @@ test("check 2 (range 6): full strength for three quarters of the length, faded o
 // 1.76 (the view is then 2 x 17.6 units wide): there the density falls with
 // the canvas' width, above it with its height. The tab judges the share
 // against FADE_SHARE, which these tests read from its source. Its window is
-// validated from 8 texels per unit up; below that it no longer holds.
+// validated from 8 texels per unit up; below 8 it is not guaranteed in either
+// direction. The sweeps below run on grids of canvases: the extremes they pin
+// are the grids', and a finer sweep reaches a little past them (the model's
+// bounds, rounded: correct code about 0.44 to 0.72 from 8 texels per unit up
+// and 0.47 to 0.61 from 16 up, a range 0.5 off about 0.31 or less, or 0.87 or
+// more).
 
 /** The distances of check 2 past wall A's far face, and the one inside the fade. */
 const LENGTH = [0.5, 2, 4, 5.25, 7.5];
@@ -241,8 +246,8 @@ test("check 2 on the tab's framing (fitView), the sun's 192 steps: at named canv
     [999, 999, 0.5682, 14.176, 0.607],
     [800, 600, 0.7576, 11.364, 0.635],
     [700, 500, 0.7955, 9.943, 0.627],
-    [588, 420, 0.7955, 8.352, 0.448], // the lowest share of the sweep below
-    [576, 320, 1, 8, 0.709], // the highest, on a texel's edge: the sweep reads both texels
+    [588, 420, 0.7955, 8.352, 0.448], // the lowest share on the grid of the 8-16 sweep below
+    [576, 320, 1, 8, 0.709], // that grid's highest, on a texel's edge: the sweep reads both texels
   ];
   for (const [w, h, zoom, tpu, share] of cases) {
     const cam = fitViewCamera(C[0], C[1], w, h, halfWidth);
@@ -261,10 +266,12 @@ test("check 2 on the tab's framing (fitView), the sun's 192 steps: at named canv
   }
 });
 
-test("check 2 on the tab's framing, the sun's 192 steps, 8 to 16 texels per unit (every canvas 300 to 1000 px tall, aspect 0.5 to 2.4): 0, 0, 0, a share in FADE_SHARE, 1, at every texel a probe may read; no reach or range error lies in it", () => {
+test("check 2 on the tab's framing, the sun's 192 steps, 8 to 16 texels per unit (a grid of canvases: heights 300 to 1000 px every 20 px, aspects 0.5 to 2.4 in tenths): 0, 0, 0, a share in FADE_SHARE, 1, at every texel a probe may read; no reach or range error lies in it", () => {
   const s = sweepCheck2(canvasGrid(300, 1000, 20, 5, 24, 1), 8, 16);
   // 23 put the point 5.25 past the face on a texel's edge. The window [0.40,
-  // 0.60] of the first fix failed correct code on 58.
+  // 0.60] of the first fix failed correct code on 58. The extremes are this
+  // grid's: off it the model reads 0.716 at 565x320 and 0.437 at 699x349,
+  // and a range 0.5 off 0.306 (565x320) and 0.868 (699x349).
   assert.deepEqual([s.canvases, s.onEdge, s.above], [326, 23, 58]);
   const extremes = { low: [0.448, '588x420'], high: [0.709, '576x320'], shortest: [0.877, '588x420'], longest: [0.3, '576x320'] };
   for (const [k, [value, canvas]] of Object.entries(extremes)) {
@@ -273,8 +280,10 @@ test("check 2 on the tab's framing, the sun's 192 steps, 8 to 16 texels per unit
   }
 });
 
-test("check 2 on the tab's framing, the sun's 192 steps, 16 or more texels per unit (canvases 640 to 1440 px tall in steps of 80, aspect 0.5 to 2.3 in steps of 0.3): the same, the share 0.47 to 0.60", () => {
+test("check 2 on the tab's framing, the sun's 192 steps, 16 or more texels per unit (a grid of canvases: heights 640 to 1440 px every 80 px, aspects 0.5 to 2.3 in steps of 0.3): the same, the share on this grid 0.47 to 0.60", () => {
   const s = sweepCheck2(canvasGrid(640, 1440, 80, 5, 23, 3), 16, Infinity);
+  // The extremes are this grid's: off it the model reads 0.4672 at 2154x718
+  // (17.95 texels per unit) and 0.6024 at 1281x640 (16.0).
   assert.deepEqual([s.canvases, s.onEdge, s.above], [47, 16, 0]);
   const extremes = { low: [0.47, '1152x1440'], high: [0.599, '1280x640'], shortest: [0.893, '1152x1440'], longest: [0.206, '1280x640'] };
   for (const [k, [value, canvas]] of Object.entries(extremes)) {
@@ -283,7 +292,7 @@ test("check 2 on the tab's framing, the sun's 192 steps, 16 or more texels per u
   }
 });
 
-test("check 2 below 8 texels per unit: FADE_SHARE no longer separates correct code from a range 0.5 off (290x580, 4.12 per unit)", () => {
+test("check 2 below 8 texels per unit, where the window is not guaranteed: at 290x580 (4.12 per unit) FADE_SHARE fails correct code and passes a range 0.5 too long", () => {
   const { halfWidth, lo, hi } = tabCheck2();
   const cam = fitViewCamera(C[0], C[1], 290, 580, halfWidth);
   near(cam.texPerUnit, 4.119, 'texels per unit');

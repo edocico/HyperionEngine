@@ -64,25 +64,34 @@ const LENGTH_DISTANCES = [0.5, 2, 4, 5.25, 7.5];
 const FADE_POINT = 3;
 /**
  * The sun's share of the light allowed at FADE_POINT. The march model gives
- * 0.503 there at 1080p, 27 light-buffer texels per world unit (the M2 read
- * 0.508 on a 1960x1248 canvas, 28 per unit, where the model gives 0.499;
- * round step 6). The share moves with where the point falls in its texel and
- * with the SDF's quantisation, both larger as the texels per unit fall:
- * march-model.test.mjs puts correct code at 0.448 to 0.709 from 8 to 16
- * texels per unit and at 0.470 to 0.599 above, in either texel where the
- * point lies on a texel's edge.
+ * 0.503 there at 1080p, 27 light-buffer texels per world unit, and 0.499 on a
+ * 1960x1248 canvas, 28 per unit. The share moves with where the point falls in
+ * its texel and with the SDF's quantisation, both larger as the texels per
+ * unit fall: the march model, read in either texel where the point lies on a
+ * texel's edge, puts correct code at about 0.44 to 0.72 from 8 texels per unit
+ * up, and at about 0.47 to 0.61 from 16 up (the model's bounds, rounded:
+ * march-model.test.mjs pins the extremes of two grids of canvases, which lie
+ * inside them). On the M2 GPU (2026-10-06, at 6fb0480, Mode B, backing stores
+ * set by engine.resize) ten canvases from 565x320 to 4800x960, at 8 to 28
+ * texels per unit, read 0.455 to 0.655, among them 1960x1248 0.508, 800x600
+ * 0.655, 699x349 0.455 and 565x320 0.534; the full readings go into
+ * docs/plans/assets/2026-09-30-step6/length-canvases-m2.json (step 6, Task 10).
  *
  * The window is validated from 8 light-buffer texels per world unit up. With
  * this tab's framing that is a canvas (its backing store) at least 320 px
  * tall where fitView keeps zoom 1 (an aspect of 1.76 or more), or about 564
- * px wide or more where it zooms out. Below that the window no longer holds:
- * at 290x580 (4.1 per unit) correct code reads 0.85, and a range 0.5 too
- * long 0.45. A failure on such a canvas may mean the canvas, not a bug.
+ * px wide or more where it zooms out. Below 8 texels per unit the window is
+ * not guaranteed in either direction: at 290x580 (4.1 per unit) correct code
+ * reads 0.85, and a range 0.5 too long 0.45; at zoom 1 correct code first
+ * leaves it between 5 and 6 per unit (425x212: 0.754). A failure on such a
+ * canvas may mean the canvas, not a bug, and a pass there does not rule one
+ * out.
  *
  * From 8 texels per unit up every defect the check names lies outside: a
  * shadow half its range long is gone by then (1); a hard cut, or a shadow
- * twice its range, is still whole (0); a range 0.5 off reads 0.300 or less,
- * or 0.877 or more; a fade from the caster about 0.9.
+ * twice its range, is still whole (0); a range 0.5 off reads about 0.31 or
+ * less, or 0.87 or more (the model's bounds, rounded); a fade from the caster
+ * about 0.9.
  */
 const FADE_SHARE: readonly [number, number] = [0.4, 0.75];
 /** The edge check's sun keeps LightOptions' default range. */
@@ -175,7 +184,7 @@ export function shadowLengthVerdict(profile: readonly Rgba[], lit: readonly numb
   const share = (lums[FADE_POINT] - (lum(lit) - lum(sun))) / lum(sun);
   if (!(share >= FADE_SHARE[0] && share <= FADE_SHARE[1])) {
     problems.push(`the sun's share ${LENGTH_DISTANCES[FADE_POINT]} past the caster is not ${FADE_SHARE.join('-')} `
-      + '(the march model: 0.503 at 1080p, 0.448-0.709 from 8 light-buffer texels per unit up; a coarser canvas can fail it): '
+      + '(the march model: 0.503 at 1080p, about 0.44-0.72 from 8 light-buffer texels per unit up; below 8 the window is not guaranteed either way): '
       + (share > FADE_SHARE[1]
         ? 'the shadow is shorter than its range, or fades before its last quarter'
         : 'no fade, or a shadow longer than its range'));
