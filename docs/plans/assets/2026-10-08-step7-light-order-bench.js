@@ -103,7 +103,9 @@ async () => {
   //   engine.recompileShader('light-accum', old), a wait for
   //   LightAccumStage.SHADER_SOURCE === old and a new graph, `oldShaderLayers`,
   //   and step 7's shader put back the same way in a `finally`. On master
-  //   (no light list) only `layers` is read.
+  //   (no light list) only `layers` is read, and window.__step7OldLightAccum
+  //   is ignored if set (a loader may set it on every page):
+  //   `oldShaderIgnored: true`.
   // - order { K = 3, apart = 256, blend = 'add', reads = 240, atomic = false }:
   //   whether the cull reorders the lights between frames. The floor (slot 0)
   //   and K pointLight(j, K, blend) with apart - 1 fillers between two
@@ -538,6 +540,7 @@ async () => {
   // ── regress ────────────────────────────────────────────────────────────
   const runRegress = async () => {
     // On a step-7 page the old shader's leg is part of the run: checked before the world is touched.
+    // On master it is ignored: a loader may set window.__step7OldLightAccum on every page.
     const step7Page = (await groupsReady()).lightOrder !== undefined;
     const old = window.__step7OldLightAccum;
     if (step7Page) {
@@ -547,8 +550,6 @@ async () => {
       if (!old.includes('visibleIndices') || old === LightAccumStage.SHADER_SOURCE) {
         throw new Error("window.__step7OldLightAccum is not master's light-accum.wgsl (which reads visibleIndices): set it again from 1d19575");
       }
-    } else if (old !== undefined) {
-      throw new Error('window.__step7OldLightAccum is set on a page without the light list (master): delete it, master reads its own shader only');
     }
     await clearEntities();
     const sceneHdr = await setView();
@@ -572,6 +573,8 @@ async () => {
       sceneHdr, gridSize: GRID, ambient: AMBIENT, shadowSteps: STEPS,
       scene: { receiver: REGRESS_RECEIVER, casters: REGRESS_CASTERS, lights: REGRESS_LIGHTS },
       shaders: { live: fnv1a(live), ...(step7Page ? { old: fnv1a(old) } : {}) },
+      // Master reads its own shader only: an old shader on the page was left alone.
+      ...(!step7Page && old !== undefined ? { oldShaderIgnored: true } : {}),
     };
     const layers = engine.lighting.groups.groups.map((_, g) => g);
     const uv = uvGrid(...GRID);
