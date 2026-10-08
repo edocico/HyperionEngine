@@ -1043,6 +1043,7 @@ export async function createRenderer(
         renderMeta: state.renderMeta,
         texIndices: state.texIndices,
         primParams: state.primParams ?? new Float32Array(0),
+        entityIds: state.entityIds,
         cameraViewProjection: camera.viewProjection,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,

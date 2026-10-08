@@ -19,6 +19,8 @@ const EVERYTHING: LightGroups = {
   shadowedGlobalLight: false,
   lightMasks: [],
   occluderMasks: [],
+  lightOrder: new Uint32Array(0),
+  lightIds: new Uint32Array(0),
 };
 
 /**

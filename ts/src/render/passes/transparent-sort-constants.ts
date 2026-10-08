@@ -31,6 +31,22 @@ export const MASK_WORDS = WORKGROUP_SIZE / 32;
 /** Tiles the scan's column loop loads per chunk. */
 export const SCAN_CHUNK = 8;
 
+// ── Keys ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The z key (design §5.1), from the bits of `entity-bounds[slot].z` as the
+ * gather computes it: -0 becomes +0 by an integer compare (no float operation
+ * touches z), then the flip that makes unsigned order follow float order — a
+ * negative z has every bit inverted, a positive one gets the sign bit set.
+ * The light list (render/light-groups.ts, round step 7) keys its z with it
+ * too, so lights and transparent sprites follow one rule.
+ */
+export function sortableZBits(bits: number): number {
+  let zb = bits >>> 0;
+  if (zb === 0x80000000) zb = 0;
+  return ((zb & 0x80000000) !== 0 ? ~zb : zb | 0x80000000) >>> 0;
+}
+
 // ── What the gather reads from the cull ──────────────────────────────────────
 
 /** First transparent record of `indirect-args`: cull.wgsl puts the 14 opaque buckets first. */

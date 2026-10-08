@@ -1,5 +1,6 @@
 import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
 import { PRIMITIVE_LIBRARIES } from './primitive-shaders';
+import { sortableZBits } from './passes/transparent-sort-constants';
 
 /**
  * Light layers (Phase 17, design 2026-09-26): which receiver layers share a
@@ -22,6 +23,14 @@ import { PRIMITIVE_LIBRARIES } from './primitive-shaders';
  * around does not regroup by itself. The groups change when a value appears or
  * goes, or when a light, an occluder or a lit receiver enters or leaves the
  * view — a lone receiver on its own layer can bring a whole SDF set with it.
+ *
+ * The same scan builds the frame's light list (round step 7): the order in
+ * which LightAccumStage draws every light, into every group. It holds each
+ * Light2D the cull's EXACT sphere-frustum test keeps (cull.wgsl; the grouping
+ * keeps its margin), sorted by blend class (add and sub before mix), then world
+ * z back to front, then external id, the higher id last: the 5b rule of the
+ * transparent sort, and a function of the ECS state, never of the slots or of
+ * the cull's atomics.
  */
 
 export interface LightGroup {
@@ -50,21 +59,50 @@ export interface LightGroups {
   lightMasks: number[];
   /** The distinct occluder mask values in view, 0 normalised to 0xFFFF. */
   occluderMasks: number[];
+  /**
+   * The light list (round step 7): the slots of the lights the cull's exact
+   * sphere-frustum test keeps, whatever their mask or type, in draw order —
+   * blend class (add and sub before mix), then sortableZBits of the row's z,
+   * then external id, the higher id last. A new array on every call.
+   */
+  lightOrder: Uint32Array<ArrayBuffer>;
+  /**
+   * The external ids of `lightOrder`, in the same order (a new array too). The
+   * slot stands in for every id when `entityIds` is missing or shorter than
+   * `entityCount`.
+   */
+  lightIds: Uint32Array<ArrayBuffer>;
 }
 
-/** The SoA columns of `GPURenderState` / `FrameState` the grouping reads. */
+/** The SoA columns of `GPURenderState` / `FrameState` the grouping and the light list read. */
 export interface LightGroupsInput {
   entityCount: number;
   renderMeta: Uint32Array;
   primParams: Float32Array;
   bounds: Float32Array;
   cameraViewProjection: Float32Array;
+  /**
+   * Slot -> external id: the light list's tie-break. A column shorter than
+   * `entityCount`, or none, is ignored whole, and the slot stands in for the
+   * id: an order that holds from frame to frame, but not across a despawn or a
+   * restore.
+   */
+  entityIds?: Uint32Array;
 }
 
 const LIGHT2D = 6;
 const CASTS_SHADOW = 1 << 9;
 const RECEIVES_LIGHT = 1 << 10;
 const LIGHT_TYPE_SHIFT = 11;
+/** renderMeta word 1, bits 14-15: the light's blend mode (RENDER_META_LIGHT_BLEND_SHIFT in components.rs). */
+const LIGHT_BLEND_SHIFT = 14;
+/**
+ * The wire value of the `mix` blend mode (LightBlendMode::Mix, LIGHT_BLEND_IDS,
+ * BLEND_MIX in light-accum.wgsl): the one class drawn after the others. Add
+ * (0), sub (1) and the unclaimed 3, which light-accum.wgsl draws like add,
+ * come first.
+ */
+export const BLEND_MIX = 2;
 const POINT = 0;
 const SPOT = 1;
 const DIRECTIONAL = 2;
@@ -79,10 +117,12 @@ export const SHADOWED_LIGHT_TYPES: readonly number[] = [POINT, SPOT, DIRECTIONAL
 const SHADOWED = new Uint8Array(8);
 for (const type of SHADOWED_LIGHT_TYPES) SHADOWED[type] = 1;
 /**
- * The CPU keeps every light the GPU CullPass could draw, and a few more: the
- * same sphere-frustum test with a slightly larger radius. A light the GPU draws
- * but the CPU left out of the keys could land in a group whose layers it does
- * not all light.
+ * The grouping keeps every entity the GPU could draw, and a few more: the
+ * cull's sphere-frustum test with a slightly larger radius. A receiver or a
+ * caster the GPU draws but the CPU left out of the keys could land in a group
+ * it was not keyed for. Lights are drawn from the light list, which takes the
+ * exact test (round step 7): every listed light is inside this margin too, so
+ * its mask is among the keys.
  */
 const MARGIN_SCALE = 1.01;
 const MARGIN_ADD = 1e-3;
@@ -103,12 +143,52 @@ export function receiverLayer(mask: number): number {
   return mask === 0 ? 0 : 31 - Math.clz32(mask & -mask);
 }
 
+/**
+ * The light list's order: blend class, then sortableZBits of the row's z (the
+ * bits the GPU holds: a view over `bounds`, no float round trip, so -0 is +0
+ * and a NaN has a fixed place), then the id, then the slot. Every key is an
+ * integer and the slots are unique, so the comparator is a total order: one
+ * sorted permutation, whatever the sort algorithm.
+ */
+function orderLights(
+  slots: readonly number[],
+  renderMeta: Uint32Array,
+  bounds: Float32Array,
+  ids: Uint32Array | null,
+): { lightOrder: Uint32Array<ArrayBuffer>; lightIds: Uint32Array<ArrayBuffer> } {
+  const k = slots.length;
+  const lightOrder = new Uint32Array(k);
+  const lightIds = new Uint32Array(k);
+  if (k === 0) return { lightOrder, lightIds };
+  const zBits = new Uint32Array(bounds.buffer, bounds.byteOffset, bounds.length);
+  const cls = new Uint8Array(k);
+  const zKey = new Uint32Array(k);
+  const id = new Uint32Array(k);
+  for (let j = 0; j < k; j++) {
+    const s = slots[j];
+    cls[j] = ((renderMeta[s * 2 + 1] >>> LIGHT_BLEND_SHIFT) & 3) === BLEND_MIX ? 1 : 0;
+    zKey[j] = sortableZBits(zBits[s * 4 + 2]);
+    id[j] = ids === null ? s : ids[s];
+  }
+  const idx = Array.from({ length: k }, (_, j) => j);
+  idx.sort((a, b) => (cls[a] - cls[b]) || (zKey[a] - zKey[b]) || (id[a] - id[b]) || (slots[a] - slots[b]));
+  for (let j = 0; j < k; j++) {
+    lightOrder[j] = slots[idx[j]];
+    lightIds[j] = id[idx[j]];
+  }
+  return { lightOrder, lightIds };
+}
+
 export function deriveLightGroups(input: LightGroupsInput): LightGroups {
   const { entityCount, renderMeta, primParams, bounds } = input;
   const planes = extractFrustumPlanes(input.cameraViewProjection);
   const inView = (i: number): boolean => isSphereInFrustum(
     planes, bounds[i * 4], bounds[i * 4 + 1], bounds[i * 4 + 2], bounds[i * 4 + 3] * MARGIN_SCALE + MARGIN_ADD,
   );
+  // All or nothing: a short column is a transport bug, and mixing ids with
+  // slots as keys would compare two numberings.
+  const ids = input.entityIds !== undefined && input.entityIds.length >= entityCount ? input.entityIds : null;
+  const listed: number[] = [];
 
   const lightMasks = new Set<number>();
   const occluderMasks = new Set<number>();
@@ -125,7 +205,11 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     // GPU on whatever reaches it.
     const primType = Math.min(word & 0xff, LIGHT2D);
     if (primType === LIGHT2D) {
-      if (!inView(i)) continue;
+      // The cull's own test, radius as is: the light list decides what is drawn.
+      const drawn = isSphereInFrustum(planes, bounds[i * 4], bounds[i * 4 + 1], bounds[i * 4 + 2], bounds[i * 4 + 3]);
+      // `drawn ||` keeps every listed light among the keys, whatever its radius.
+      if (!drawn && !inView(i)) continue;
+      if (drawn) listed.push(i);
       lightMasks.add(mask);
       // The shader's gate (shadowedLightType in light-accum.wgsl): point, spot
       // or directional, with a shadow strength above 0. A global light's
@@ -209,5 +293,6 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     shadowedGlobalLight,
     lightMasks: lights,
     occluderMasks: occluders,
+    ...orderLights(listed, renderMeta, bounds, ids),
   };
 }
