@@ -163,6 +163,8 @@ async () => {
   //   row, moves to its slot), P and Q at depth 1; it throws if slot(Q) >=
   //   slot(P): only with slot(Q) < slot(P) does the screenshot tell the id
   //   rule (Q, the higher id, in front at equal depth) from the slot order.
+  //   `resize` is phase 1's: phases 2 and 3 keep it, and accept it only
+  //   repeated (resize: false after a phase 1 without resize).
   //   Returns `points`, the ids, the slots (`lights`) and `expected8`, step
   //   7's rule in 8 bits at each point (the floor is white and the tonemap a
   //   passthrough); in B and C also `measured` (the light buffer at the
@@ -786,11 +788,14 @@ async () => {
         throw new Error("in Mode A 'scene' phase 1 must be the first task of a freshly loaded page: the bridge drops empty render states, so a cleared world is never seen (reload the page)");
       }
     } else {
-      if (opts.resize !== undefined) throw new Error('resize is an option of phase 1: phases 2 and 3 change its scene in place');
       if (!prev || prev.phase !== phase - 1) {
         throw new Error(`'scene' phase ${phase} follows phase ${phase - 1} on this page, ${prev ? `not phase ${prev.phase}` : 'and no phase ran here'}`);
       }
       resize = prev.resize;
+      // Phase 1's option: a later phase may repeat it, never change it.
+      if (opts.resize !== undefined && flag(opts.resize, 'resize') !== resize) {
+        throw new Error(`resize is an option of phase 1, which ran with resize: ${resize}: phases 2 and 3 change its scene in place (pass resize: ${resize}, or leave it out)`);
+      }
     }
     // The render worker's view is 20·a x 20 (gpu-check §7), and so is the main
     // thread's after the page's own resize: the floor point must be in it.
