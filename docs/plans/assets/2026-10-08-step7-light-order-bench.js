@@ -166,8 +166,11 @@ async () => {
   //   Returns `points`, the ids, the slots (`lights`) and `expected8`, step
   //   7's rule in 8 bits at each point (the floor is white and the tonemap a
   //   passthrough); in B and C also `measured` (the light buffer at the
-  //   points) and `maxDiff`, the largest |255·v - expected8| over their RGB
-  //   (v clamped to [0, 1]).
+  //   points) and `maxDiff`, the largest |v - expected8 / 255| over their RGB
+  //   (v clamped to [0, 1]), in value units like the plan's gate (maxDiff <=
+  //   0.002): the 8-bit rounding of expected8 alone leaves at most 0.5 / 255
+  //   (about 0.00196; mIn's green, 0.5 against 128 / 255). Reported, not
+  //   judged: on master, where a mix adds, it is large.
   //
   // A wait on the engine (a frame, a frameEnd hook, a probe) gives up after
   // WAIT_MS (20 s) with 'timed out … waiting for …' instead of hanging when
@@ -854,8 +857,9 @@ async () => {
       const at = Object.keys(SCENE_POINTS);
       const got = await read({ world: at.map((n) => SCENE_POINTS[n]) }, [0], lights);
       result.measured = Object.fromEntries(at.map((n, p) => [n, got.values[0][p]]));
+      // In value units, against expected8 / 255: the 8-bit rounding alone leaves at most 0.5 / 255.
       result.maxDiff = Math.max(...at.flatMap((n, p) => [0, 1, 2].map((c) =>
-        Math.abs(255 * Math.min(Math.max(got.values[0][p][c], 0), 1) - result.expected8[n][c]))));
+        Math.abs(Math.min(Math.max(got.values[0][p][c], 0), 1) - result.expected8[n][c] / 255))));
       result.lightBuffer = got.lightBuffer;
       result.canvas = got.canvas;
     }
