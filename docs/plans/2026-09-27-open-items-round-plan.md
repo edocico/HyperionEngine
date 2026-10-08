@@ -22,7 +22,7 @@ HEAD `1f04d40` (master), 2026-09-27. L'ordine è stato ricavato dal workflow `or
 - `mix` viene sommata come `add` (`:226-228`);
 - `directional` è identica a `global` (`:75-76`, `:190`).
 
-Il §7.3 del design dice "Mix in-shader", ma non si può fare: WebGPU non ha framebuffer fetch. Serve una seconda pipeline con blending fisso, e il risultato dipende dall'ordine, che le atomiche del cull rendono non deterministico.
+Il §7.3 del design dice "Mix in-shader", ma non si può fare: WebGPU non ha framebuffer fetch. Serve una seconda pipeline con blending fisso, e il risultato dipende dall'ordine, che le atomiche del cull rendono non deterministico. (Superata dal §2, passo 7, deciso il 2026-09-30: ogni luce da una lista CPU, una sola pipeline «over» premoltiplicata; al passo 7.)
 
 ## 2. Decisioni prese (2026-09-27)
 
@@ -199,15 +199,15 @@ Ognuno va corretto nel commit del passo che lo tocca:
   - `components.rs:229`, `components.rs:252-253`, `systems.rs:236`, `command_processor.rs:950`;
   - il §4 del design di Phase 13.
 - **L:**
-  - nel design Phase 17: §7.3:577 ("Mix in-shader"), §4-B:221 e §7.3:571 (global = clear color), §10.2:832-834 (determinismo), l'API di esempio del §11:861;
-  - il design dei light layers, righe 53 e 224;
-  - `light-groups.ts:110-113`;
-  - l'header di `light-accum.wgsl`;
-  - la riga di `light-accum-stage.ts` in CLAUDE.md;
+  - nel design Phase 17: §7.3:577 ("Mix in-shader") — ✅ passo 7; §4-B:221 e §7.3:571 (global = clear color) — ✅ passo 6 (`d381d92`) e passo 7 per il mix; §10.2:832-834 (determinismo, oggi `:842-844`) — ✅ passo 7; l'API di esempio del §11:861 — ✅ passo 6 (`d381d92`) e passo 7 per il mix;
+  - il design dei light layers, righe 53 (✅ passo 6 per le directional, `d381d92`; le sprite al passo 8) e 224 (✅ passo 6, `d381d92`);
+  - `light-groups.ts:110-113` — ✅ passo 6 per le directional (`3b61719`, poi `b05f09d` e `bbf7183`; oggi `:214-227`); le sprite al passo 8;
+  - l'header di `light-accum.wgsl` — ✅ passo 6 (directional) e passo 7 (mix); lo sprite resta al passo 8;
+  - la riga di `light-accum-stage.ts` in CLAUDE.md — ✅ passo 6 (directional) e passo 7 (mix); lo sprite resta al passo 8;
   - trovati il 2026-09-30, nel design Phase 17:
-    - riga 488: con la semantica del codice, 110% vale 1,44× i pixel, non 1,21×;
-    - righe 944 e 952: 1344×756 fa 12 passate con 1+JFA, non 11;
-    - E2 va precisato: le ombre integrate di Godot non leggono l'SDF, quelle marciate su SDF sì, e per loro l'oversize serve.
+    - riga 488: con la semantica del codice, 110% vale 1,44× i pixel, non 1,21× — ✅ passo 6 (`d381d92`);
+    - righe 944 e 952: 1344×756 fa 12 passate con 1+JFA, non 11 — ✅ passo 6 (`d381d92`);
+    - E2 va precisato: le ombre integrate di Godot non leggono l'SDF, quelle marciate su SDF sì, e per loro l'oversize serve — ✅ passo 6 (`d381d92`).
 - **Mode A (passo 10):**
   - `hyperion-masterplan.md` righe 232 e 247 (recupero dopo un device lost);
   - CLAUDE.md, la riga di `worker-bridge.ts` e il gotcha sul mondo vuoto in Mode A;

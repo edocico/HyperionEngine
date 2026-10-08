@@ -14,10 +14,11 @@ override USE_SUBGROUP_ID: bool = false;
 
 // 7 = Quad, Line, SDFGlyph, BezierPath, Gradient, BoxShadow, Light2D.
 // Light2D is filed like any other type (bucket 1 for a tier > 0 texture, the
-// transparent half for bit 8); a plain light fills only slot 12, and
-// LightAccumStage draws all four. Uniform waste, and the alternative — a variable bucket
-// count per type — would break the `blendOff + primType * BUCKETS_PER_TYPE + bk`
-// indexing below and add a branch to the hot loop.
+// transparent half for bit 8), and since round step 7 nothing draws those
+// buckets: LightAccumStage draws the light list built on the CPU. Uniform
+// waste, and the alternative — a variable bucket count per type — would break
+// the `blendOff + primType * BUCKETS_PER_TYPE + bk` indexing below and add a
+// branch to the hot loop.
 const NUM_PRIM_TYPES: u32 = 7u;
 const BUCKETS_PER_TYPE: u32 = 2u;   // bucket 0 = tier0 compressed, bucket 1 = other tiers
 const OPAQUE_BUCKETS: u32 = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;   // 14

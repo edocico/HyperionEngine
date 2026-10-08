@@ -279,12 +279,14 @@ describe("describeAdapter", () => {
 });
 
 // cull-pass.ts gives every bucket but 0 a non-zero firstInstance (the offset of
-// its region in visible-indices). That is 23 of ForwardPass's 24 indirect
-// draws, plus 1 of SelectionSeedPass's 2 when outlines are on. Without the
-// 'indirect-first-instance' feature the spec turns each of those draws into a
-// no-op, with no validation error. Measured on an RTX 4060: 0 pixels without
-// the feature, drawn with it. Only bucket 0 (opaque tier-0 quads) survives,
-// so every other primitive type and every transparent entity vanishes silently.
+// its region in visible-indices). That is 11 of ForwardPass's 12 opaque indirect
+// draws, 23 of OccluderSeedStage's 24 per SDF set, plus 1 of SelectionSeedPass's
+// 2 when outlines are on. Without the 'indirect-first-instance' feature the spec
+// turns each of those draws into a no-op, with no validation error. Measured on
+// an RTX 4060: 0 pixels without the feature, drawn with it. Only bucket 0
+// (opaque tier-0 quads) survives among them. Transparent entities (the uber draw
+// of transparent-args, phase 5b) and lights (one direct draw per light group,
+// round step 7) draw from firstInstance 0, so they never needed it.
 describe("selectDeviceFeatures", () => {
   it("requests indirect-first-instance whenever the adapter offers it", () => {
     const features = selectDeviceFeatures(new Set(["indirect-first-instance"]), null, false);

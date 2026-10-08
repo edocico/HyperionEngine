@@ -47,8 +47,9 @@ const LIGHTING_UNIFORM_BYTES = 16;
  * Sub-pass 2: every transparent entity, in the ONE uber draw above.
  *
  * Type 6 (Light2D) has buckets here but no pipeline: `SHADER_SOURCES` registers
- * nothing for it, so the per-type loop below never finds it. Its buckets are
- * read directly by the light accumulation pass.
+ * nothing for it, so the per-type loop below never finds it. Nothing draws its
+ * buckets since round step 7: LightAccumStage draws the light list
+ * deriveLightGroups builds on the CPU.
  *
  * Group 2 is the light buffer (Phase 17): texture, sampler, lighting uniform.
  * Every pipeline shares the three-group layout, and every composed module

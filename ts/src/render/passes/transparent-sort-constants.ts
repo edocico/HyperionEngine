@@ -53,7 +53,8 @@ export function sortableZBits(bits: number): number {
 export const FIRST_TRANSPARENT_ARG = 14;
 /**
  * Transparent regions the gather reads: types 0-5 × 2 texture buckets, records
- * 14-25. Records 26/27 (a `.transparent()` Light2D) stay LightAccumStage's.
+ * 14-25. Records 26/27 (a `.transparent()` Light2D) are drawn by nothing since
+ * round step 7 (LightAccumStage draws the CPU light list).
  */
 export const GATHER_REGIONS = 12;
 /** Words of one DrawIndexedIndirect record of `indirect-args`. */
