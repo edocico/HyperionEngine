@@ -325,6 +325,10 @@ describe("indirectFirstInstanceWarning", () => {
     const warning = indirectFirstInstanceWarning(new Set());
     expect(warning).toContain("indirect-first-instance");
     expect(warning).toMatch(/only opaque/i);
+    // Lights (one direct draw per group, round step 7) and transparent
+    // entities (the uber draw, phase 5b) draw from firstInstance 0.
+    expect(warning).toMatch(/Lights and transparent entities still draw/);
+    expect(warning).not.toMatch(/every transparent entity is missing/i);
   });
 });
 
