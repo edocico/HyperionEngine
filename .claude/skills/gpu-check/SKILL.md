@@ -1,10 +1,14 @@
 ---
 name: gpu-check
-description: Verify rendering on real WebGPU in the verification harness — rebuild ts/wasm if stale, load the harness on a hardware adapter (AMD iGPU on Fedora, Apple GPU on the Mac), run every tab (or the ones named), report N/M passed, pending checks and console errors, and optionally sample screenshot pixels at world coordinates. Use after any change to rendering, shaders, the render graph, the command queue or the Rust engine, before calling it done.
+description: Verify rendering on real WebGPU in the verification harness — rebuild ts/wasm if stale, load the harness on a hardware adapter (AMD iGPU on Fedora, Apple GPU on the Mac), run every tab (or the ones named), report N/M passed, pending checks and console errors, and optionally sample screenshot pixels at world coordinates; also runs a GPU bench session (fresh dev server, asset server, a committed bench). Use after any change to rendering, shaders, the render graph, the command queue or the Rust engine, before calling it done, and for any committed GPU bench or measurement.
 ---
 
 Headless tests cannot see WebGPU errors; this is the check that can. Arguments (optional): the
 tab labels to run, e.g. `/gpu-check Lighting` — default is every tab.
+
+The scripts are in `.claude/skills/gpu-check/scripts/`; each file's header says how to pass it and
+what it returns. A committed bench, or any GPU leg whose scripts import app modules, runs as a
+**Bench session** (the last section).
 
 ## 1. The WASM must be the current engine
 
@@ -21,6 +25,10 @@ decoration: `ts/wasm` is generated and gitignored, so a fresh clone or worktree 
 stderr), which reads exactly like "fresh". Physics behaviour is not in this build at all: verify it
 with `cargo test -p hyperion-core --features physics-2d --test verify_physics`.
 
+Run those two lines from the root of the checkout the dev server SERVES, which is the code under
+test: in a Bench session that is `gpu-infra.sh`'s root, not necessarily the shell's cwd (`up`
+checks that root's `ts/wasm` the same way and prints a `note:` when it is missing or older).
+
 ## 2. Dev server
 
 After a `git checkout` / merge / rebase that touched a shader, RESTART it (stop the background task,
@@ -28,11 +36,12 @@ start it again): Vite can keep serving a stale transform of `?import&raw` with a
 then runs the old shader (2026-09-27: pixel-width lines drew in world units).
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5173/
+curl --noproxy '*' -s -o /dev/null -w '%{http_code}\n' http://localhost:5173/
 ```
 
 Not `200` → start it in the background (Bash `run_in_background`):
-`npm --prefix ts run dev -- --strictPort --port 5173`.
+`npm --prefix ts run dev -- --strictPort --port 5173`. `scripts/gpu-infra.sh up` restarts it
+detached and checks COOP/COEP, with the asset server and caffeinate (Bench session).
 
 ## 3. Load the harness on a hardware adapter
 
@@ -51,13 +60,14 @@ user's Chrome does) for stock behaviour. Either one gives the pass/fail verdicts
 
 `navigate_page` with `type: "url"`, `url: "http://localhost:5173/?mode=B"` and `ignoreCache: true`,
 WITHOUT the low-power adapter initScript (Fedora-only); for the §4 runner pass the anti-reload
-initScript below. Quote the URL in any shell command (zsh: `?` is a glob). The adapter line must
-say Apple and not a fallback: `apple / metal-3 / 0x0000, subgroups 32-32` on the gpu server (the
-stock Chrome leaves the device out: `apple / metal-3, subgroups 32-32`). A reload after a TS edit
-keeps the adapter (one GPU, nothing to force) but drops the anti-reload initScript: navigate again
-with it before a long run. Then run `?mode=C` and `?mode=A` too, each loaded the same way and with
-its own adapter line (in Mode A the render worker prints it, and `list_console_messages` shows
-worker messages: no DevTools context switch is needed).
+initScript (`scripts/anti-reload-init.js`, below). Quote the URL in any shell command (zsh: `?` is
+a glob). The adapter line must say Apple and not a fallback:
+`apple / metal-3 / 0x0000, subgroups 32-32` on the gpu server (the stock Chrome leaves the device
+out: `apple / metal-3, subgroups 32-32`). A reload after a TS edit keeps the adapter (one GPU,
+nothing to force) but drops the anti-reload initScript: navigate again with it before a long run.
+Then run `?mode=C` and `?mode=A` too, each loaded the same way and with its own adapter line (in
+Mode A the render worker prints it, and `list_console_messages` shows worker messages: no DevTools
+context switch is needed).
 
 Long `evaluate_script` runs (the all-tabs runner: 35 s with its 3.5 s waits per tab, more with the
 7 s the slow tabs want) start from a navigation that carries the anti-reload initScript. In the
@@ -66,13 +76,9 @@ Vite 6.4 client ANY close of the HMR WebSocket, even a clean one, ends in `locat
 `Execution context was destroyed`: it happened twice on 2026-09-29, with the same server process
 and nothing in its log. The script wraps `WebSocket` for the `vite-hmr` protocol only, records each
 close in `window.__viteWsCloses` and in the console (a `[mac-m2 test] vite-hmr websocket closed`
-warning), and stops the reload; it touches neither the adapter nor the engine. Verbatim, from
-`docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md` (Task 8), as the `initScript` of
-`navigate_page`:
-
-```js
-(() => { const Native = window.WebSocket; window.__viteWsCloses = []; function Patched(url, protocols) { const ws = protocols === undefined ? new Native(url) : new Native(url, protocols); const proto = Array.isArray(protocols) ? protocols.join(',') : String(protocols ?? ''); if (proto.includes('vite-hmr')) { ws.addEventListener('close', (e) => { const rec = { t: new Date().toISOString(), perf: Math.round(performance.now()), code: e.code, reason: e.reason, wasClean: e.wasClean }; window.__viteWsCloses.push(rec); console.warn('[mac-m2 test] vite-hmr websocket closed, reload suppressed: ' + JSON.stringify(rec)); e.stopImmediatePropagation(); }); } return ws; } Patched.prototype = Native.prototype; Object.assign(Patched, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 }); window.WebSocket = Patched; })()
-```
+warning), and stops the reload; it touches neither the adapter nor the engine. It is
+`scripts/anti-reload-init.js` (from `docs/plans/2026-09-29-gpu-profiler-timestamp-writes-plan.md`,
+Task 8): pass the file's whole text as the `initScript` of `navigate_page`.
 
 Like any initScript it applies to ONE navigation (a plain `reload` drops it: pass it again), and
 after a suppressed close the page gets no more HMR updates until the next navigation. An empty
@@ -87,6 +93,12 @@ NVIDIA adapter cannot present to a canvas, so force the low-power one — `navig
 ```js
 GPU.prototype.requestAdapter = (o => function (x) { return o.call(this, { ...(x || {}), powerPreference: 'low-power' }); })(GPU.prototype.requestAdapter)
 ```
+
+A long run (a §4 runner, a Bench session) needs the anti-reload initScript too (§3 Mac explains
+why), and `navigate_page` takes ONE `initScript`: pass one string holding the whole text of
+`scripts/anti-reload-init.js` first, then a newline, a semicolon and a newline, then the line
+above. Never one of the two alone on this box: without the line the page gets NVIDIA and loses the
+device, without the anti-reload script a long run dies at the next close of the HMR socket.
 
 Then read the adapter line (`list_console_messages`, types `log`/`info`/`warn`): it must say AMD,
 not nvidia and not a software fallback (SwiftShader). Mode A cannot be checked on the Fedora box: the
@@ -129,6 +141,15 @@ async () => {
 The harness draws ✓ pass, ✕ fail, ⊘ skip and ⏳ pending (`STATUS_ICON` in `main.ts`): the runner
 reads those glyphs, and `summary` also says `N failed`.
 
+`scripts/tab-runner.js` is this runner waiting for the END of each tab's setup (60 s cap, then
+600 ms) instead of a fixed time, with `setupMs` and `timedOut` in its answer; the labels to run go
+in `window.__tabsOnly`, set by an earlier `evaluate_script` (none: every tab). It imports
+`/src/demo/<tab>.ts` to see the setup end, so it wants a dev server started after the last edit
+(`gpu-infra.sh up`), best with a `?bench` page, where every setup starts from its click: a section
+edited since the server started waits the full 60 s and says `timedOut: true` (its checks still
+read right). A setup that really runs past 60 s says `timedOut: true` too, and its checks may not
+be finished when they are read: rerun that tab alone.
+
 Expected today (2026-09-27, the checks read pixels through the probe): every tab green except
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
@@ -166,11 +187,12 @@ DOM overlay in the way. From `evaluate_script`:
 CPU ones (`usedScatter` true only in `?mode=C`). The screenshot path below is for what the probe
 cannot see: DOM overlays, and anything in Mode A (§7: there `vp` is the render worker's).
 
-1. `evaluate_script` with `filePath: <out>/map.json`, returning
-   `{ rect: [left, top, width, height] of the canvas getBoundingClientRect(), vp: Array.from(window.__hyperion.cam.viewProjection), dpr: window.devicePixelRatio }`
-   — the file is plain JSON. In Mode A `vp` is NOT `cam.viewProjection`: see §7. Read `dpr` live
-   every time and never reuse a number: 2 on the Retina Mac, 1.25 or 1.667 on the Fedora box, and
-   screenshot px = CSS px × dpr (a 1200×689 CSS window at dpr 2 gives a 2400×1378 screenshot).
+1. `evaluate_script` with the text of `scripts/map-json.js` and `filePath: <out>/map.json`: plain
+   JSON with `rect` (the canvas `getBoundingClientRect()` as `[left, top, width, height]`), `vp` and
+   `dpr`. `vp` is `cam.viewProjection` in B and C and the render worker's in Mode A (§7); `vpSource`
+   says which. It reads `dpr` live: never reuse a number, 2 on the Retina Mac, 1.25 or 1.667 on the
+   Fedora box, and screenshot px = CSS px × dpr (a 1200×689 CSS window at dpr 2 gives a 2400×1378
+   screenshot).
 2. `take_screenshot` with `filePath: <out>/shot.png`.
 3. `python3 .claude/skills/gpu-check/scripts/pixels.py <out>/shot.png <out>/map.json 15.6,4 15.6,2.8`
    or `--line x0,y0:x1,y1:N` for a profile. Coordinates are WORLD units. It needs Pillow, so
@@ -228,21 +250,8 @@ worker's camera and not from `cam.viewProjection`: the worker has its own `Camer
 calls `setPosition`), and neither `engine.cam` nor the tabs' `fitView` reach it. Its aspect is the
 one of the last `engine.resize(w, h)`, that is `floor(clientWidth·dpr) / floor(clientHeight·dpr)`,
 not `rect.width / rect.height` (the CSS height is fractional: 0.08 % apart on the M2, under a
-pixel there). `evaluate_script` with `filePath: <out>/map.json`:
-
-```js
-() => {
-  const c = document.getElementById('canvas');
-  const dpr = window.devicePixelRatio;
-  const a = Math.floor(c.clientWidth * dpr) / Math.floor(c.clientHeight * dpr);
-  const r = c.getBoundingClientRect();
-  return {
-    rect: [r.left, r.top, r.width, r.height],
-    vp: [1 / (10 * a), 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -1 / 1001, 0, 0, 0, 1 / 1001, 1],
-    dpr,
-  };
-}
-```
+pixel there). `scripts/map-json.js` (§6) builds that `vp` whenever `window.__hyperion.mode` is
+`'A'`, and keeps `cam.viewProjection` beside it as `vpMainThread`.
 
 Checked on the M2 (2026-09-30, `?mode=A&bench`, camera at the origin, zoom 1): three 2D quads at
 x = -4, 0, 4 (scale 2: white, a uniform-red gradient, a white `.transparent()`; the scene of M6b in
@@ -275,3 +284,62 @@ One line per tab (`N/M passed`, pending, failed), the adapter, console errors, a
 measurements with the points used. Say explicitly what this did NOT cover: physics, and on the
 Fedora box Mode A ("did NOT cover Mode A"). On the Mac Mode A is covered, by screenshots only (§7):
 write "Mode A: solo screenshot" instead.
+
+## Bench session
+
+**When:** a committed bench (`docs/plans/assets/*-bench.js`), or any GPU leg whose scripts
+`import('/src/…')` app modules. Such an import gets the app's own module instance only from a dev
+server started after the last edit to an app module (CLAUDE.md, the dev-server gotcha), and a bench
+runs for minutes with the display awake. From step 1 to step 8, edit no app file: Vite would reload
+the page or re-instance the modules under the bench.
+
+**The checkout `gpu-infra.sh` serves is the code under test:** `$HYPERION_ROOT`, else
+`$CLAUDE_PROJECT_DIR` (when set, the checkout the session was opened on), else the checkout the
+script is in. The page runs THAT checkout's `ts/src` and `ts/wasm`, and the asset server's default
+root is its `docs/plans/assets` (a bench committed only in another checkout is a 404 there). To
+check a worktree's change, serve the worktree itself: a fresh worktree has neither
+`ts/node_modules` nor `ts/wasm`, so run `npm --prefix ts ci` and `npm --prefix ts run build:wasm`
+in it first, and §1 there. `HYPERION_ROOT=<another checkout>` runs THAT checkout's code: right only
+when the app code does not matter (a check of these scripts), never for a GPU check or a bench of
+a change, where the other checkout's branch can report green for code it does not hold. `up`
+prints the root, and a `note:` when it is not the script's own checkout or its `ts/wasm` is
+missing or older than the Rust sources.
+
+1. **Infrastructure:** `sh .claude/skills/gpu-check/scripts/gpu-infra.sh up [asset-server args]`,
+   e.g. `… up --git /old-light-accum.wgsl=1d19575:ts/src/shaders/light-accum.wgsl` to serve a file as
+   it is at a revision, with no copy to keep. Give the Bash call `timeout: 300000`: in the worst case
+   `up` takes about 3 minutes (each stop waits up to 13 s, Vite up to 60 s, the asset server 30 s),
+   past the tool's default 120 s. It starts `caffeinate -dimsu` on the Mac (8 h), restarts that
+   checkout's Vite on :5173 and checks COOP/COEP (anything else on :5173 or :8765: it refuses, exit
+   1, and changes nothing), then starts `asset-server.py` on 127.0.0.1:8765, serving
+   `docs/plans/assets` live (`--map URLPATH=FILE` for another file, `--root DIR`; `asset-server.py
+   --help`). Done when it prints `gpu-infra up: ready` and exits 0; `gpu-infra.sh status` checks it
+   later. Its state is in `${TMPDIR:-/tmp}/hyperion-gpu-infra-<uid>`, so `status` and `down` find it
+   only with the `TMPDIR` of `up`: the last line `up` prints is the `down` command with it.
+2. **Page:** `navigate_page` with `type: "url"`, the page the bench header names (usually
+   `"http://localhost:5173/?mode=B&bench"`), `ignoreCache: true`, and as `initScript` the whole text
+   of `scripts/anti-reload-init.js`. On the Fedora box (`uname -s` says `Linux`) `navigate_page`
+   still takes ONE `initScript`: that text first, then a newline, a semicolon and a newline, then
+   §3's low-power adapter line (without it the page gets NVIDIA and loses the device). Then
+   `resize_page` if the plan or the bench names a window.
+3. **Adapter line** (§3), before anything else.
+4. **Bench spec:** `evaluate_script` with
+   `() => { window.__benchSpec = { bench: '/<bench file>', globals: { <NAME>: '/<path>' } }; return window.__benchSpec; }`
+   naming the globals the bench header reads; round step 7's is
+   `{ bench: '/2026-10-08-step7-light-order-bench.js', globals: { __step7OldLightAccum: '/old-light-accum.wgsl' } }`.
+5. **Load:** `evaluate_script` with the text of `scripts/load-bench.js`, once per page load. Done
+   when `benchType` is `'function'` and every global has `status` 200 and the `sha256` of its source
+   (`shasum -a 256 <file>`, or `git show <rev>:<path> | shasum -a 256`; on Linux `sha256sum`, from
+   coreutils: `shasum` is a Perl script that a Fedora install may lack).
+6. **Run** each task as the bench header says, usually `window.__benchOpts = { task, label, … }`
+   then `async () => await window.__benchFn()` with an absolute `filePath` inside the repo. A tab
+   run in the same session uses `scripts/tab-runner.js` (§4).
+7. **Each page ends** with `window.__viteWsCloses` at `[]` and a console (§5) holding only the
+   `favicon.ico` 404.
+8. **Down:** `sh .claude/skills/gpu-check/scripts/gpu-infra.sh down`, with the `TMPDIR` of `up`
+   (the command `up` printed last), stops exactly what `up` started, each pid re-checked against its
+   command and start time, and nothing else. With another `TMPDIR` it finds no state and stops
+   nothing.
+
+Report the `up` summary, and per page its adapter line, `load-bench.js`'s answer, the evidence
+files, `window.__viteWsCloses` and the console.
