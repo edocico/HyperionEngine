@@ -30,6 +30,26 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__chrome-devtools-gpu__navigate_page|mcp__chrome-devtools__navigate_page|mcp__chrome-devtools-gpu__evaluate_script|mcp__chrome-devtools__evaluate_script",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-stale-devserver.sh\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/keep-awake.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
