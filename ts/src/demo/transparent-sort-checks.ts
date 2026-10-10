@@ -12,9 +12,14 @@ import { sortableZBits, digitOf, oracleOrder } from '../render/passes/transparen
 import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 
 const TRANSPARENT_BIT = 0x100;
-/** Box shadow. 6 (Light2D), and every type the cull clamps to it, stays with LightAccumStage. */
-const LAST_SORTED_TYPE = 5;
-const LIGHT2D = 6;
+/**
+ * Box shadow, the last type the gather takes. 6 (Light2D), and every type the
+ * cull clamps to it, stays with LightAccumStage. Both are pinned by
+ * transparent-sort-checks.test.ts (Light2D to cull.wgsl, Rust and both
+ * RenderPrimitiveType enums; this one to the type before it).
+ */
+export const LAST_SORTED_TYPE = 5;
+export const LIGHT2D = 6;
 const REGION_CLASSES = 12;
 /** deriveLightGroups' conservative sphere test (light-groups.ts): every entity the GPU draws passes it. */
 const ENLARGED = { scale: 1.01, add: 1e-3 };

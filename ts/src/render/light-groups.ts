@@ -90,7 +90,16 @@ export interface LightGroupsInput {
   entityIds?: Uint32Array;
 }
 
-const LIGHT2D = 6;
+/**
+ * The Light2D primitive type, the last one: PRIM_TYPE_LIGHT2D in components.rs,
+ * NUM_PRIM_TYPES - 1 in cull.wgsl, RenderPrimitiveType.Light2D. Since round
+ * step 7 the light list's type gate, so what LightAccumStage draws as a light:
+ * light-accum.wgsl tests no primitive type. light-groups.test.ts pins it to all
+ * three. A plain number, not the const enum: the scan runs every frame, and a
+ * const enum imported from another module is not inlined by vitest's per-file
+ * transform.
+ */
+export const LIGHT2D = 6;
 const CASTS_SHADOW = 1 << 9;
 const RECEIVES_LIGHT = 1 << 10;
 const LIGHT_TYPE_SHIFT = 11;

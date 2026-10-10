@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, type LightGroupsInput } from './light-groups';
+import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, type LightGroupsInput } from './light-groups';
 import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
+import { RenderPrimitiveType } from '../entity-handle';
+import { RenderPrimitiveType as SchemaPrimitiveType } from '../prim-params-schema';
 import { loadPrimitivePieces } from './primitive-pieces.fixture';
 import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../shaders/wgsl-analysis';
 import { extractFrustumPlanes, isSphereInFrustum, orthographic } from '../camera';
@@ -571,6 +573,25 @@ describe('deriveLightGroups: the light list (round step 7)', () => {
     const modes = new Map([.../pub enum LightBlendMode \{([^}]*)\}/.exec(rust)![1].matchAll(/(\w+)\s*=\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
     expect(modes).toEqual(new Map([['Add', ADD], ['Sub', SUB], ['Mix', MIX]]));
     expect(BLEND_MIX).toBe(modes.get('Mix'));
+  });
+
+  it("LIGHT2D, the list's type gate, is Light2D everywhere: cull.wgsl's last type, Rust's PRIM_TYPE_LIGHT2D, both RenderPrimitiveType enums", () => {
+    // light-accum.wgsl tests no primitive type, only the mask: since round step
+    // 7 this constant alone decides what LightAccumStage draws as a light. A
+    // new drawable type moves Light2D (/new-primitive step 4); left behind,
+    // LIGHT2D would list the new type's rows, and draw them, as lights.
+    const cull = readFileSync(new URL('../shaders/cull.wgsl', import.meta.url), 'utf8');
+    const rust = readFileSync(new URL('../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
+    expect(LIGHT2D, "cull.wgsl's NUM_PRIM_TYPES - 1").toBe(Number(/const NUM_PRIM_TYPES: u32 = (\d+)u;/.exec(cull)?.[1]) - 1);
+    expect(LIGHT2D, "Rust's PRIM_TYPE_LIGHT2D").toBe(Number(/pub const PRIM_TYPE_LIGHT2D: u8 = (\d+);/.exec(rust)?.[1]));
+    expect(LIGHT2D, 'RenderPrimitiveType.Light2D (entity-handle.ts)').toBe(RenderPrimitiveType.Light2D);
+    expect(LIGHT2D, 'RenderPrimitiveType.Light2D (prim-params-schema.ts)').toBe(SchemaPrimitiveType.Light2D);
+    // And it is the gate the scan applies: a row of that type is listed; a
+    // caster of the type before it is a drawable, keyed as an occluder.
+    expect(deriveLightGroups(scene([drawable(LIGHT2D, 0xffff)])).lightOrder).toHaveLength(1);
+    const caster = deriveLightGroups(scene([drawable(CAST | (LIGHT2D - 1), 0xffff)]));
+    expect(caster.occluderMasks).toEqual([0xffff]);
+    expect(caster.lightOrder).toHaveLength(0);
   });
 
   it('renderer.ts hands the slot -> id column to the grouping: FrameState.entityIds = state.entityIds', () => {
