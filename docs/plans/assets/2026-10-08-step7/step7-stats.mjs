@@ -14,14 +14,15 @@
 //
 // Each prints its summary as JSON on stdout. Exit codes: 0 fine; 1 out of
 // tolerance (`regress` not ok, a `details` number beyond DETAILS_TOL); 2 bad
-// usage, or nothing to summarise: a file that cannot be read or parsed, a
-// summary that throws (no `regress` result on a side, runs that read
-// different numbers of layers), an `order` or `permute` file holding no
-// result of its task; no JSON then, and `step7-stats: <message>` on stderr;
-// 3 refused: a summary with `refusals`, a run without the precondition its
-// numbers stand on (where its lights sit in the cull's workgroups, the cull
-// path, the canvas). A refused run is run again, and its numbers are not
-// read. Every string is in English; the plan's documents translate them.
+// usage (the usage text on stderr), or nothing to summarise: a file that
+// cannot be read or parsed, a summary that throws (no `regress` result on a
+// side, runs that read different numbers of layers), an `order` or `permute`
+// file holding no result of its task (no JSON then, and
+// `step7-stats: <message>` on stderr); 3 refused: a summary with `refusals`,
+// a run without the precondition its numbers stand on (where its lights sit
+// in the cull's workgroups, the cull path, the canvas). A refused run is run
+// again, and its numbers are not read. Every string is in English; the plan's
+// documents translate them.
 //
 // Light-buffer values are linear RGBA (the probe's), held as rgba16float on
 // the GPU: a step is one fp16 step, counted exactly by compareGrids.
