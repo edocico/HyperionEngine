@@ -103,10 +103,10 @@ const PARTIAL_OFFSETS = [0.75, 1.5];
 const PARTIAL_WEIGHTS = PARTIAL_OFFSETS.map((dx) => 1 - dx / M_LIGHT.range);
 /**
  * The coarsest light buffer WEIGHT_TOL is derived for, in texels per world
- * unit: the density the tab's step-6 checks are validated from
- * (VALIDATED_TEXELS_PER_UNIT in lighting-directional.ts), which this framing
- * (SUB_HALF_WIDTH, the same) reaches on a canvas at least 320 px tall at
- * zoom 1, or about 564 px wide where fitView zooms out.
+ * unit: the density the tab's 'Directional shadow length' check is validated
+ * from (VALIDATED_TEXELS_PER_UNIT in lighting-directional.ts), which this
+ * framing (SUB_HALF_WIDTH, the same) reaches on a canvas at least 320 px tall
+ * at zoom 1, or about 564 px wide where fitView zooms out.
  */
 const MIN_TEXELS_PER_UNIT = 8;
 /**

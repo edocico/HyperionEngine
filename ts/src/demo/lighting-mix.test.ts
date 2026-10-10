@@ -25,9 +25,10 @@ const sum = (...cs: Rgb[]): Rgb => cs.reduce((a, b) => [a[0] + b[0], a[1] + b[1]
 /**
  * `x` rounded toward zero to an fp16 value: how the M2 stores its light-buffer
  * blends. The grow gate's centres (docs/plans/assets/2026-10-08-step7/
- * gate-m2-grow-B.json) and harness-task5-B.json's R_ONLY, 0.669 for 0.670,
- * sit on the largest fp16 at or below the exact sum. Math.f16round rounds to
- * nearest instead.
+ * gate-m2-grow-B.json), one add blend over the ambient each, sit on the
+ * largest fp16 at or below the exact sum; harness-task5-B.json's R_ONLY, two
+ * add blends, reads 0.669 in green where rounding each to nearest gives 0.670.
+ * Math.f16round rounds to nearest.
  */
 function f16TowardZero(x: number): number {
   if (x === 0 || !Number.isFinite(x)) return x;
