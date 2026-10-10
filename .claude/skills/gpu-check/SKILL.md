@@ -228,11 +228,11 @@ no probe, no bloom, no outlines, no particles and no texture loading on the main
 like §3, with the anti-reload initScript for a tab run.
 
 **Expected: no `fail` from Mode A itself.** A check that passes in B passes or skips in A, and a
-`fail` there is real. Measured on 2026-10-06 (M2 Pro, Chrome 155, `c19cc6a`, `?mode=A&bench`, the
+`fail` there is real. Measured on 2026-10-10 (M2 Pro, Chrome 155, `83a9b9d`, `?mode=A&bench`, the
 §4 runner waiting for the end of each tab's setup instead of 3.5 s): Primitives 0/9 · 9 skipped,
 Scene Graph 1/5 · 4 skipped, Input 1/6 · 1 skipped (+ the 4 ⏳), Audio 4/4, Particles 0/4 · 4
-skipped, Rendering FX 0/4 · 4 skipped, Lighting 4/9 · 5 skipped, Debug Tools 6/7 · 1 skipped,
-Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped: 17 pass, 39 skips and 4 pending over the 60
+skipped, Rendering FX 0/4 · 4 skipped, Lighting 4/12 · 8 skipped, Debug Tools 6/7 · 1 skipped,
+Lifecycle 1/6 · 5 skipped, 2D Twins 0/6 · 6 skipped: 17 pass, 42 skips and 4 pending over the 63
 checks, no `fail`. The skips fall in a few classes: "pixel probe unavailable" (every check that
 reads pixels: the probe needs a main-thread renderer), "no renderer" (selection, particles, bloom,
 outlines), "no main-thread renderer" (test textures), the ones B has too (MSDF atlas, Tonemap stub,
@@ -266,7 +266,10 @@ after everything is destroyed the screenshot still shows the last frame, and
 quads above still sampled white, red, white 1.2 s after `destroy()`, where B went back to the clear
 (17). It is step 10 of the open-items round (`docs/plans/2026-09-27-open-items-round-plan.md`), a
 known gap and not a regression: a "gone after destroy" pixel check proves nothing in A, run it in B
-or C.
+or C. The same gap leaves the canvas ELEMENT at the HTML default 300 × 150 on a fresh
+`?mode=A&bench` page until the render worker presents its first frame (the canvas is transferred to
+it): in Mode A read the canvas size after a frame was drawn, never right after a resize (round step
+7, 2026-10-10: the same page read 1960 × 1248 once its tabs had drawn).
 
 **State that travels by message.** The lighting quality and the sort's inputs (`transparentCount`,
 `entityIdsGeneration`) reach the render worker too, and only a screenshot shows it. The Lighting
@@ -274,7 +277,10 @@ tab moves its lights every tick, so two of its screenshots never match: build a 
 `?mode=A&bench`. The sort, checked on the M2: three overlapping `.transparent()` 2D gradients at
 `.depth()` 0.2, 0.5 and 0.8 (red uniform, green to black, blue to black) sample red in front at
 (-0.6, 0), (0, 0) and (0.6, 0); after `depth(0.8)` on the red and `depth(0.2)` on the blue, blue is
-in front: 202, 126, 51 along its gradient. The quality (README M6c in
+in front: 202, 126, 51 along its gradient. The light list's id tie-break (round step 7) needs
+`entityIds` in the render worker too: checked by the step-7 bench's `scene` phase 3 in
+`?mode=A&bench` (2026-10-10, `83a9b9d`: at equal depths Q, the higher id, is in front of P, with
+its slot below P's; A, B and the expected colours equal at 18 of 18 points). The quality (README M6c in
 `docs/plans/assets/2026-09-29-mac-m2/`, not re-run): `shadowSteps` 4 against 48 on a static lit
 scene changes 6.35 % of the canvas.
 
