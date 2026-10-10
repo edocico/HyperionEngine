@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
-import { verifySortReadback, regionClass, sameIdOrder, readSortFrame, LAST_SORTED_TYPE, LIGHT2D } from './transparent-sort-checks';
+import { verifySortReadback, regionClass, sameIdOrder, readSortFrame, LAST_SORTED_TYPE, LIGHT2D, REGION_CLASSES } from './transparent-sort-checks';
 import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 import { orthographic, extractFrustumPlanes, isSphereInFrustum } from '../camera';
-import { CAP, PASSES, RADIX, DIAG_WORDS } from '../render/passes/transparent-sort-constants';
+import { CAP, GATHER_REGIONS, PASSES, RADIX, DIAG_WORDS } from '../render/passes/transparent-sort-constants';
 import { RenderPrimitiveType } from '../entity-handle';
 import { RenderPrimitiveType as SchemaPrimitiveType } from '../prim-params-schema';
 
@@ -214,7 +214,7 @@ describe('verifySortReadback', () => {
   });
 });
 
-describe('LIGHT2D and LAST_SORTED_TYPE', () => {
+describe('LIGHT2D, LAST_SORTED_TYPE and REGION_CLASSES', () => {
   it("are Light2D everywhere (cull.wgsl's last type, Rust's PRIM_TYPE_LIGHT2D, both RenderPrimitiveType enums) and the type before it", () => {
     // A new drawable type moves Light2D (/new-primitive step 4): left behind,
     // the checks would expect the gather to skip the new type's rows.
@@ -225,6 +225,13 @@ describe('LIGHT2D and LAST_SORTED_TYPE', () => {
     expect(LIGHT2D, 'RenderPrimitiveType.Light2D (entity-handle.ts)').toBe(RenderPrimitiveType.Light2D);
     expect(LIGHT2D, 'RenderPrimitiveType.Light2D (prim-params-schema.ts)').toBe(SchemaPrimitiveType.Light2D);
     expect(LAST_SORTED_TYPE, 'the last type the gather takes: the one before Light2D').toBe(LIGHT2D - 1);
+  });
+
+  it("REGION_CLASSES, the classes check (i) requires, is the gather's regions: two per type up to LAST_SORTED_TYPE", () => {
+    // Check (i) counts a class only below REGION_CLASSES: left at 12 after a move (LAST_SORTED_TYPE 6), it would
+    // never require the new type's two regions.
+    expect(REGION_CLASSES, "the gather's regions (GATHER_REGIONS)").toBe(GATHER_REGIONS);
+    expect(REGION_CLASSES, 'two per type the gather takes (regionClass: type × 2 + textured)').toBe((LAST_SORTED_TYPE + 1) * 2);
   });
 });
 

@@ -7,7 +7,7 @@
 // consecutive frames; (h) is the churn scene of the 2D Twins tab.
 
 import { extractFrustumPlanes, isSphereInFrustum } from '../camera';
-import { CAP, PASSES, RADIX } from '../render/passes/transparent-sort-constants';
+import { CAP, GATHER_REGIONS, PASSES, RADIX } from '../render/passes/transparent-sort-constants';
 import { sortableZBits, digitOf, oracleOrder } from '../render/passes/transparent-sort-reference';
 import type { TransparentSortReadback } from '../render/transparent-sort-probe';
 
@@ -20,7 +20,12 @@ const TRANSPARENT_BIT = 0x100;
  */
 export const LAST_SORTED_TYPE = 5;
 export const LIGHT2D = 6;
-const REGION_CLASSES = 12;
+/**
+ * The (type, textured) classes check (i) requires: one per gather region, so
+ * GATHER_REGIONS itself, which a Light2D move updates. Pinned by
+ * transparent-sort-checks.test.ts to two per type up to LAST_SORTED_TYPE.
+ */
+export const REGION_CLASSES = GATHER_REGIONS;
 /** deriveLightGroups' conservative sphere test (light-groups.ts): every entity the GPU draws passes it. */
 const ENLARGED = { scale: 1.01, add: 1e-3 };
 /** The other side of the margin: every entity that passes it is certainly drawn. */
@@ -40,7 +45,7 @@ export function regionClass(meta1: number, texIndex: number): number {
  * The failures of one answer, empty when it passes. `exactSet`: every
  * transparent row of type 0-5 inside the ENLARGED frustum must be gathered —
  * for scenes with nothing near the edge of the view. `requireAllRegions`:
- * all 12 (type, textured) classes must be non-empty.
+ * all REGION_CLASSES (type, textured) classes must be non-empty.
  */
 export function verifySortReadback(
   r: TransparentSortReadback,
@@ -144,7 +149,7 @@ export function verifySortReadback(
     }
   }
 
-  // (i) Every gather region walked: the 12 (type, textured) classes all non-empty.
+  // (i) Every gather region walked: the REGION_CLASSES (type, textured) classes all non-empty.
   if (opts.requireAllRegions) {
     const perClass = new Uint32Array(REGION_CLASSES);
     for (const s of gathered) {

@@ -17,7 +17,7 @@ import { extractFrustumPlanes, isSphereInFrustum, orthographic } from '../camera
 //   receiver — ONE layer, its lowest bit; 0 is layer 0
 //   occluder — the layers it shadows; 0 is every layer
 
-const LIGHT = 6, CAST = 1 << 9, RECV = 1 << 10;
+const LIGHT = LIGHT2D, CAST = 1 << 9, RECV = 1 << 10;
 const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3;
 /** Light blend modes on the wire, renderMeta bits 14-15 (LightBlendMode in components.rs). */
 const ADD = 0, SUB = 1, MIX = 2;
@@ -255,7 +255,7 @@ describe('deriveLightGroups', () => {
     // must count it as one, or it lights layers its group was not keyed for.
     const cull = readFileSync(new URL('../shaders/cull.wgsl', import.meta.url), 'utf8');
     expect(cull).toMatch(/primType = min\(metaVal & 0xFFu, NUM_PRIM_TYPES - 1u\);/);
-    const PAST_LAST = 7;
+    const PAST_LAST = LIGHT2D + 1;
     const g = deriveLightGroups(scene([light(0xffff), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(PAST_LAST | CAST, 0b10)]));
     expect(g.lightMasks).toContain(0b10);
     expect(g.occluderMasks).toEqual([]);
@@ -522,7 +522,7 @@ describe('deriveLightGroups: the light list (round step 7)', () => {
   it('lists what the cull draws as a light: a mask-0 light, a sprite light, a type past Light2D; the unclaimed blend 3 sorts with add', () => {
     // vs_main drops a mask-0 light in every group, fs_main discards a sprite
     // light until step 8, and cull.wgsl clamps a type past 6 to Light2D.
-    const SPRITE = 4, PAST_LAST = 7;
+    const SPRITE = 4, PAST_LAST = LIGHT2D + 1;
     expect(drawn(scene([light(0, 0, { id: 1 }), light(0xffff, 0, { id: 2, type: SPRITE }), drawable(PAST_LAST, 0xffff, { id: 3 }), drawable(RECV, 0, { id: 4 })])))
       .toEqual([1, 2, 3]);
     // Rust stores a 3 (masked, never rejected): light-accum.wgsl draws it like add, so it sorts with add.
