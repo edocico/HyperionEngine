@@ -15,10 +15,11 @@
 //   global, still mix, it brings its whole layer to its target.
 // - 'Mix order follows depth': where P and Q overlap the nearer one is on
 //   top, over ORDER_READS reads, and the other one once their depths swap at
-//   runtime; R, nearer than both but an add light, is under both (add and sub
-//   before mix), and P's `.transparent()` does not move P. A pass is no
-//   evidence of stability: P and Q sit in adjacent slots, where the M2's cull
-//   did not reorder lights (ORDER_READS).
+//   runtime (crossed, so that each change is needed, and read back in the rows
+//   of that frame); R, nearer than both but an add light, is under both (add
+//   and sub before mix), and P's `.transparent()` does not move P. A pass is
+//   no evidence of stability: P and Q sit in adjacent slots, where the M2's
+//   cull did not reorder lights (ORDER_READS).
 // - 'Light list: exact cull, id at equal depth': M is drawn just inside the
 //   limit of the cull's exact sphere test (the far plane + its range) and not
 //   just outside it, where the grouping's margin would still keep it; at
@@ -79,10 +80,23 @@ const R_RANGE = 5;
 const PQ_RANGE = 3;
 /** R's depth: the nearest of R, P and Q (a root 2D light's world z is −depth), yet drawn under P and Q, as an add light. */
 const R_DEPTH = 0.5;
-/** P's depth: nearer than Q, so on top of it where they overlap. */
+/** P's depth before the swap: nearer than Q, so on top of it where they overlap. 'Light list' puts both lights at it. */
 const P_DEPTH = 1;
-/** Q's depth: the farthest. */
-const Q_DEPTH = 2;
+/** Q's depth before the swap: the farthest. */
+const Q_DEPTH = 4;
+/**
+ * P's depth after the swap, which puts Q nearer. P and Q cross over rather
+ * than trade places, so that Q comes on top only when both SetDepth commands
+ * reach the rows: P's change alone leaves P at 3 and Q at 4, Q's alone P at 1
+ * and Q at 2, P nearer either way. Traded depths (1 and 2) put the two lights
+ * at equal depths after one lost SetDepth, where Q, the higher id, is on top
+ * as after a full swap.
+ */
+const P_DEPTH_AFTER = 3;
+/** Q's depth after the swap: nearer than P's (P_DEPTH_AFTER), farther than R's. */
+const Q_DEPTH_AFTER = 2;
+/** How far P's and Q's row z after the swap may sit from −depth: correct code writes exact f32 integers. */
+const SWAP_Z_EPS = 1e-6;
 /**
  * The probe points, from MIX_SCENE. Each lies at least 1 unit from the edge
  * of every disc that contains it: M_IN in M only; P_ONLY in P and R; OVERLAP
@@ -150,6 +164,12 @@ const PARTIAL_TOL = 0.004;
  * that took the margin would still draw M just outside the limit.
  */
 const FAR_EPS = 0.015;
+/**
+ * How far M's row z may sit from −depth before 'Light list' blames M's depth
+ * rather than the list: its depths near 1003 are no f32 integers, and f32
+ * values there lie 6.1e-5 apart.
+ */
+const M_ROW_Z_TOL = 1e-3;
 /** The points of the global read, in order. */
 const GLOBAL_POINTS = ['FLOOR', 'M_IN', 'AWAY'];
 
@@ -371,12 +391,14 @@ const rowZText = (z: number): string => (Number.isNaN(z) ? 'none' : z.toFixed(3)
  * every read before the swap, while P is nearer, and Q after it. The overlap
  * is read as 'P' or 'Q' within TOL (P_COLOR and Q_COLOR are far enough apart
  * for that), otherwise as its values, and a wrong overlap names the rule it
- * follows instead; P's and Q's row z after the swap are printed, which tell
- * a swap that never reached the rows. A cause found in several reads is named
- * once, at the first, with the values it judged there and how many reads show
- * it. `ambient` is the light buffer's clear: floor − ambient is what the tab's
- * global light adds, which a broken class order draws after the mix lights
- * too.
+ * follows instead. P's and Q's row z after the swap, read in the same frame,
+ * must hold the depths it set (z = −depth, within SWAP_Z_EPS): otherwise the
+ * read is refused whatever its overlap, which was drawn at other depths than
+ * the ones it is judged against; a light with no row (NaN) is only printed. A
+ * cause found in several reads is named once, at the first, with the values
+ * it judged there and how many reads show it. `ambient` is the light buffer's
+ * clear: floor − ambient is what the tab's global light adds, which a broken
+ * class order draws after the mix lights too.
  */
 export function mixOrderVerdict(before: readonly OrderRead[], after: SwapRead, floor: Rgb, ambient: Rgb): Verdict {
   const found = new Map<string, { where: string; values: string; reads: number }>();
@@ -407,20 +429,25 @@ export function mixOrderVerdict(before: readonly OrderRead[], after: SwapRead, f
   // One phase of the overlap: the colour read, and what it is against what it should be.
   const phase = (label: string, value: Rgba, want: 'P' | 'Q'): string =>
     `${rgb(value)} (${label === want ? want : `${isPq(label) ? label : 'neither'}, want ${want}`})`;
+  // The rows after the swap, against the z its depths give.
+  const rowsAfter = `row z P ${rowZText(after.rowZ.p)}, Q ${rowZText(after.rowZ.q)} after it`;
+  const wantZ = { p: -P_DEPTH_AFTER, q: -Q_DEPTH_AFTER };
+  const wantAfter = `want ${wantZ.p.toFixed(3)}, ${wantZ.q.toFixed(3)}`;
+  const unswapped = (['p', 'q'] as const).some((k) => Number.isFinite(after.rowZ[k]) && Math.abs(after.rowZ[k] - wantZ[k]) > SWAP_Z_EPS);
   let rule: string | null = null;
   if (!steady) rule = 'the overlap changes from read to read: the order does not come from the ECS state alone';
   else if (first === 'Q' && last === 'P') rule = 'the order is reversed: the nearer mix light is drawn first';
   else if (first === 'Q' && last === 'Q') rule = 'the overlap follows the ids or the slots, not the depths: Q has the higher id and the later slot';
   else if (first === 'P' && last === 'P') {
     rule = 'P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
-      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows '
-      + `(row z P ${rowZText(after.rowZ.p)}, Q ${rowZText(after.rowZ.q)} after it; want ${(-Q_DEPTH).toFixed(3)}, ${(-P_DEPTH).toFixed(3)})`;
+      + `(its buffer rewritten only when the light count changes), or the swap never reached the rows (${rowsAfter}; ${wantAfter})`;
   } else if (!(first === 'P' && last === 'Q')) {
     rule = `the overlap is neither P nor Q in a phase: with P nearer ${before.length > 0 ? phase(first, before[0].overlap, 'P') : 'no read'}, `
       + `after the swap ${phase(last, after.overlap, 'Q')}`;
   }
   const problems = [
     ...(rule === null ? [] : [rule]),
+    ...(unswapped ? [`the depth swap did not reach the rows: ${rowsAfter}, ${wantAfter}`] : []),
     ...[...found].map(([cause, { where, values, reads }]) => `${where}${reads > 1 ? ` (${reads} of ${all.length} reads)` : ''}: ${cause} (${values})`),
   ];
   const detail = `overlap ${first} over ${before.length} reads with P nearer, ${last} after the swap; `
@@ -437,6 +464,13 @@ export interface ListReads {
   /** M's listed limit, the far plane's depth + its range, and the two depths M was read at, limit ∓ FAR_EPS. */
   limit: number;
   depths: { inside: number; outside: number };
+  /**
+   * At each of those reads, M's row z, read back in the same frame (NaN: no
+   * row), and whether M's id was in the light list
+   * (`engine.lighting.groups.lightIds`) right after the probe resolved.
+   */
+  mRowZ: { inside: number; outside: number };
+  mListed: { inside: boolean; outside: boolean };
   /** OVERLAP with P and Q at equal depths after M's despawn, and their slots, ids and row z (NaN: no row) in that frame. */
   overlap: Rgba;
   slots: { p: number; q: number };
@@ -450,18 +484,23 @@ export interface ListReads {
  * 'Light list: exact cull, id at equal depth': M_IN within one fp16 ULP of
  * `target` with M just inside its listed limit (otherwise: not drawn, near
  * `floor`, or drawn off its target), and within TOL of `floor` just outside
- * it. The overlap at equal depths counts only where slot order and the ids
- * disagree, (id Q > id P) !== (slot Q > slot P), and with both lights in the
- * rows read back; it must then be the light with the higher id. The lower id
- * on top follows the slots or the ids reversed: it has the later slot, so a
- * slot tie-break and a reversed id tie-break give the same read. When it is
- * P, P's `.transparent()` may put it there too (a transparent-last order),
- * which 'Mix order follows depth' tells apart (P on top in both its phases).
- * P's and Q's row z, read in the same frame, show the premise: depths that
- * never reached the rows land in the same cause, with unequal z.
+ * it. M drawn just outside is blamed on its depth when M's row z there, read
+ * in the same frame, is not −depth (beyond M_ROW_Z_TOL: a lost SetDepth, a
+ * clamped depth); otherwise on the list's test when M was listed though
+ * outside (the grouping's margin), on LightAccumStage when M was drawn though
+ * unlisted. M's row z and listing at both reads are printed. The overlap at
+ * equal depths counts only with both lights in the rows read back, at the
+ * same row z there (read in the same frame: a SetDepth that never reached its
+ * row leaves the nearer light on top, which may be the higher id), and where
+ * slot order and the ids disagree, (id Q > id P) !== (slot Q > slot P); it
+ * must then be the light with the higher id. The lower id on top follows the
+ * slots or the ids reversed: it has the later slot, so a slot tie-break and a
+ * reversed id tie-break give the same read. When it is P, P's
+ * `.transparent()` may put it there too (a transparent-last order), which
+ * 'Mix order follows depth' tells apart (P on top in both its phases).
  */
 export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict {
-  const { inside, outside, limit, depths, overlap, slots, ids, rowZ, rows } = reads;
+  const { inside, outside, limit, depths, mRowZ, mListed, overlap, slots, ids, rowZ, rows } = reads;
   const problems: string[] = [];
   if (!withinUlp(inside, target)) {
     problems.push(close(inside, floor)
@@ -469,12 +508,21 @@ export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict 
       : `M is drawn just inside its listed limit, but not at its target: ${ulpsOff(inside, target).toFixed(1)} fp16 ULP off`);
   }
   if (!close(outside, floor)) {
-    problems.push("M is still drawn just outside its listed limit: the list keeps the grouping's margin, not the cull's exact test");
+    if (Number.isFinite(mRowZ.outside) && Math.abs(mRowZ.outside + depths.outside) > M_ROW_Z_TOL) {
+      problems.push(`M's depth did not reach its row (row z ${rowZText(mRowZ.outside)}, set depth ${depths.outside.toFixed(3)})`);
+    } else if (mListed.outside) {
+      problems.push("M is still drawn just outside its listed limit, listed though outside: the list keeps the grouping's margin, not the cull's exact test");
+    } else {
+      problems.push('M is still drawn just outside its listed limit, drawn though unlisted: LightAccumStage draws beyond the list');
+    }
   }
   const seen = overlapLabel(overlap);
   const [higher, lower] = ids.q > ids.p ? ['Q', 'P'] : ['P', 'Q'];
   if (slots.p < 0 || slots.q < 0) {
     problems.push(`P or Q has no slot in the rows read back${rows.ids < rows.count ? `: their ids column is short, ${rows.ids} ids for ${rows.count} rows` : ''}`);
+  } else if (!(rowZ.p === rowZ.q)) {
+    // A SetDepth that never reached its row: the nearer light is on top, whatever the tie-break.
+    problems.push(`P and Q are not at equal depths in the rows (row z P ${rowZText(rowZ.p)}, Q ${rowZText(rowZ.q)})`);
   } else if ((ids.q > ids.p) === (slots.q > slots.p)) problems.push('the slots agree with the ids: the read cannot tell the id rule from slot order');
   else if (seen === lower) {
     // The lower id has the later slot here: slot order and a reversed id tie-break both draw it last. P is
@@ -483,8 +531,10 @@ export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict 
       + '(one read cannot tell those two apart)'
       + (lower === 'P' ? ", or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)" : ''));
   } else if (seen !== higher) problems.push('at equal depths the overlap is neither P nor Q');
-  const detail = `M ${rgb(inside)} just inside its listed limit, at depth ${depths.inside.toFixed(3)}, `
-    + `and ${rgb(outside)} just outside, at depth ${depths.outside.toFixed(3)} `
+  // M's row and its place in the light list at one read.
+  const mAt = (read: 'inside' | 'outside'): string => `row z ${rowZText(mRowZ[read])}, ${mListed[read] ? 'listed' : 'unlisted'}`;
+  const detail = `M ${rgb(inside)} just inside its listed limit, at depth ${depths.inside.toFixed(3)} (${mAt('inside')}), `
+    + `and ${rgb(outside)} just outside, at depth ${depths.outside.toFixed(3)} (${mAt('outside')}) `
     + `(limit ${limit.toFixed(3)}, the far plane + its range; FAR_EPS ${FAR_EPS}); `
     + `overlap ${seen} at equal depths (row z P ${rowZText(rowZ.p)}, Q ${rowZText(rowZ.q)}); `
     + `ids P ${ids.p}, Q ${ids.q}; slots P ${slots.p}, Q ${slots.q}; ${rows.ids} ids for ${rows.count} rows`;
@@ -588,10 +638,10 @@ export async function checkMix(
       };
       const before: OrderRead[] = [];
       for (let i = 0; i < ORDER_READS; i++) before.push(await read());
-      p.depth(Q_DEPTH);
-      q.depth(P_DEPTH);
+      p.depth(P_DEPTH_AFTER);
+      q.depth(Q_DEPTH_AFTER);
       await frames(4);
-      // The rows of the same frame: P's and Q's z (column 3 of their matrix) tell a swap that never reached them.
+      // The rows of the same frame: P's and Q's z (column 3 of their matrix) must hold both new depths.
       const [after, rows] = await Promise.all([read(), readTransforms()]);
       const rowZ = (id: number): number => rowZAt(rows.cpuRows, rows.entityIds.indexOf(id));
       // The light buffer's clear, the ambient: floor − ambient is the tab's global light.
@@ -607,12 +657,20 @@ export async function checkMix(
       const vp = engine.cam.viewProjection;
       const limit = (vp[14] - 1) / vp[10] + M_LIGHT.range;
       const depths = { inside: limit - FAR_EPS, outside: limit + FAR_EPS };
-      m.depth(depths.inside);
-      await frames(4);
-      const [inside] = await probe('light-buffer', [at(POINTS.mIn)], floorGroup());
-      m.depth(depths.outside);
-      await frames(4);
-      const [outside] = await probe('light-buffer', [at(POINTS.mIn)], floorGroup());
+      // M_IN with M at `depth`, M's row z in the same frame, and whether the
+      // light list held M right after the probe resolved.
+      const readM = async (depth: number): Promise<{ value: Rgba; rowZ: number; listed: boolean }> => {
+        m.depth(depth);
+        await frames(4);
+        const [[value, listed], rows] = await Promise.all([
+          probe('light-buffer', [at(POINTS.mIn)], floorGroup())
+            .then(([v]) => [v, engine.lighting.groups?.lightIds.includes(m.id) ?? false] as const),
+          readTransforms(),
+        ]);
+        return { value, rowZ: rowZAt(rows.cpuRows, rows.entityIds.indexOf(m.id)), listed };
+      };
+      const inside = await readM(depths.inside);
+      const outside = await readM(depths.outside);
       // M's despawn moves the last row, Q's, into its slot (swap-remove): Q's
       // slot falls below P's while its id stays the higher.
       m.destroy();
@@ -625,10 +683,16 @@ export async function checkMix(
       ]);
       const ids = { p: p.id, q: q.id };
       const slots = { p: rows.entityIds.indexOf(ids.p), q: rows.entityIds.indexOf(ids.q) };
-      // Their rows' z in that frame: the equal depths the tie stands on.
+      // Their rows' z in that frame: the tie counts only if they are equal.
       const rowZ = { p: rowZAt(rows.cpuRows, slots.p), q: rowZAt(rows.cpuRows, slots.q) };
       return listVerdict({
-        inside, outside, limit, depths, overlap, slots, ids, rowZ, rows: { ids: rows.entityIds.length, count: rows.entityCount },
+        inside: inside.value,
+        outside: outside.value,
+        limit,
+        depths,
+        mRowZ: { inside: inside.rowZ, outside: outside.rowZ },
+        mListed: { inside: inside.listed, outside: outside.listed },
+        overlap, slots, ids, rowZ, rows: { ids: rows.entityIds.length, count: rows.entityCount },
       }, floor, M_TARGET);
     });
   } finally {

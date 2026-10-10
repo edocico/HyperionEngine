@@ -234,13 +234,31 @@ describe('mixOrderVerdict', () => {
     floor: rgba(extra.floor ?? F),
   });
   const reads = (front: Rgb, extra: Partial<Record<keyof OrderRead, Rgb>> = {}) => Array.from({ length: ORDER_READS }, () => at(front, extra));
-  // The read after the swap, with P's and Q's row z in its frame: by default the swapped depths, P at 2 and Q at 1.
-  const swap = (front: Rgb, extra: Partial<Record<keyof OrderRead, Rgb>> = {}, rowZ = { p: -2, q: -1 }): SwapRead => ({ ...at(front, extra), rowZ });
+  // The read after the swap, with P's and Q's row z in its frame: by default the swapped depths, P at 3 and Q at 2.
+  const swap = (front: Rgb, extra: Partial<Record<keyof OrderRead, Rgb>> = {}, rowZ = { p: -3, q: -2 }): SwapRead => ({ ...at(front, extra), rowZ });
 
   it('passes the rule: P over the overlap while nearer, Q after the swap; R under both', () => {
     const v = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR), F, AMBIENT);
     expect(v.ok).toBe(true);
     expect(v.detail).toContain('overlap P over 10 reads with P nearer, Q after the swap');
+  });
+
+  it('refuses the read after the swap unless its rows hold both swapped depths, whatever the overlap shows', () => {
+    // P 1 -> 3 and Q 4 -> 2: P's change lost, Q's lost, both lost, and a swap that left both lights at P's old
+    // depth (where Q, the higher id, is on top by the tie-break).
+    for (const rowZ of [{ p: -1, q: -2 }, { p: -3, q: -4 }, { p: -1, q: -4 }, { p: -1, q: -1 }, { p: -3.001, q: -2 }]) {
+      const v = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, rowZ), F, AMBIENT);
+      expect(v.ok, JSON.stringify(rowZ)).toBe(false);
+      expect(v.detail).toContain(`the depth swap did not reach the rows: row z P ${rowZ.p.toFixed(3)}, Q ${rowZ.q.toFixed(3)} after it, `
+        + 'want -3.000, -2.000');
+    }
+    // A light with no row (NaN) is only printed: the other one is still checked.
+    expect(mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -2 }), F, AMBIENT).ok).toBe(true);
+    expect(mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -4 }), F, AMBIENT).detail)
+      .toContain('the depth swap did not reach the rows: row z P none, Q -4.000 after it, want -3.000, -2.000');
+    // The full swap passes, and so does a row within 1e-6 of it.
+    expect(mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR), F, AMBIENT).ok).toBe(true);
+    expect(mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: -3 - 5e-7, q: -2 + 5e-7 }), F, AMBIENT).ok).toBe(true);
   });
 
   it('names the rule the overlap follows instead', () => {
@@ -285,6 +303,11 @@ describe('mixOrderVerdict', () => {
     expect(order.ok).toBe(false);
     expect(order.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY − P = 0.165, 0.650, 0.275 = R + floor − ambient');
     expect(order.detail).not.toContain('added like add');
+    // No ambient: the two formulas are one, and the tie names the class order.
+    const tie = mixOrderVerdict(reads(P_COLOR, { pOnly: summed }), swap(Q_COLOR, { pOnly: summed }), F, [0, 0, 0]);
+    expect(tie.ok).toBe(false);
+    expect(tie.detail).toContain('R is drawn after the mix lights: add and sub come first');
+    expect(tie.detail).not.toContain('added like add');
   });
 
   it("names a class order broken under the tab's global light, which is drawn after the mix lights too", () => {
@@ -342,37 +365,70 @@ describe('mixOrderVerdict', () => {
 
   it("prints P's and Q's row z after the swap, and names a stale list and a lost swap next to P's .transparent()", () => {
     const v = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR), F, AMBIENT);
-    expect(v.detail).toContain('after it P_ONLY 1.000, 0.250, 0.250; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295; row z P -2.000, Q -1.000');
+    expect(v.detail).toContain('after it P_ONLY 1.000, 0.250, 0.250; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295; row z P -3.000, Q -2.000');
     expect(v.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
-      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows (row z P -2.000, Q -1.000 after it; want -2.000, -1.000)');
-    // The rows say which: here they never took the swap. The row z only informs: a light with no row reads 'none'.
-    const lost = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: -1, q: -2 }), F, AMBIENT);
-    expect(lost.detail).toContain('(row z P -1.000, Q -2.000 after it; want -2.000, -1.000)');
-    const none = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -1 }), F, AMBIENT);
+      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows (row z P -3.000, Q -2.000 after it; want -3.000, -2.000)');
+    expect(v.detail).not.toContain('the depth swap did not reach the rows');
+    // The rows say which: here they never took the swap, and the read is refused for it too.
+    const lost = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: -1, q: -4 }), F, AMBIENT);
+    expect(lost.detail).toContain('(row z P -1.000, Q -4.000 after it; want -3.000, -2.000)');
+    expect(lost.detail).toContain('the depth swap did not reach the rows: row z P -1.000, Q -4.000 after it, want -3.000, -2.000');
+    // A light with no row reads 'none'.
+    const none = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -2 }), F, AMBIENT);
     expect(none.ok).toBe(true);
-    expect(none.detail).toContain('row z P none, Q -1.000');
+    expect(none.detail).toContain('row z P none, Q -2.000');
   });
 });
 
 describe('listVerdict', () => {
   const right: ListReads = {
     inside: rgba(M_TARGET), outside: rgba(F), limit: 1003, depths: { inside: 1002.985, outside: 1003.015 },
+    mRowZ: { inside: -1002.985, outside: -1003.015 }, mListed: { inside: true, outside: false },
     overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 }, rowZ: { p: -1, q: -1 }, rows: { ids: 16, count: 16 },
   };
+  const margin = "M is still drawn just outside its listed limit, listed though outside: the list keeps the grouping's margin, not the cull's exact test";
 
   it('passes the rule: listed just inside the limit, not just outside; at equal depths the higher id, against the slots', () => {
     expect(listVerdict(right, F, M_TARGET).ok).toBe(true);
   });
 
   it('fails the grouping margin (drawn just outside), a light not drawn inside, and slot order', () => {
-    const margin = listVerdict({ ...right, outside: rgba(M_TARGET) }, F, M_TARGET);
-    expect(margin.ok).toBe(false);
-    expect(margin.detail).toContain('still drawn');
+    // A list with the grouping's margin keeps M just outside its limit, and draws it.
+    const kept = listVerdict({ ...right, outside: rgba(M_TARGET), mListed: { inside: true, outside: true } }, F, M_TARGET);
+    expect(kept.ok).toBe(false);
+    expect(kept.detail).toContain(margin);
+    expect(kept.detail).not.toContain("M's depth did not reach its row");
     const missing = listVerdict({ ...right, inside: rgba(F) }, F, M_TARGET);
     expect(missing.detail).toContain('is not drawn');
     const slots = listVerdict({ ...right, overlap: rgba(P_COLOR) }, F, M_TARGET);
     expect(slots.ok).toBe(false);
     expect(slots.detail).toContain('follows the slots');
+  });
+
+  it("blames M's depth, not the list, for M drawn just outside when M's row z is not -depth there", () => {
+    // M's SetDepth lost (M left at depth 0, so listed and drawn), or a 2D depth clamped to 1000.
+    const cases: Array<[{ inside: number; outside: number }, string]> = [
+      [{ inside: 0, outside: 0 }, "M's depth did not reach its row (row z 0.000, set depth 1003.015)"],
+      [{ inside: -1000, outside: -1000 }, "M's depth did not reach its row (row z -1000.000, set depth 1003.015)"],
+    ];
+    for (const [mRowZ, cause] of cases) {
+      const v = listVerdict({ ...right, outside: rgba(M_TARGET), mRowZ, mListed: { inside: true, outside: true } }, F, M_TARGET);
+      expect(v.ok).toBe(false);
+      expect(v.detail).toContain(cause);
+      expect(v.detail).not.toContain("grouping's margin");
+    }
+    // The f32 row of a depth that did reach it (1003.015 is no f32 integer): within 1e-3, so the list is named.
+    const f32 = listVerdict({ ...right, outside: rgba(M_TARGET), mRowZ: { inside: Math.fround(-1002.985), outside: Math.fround(-1003.015) },
+      mListed: { inside: true, outside: true } }, F, M_TARGET);
+    expect(f32.detail).toContain(margin);
+    expect(f32.detail).not.toContain("M's depth did not reach its row");
+  });
+
+  it('blames LightAccumStage for M drawn just outside its limit though the list left it out', () => {
+    const v = listVerdict({ ...right, outside: rgba(M_TARGET) }, F, M_TARGET);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('M is still drawn just outside its listed limit, drawn though unlisted: LightAccumStage draws beyond the list');
+    expect(v.detail).not.toContain("grouping's margin");
   });
 
   it('fails when the slots agree with the ids: the read cannot tell the two rules apart', () => {
@@ -396,19 +452,34 @@ describe('listVerdict', () => {
     expect(q.detail).not.toContain('.transparent()');
   });
 
-  it("prints M's listed limit, FAR_EPS and M's two depths, P's and Q's row z, and the rows' ids against their count", () => {
-    expect(listVerdict(right, F, M_TARGET).detail).toBe('M 2.000, 1.000, 0.500 just inside its listed limit, at depth 1002.985, '
-      + 'and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (limit 1003.000, the far plane + its range; FAR_EPS 0.015); '
+  it("prints M's listed limit, FAR_EPS, M's two depths with its row z and listing at each, P's and Q's row z, and the rows' ids against their count", () => {
+    expect(listVerdict(right, F, M_TARGET).detail).toBe('M 2.000, 1.000, 0.500 just inside its listed limit, at depth 1002.985 (row z -1002.985, listed), '
+      + 'and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (row z -1003.015, unlisted) (limit 1003.000, the far plane + its range; FAR_EPS 0.015); '
       + 'overlap Q at equal depths (row z P -1.000, Q -1.000); ids P 120, Q 121; slots P 15, Q 13; 16 ids for 16 rows');
+    // M with no row: 'none'.
+    expect(listVerdict({ ...right, mRowZ: { inside: NaN, outside: NaN } }, F, M_TARGET).detail)
+      .toContain('at depth 1002.985 (row z none, listed), and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (row z none, unlisted)');
   });
 
-  it('prints the row z that show depths which never reached the rows: the premise of the tie, read in the same frame', () => {
-    // P left at depth 1 and Q at 2: P is nearer, and on top, while the cause blames the order.
+  it('refuses the tie unless P and Q hold the same z in the rows read in its frame, whichever light is on top', () => {
+    // Q's SetDepth reached its row (z -1) and P's did not, P left farther (at 3, its depth after the swap, or
+    // at 2): Q, nearer, is on top by depth, and the tie-break is never tested.
+    for (const rowZ of [{ p: -2, q: -1 }, { p: -3, q: -1 }]) {
+      const v = listVerdict({ ...right, rowZ }, F, M_TARGET);
+      expect(v.ok, JSON.stringify(rowZ)).toBe(false);
+      expect(v.detail).toContain(`P and Q are not at equal depths in the rows (row z P ${rowZ.p.toFixed(3)}, Q -1.000)`);
+    }
+    // P's reached and Q's did not: P, nearer, is on top, and the order is not blamed for it.
     const lost = listVerdict({ ...right, overlap: rgba(P_COLOR), rowZ: { p: -1, q: -2 } }, F, M_TARGET);
     expect(lost.ok).toBe(false);
     expect(lost.detail).toContain('overlap P at equal depths (row z P -1.000, Q -2.000)');
-    // A light with no row: 'none'.
-    expect(listVerdict({ ...right, slots: { p: -1, q: 13 }, rowZ: { p: NaN, q: -1 } }, F, M_TARGET).detail).toContain('(row z P none, Q -1.000)');
+    expect(lost.detail).toContain('P and Q are not at equal depths in the rows (row z P -1.000, Q -2.000)');
+    expect(lost.detail).not.toContain('the lower id');
+    // A light with no row: 'none', and the missing slot is what is named.
+    const none = listVerdict({ ...right, slots: { p: -1, q: 13 }, rowZ: { p: NaN, q: -1 } }, F, M_TARGET);
+    expect(none.detail).toContain('(row z P none, Q -1.000)');
+    expect(none.detail).toContain('P or Q has no slot in the rows read back');
+    expect(none.detail).not.toContain('not at equal depths');
   });
 
   it('tells M drawn off its target just inside its limit from M not drawn there', () => {
@@ -445,9 +516,10 @@ interface FakeLight {
 
 /**
  * A handle of the fake engine: it records what the check sets, and its row
- * moves like Rust's (swap-remove). `calls` logs depth, transparent, light
- * (`<type>/<falloff or ->`) and destroy, nothing else (not position); destroy
- * is idempotent, like EntityHandle.destroy(), and logs its first call only.
+ * moves like Rust's (swap-remove). `calls` logs depth (a lost one too),
+ * transparent, light (`<type>/<falloff or ->`) and destroy, nothing else (not
+ * position); destroy is idempotent, like EntityHandle.destroy(), and logs its
+ * first call only.
  */
 interface FakeHandle {
   id: number;
@@ -479,9 +551,11 @@ type Rule = 'list' | 'slot' | 'mixFirst' | 'transparentLast' | 'bucket' | 'idDes
  * culled.
  * readEntityTransforms holds each row's translation (a 2D row's z is −depth)
  * and every id. With `fp16TowardZero` each blend's result is stored as the M2
- * stores it, rounded toward zero to fp16; without it, exact.
+ * stores it, rounded toward zero to fp16; without it, exact. With `lostDepth`,
+ * the `depth()` calls of the lights named there after the spawn batch never
+ * reach their rows: a runtime SetDepth lost.
  */
-function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZero?: boolean } = {}) {
+function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZero?: boolean; lostDepth?: ReadonlyArray<'M' | 'P' | 'Q'> } = {}) {
   const unavailable = 'The debug probe needs the main-thread renderer of a dev build';
   const global: FakeHandle = {
     id: 119, is2D: false, x: 500, y: 500, d: 0, isTransparent: false,
@@ -490,9 +564,14 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
   const rows: FakeHandle[] = [global];
   const handles: FakeHandle[] = [];
   const requests: Array<{ target: string; world: [number, number][]; layer?: number }> = [];
+  // checkMix spawns the floor, M, R, P and Q in this order, in one batch.
+  const names = ['floor', 'M', 'R', 'P', 'Q'];
+  const lost = new Set<string>(opts.lostDepth);
+  let spawned = false;
   let nextId = 120;
   const spawn = (opts?: { mode?: '2d' | '3d' }) => {
     const h: FakeHandle = { id: nextId++, is2D: opts?.mode === '2d', x: 0, y: 0, d: 0, isTransparent: false, lightOptions: null, destroyed: false, calls: [] };
+    const name = names[handles.length];
     rows.push(h);
     handles.push(h);
     const api = {
@@ -500,7 +579,11 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
       position: (x: number, y: number) => { h.x = x; h.y = y; return api; },
       scale: () => api,
       receivesLight: () => api,
-      depth: (d: number) => { h.d = d; h.calls.push(`depth ${d}`); return api; },
+      depth: (d: number) => {
+        h.calls.push(`depth ${d}`);
+        if (!(spawned && lost.has(name))) h.d = d;
+        return api;
+      },
       transparent: () => { h.isTransparent = true; h.calls.push('transparent'); return api; },
       light: (o: FakeLight) => { h.lightOptions = o; h.calls.push(`light ${o.type}/${o.falloff ?? '-'}`); return api; },
       destroy: () => {
@@ -516,17 +599,21 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
   };
   const cam = new CameraAPI(new Camera());
   cam.setOrthographic((20 * 1920) / 1080, 20);
-  const lightBufferAt = ([x, y]: [number, number]): Rgba => {
+  // The light list's members: every light the exact far-plane test keeps (a global light always), in row order.
+  const listed = (): FakeHandle[] => {
     const vp = cam.viewProjection;
     const farDepth = (vp[14] - 1) / vp[10];
-    const lights = rows.filter((h) => h.lightOptions !== null).map((h) => {
+    return rows.filter((h) => h.lightOptions !== null && (h.lightOptions.type === 'global' || h.d <= farDepth + (h.lightOptions.range ?? 100)));
+  };
+  const lightBufferAt = ([x, y]: [number, number]): Rgba => {
+    const lights = listed().map((h) => {
       const o = h.lightOptions!;
       const range = o.range ?? 100;
       const weight = o.type === 'global' ? 1 : pointWeight([x, y], [h.x, h.y], range, o.falloff ?? 1);
       const energy = o.energy ?? 1;
       const color = (o.color ?? [1, 1, 1]).map((c) => c * energy) as Rgb;
-      return { h, blend: o.blend ?? 'add', depth: h.d, id: h.id, color, weight, listed: o.type === 'global' || h.d <= farDepth + range };
-    }).filter((l) => l.listed);
+      return { h, blend: o.blend ?? 'add', depth: h.d, id: h.id, color, weight };
+    });
     const mixLast = (l: { blend: LightBlend }): number => (l.blend === 'mix' ? 1 : 0);
     const order: Record<Rule, () => typeof lights> = {
       list: () => lightsBackToFront(lights),
@@ -554,8 +641,18 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
     return { entityIds: Uint32Array.from(rows.map((h) => h.id)), entityCount: rows.length, cpuRows, gpuRows: cpuRows, usedScatter: false };
   };
   const engine = {
-    batch: (fn: () => void) => fn(), spawn, cam,
-    lighting: { groups: { groups: [{ layers: 1, sdfSet: -1 }], sdfSets: [], layerToGroup: [0x10, 0] }, ambient: [...AMBIENT, 1] },
+    batch: (fn: () => void) => {
+      fn();
+      spawned = true;
+    },
+    spawn, cam,
+    lighting: {
+      // Read live, like LightingAPI.groups: the list's ids follow the depths set so far.
+      get groups() {
+        return { groups: [{ layers: 1, sdfSet: -1 }], sdfSets: [], layerToGroup: [0x10, 0], lightIds: Uint32Array.from(listed().map((h) => h.id)) };
+      },
+      ambient: [...AMBIENT, 1],
+    },
     debug: { probe, readEntityTransforms, readTransparentSort: async () => ({}) },
   } as unknown as Hyperion;
   return { engine, handles, rows, requests };
@@ -604,9 +701,9 @@ describe('checkMix', () => {
     expect(reporter.results()[0].detail).toContain('1 group, 0 SDF sets');
     const [, m, r, p, q] = handles;
     expect(r.calls).toEqual(['depth 0.5', 'light point/0', 'destroy']);
-    // P nearer, then the swap, then equal depths; `.transparent()` must not move P after Q.
-    expect(p.calls).toEqual(['depth 1', 'transparent', 'light point/0', 'depth 2', 'depth 1', 'destroy']);
-    expect(q.calls).toEqual(['depth 2', 'light point/0', 'depth 1', 'depth 1', 'destroy']);
+    // P nearer, then the swap (crossed: P 1 -> 3, Q 4 -> 2), then equal depths; `.transparent()` must not move P after Q.
+    expect(p.calls).toEqual(['depth 1', 'transparent', 'light point/0', 'depth 3', 'depth 1', 'destroy']);
+    expect(q.calls).toEqual(['depth 4', 'light point/0', 'depth 2', 'depth 1', 'destroy']);
     // Weight 1, weight w, global, back to weight 1; then just inside and just outside its listed limit, and despawned.
     expect(m.calls.slice(0, 4)).toEqual(['light point/0', 'light point/1', 'light global/-', 'light point/0']);
     expect(m.calls.slice(4, 6).map((c) => Number(c.split(' ')[1]))).toEqual([expect.closeTo(1002.985, 3), expect.closeTo(1003.015, 3)]);
@@ -618,9 +715,12 @@ describe('checkMix', () => {
     const [replaces, order, list] = reporter.results();
     // The 1920 x 1080 canvas: a 960 x 540 light buffer over the 35.56 x 20 units of the view.
     expect(replaces.detail).toContain('against FLOOR 0.185, 0.170, 0.295 read in the same frame; light buffer 27.000 texels per world unit; global');
-    expect(order.detail).toContain('row z P -2.000, Q -1.000');
+    expect(order.detail).toContain('row z P -3.000, Q -2.000');
     expect(list.detail).toContain('(limit 1003.000, the far plane + its range; FAR_EPS 0.015)');
     expect(list.detail).toContain('slots P 4, Q 2; 5 ids for 5 rows');
+    // M's row (f32) and its place in the light list, read with each of its two probes.
+    expect(list.detail).toContain('at depth 1002.985 (row z -1002.985, listed), and 0.185, 0.170, 0.295 just outside, '
+      + 'at depth 1003.015 (row z -1003.015, unlisted)');
   });
 
   it("with no canvas: both partial points at the view centre, w = 0, and the first check fails naming the 1 x 1 light buffer's density", async () => {
@@ -677,6 +777,44 @@ describe('checkMix', () => {
       + "(one read cannot tell those two apart), or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)");
     // The premise, read in the same frame: P's and Q's rows hold the same z.
     expect(list.detail).toContain('overlap P at equal depths (row z P -1.000, Q -1.000); ids P 123, Q 124; slots P 4, Q 2');
+  });
+
+  it("with P's runtime SetDepth lost: 'Mix order' fails, P staying nearer, and names the rows that missed the swap", async () => {
+    stubs();
+    const { engine } = modelEngine('list', { lostDepth: ['P'] });
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    // P stays at depth 1, nearer than Q at 2: P on top after the swap too. 'Light list' then moves Q to P's depth.
+    expect([replaces.status, order.status, list.status]).toEqual(['pass', 'fail', 'pass']);
+    expect(order.detail).toContain('overlap P over 10 reads with P nearer, P after the swap');
+    expect(order.detail).toContain('the depth swap did not reach the rows: row z P -1.000, Q -2.000 after it, want -3.000, -2.000');
+  });
+
+  it("with Q's runtime SetDepth lost: both order checks fail, and 'Light list' names the unequal rows, not the order", async () => {
+    stubs();
+    const { engine } = modelEngine('list', { lostDepth: ['Q'] });
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    // Q stays at depth 4: P (3 after the swap, 1 for the tie) stays nearer, and on top.
+    expect([replaces.status, order.status, list.status]).toEqual(['pass', 'fail', 'fail']);
+    expect(order.detail).toContain('the depth swap did not reach the rows: row z P -3.000, Q -4.000 after it, want -3.000, -2.000');
+    expect(list.detail).toContain('P and Q are not at equal depths in the rows (row z P -1.000, Q -4.000)');
+    expect(list.detail).not.toContain('the lower id');
+  });
+
+  it("with M's runtime SetDepth lost: 'Light list' blames M's depth, read in M's row, not the list's margin", async () => {
+    stubs();
+    const { engine } = modelEngine('list', { lostDepth: ['M'] });
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    // M stays at depth 0: listed and drawn at both of its reads.
+    expect([replaces.status, order.status, list.status]).toEqual(['pass', 'pass', 'fail']);
+    expect(list.detail).toContain('at depth 1002.985 (row z 0.000, listed), and 2.000, 1.000, 0.500 just outside, at depth 1003.015 (row z 0.000, listed)');
+    expect(list.detail).toContain("M's depth did not reach its row (row z 0.000, set depth 1003.015)");
+    expect(list.detail).not.toContain("grouping's margin");
   });
 
   it('with every blend rounded toward zero in fp16, as on the M2: three passes, and R_ONLY reads as it did there', async () => {
