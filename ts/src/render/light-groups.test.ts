@@ -491,6 +491,21 @@ describe('deriveLightGroups: the light list (round step 7)', () => {
     expect([...deriveLightGroups(s).lightOrder]).toEqual([2, 3, 1, 0]);
   });
 
+  it("reads the z bits at bounds' own byteOffset: a column that does not start its buffer keys each slot by its own row", () => {
+    // Every transport copies `bounds` to offset 0 today, so a view of
+    // `bounds.buffer` alone would pass every other test while keying each
+    // slot by the row before its own.
+    const s = scene([light(0xffff, 0, { id: 2, z: -0.5 }), light(0xffff, 0, { id: 1, z: 0.5 })]);
+    expect(drawn(s)).toEqual([2, 1]);
+    // A decoy row first: read in place of slot 0's, its z (0.9) would draw slot 0 last.
+    const padded = new Float32Array(4 + s.bounds.length);
+    padded.set([0, 0, 0.9, 1]);
+    padded.set(s.bounds, 4);
+    const bounds = padded.subarray(4);
+    expect(bounds.byteOffset).toBe(16);
+    expect(drawn({ ...s, bounds })).toEqual([2, 1]);
+  });
+
   it('is a function of the ECS state: the same lights in other slots give the same ids in the same order', () => {
     // A despawn swap-removes rows (render_state.rs), snapshot_restore reassigns the slots.
     const lights = [
