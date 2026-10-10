@@ -253,6 +253,17 @@ describe('LightAccumStage', () => {
     expect(encode(0, view('t'), sdf).groups[0]).toBe(grown);
   });
 
+  it('creates the list buffer STORAGE | COPY_DST, in setup() and when it grows: prepare() fills it with writeBuffer', () => {
+    // The mock writeBuffer checks no usage: without COPY_DST at either site
+    // every other test passes, and only the GPU rejects the write.
+    const { stage, device, frame, buffers } = setUp();
+    const created = () => buffers.filter((b) => b.label === 'light-order').map((b) => ({ size: b.size, usage: b.usage }));
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    expect(created()).toEqual([{ size: MIN_LIGHT_ORDER_CAPACITY * 4, usage }]);
+    stage.prepare(device, frame(), groups3, new Uint32Array(MIN_LIGHT_ORDER_CAPACITY + 1));
+    expect(created()).toEqual([{ size: MIN_LIGHT_ORDER_CAPACITY * 4, usage }, { size: MIN_LIGHT_ORDER_CAPACITY * 8, usage }]);
+  });
+
   it('reuses a group bind group until its SDF view or the uniform buffer changes', () => {
     const { stage, device, frame, encode } = setUp();
     stage.prepare(device, frame(), groups3, NO_LIGHTS);
