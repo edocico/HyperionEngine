@@ -72,8 +72,8 @@ export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
  * How a light combines into the light buffer of its layers, which every frame
  * starts at the ambient light (`engine.lighting.setAmbient()`). With `c` the
  * light's `color` × `energy` and `w` its intensity at a pixel (the attenuation
- * (1 − d/range)^falloff × spot cone × shadow, from 0 to 1; 1 for a global
- * light):
+ * (1 − d/range)^falloff × spot cone × shadow, from 0 to 1; the shadow alone
+ * for a directional light, 1 for a global light):
  * - `add` (the default): buffer + c·w.
  * - `sub`: buffer − c·w. Nothing clamps the buffer at 0: where `sub` lights
  *   take more than there is, it goes negative (a lit sprite shows 0 in those
@@ -93,7 +93,7 @@ export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
  * its `position()` z, a child's its world z), then by external id, the higher
  * id last, so on top (the newest light only while ids are fresh, as for
  * transparent sprites). `add` and `sub` lights commute up to rounding in the
- * half-float buffer (a step or two where several overlap): the order decides
+ * half-float buffer (a few steps where several overlap): the order decides
  * which `mix` light ends on top. It comes from the ECS state alone, never from
  * the GPU's culling, so a still scene lights the same from frame to frame.
  */

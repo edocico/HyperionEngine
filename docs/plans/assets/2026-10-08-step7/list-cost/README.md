@@ -15,5 +15,7 @@ Per rieseguirlo (non resta nulla in `ts/src`):
 4. `rm ts/src/render/list-cost.tmp.test.ts ts/src/render/light-groups-master.tmp.ts`
 
 Le variabili `G1_N` e `G1_WARMUP` cambiano il numero di chiamate misurate e di riscaldamento. Il terzo
-decimale non si riproduce da una corsa all'altra (0,037-0,040 ms a 300 luci su quattro corse): la riga
-del design arrotonda a +0,04 ms.
+decimale non si riproduce da una corsa all'altra (0,037-0,040 ms a 300 luci su quattro corse: le tre
+qui e una della review del Task 8f3, +0,039 ms, non committata): la riga del design arrotonda a
++0,04 ms. L'harness è copiato tale e quale: il «never committed» del suo commento in testa vale per
+`ts/src`.

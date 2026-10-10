@@ -281,7 +281,7 @@ tab moves its lights every tick, so two of its screenshots never match: build a 
 in front: 202, 126, 51 along its gradient. The light list's id tie-break (round step 7) needs
 `entityIds` in the render worker too: checked by the step-7 bench's `scene` phase 3 in
 `?mode=A&bench` (2026-10-10, `83a9b9d`: at equal depths Q, the higher id, is in front of P, with
-its slot below P's; A, B and the expected colours equal at 18 of 18 points,
+its slot below P's; A, B and the expected colours equal at 18 of 18 points over the three phases,
 `docs/plans/assets/2026-10-08-step7/modeA-vs-B/pixels.json`). The quality (README M6c in
 `docs/plans/assets/2026-09-29-mac-m2/`, not re-run): `shadowSteps` 4 against 48 on a static lit
 scene changes 6.35 % of the canvas.
