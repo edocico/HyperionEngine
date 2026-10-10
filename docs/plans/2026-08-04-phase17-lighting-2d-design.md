@@ -375,7 +375,7 @@ Due letture:
 | Elemento | Perché regge |
 |---|---|
 | **Luce = entità ECS** | `Position` è già `Vec3`, `Rotation` è già `Quat`. Una point light 3D è la stessa entità con una z diversa. Gerarchia, spawn/despawn, snapshot, replay funzionano identici |
-| **Culling delle luci via `CullPass`** | Il test è già sfera-frustum su 6 piani in 3D. Con una camera prospettica funziona **così com'è**, senza una riga di modifica |
+| **Culling delle luci** | Il test è sfera-frustum su 6 piani in 3D da entrambi i lati: nel cull GPU (`CullPass`) e, dal passo 7 del giro, nella lista delle luci sulla CPU (`deriveLightGroups`), che decide quali luci il frame disegna, con la stessa formula sugli stessi piani (`extractFrustumPlanes`); il `CullPass` archivia ancora le luci nei bucket del tipo 6, che nessuno legge. Con una camera prospettica funziona **così com'è** da entrambi i lati, senza una riga di modifica |
 | **Il pattern "backend intercambiabile"** | È esattamente il meccanismo con cui si aggiungerebbe `clustered` come terzo backend |
 | **Il protocollo dei comandi** | `SetPrimParams0/1` e i bit di `renderMeta` sono agnostici rispetto alla dimensionalità |
 | **HDR + tonemap + bloom** | Prerequisito comune a 2D e 3D |
