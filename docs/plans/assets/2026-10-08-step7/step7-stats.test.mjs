@@ -220,15 +220,28 @@ test("the bench's encodeGrid and fnv1a: a grid round-trips through decodeGrid, e
 
 // ── CLI ──────────────────────────────────────────────────────────────────
 
-test('CLI: `regress` exits 0, 1 out of tolerance, 3 refused; `details` 0, 1 and 3; `permute --cull atomic`; bad usage exits 2', () => {
+/**
+ * `body({ dir, write, run })` in a scratch directory `dir`, removed
+ * afterwards: `write` puts a value there as JSON (a string as is) and returns
+ * its path, `run` spawns the CLI.
+ */
+function withCli(body) {
   const dir = mkdtempSync(join(tmpdir(), 'step7-stats-'));
   try {
     const write = (name, value) => {
       const file = join(dir, name);
-      writeFileSync(file, JSON.stringify(value));
+      writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value));
       return file;
     };
     const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+    body({ dir, write, run });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('CLI: `regress` exits 0, 1 out of tolerance, 3 refused; `details` 0, 1 and 3; `permute --cull atomic`; bad usage exits 2', () => {
+  withCli(({ write, run }) => {
     const master = write('master.json', masterRun());
     assert.equal(run('regress', master, write('same.json', step7Run())).status, 0);
     assert.equal(run('regress', master, write('off.json', step7Run({ layers: [grid(moved(1, 1)), grid(BASE)] }))).status, 1);
@@ -242,7 +255,42 @@ test('CLI: `regress` exits 0, 1 out of tolerance, 3 refused; `details` 0, 1 and 
     assert.equal(run('permute', safari, '--cull', 'atomic').status, 0);
     assert.equal(run('regress', master).status, 2);
     assert.equal(run('permute', safari, '--cull', 'nonsense').status, 2);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
+});
+
+test('CLI: a summary that throws exits 2 (not 1, out of tolerance) with `step7-stats: <message>` on stderr and no JSON', () => {
+  withCli(({ dir, write, run }) => {
+    const noRegress = run('regress', write('order.json', bench([orderResult({})])), write('s.json', step7Run()));
+    assert.equal(noRegress.status, 2);
+    assert.equal(noRegress.stderr, 'step7-stats: no regress result in the master bench output\n');
+    assert.equal(noRegress.stdout, '');
+    const layers = run('regress', write('m.json', masterRun()), write('one-layer.json', step7Run({ layers: [grid(BASE)], oldShaderLayers: [grid(BASE)] })));
+    assert.equal(layers.status, 2);
+    assert.equal(layers.stderr, 'step7-stats: 1 layers against 2\n');
+    const missing = run('order', join(dir, 'missing.json'));
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /^step7-stats: ENOENT: no such file or directory, open '.*missing\.json'\n$/);
+    const garbage = run('order', write('garbage.json', '{"results": ['));
+    assert.equal(garbage.status, 2);
+    assert.match(garbage.stderr, /^step7-stats: [^\n]+\n$/);
+  });
+});
+
+test('CLI: `order` and `permute` on a file holding no result of their task exit 2, `step7-stats: no <task> result in <file>`, never an empty []', () => {
+  withCli(({ write, run }) => {
+    const permuteOnly = write('permute.json', bench([permuteResult({})]));
+    const orderOnly = write('order.json', bench([orderResult({})]));
+    const noOrder = run('order', permuteOnly);
+    assert.equal(noOrder.status, 2);
+    assert.equal(noOrder.stderr, `step7-stats: no order result in ${permuteOnly}\n`);
+    assert.equal(noOrder.stdout, '');
+    const noPermute = run('permute', orderOnly);
+    assert.equal(noPermute.status, 2);
+    assert.equal(noPermute.stderr, `step7-stats: no permute result in ${orderOnly}\n`);
+    assert.equal(noPermute.stdout, '');
+    assert.equal(run('permute', orderOnly, '--cull', 'atomic').status, 2);
+    // Each still summarises a file of its own task.
+    assert.equal(run('order', orderOnly).status, 0);
+    assert.equal(run('permute', permuteOnly).status, 0);
+  });
 });

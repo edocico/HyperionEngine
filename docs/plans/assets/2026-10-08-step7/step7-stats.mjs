@@ -14,11 +14,14 @@
 //
 // Each prints its summary as JSON on stdout. Exit codes: 0 fine; 1 out of
 // tolerance (`regress` not ok, a `details` number beyond DETAILS_TOL); 2 bad
-// usage; 3 refused: a summary with `refusals`, a run without the
-// precondition its numbers stand on (where its lights sit in the cull's
-// workgroups, the cull path, the canvas). A refused run is run again, and its
-// numbers are not read. Every string is in English; the plan's documents
-// translate them.
+// usage, or nothing to summarise: a file that cannot be read or parsed, a
+// summary that throws (no `regress` result on a side, runs that read
+// different numbers of layers), an `order` or `permute` file holding no
+// result of its task; no JSON then, and `step7-stats: <message>` on stderr;
+// 3 refused: a summary with `refusals`, a run without the precondition its
+// numbers stand on (where its lights sit in the cull's workgroups, the cull
+// path, the canvas). A refused run is run again, and its numbers are not
+// read. Every string is in English; the plan's documents translate them.
 //
 // Light-buffer values are linear RGBA (the probe's), held as rgba16float on
 // the GPU: a step is one fp16 step, counted exactly by compareGrids.
@@ -305,15 +308,24 @@ const USAGE = `usage: node step7-stats.mjs order <bench.json>
        node step7-stats.mjs details <harness.json> <statuses.json>`;
 const CULL_PATHS = ['subgroup', 'atomic'];
 
-/** The summary of a command, and whether it is out of tolerance; null: bad usage. */
+/** `summary`, the results of `task` in `file`; none is an error, not a passing `[]`. */
+function nonEmpty(summary, task, file) {
+  if (summary.length === 0) throw new Error(`no ${task} result in ${file}`);
+  return summary;
+}
+
+/**
+ * The summary of a command, and whether it is out of tolerance; null: bad
+ * usage. Throws when there is nothing to summarise (main exits 2).
+ */
 function summarize(command, args, read) {
   if (command === 'order' && args.length === 1) {
-    return { summary: summarizeOrder(read(args[0])), outOfTolerance: false };
+    return { summary: nonEmpty(summarizeOrder(read(args[0])), 'order', args[0]), outOfTolerance: false };
   }
   if (command === 'permute' && (args.length === 1 || (args.length === 3 && args[1] === '--cull'))) {
     const cull = args.length === 3 ? args[2] : 'subgroup';
     if (!CULL_PATHS.includes(cull)) return null;
-    return { summary: summarizePermute(read(args[0]), { cull }), outOfTolerance: false };
+    return { summary: nonEmpty(summarizePermute(read(args[0]), { cull }), 'permute', args[0]), outOfTolerance: false };
   }
   if (command === 'regress' && args.length === 2) {
     const summary = summarizeRegress(read(args[0]), read(args[1]));
@@ -329,7 +341,14 @@ function summarize(command, args, read) {
 function main(argv) {
   const [command, ...args] = argv;
   const read = (file) => JSON.parse(readFileSync(file, 'utf8'));
-  const result = summarize(command, args, read);
+  let result;
+  try {
+    result = summarize(command, args, read);
+  } catch (err) {
+    // Not 1: with nothing summarised there is nothing out of tolerance.
+    console.error(`step7-stats: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
   if (!result) {
     console.error(USAGE);
     return 2;
