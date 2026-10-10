@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   checkMix, fp16Ulp, lightTexelCentre, listVerdict, mixOrderVerdict, mixReplacesVerdict, pointWeight,
-  M_TARGET, P_COLOR, Q_COLOR, R_COLOR, ORDER_READS, type OrderRead,
+  M_TARGET, P_COLOR, Q_COLOR, R_COLOR, ORDER_READS, type ListReads, type OrderRead, type SwapRead,
 } from './lighting-mix';
 import { createTestReporter } from './types';
 import { Camera, orthographic } from '../camera';
@@ -13,6 +13,11 @@ import type { Rgba } from './probe-checks';
 
 // The Lighting tab's floor (ambient + its global light) under the sub-scene.
 const F: Rgb = [0.185, 0.17, 0.295];
+// The tab's ambient (lighting.ts, intensity 1) and its global light, an add light: F is their sum.
+const AMBIENT: Rgb = [0.06, 0.07, 0.12];
+const GLOBAL_LIGHT = { color: [0.25, 0.2, 0.35] as Rgb, energy: 0.5 };
+// What the global light adds everywhere: F − AMBIENT.
+const G: Rgb = [0.125, 0.1, 0.175];
 const rgba = (c: readonly number[]): Rgba => [c[0], c[1], c[2], 1];
 const sum = (...cs: Rgb[]): Rgb => cs.reduce((a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
 
@@ -108,6 +113,23 @@ describe('mixReplacesVerdict', () => {
     expect(at(0.73, 0.52).ok).toBe(true);
     expect(at(0.75, 0.46).detail).toContain('the partial points sit at w 0.750 and 0.460');
   });
+
+  it('prints the FLOOR the partial reads are judged against, and holds it to one fp16 ULP of the first FLOOR read', () => {
+    expect(mixReplacesVerdict(read(right), F, M_TARGET).detail).toContain('target·w against FLOOR 0.185, 0.170, 0.295 read in the same frame');
+    const moved: Rgb = sum(F, [0.1, 0.1, 0.1]);
+    // Partial reads consistent with a reference moved by 0.1: every one within PARTIAL_TOL of it.
+    const consistent = mixReplacesVerdict({ ...read((w) => composite(moved, [straight(M_TARGET, w)])), partialFloor: rgba(moved) }, F, M_TARGET);
+    expect(consistent.ok).toBe(false);
+    expect(consistent.detail).toContain('target·w against FLOOR 0.285, 0.270, 0.395 read in the same frame');
+    expect(consistent.detail).toContain('the FLOOR read with the partial weights, 0.285, 0.270, 0.395, is not the FLOOR read first, 0.185, 0.170, 0.295');
+    // Right reads against a moved reference: the reference shows why they fail.
+    const moving = mixReplacesVerdict({ ...read(right), partialFloor: rgba(moved) }, F, M_TARGET);
+    expect(moving.ok).toBe(false);
+    expect(moving.detail).toContain('against FLOOR 0.285, 0.270, 0.395 read in the same frame');
+    // One fp16 ULP apart is the same texel colour still.
+    const ulp = F.map((c) => c + fp16Ulp(c)) as Rgb;
+    expect(mixReplacesVerdict({ ...read((w) => composite(ulp, [straight(M_TARGET, w)])), partialFloor: rgba(ulp) }, F, M_TARGET).ok).toBe(true);
+  });
 });
 
 describe('mixOrderVerdict', () => {
@@ -119,9 +141,11 @@ describe('mixOrderVerdict', () => {
     floor: rgba(extra.floor ?? F),
   });
   const reads = (front: Rgb, extra: Partial<Record<keyof OrderRead, Rgb>> = {}) => Array.from({ length: ORDER_READS }, () => at(front, extra));
+  // The read after the swap, with P's and Q's row z in its frame: by default the swapped depths, P at 2 and Q at 1.
+  const swap = (front: Rgb, extra: Partial<Record<keyof OrderRead, Rgb>> = {}, rowZ = { p: -2, q: -1 }): SwapRead => ({ ...at(front, extra), rowZ });
 
   it('passes the rule: P over the overlap while nearer, Q after the swap; R under both', () => {
-    const v = mixOrderVerdict(reads(P_COLOR), at(Q_COLOR), F);
+    const v = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR), F, AMBIENT);
     expect(v.ok).toBe(true);
     expect(v.detail).toContain('overlap P over 10 reads with P nearer, Q after the swap');
   });
@@ -133,7 +157,7 @@ describe('mixOrderVerdict', () => {
       [P_COLOR, P_COLOR, 'P stays on top'],
     ];
     for (const [before, after, cause] of cases) {
-      const v = mixOrderVerdict(reads(before), at(after), F);
+      const v = mixOrderVerdict(reads(before), swap(after), F, AMBIENT);
       expect(v.ok, cause).toBe(false);
       expect(v.detail).toContain(cause);
       for (const [, , other] of cases.filter(([, , c]) => c !== cause)) expect(v.detail).not.toContain(other);
@@ -141,22 +165,35 @@ describe('mixOrderVerdict', () => {
   });
 
   it('names a class order broken (R after the mix lights) and mix lights added like add', () => {
+    // A floor with no global light (the ambient alone): P_ONLY reads P + R.
     const late = mixOrderVerdict(reads(sum(P_COLOR, R_COLOR), { pOnly: sum(P_COLOR, R_COLOR), qOnly: sum(Q_COLOR, R_COLOR) }),
-      at(sum(Q_COLOR, R_COLOR), { pOnly: sum(P_COLOR, R_COLOR), qOnly: sum(Q_COLOR, R_COLOR) }), F);
+      swap(sum(Q_COLOR, R_COLOR), { pOnly: sum(P_COLOR, R_COLOR), qOnly: sum(Q_COLOR, R_COLOR) }), F, F);
     expect(late.ok).toBe(false);
     expect(late.detail).toContain('R is drawn after the mix lights');
     expect(late.detail).not.toContain('added like add');
     const summed = sum(F, R_COLOR, P_COLOR);
-    const added = mixOrderVerdict(reads(sum(F, R_COLOR, P_COLOR, Q_COLOR), { pOnly: summed }), at(sum(F, R_COLOR, P_COLOR, Q_COLOR), { pOnly: summed }), F);
+    const added = mixOrderVerdict(reads(sum(F, R_COLOR, P_COLOR, Q_COLOR), { pOnly: summed }), swap(sum(F, R_COLOR, P_COLOR, Q_COLOR), { pOnly: summed }), F, AMBIENT);
     expect(added.ok).toBe(false);
     expect(added.detail).toContain('the mix lights are added like add');
     expect(added.detail).not.toContain('R is drawn after');
   });
 
+  it("names a class order broken under the tab's global light, which is drawn after the mix lights too", () => {
+    // The tab's real reads with mix before add (harness-check-auditor's executed mutant): P_ONLY = P + R + the global light's share.
+    const pOnly = sum(P_COLOR, R_COLOR, G);
+    const qOnly = sum(Q_COLOR, R_COLOR, G);
+    const v = mixOrderVerdict(reads(pOnly, { pOnly, qOnly }), swap(qOnly, { pOnly, qOnly }), F, AMBIENT);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('before 0 (11 of 11 reads): R is drawn after the mix lights: add and sub come first '
+      + '(P_ONLY − P = 0.125, 0.600, 0.175 = R + floor − ambient, R and the global light)');
+    expect(v.detail).not.toContain('is not its own light');
+    expect(v.detail).not.toContain('added like add');
+  });
+
   it('fails an overlap that changes from read to read', () => {
     const before = reads(P_COLOR);
     before[4] = at(Q_COLOR);
-    const v = mixOrderVerdict(before, at(Q_COLOR), F);
+    const v = mixOrderVerdict(before, swap(Q_COLOR), F, AMBIENT);
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('changes from read to read');
   });
@@ -169,7 +206,7 @@ describe('mixOrderVerdict', () => {
       [odd, P_COLOR, 'with P nearer 0.700, 0.250, 0.700 (neither, want P), after the swap 1.000, 0.250, 0.250 (P, want Q)'],
     ];
     for (const [before, after, phases] of cases) {
-      const v = mixOrderVerdict(reads(before), at(after), F);
+      const v = mixOrderVerdict(reads(before), swap(after), F, AMBIENT);
       expect(v.ok).toBe(false);
       expect(v.detail).toContain(`the overlap is neither P nor Q in a phase: ${phases}`);
     }
@@ -178,7 +215,7 @@ describe('mixOrderVerdict', () => {
   it('gives each cause the values it judged, and prints a read before the swap too', () => {
     // R_ONLY and FLOOR wrong before the swap only, P_ONLY wrong in every read.
     const odd: Rgb = [0.5, 0.5, 0.5];
-    const v = mixOrderVerdict(reads(P_COLOR, { pOnly: odd, rOnly: sum(F, [0, 0.25, 0]), floor: [0.1, 0.1, 0.1] }), at(Q_COLOR, { pOnly: odd }), F);
+    const v = mixOrderVerdict(reads(P_COLOR, { pOnly: odd, rOnly: sum(F, [0, 0.25, 0]), floor: [0.1, 0.1, 0.1] }), swap(Q_COLOR, { pOnly: odd }), F, AMBIENT);
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('before it (read 0) P_ONLY 0.500, 0.500, 0.500; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.420, 0.295; FLOOR 0.100, 0.100, 0.100; '
       + 'after it P_ONLY 0.500, 0.500, 0.500; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295');
@@ -188,15 +225,31 @@ describe('mixOrderVerdict', () => {
   });
 
   it('names the values of the class-order and added-like-add causes too', () => {
-    const late = mixOrderVerdict(reads(P_COLOR, { pOnly: sum(P_COLOR, R_COLOR) }), at(Q_COLOR), F);
-    expect(late.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY 1.000, 0.750, 0.250 = P + R)');
-    const added = mixOrderVerdict(reads(P_COLOR, { qOnly: sum(F, R_COLOR, Q_COLOR) }), at(Q_COLOR), F);
+    const late = mixOrderVerdict(reads(P_COLOR, { pOnly: sum(P_COLOR, R_COLOR) }), swap(Q_COLOR), F, F);
+    expect(late.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY − P = 0.000, 0.500, 0.000 = R + floor − ambient, R and the global light)');
+    const added = mixOrderVerdict(reads(P_COLOR, { qOnly: sum(F, R_COLOR, Q_COLOR) }), swap(Q_COLOR), F, AMBIENT);
     expect(added.detail).toContain('the mix lights are added like add (Q_ONLY 0.435, 0.920, 1.295 = floor + R + Q)');
+  });
+
+  it("prints P's and Q's row z after the swap, and names a stale list and a lost swap next to P's .transparent()", () => {
+    const v = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR), F, AMBIENT);
+    expect(v.detail).toContain('after it P_ONLY 1.000, 0.250, 0.250; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295; row z P -2.000, Q -1.000');
+    expect(v.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
+      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows (row z P -2.000, Q -1.000 after it; want -2.000, -1.000)');
+    // The rows say which: here they never took the swap. The row z only informs: a light with no row reads 'none'.
+    const lost = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: -1, q: -2 }), F, AMBIENT);
+    expect(lost.detail).toContain('(row z P -1.000, Q -2.000 after it; want -2.000, -1.000)');
+    const none = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -1 }), F, AMBIENT);
+    expect(none.ok).toBe(true);
+    expect(none.detail).toContain('row z P none, Q -1.000');
   });
 });
 
 describe('listVerdict', () => {
-  const right = { inside: rgba(M_TARGET), outside: rgba(F), overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 } };
+  const right: ListReads = {
+    inside: rgba(M_TARGET), outside: rgba(F), limit: 1003, depths: { inside: 1002.985, outside: 1003.015 },
+    overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 }, rows: { ids: 16, count: 16 },
+  };
 
   it('passes the rule: listed just inside the limit, not just outside; at equal depths the higher id, against the slots', () => {
     expect(listVerdict(right, F, M_TARGET).ok).toBe(true);
@@ -217,6 +270,32 @@ describe('listVerdict', () => {
     const v = listVerdict({ ...right, slots: { p: 13, q: 15 } }, F, M_TARGET);
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('cannot tell the id rule from slot order');
+  });
+
+  it("prints M's listed limit, FAR_EPS and M's two depths, and the rows' ids against their count", () => {
+    expect(listVerdict(right, F, M_TARGET).detail).toBe('M 2.000, 1.000, 0.500 just inside its listed limit, at depth 1002.985, '
+      + 'and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (limit 1003.000, the far plane + its range; FAR_EPS 0.015); '
+      + 'overlap Q at equal depths; ids P 120, Q 121; slots P 15, Q 13; 16 ids for 16 rows');
+  });
+
+  it('tells M drawn off its target just inside its limit from M not drawn there', () => {
+    // M under the tab's global light (the class order inverted, or the list drawn reversed): drawn, 358 ULP off.
+    const off = listVerdict({ ...right, inside: rgba(sum(M_TARGET, G)) }, F, M_TARGET);
+    expect(off.ok).toBe(false);
+    expect(off.detail).toContain('M is drawn just inside its listed limit, but not at its target: 358.4 fp16 ULP off');
+    expect(off.detail).not.toContain('is not drawn');
+    // A clamped light buffer: drawn too.
+    expect(listVerdict({ ...right, inside: rgba([1, 1, 0.5]) }, F, M_TARGET).detail).toContain('but not at its target: 512.0 fp16 ULP off');
+    const missing = listVerdict({ ...right, inside: rgba(F) }, F, M_TARGET);
+    expect(missing.detail).toContain('M is not drawn just inside its listed limit, the far plane + its range');
+    expect(missing.detail).not.toContain('not at its target');
+  });
+
+  it('names a short ids column when P or Q has no slot', () => {
+    const v = listVerdict({ ...right, slots: { p: -1, q: -1 }, rows: { ids: 13, count: 16 } }, F, M_TARGET);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('slots P -1, Q -1; 13 ids for 16 rows');
+    expect(v.detail).toContain('P or Q has no slot in the rows read back: their ids column is short, 13 ids for 16 rows');
   });
 });
 
@@ -249,14 +328,27 @@ interface FakeHandle {
   calls: string[];
 }
 
+/** The light orders the model draws in: `modelEngine`'s doc says which is which. */
+type Rule = 'list' | 'slot' | 'mixFirst';
+
 /**
- * An engine whose probe reads a model of the light buffer: the floor, then
+ * An engine whose probe reads a model of the light buffer: the ambient, then
  * every light the exact far-plane test keeps, in the order `rule` gives
- * ('list': the step-7 rule, blend-expect's oracle; 'slot': the rows), each
- * through lightLayer at its weight (pointWeight, a global light 1).
+ * ('list': the step-7 rule, blend-expect's oracle; 'slot': the rows;
+ * 'mixFirst': the class order inverted, mix before add and sub, then back to
+ * front and by id), each through lightLayer at its weight (pointWeight, a
+ * global light 1). The tab's global light is one of them, as on the GPU: a 3D
+ * add light at z 0, spawned before the sub-scene (slot 0, a lower id), never
+ * culled. readEntityTransforms holds each row's translation (a 2D row's z is
+ * −depth) and every id.
  */
-function modelEngine(rule: 'list' | 'slot', probeUnavailable = false) {
-  const rows: FakeHandle[] = [];
+function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean } = {}) {
+  const unavailable = 'The debug probe needs the main-thread renderer of a dev build';
+  const global: FakeHandle = {
+    id: 119, is2D: false, x: 500, y: 500, d: 0, isTransparent: false,
+    lightOptions: { type: 'global', blend: 'add', ...GLOBAL_LIGHT }, destroyed: false, calls: [],
+  };
+  const rows: FakeHandle[] = [global];
   const handles: FakeHandle[] = [];
   const requests: Array<{ target: string; world: [number, number][]; layer?: number }> = [];
   let nextId = 120;
@@ -296,18 +388,26 @@ function modelEngine(rule: 'list' | 'slot', probeUnavailable = false) {
       const color = (o.color ?? [1, 1, 1]).map((c) => c * energy) as Rgb;
       return { h, blend: o.blend ?? 'add', depth: h.d, id: h.id, color, weight, listed: o.type === 'global' || h.d <= farDepth + range };
     }).filter((l) => l.listed);
-    const ordered = rule === 'list' ? lightsBackToFront(lights) : lights;
-    return rgba(composite(F, ordered.map((l) => lightLayer(l))));
+    const mixLast = (l: { blend: LightBlend }): number => (l.blend === 'mix' ? 1 : 0);
+    const ordered = rule === 'list' ? lightsBackToFront(lights)
+      : rule === 'mixFirst' ? [...lights].sort((a, b) => (mixLast(b) - mixLast(a)) || (b.depth - a.depth) || (a.id - b.id))
+      : lights;
+    return rgba(composite(AMBIENT, ordered.map((l) => lightLayer(l))));
   };
   const probe = async (request: { target: string; world: [number, number][]; layer?: number }) => {
     requests.push(request);
-    if (probeUnavailable) throw new Error('The debug probe needs the main-thread renderer of a dev build');
+    if (opts.probeUnavailable) throw new Error(unavailable);
     return { values: request.world.map(lightBufferAt) };
   };
-  const readEntityTransforms = async () => ({ entityIds: Uint32Array.from(rows.map((h) => h.id)) });
+  const readEntityTransforms = async () => {
+    if (opts.probeUnavailable) throw new Error(unavailable);
+    const cpuRows = new Float32Array(rows.length * 16);
+    rows.forEach((h, s) => cpuRows.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, h.x, h.y, h.is2D ? -h.d : 0, 1], s * 16));
+    return { entityIds: Uint32Array.from(rows.map((h) => h.id)), entityCount: rows.length, cpuRows, gpuRows: cpuRows, usedScatter: false };
+  };
   const engine = {
     batch: (fn: () => void) => fn(), spawn, cam,
-    lighting: { groups: { groups: [{ layers: 1, sdfSet: -1 }], sdfSets: [], layerToGroup: [0x10, 0] } },
+    lighting: { groups: { groups: [{ layers: 1, sdfSet: -1 }], sdfSets: [], layerToGroup: [0x10, 0] }, ambient: [...AMBIENT, 1] },
     debug: { probe, readEntityTransforms, readTransparentSort: async () => ({}) },
   } as unknown as Hyperion;
   return { engine, handles, rows, requests };
@@ -322,7 +422,7 @@ describe('checkMix', () => {
 
   it('in Mode A: three skips, every handle destroyed, the view restored', async () => {
     stubs();
-    const { engine, handles } = modelEngine('list', true);
+    const { engine, handles } = modelEngine('list', { probeUnavailable: true });
     const reporter = createTestReporter();
     const entities: EntityHandle[] = [];
     const restoreView = vi.fn();
@@ -365,6 +465,13 @@ describe('checkMix', () => {
     expect(m.calls.at(-1)).toBe('destroy');
     expect(handles.every((h) => h.destroyed)).toBe(true);
     expect(restoreView).toHaveBeenCalledTimes(1);
+    // What the details print from the rows and the view: P's and Q's row z after the swap, M's listed
+    // limit, the ids column (the tab's global light, the floor, Q, R and P after M's despawn).
+    const [replaces, order, list] = reporter.results();
+    expect(replaces.detail).toContain('against FLOOR 0.185, 0.170, 0.295 read in the same frame');
+    expect(order.detail).toContain('row z P -2.000, Q -1.000');
+    expect(list.detail).toContain('(limit 1003.000, the far plane + its range; FAR_EPS 0.015)');
+    expect(list.detail).toContain('slots P 4, Q 2; 5 ids for 5 rows');
   });
 
   it('on slot order (the cull of a small scene on a 32-lane GPU): the order and the tie fail', async () => {
@@ -378,5 +485,19 @@ describe('checkMix', () => {
       ['Light list: exact cull, id at equal depth', 'fail'],
     ]);
     expect(reporter.results()[2].detail).toContain('follows the slots');
+  });
+
+  it("on the class order inverted, mix before add, under the tab's global light: the checks name the class order and M drawn off its target", async () => {
+    stubs();
+    const { engine } = modelEngine('mixFirst');
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    expect([replaces.status, order.status, list.status]).toEqual(['fail', 'fail', 'fail']);
+    // R and the global light both land on P after it: the reads the M2 would give, not P + R.
+    expect(order.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY − P = 0.125, 0.600, 0.175 = R + floor − ambient, R and the global light)');
+    expect(order.detail).not.toContain('is not its own light');
+    expect(list.detail).toContain('M is drawn just inside its listed limit, but not at its target');
+    expect(list.detail).not.toContain('M is not drawn');
   });
 });

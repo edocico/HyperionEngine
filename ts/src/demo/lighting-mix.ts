@@ -16,7 +16,9 @@
 // - 'Mix order follows depth': where P and Q overlap the nearer one is on
 //   top, over ORDER_READS reads, and the other one once their depths swap at
 //   runtime; R, nearer than both but an add light, is under both (add and sub
-//   before mix), and P's `.transparent()` does not move P.
+//   before mix), and P's `.transparent()` does not move P. A pass is no
+//   evidence of stability: P and Q sit in adjacent slots, where the M2's cull
+//   did not reorder lights (ORDER_READS).
 // - 'Light list: exact cull, id at equal depth': M is drawn just inside the
 //   limit of the cull's exact sphere test (the far plane + its range) and not
 //   just outside it, where the grouping's margin would still keep it; at
@@ -119,7 +121,18 @@ const MIN_TEXELS_PER_UNIT = 8;
  * refusal there may mean the canvas.
  */
 const WEIGHT_TOL = Math.SQRT1_2 / (MIN_TEXELS_PER_UNIT * M_LIGHT.range);
-/** The order check's reads before the depth swap: the overlap must hold over all of them. */
+/**
+ * The order check's reads before the depth swap: the overlap must hold over
+ * all of them. They are no evidence of stability: P and Q sit in adjacent
+ * slots (15 and 16 on the M2), and with lights 1 slot apart master's cull, on
+ * the M2's subgroup path, drew one light buffer over 240 reads
+ * (docs/plans/assets/2026-10-08-step7/master-B.order.stats.json), so 'changes
+ * from read to read' cannot fire here. A regression to the cull's order shows
+ * in the depth swap instead: Q on top in both phases in slot order, P in both
+ * through the cull's buckets (P's `.transparent()` bucket comes after Q's).
+ * Stability is shown by the committed bench's `order` task, with the lights
+ * 256 or more slots apart (the plan's exit criterion, Task 9).
+ */
 export const ORDER_READS = 10;
 /** Per-channel tolerance on a light-buffer value that sums lights, and for naming what a wrong read looks like. */
 const TOL = 0.03;
@@ -148,6 +161,7 @@ interface Verdict {
 const rgb = (c: readonly number[]): string => fmt([c[0], c[1], c[2]]);
 const rgbOf = (c: readonly number[]): Rgb => [c[0], c[1], c[2]];
 const plus = (a: readonly number[], b: readonly number[]): Rgb => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const minus = (a: readonly number[], b: readonly number[]): Rgb => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const times = (a: readonly number[], k: number): Rgb => [a[0] * k, a[1] * k, a[2] * k];
 const close = (a: readonly number[], b: readonly number[], tol = TOL): boolean => maxChannelDiff(a, b) <= tol;
 const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -233,7 +247,10 @@ function partialCause(read: Rgba, base: Rgb, target: Rgb, w: number): string {
  * `floor`; M_IN within one fp16 ULP of `target` at weight 1; the partial
  * points at weights within WEIGHT_TOL of PARTIAL_WEIGHTS, and each partial
  * read within PARTIAL_TOL of floor·(1 − w) + target·w, the floor read in the
- * same frame; and the three global reads within one fp16 ULP of `target`.
+ * same frame, itself within one fp16 ULP of the first FLOOR read: one texel
+ * of a still scene, where no light of the sub-scene reaches and the tab's
+ * lights stand still until its checks end; and the three global reads within
+ * one fp16 ULP of `target`.
  */
 export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Verdict {
   const problems: string[] = [];
@@ -245,6 +262,10 @@ export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Ve
       + `not ${PARTIAL_WEIGHTS.map((w) => w.toFixed(3)).join(' and ')} (the texel snapping moves a weight by at most ${WEIGHT_TOL.toFixed(3)})`);
   }
   const base = rgbOf(reads.partialFloor);
+  if (!withinUlp(base, reads.floor)) {
+    problems.push(`the FLOOR read with the partial weights, ${rgb(base)}, is not the FLOOR read first, ${rgb(reads.floor)}: `
+      + `${ulpsOff(base, reads.floor).toFixed(1)} fp16 ULP apart, where one texel of a still scene reads the same`);
+  }
   const partial = reads.partial.map(({ read, w }) => ({ read, w, off: maxChannelDiff(read, composite(base, [straight(target, w)])) }));
   for (const { read, w, off } of partial) {
     if (!(off <= PARTIAL_TOL)) problems.push(`w ${fmt([w])}: ${partialCause(read, base, target, w)}`);
@@ -254,7 +275,8 @@ export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Ve
   const detail = `M ${rgb(reads.full)}, ${ulpsOff(reads.full, target).toFixed(1)} fp16 ULP from ${rgb(target)}; `
     + `FLOOR ${rgb(reads.floor)}; `
     + `${partial.map(({ read, w }) => `w = ${fmt([w])}: ${rgb(read)}`).join(' / ')}, `
-    + `at most ${Math.max(0, ...partial.map(({ off }) => off)).toFixed(4)} from floor·(1 − w) + target·w; `
+    + `at most ${Math.max(0, ...partial.map(({ off }) => off)).toFixed(4)} from floor·(1 − w) + target·w `
+    + `against FLOOR ${rgb(base)} read in the same frame; `
     + `global ${reads.global.map((g, i) => `${GLOBAL_POINTS[i] ?? `#${i}`} ${rgb(g)}`).join(' / ')}`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
@@ -268,16 +290,28 @@ export interface OrderRead {
   floor: Rgba;
 }
 
+/** The read after the depth swap, with P's and Q's row z in its frame (readEntityTransforms; NaN for a light with no row). */
+export interface SwapRead extends OrderRead {
+  rowZ: { p: number; q: number };
+}
+
 /** A cause of 'Mix order follows depth', and the values it judged. */
 interface Cause {
   cause: string;
   values: string;
 }
 
-/** Why P_ONLY or Q_ONLY, where only its own mix light and R reach, is not that light's colour. */
-function onlyCause(point: 'P_ONLY' | 'Q_ONLY', value: Rgba, name: 'P' | 'Q', light: Rgb, floor: Rgb): Cause {
-  if (close(value, plus(light, R_COLOR))) {
-    return { cause: 'R is drawn after the mix lights: add and sub come first', values: `${point} ${rgb(value)} = ${name} + R` };
+/**
+ * Why P_ONLY or Q_ONLY, where only its own mix light and the add lights reach
+ * (R, and the tab's global light, floor − ambient), is not that light's colour.
+ */
+function onlyCause(point: 'P_ONLY' | 'Q_ONLY', value: Rgba, name: 'P' | 'Q', light: Rgb, floor: Rgb, ambient: Rgb): Cause {
+  // Every add light drawn after the mix light: R and the global light both land on it.
+  if (close(value, plus(light, plus(R_COLOR, minus(floor, ambient))))) {
+    return {
+      cause: 'R is drawn after the mix lights: add and sub come first',
+      values: `${point} − ${name} = ${rgb(minus(value, light))} = R + floor − ambient, R and the global light`,
+    };
   }
   if (close(value, plus(plus(floor, R_COLOR), light))) {
     return { cause: 'the mix lights are added like add', values: `${point} ${rgb(value)} = floor + R + ${name}` };
@@ -293,6 +327,9 @@ function orderValues(read: OrderRead): string {
   return `P_ONLY ${rgb(read.pOnly)}; Q_ONLY ${rgb(read.qOnly)}; R_ONLY ${rgb(read.rOnly)}; FLOOR ${rgb(read.floor)}`;
 }
 
+/** A row's z for a detail: 'none' for a light with no row. */
+const rowZText = (z: number): string => (Number.isNaN(z) ? 'none' : z.toFixed(3));
+
 /**
  * 'Mix order follows depth'. In every read P_ONLY and Q_ONLY within one fp16
  * ULP of their light (a mix light at weight 1 covers R and the floor),
@@ -300,10 +337,14 @@ function orderValues(read: OrderRead): string {
  * every read before the swap, while P is nearer, and Q after it. The overlap
  * is read as 'P' or 'Q' within TOL (P_COLOR and Q_COLOR are far enough apart
  * for that), otherwise as its values, and a wrong overlap names the rule it
- * follows instead. A cause found in several reads is named once, at the
- * first, with the values it judged there and how many reads show it.
+ * follows instead; P's and Q's row z after the swap are printed, which tell
+ * a swap that never reached the rows. A cause found in several reads is named
+ * once, at the first, with the values it judged there and how many reads show
+ * it. `ambient` is the light buffer's clear: floor − ambient is what the tab's
+ * global light adds, which a broken class order draws after the mix lights
+ * too.
  */
-export function mixOrderVerdict(before: readonly OrderRead[], after: OrderRead, floor: Rgb): Verdict {
+export function mixOrderVerdict(before: readonly OrderRead[], after: SwapRead, floor: Rgb, ambient: Rgb): Verdict {
   const found = new Map<string, { where: string; values: string; reads: number }>();
   const all = [...before.map((read, i) => ({ read, where: `before ${i}` })), { read: after, where: 'after' }];
   for (const { read, where } of all) {
@@ -312,8 +353,8 @@ export function mixOrderVerdict(before: readonly OrderRead[], after: OrderRead, 
     const add = ({ cause, values }: Cause): void => {
       if (!causes.has(cause)) causes.set(cause, values);
     };
-    if (!withinUlp(read.pOnly, P_COLOR)) add(onlyCause('P_ONLY', read.pOnly, 'P', P_COLOR, floor));
-    if (!withinUlp(read.qOnly, Q_COLOR)) add(onlyCause('Q_ONLY', read.qOnly, 'Q', Q_COLOR, floor));
+    if (!withinUlp(read.pOnly, P_COLOR)) add(onlyCause('P_ONLY', read.pOnly, 'P', P_COLOR, floor, ambient));
+    if (!withinUlp(read.qOnly, Q_COLOR)) add(onlyCause('Q_ONLY', read.qOnly, 'Q', Q_COLOR, floor, ambient));
     if (!close(read.rOnly, plus(floor, R_COLOR))) {
       add({ cause: 'R_ONLY is not floor + R', values: `${rgb(read.rOnly)} against ${rgb(plus(floor, R_COLOR))}` });
     }
@@ -336,8 +377,11 @@ export function mixOrderVerdict(before: readonly OrderRead[], after: OrderRead, 
   if (!steady) rule = 'the overlap changes from read to read: the order does not come from the ECS state alone';
   else if (first === 'Q' && last === 'P') rule = 'the order is reversed: the nearer mix light is drawn first';
   else if (first === 'Q' && last === 'Q') rule = 'the overlap follows the ids or the slots, not the depths: Q has the higher id and the later slot';
-  else if (first === 'P' && last === 'P') rule = 'P stays on top whatever the depths: its .transparent() moves it after Q';
-  else if (!(first === 'P' && last === 'Q')) {
+  else if (first === 'P' && last === 'P') {
+    rule = 'P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
+      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows '
+      + `(row z P ${rowZText(after.rowZ.p)}, Q ${rowZText(after.rowZ.q)} after it; want ${(-Q_DEPTH).toFixed(3)}, ${(-P_DEPTH).toFixed(3)})`;
+  } else if (!(first === 'P' && last === 'Q')) {
     rule = `the overlap is neither P nor Q in a phase: with P nearer ${before.length > 0 ? phase(first, before[0].overlap, 'P') : 'no read'}, `
       + `after the swap ${phase(last, after.overlap, 'Q')}`;
   }
@@ -347,7 +391,7 @@ export function mixOrderVerdict(before: readonly OrderRead[], after: OrderRead, 
   ];
   const detail = `overlap ${first} over ${before.length} reads with P nearer, ${last} after the swap; `
     + (before.length > 0 ? `before it (read 0) ${orderValues(before[0])}; ` : '')
-    + `after it ${orderValues(after)}`;
+    + `after it ${orderValues(after)}; row z P ${rowZText(after.rowZ.p)}, Q ${rowZText(after.rowZ.q)}`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
 
@@ -356,34 +400,47 @@ export interface ListReads {
   /** M_IN with M just inside its listed limit, then just outside it. */
   inside: Rgba;
   outside: Rgba;
+  /** M's listed limit, the far plane's depth + its range, and the two depths M was read at, limit ∓ FAR_EPS. */
+  limit: number;
+  depths: { inside: number; outside: number };
   /** OVERLAP with P and Q at equal depths after M's despawn, and their slots and ids in that frame. */
   overlap: Rgba;
   slots: { p: number; q: number };
   ids: { p: number; q: number };
+  /** The rows read back in that frame: how many ids their column holds, and how many rows there are. */
+  rows: { ids: number; count: number };
 }
 
 /**
  * 'Light list: exact cull, id at equal depth': M_IN within one fp16 ULP of
- * `target` with M just inside its listed limit, and within TOL of `floor`
- * just outside it. The overlap at equal depths counts only where slot order
- * and the ids disagree, (id Q > id P) !== (slot Q > slot P), and with both
- * lights in the rows read back; it must then be the light with the higher id.
+ * `target` with M just inside its listed limit (otherwise: not drawn, near
+ * `floor`, or drawn off its target), and within TOL of `floor` just outside
+ * it. The overlap at equal depths counts only where slot order and the ids
+ * disagree, (id Q > id P) !== (slot Q > slot P), and with both lights in the
+ * rows read back; it must then be the light with the higher id.
  */
 export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict {
-  const { inside, outside, overlap, slots, ids } = reads;
+  const { inside, outside, limit, depths, overlap, slots, ids, rows } = reads;
   const problems: string[] = [];
-  if (!withinUlp(inside, target)) problems.push('M is not drawn just inside its listed limit, the far plane + its range');
+  if (!withinUlp(inside, target)) {
+    problems.push(close(inside, floor)
+      ? 'M is not drawn just inside its listed limit, the far plane + its range'
+      : `M is drawn just inside its listed limit, but not at its target: ${ulpsOff(inside, target).toFixed(1)} fp16 ULP off`);
+  }
   if (!close(outside, floor)) {
     problems.push("M is still drawn just outside its listed limit: the list keeps the grouping's margin, not the cull's exact test");
   }
   const seen = overlapLabel(overlap);
   const [higher, lower] = ids.q > ids.p ? ['Q', 'P'] : ['P', 'Q'];
-  if (slots.p < 0 || slots.q < 0) problems.push('P or Q has no slot in the rows read back');
-  else if ((ids.q > ids.p) === (slots.q > slots.p)) problems.push('the slots agree with the ids: the read cannot tell the id rule from slot order');
+  if (slots.p < 0 || slots.q < 0) {
+    problems.push(`P or Q has no slot in the rows read back${rows.ids < rows.count ? `: their ids column is short, ${rows.ids} ids for ${rows.count} rows` : ''}`);
+  } else if ((ids.q > ids.p) === (slots.q > slots.p)) problems.push('the slots agree with the ids: the read cannot tell the id rule from slot order');
   else if (seen === lower) problems.push(`at equal depths ${lower}, the lower id, is on top: the order follows the slots`);
   else if (seen !== higher) problems.push('at equal depths the overlap is neither P nor Q');
-  const detail = `M ${rgb(inside)} just inside its listed limit, ${rgb(outside)} just outside; `
-    + `overlap ${seen} at equal depths; ids P ${ids.p}, Q ${ids.q}; slots P ${slots.p}, Q ${slots.q}`;
+  const detail = `M ${rgb(inside)} just inside its listed limit, at depth ${depths.inside.toFixed(3)}, `
+    + `and ${rgb(outside)} just outside, at depth ${depths.outside.toFixed(3)} `
+    + `(limit ${limit.toFixed(3)}, the far plane + its range; FAR_EPS ${FAR_EPS}); `
+    + `overlap ${seen} at equal depths; ids P ${ids.p}, Q ${ids.q}; slots P ${slots.p}, Q ${slots.q}; ${rows.ids} ids for ${rows.count} rows`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
 
@@ -474,7 +531,7 @@ export async function checkMix(
     });
 
     // ── 2. The nearer mix light is on top, and follows a depth swap ─────
-    await pixelCheck(reporter, 'Mix order follows depth', engine, async (probe) => {
+    await pixelCheck(reporter, 'Mix order follows depth', engine, async (probe, readTransforms) => {
       const points = [POINTS.pOnly, POINTS.overlap, POINTS.qOnly, POINTS.rOnly, POINTS.floor].map(at);
       const read = async (): Promise<OrderRead> => {
         const [pOnly, overlap, qOnly, rOnly, floorRead] = await probe('light-buffer', points, floorGroup());
@@ -485,7 +542,16 @@ export async function checkMix(
       p.depth(Q_DEPTH);
       q.depth(P_DEPTH);
       await frames(4);
-      return mixOrderVerdict(before, await read(), floor);
+      // The rows of the same frame: P's and Q's z (column 3 of their matrix) tell a swap that never reached them.
+      const [after, rows] = await Promise.all([read(), readTransforms()]);
+      const rowZ = (id: number): number => {
+        const slot = rows.entityIds.indexOf(id);
+        return slot < 0 ? NaN : rows.cpuRows[slot * 16 + 14] ?? NaN;
+      };
+      // The light buffer's clear, the ambient: floor − ambient is the tab's global light.
+      const [ar, ag, ab, intensity] = engine.lighting.ambient;
+      const ambient: Rgb = [ar * intensity, ag * intensity, ab * intensity];
+      return mixOrderVerdict(before, { ...after, rowZ: { p: rowZ(p.id), q: rowZ(q.id) } }, floor, ambient);
     });
 
     // ── 3. The list takes the cull's exact test; equal depths go by id ──
@@ -494,10 +560,11 @@ export async function checkMix(
       // (vp[14] − 1) / vp[10], by more than its range, the exact test culls it.
       const vp = engine.cam.viewProjection;
       const limit = (vp[14] - 1) / vp[10] + M_LIGHT.range;
-      m.depth(limit - FAR_EPS);
+      const depths = { inside: limit - FAR_EPS, outside: limit + FAR_EPS };
+      m.depth(depths.inside);
       await frames(4);
       const [inside] = await probe('light-buffer', [at(POINTS.mIn)], floorGroup());
-      m.depth(limit + FAR_EPS);
+      m.depth(depths.outside);
       await frames(4);
       const [outside] = await probe('light-buffer', [at(POINTS.mIn)], floorGroup());
       // M's despawn moves the last row, Q's, into its slot (swap-remove): Q's
@@ -512,7 +579,9 @@ export async function checkMix(
       ]);
       const ids = { p: p.id, q: q.id };
       const slots = { p: rows.entityIds.indexOf(ids.p), q: rows.entityIds.indexOf(ids.q) };
-      return listVerdict({ inside, outside, overlap, slots, ids }, floor, M_TARGET);
+      return listVerdict({
+        inside, outside, limit, depths, overlap, slots, ids, rows: { ids: rows.entityIds.length, count: rows.entityCount },
+      }, floor, M_TARGET);
     });
   } finally {
     // M is gone already after the third check: destroy() is idempotent.
