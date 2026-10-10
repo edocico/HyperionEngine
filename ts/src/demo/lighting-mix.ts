@@ -38,7 +38,7 @@ import type { EntityHandle, LightOptions } from '../entity-handle';
 import type { TestReporter } from './types';
 import { composite, maxChannelDiff, straight, type Rgb } from './blend-expect';
 import { halfResolution } from '../render/passes/occluder-seed-stage';
-import { pixelCheck, fmt, fitView, frames, type Rgba } from './probe-checks';
+import { pixelCheck, fmt, fitView, frames, viewBounds, type Rgba } from './probe-checks';
 
 /** A point in world units: from MIX_SCENE in the constants below. */
 type Xy = readonly [number, number];
@@ -118,7 +118,8 @@ const MIN_TEXELS_PER_UNIT = 8;
  * by 0.002 at most). A missing or zero-sized canvas snaps both points to the
  * view centre, beyond M's range: w = 0, where the reference is FLOOR itself.
  * Below MIN_TEXELS_PER_UNIT the snapping alone can move a weight further: a
- * refusal there may mean the canvas.
+ * refusal there may mean the canvas. The detail prints the run's texels per
+ * unit (lightTexelsPerUnit), and marks a run below MIN_TEXELS_PER_UNIT.
  */
 const WEIGHT_TOL = Math.SQRT1_2 / (MIN_TEXELS_PER_UNIT * M_LIGHT.range);
 /**
@@ -205,6 +206,16 @@ export function lightTexelCentre(world: readonly [number, number], vp: Float32Ar
   return [(2 * uc - 1 - vp[12]) / vp[0], (1 - 2 * vc - vp[13]) / vp[5]];
 }
 
+/**
+ * The light buffer's texels per world unit on its coarser axis: `size`
+ * (halfResolution of the canvas) over the world rectangle `vp` shows
+ * (viewBounds). WEIGHT_TOL holds from MIN_TEXELS_PER_UNIT up.
+ */
+export function lightTexelsPerUnit(vp: Float32Array, size: readonly [number, number]): number {
+  const [xMin, xMax, yMin, yMax] = viewBounds(vp);
+  return Math.min(size[0] / (xMax - xMin), size[1] / (yMax - yMin));
+}
+
 /** 'P' or 'Q' for a read within TOL of that light's colour, its values otherwise. */
 function overlapLabel(value: Rgba): string {
   if (close(value, P_COLOR)) return 'P';
@@ -223,6 +234,8 @@ export interface MixReads {
   partialFloor: Rgba;
   /** M turned global, still mix: FLOOR, M_IN and AWAY, where no other light of the sub-scene reaches. */
   global: Rgba[];
+  /** The light buffer's texels per world unit in this run (lightTexelsPerUnit). */
+  texelsPerUnit: number;
 }
 
 /** Why M_IN, M at weight 1, is not M's target: recognised in this order. */
@@ -251,6 +264,11 @@ function partialCause(read: Rgba, base: Rgb, target: Rgb, w: number): string {
  * of a still scene, where no light of the sub-scene reaches and the tab's
  * lights stand still until its checks end; and the three global reads within
  * one fp16 ULP of `target`.
+ *
+ * `reads.texelsPerUnit` only adds a part to the detail: the value, and below
+ * MIN_TEXELS_PER_UNIT a mark that the run is outside the domain WEIGHT_TOL is
+ * derived for, where the snapping alone can refuse correct code. The verdict
+ * never reads it.
  */
 export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Verdict {
   const problems: string[] = [];
@@ -259,7 +277,8 @@ export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Ve
   const ws = reads.partial.map(({ w }) => w);
   if (!(ws.length === PARTIAL_WEIGHTS.length && ws.every((w, i) => Math.abs(w - PARTIAL_WEIGHTS[i]) <= WEIGHT_TOL))) {
     problems.push(`the partial points sit at w ${ws.map((w) => w.toFixed(3)).join(' and ')}, `
-      + `not ${PARTIAL_WEIGHTS.map((w) => w.toFixed(3)).join(' and ')} (the texel snapping moves a weight by at most ${WEIGHT_TOL.toFixed(3)})`);
+      + `not ${PARTIAL_WEIGHTS.map((w) => w.toFixed(3)).join(' and ')} (the texel snapping moves a weight by at most `
+      + `${WEIGHT_TOL.toFixed(3)} from ${MIN_TEXELS_PER_UNIT} texels per unit up; this light buffer has ${fmt([reads.texelsPerUnit])})`);
   }
   const base = rgbOf(reads.partialFloor);
   if (!withinUlp(base, reads.floor)) {
@@ -272,11 +291,17 @@ export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Ve
   }
   const missed = reads.global.flatMap((g, i) => (withinUlp(g, target) ? [] : [GLOBAL_POINTS[i] ?? `#${i}`]));
   if (missed.length > 0) problems.push(`the global mix light does not bring its whole layer to its target (${missed.join(', ')})`);
+  // One part, without a ';' of its own: the tests strip it to compare the rest.
+  const density = `light buffer ${fmt([reads.texelsPerUnit])} texels per world unit`
+    + (reads.texelsPerUnit < MIN_TEXELS_PER_UNIT
+      ? `, below the partial weights' validated domain (${MIN_TEXELS_PER_UNIT} and up), `
+        + `where the texel snapping alone can move a weight by more than ${WEIGHT_TOL.toFixed(3)} and fail correct code`
+      : '');
   const detail = `M ${rgb(reads.full)}, ${ulpsOff(reads.full, target).toFixed(1)} fp16 ULP from ${rgb(target)}; `
     + `FLOOR ${rgb(reads.floor)}; `
     + `${partial.map(({ read, w }) => `w = ${fmt([w])}: ${rgb(read)}`).join(' / ')}, `
     + `at most ${Math.max(0, ...partial.map(({ off }) => off)).toFixed(4)} from floor·(1 − w) + target·w `
-    + `against FLOOR ${rgb(base)} read in the same frame; `
+    + `against FLOOR ${rgb(base)} read in the same frame; ${density}; `
     + `global ${reads.global.map((g, i) => `${GLOBAL_POINTS[i] ?? `#${i}`} ${rgb(g)}`).join(' / ')}`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
@@ -303,18 +328,24 @@ interface Cause {
 
 /**
  * Why P_ONLY or Q_ONLY, where only its own mix light and the add lights reach
- * (R, and the tab's global light, floor − ambient), is not that light's colour.
+ * (R, and the tab's global light, floor − ambient), is not that light's colour:
+ * the add lights drawn after it (light + R + floor − ambient) or the mix light
+ * added like add (floor + R + light), whichever formula is nearer the read,
+ * and only within TOL. The two differ by the ambient alone (the tab's is 0.12
+ * at most, 4 × TOL): with an ambient within TOL in every channel both can be
+ * within it. On a tie (no ambient: one formula) the class order is named.
  */
 function onlyCause(point: 'P_ONLY' | 'Q_ONLY', value: Rgba, name: 'P' | 'Q', light: Rgb, floor: Rgb, ambient: Rgb): Cause {
   // Every add light drawn after the mix light: R and the global light both land on it.
-  if (close(value, plus(light, plus(R_COLOR, minus(floor, ambient))))) {
-    return {
-      cause: 'R is drawn after the mix lights: add and sub come first',
-      values: `${point} − ${name} = ${rgb(minus(value, light))} = R + floor − ambient, R and the global light`,
-    };
-  }
-  if (close(value, plus(plus(floor, R_COLOR), light))) {
-    return { cause: 'the mix lights are added like add', values: `${point} ${rgb(value)} = floor + R + ${name}` };
+  const late = maxChannelDiff(value, plus(light, plus(R_COLOR, minus(floor, ambient))));
+  const added = maxChannelDiff(value, plus(plus(floor, R_COLOR), light));
+  if (Math.min(late, added) <= TOL) {
+    return late <= added
+      ? {
+          cause: 'R is drawn after the mix lights: add and sub come first',
+          values: `${point} − ${name} = ${rgb(minus(value, light))} = R + floor − ambient, R and the global light`,
+        }
+      : { cause: 'the mix lights are added like add', values: `${point} ${rgb(value)} = floor + R + ${name}` };
   }
   return {
     cause: `${point} is not its own light`,
@@ -326,6 +357,9 @@ function onlyCause(point: 'P_ONLY' | 'Q_ONLY', value: Rgba, name: 'P' | 'Q', lig
 function orderValues(read: OrderRead): string {
   return `P_ONLY ${rgb(read.pOnly)}; Q_ONLY ${rgb(read.qOnly)}; R_ONLY ${rgb(read.rOnly)}; FLOOR ${rgb(read.floor)}`;
 }
+
+/** The z of `slot`'s row in rows read back (readEntityTransforms: column 3 of its matrix); NaN for no slot. */
+const rowZAt = (cpuRows: Float32Array, slot: number): number => (slot < 0 ? NaN : cpuRows[slot * 16 + 14] ?? NaN);
 
 /** A row's z for a detail: 'none' for a light with no row. */
 const rowZText = (z: number): string => (Number.isNaN(z) ? 'none' : z.toFixed(3));
@@ -403,10 +437,11 @@ export interface ListReads {
   /** M's listed limit, the far plane's depth + its range, and the two depths M was read at, limit ∓ FAR_EPS. */
   limit: number;
   depths: { inside: number; outside: number };
-  /** OVERLAP with P and Q at equal depths after M's despawn, and their slots and ids in that frame. */
+  /** OVERLAP with P and Q at equal depths after M's despawn, and their slots, ids and row z (NaN: no row) in that frame. */
   overlap: Rgba;
   slots: { p: number; q: number };
   ids: { p: number; q: number };
+  rowZ: { p: number; q: number };
   /** The rows read back in that frame: how many ids their column holds, and how many rows there are. */
   rows: { ids: number; count: number };
 }
@@ -418,11 +453,15 @@ export interface ListReads {
  * it. The overlap at equal depths counts only where slot order and the ids
  * disagree, (id Q > id P) !== (slot Q > slot P), and with both lights in the
  * rows read back; it must then be the light with the higher id. The lower id
- * on top follows the slots, or, when it is P, P's `.transparent()` too (a
- * transparent-last order): 'Mix order follows depth' tells the two apart.
+ * on top follows the slots or the ids reversed: it has the later slot, so a
+ * slot tie-break and a reversed id tie-break give the same read. When it is
+ * P, P's `.transparent()` may put it there too (a transparent-last order),
+ * which 'Mix order follows depth' tells apart (P on top in both its phases).
+ * P's and Q's row z, read in the same frame, show the premise: depths that
+ * never reached the rows land in the same cause, with unequal z.
  */
 export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict {
-  const { inside, outside, limit, depths, overlap, slots, ids, rows } = reads;
+  const { inside, outside, limit, depths, overlap, slots, ids, rowZ, rows } = reads;
   const problems: string[] = [];
   if (!withinUlp(inside, target)) {
     problems.push(close(inside, floor)
@@ -438,14 +477,17 @@ export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict 
     problems.push(`P or Q has no slot in the rows read back${rows.ids < rows.count ? `: their ids column is short, ${rows.ids} ids for ${rows.count} rows` : ''}`);
   } else if ((ids.q > ids.p) === (slots.q > slots.p)) problems.push('the slots agree with the ids: the read cannot tell the id rule from slot order');
   else if (seen === lower) {
-    // P is `.transparent()`: an order that draws such a light after the others of its class puts P on top too.
-    problems.push(`at equal depths ${lower}, the lower id, is on top: the order follows the slots`
-      + (lower === 'P' ? ", or P's .transparent() moves it after Q (check 'Mix order follows depth' tells them apart)" : ''));
+    // The lower id has the later slot here: slot order and a reversed id tie-break both draw it last. P is
+    // `.transparent()`: an order that draws such a light after the others of its class puts P on top too.
+    problems.push(`at equal depths ${lower}, the lower id, is on top: the order follows the slots or the ids reversed `
+      + '(one read cannot tell those two apart)'
+      + (lower === 'P' ? ", or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)" : ''));
   } else if (seen !== higher) problems.push('at equal depths the overlap is neither P nor Q');
   const detail = `M ${rgb(inside)} just inside its listed limit, at depth ${depths.inside.toFixed(3)}, `
     + `and ${rgb(outside)} just outside, at depth ${depths.outside.toFixed(3)} `
     + `(limit ${limit.toFixed(3)}, the far plane + its range; FAR_EPS ${FAR_EPS}); `
-    + `overlap ${seen} at equal depths; ids P ${ids.p}, Q ${ids.q}; slots P ${slots.p}, Q ${slots.q}; ${rows.ids} ids for ${rows.count} rows`;
+    + `overlap ${seen} at equal depths (row z P ${rowZText(rowZ.p)}, Q ${rowZText(rowZ.q)}); `
+    + `ids P ${ids.p}, Q ${ids.q}; slots P ${slots.p}, Q ${slots.q}; ${rows.ids} ids for ${rows.count} rows`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
 
@@ -513,7 +555,8 @@ export async function checkMix(
         const mAt = at(M_AT);
         const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
         const size = halfResolution(canvas?.width ?? 0, canvas?.height ?? 0);
-        const points = PARTIAL_OFFSETS.map((dx) => lightTexelCentre([mAt[0] + dx, mAt[1]], engine.cam.viewProjection, size));
+        const vp = engine.cam.viewProjection;
+        const points = PARTIAL_OFFSETS.map((dx) => lightTexelCentre([mAt[0] + dx, mAt[1]], vp, size));
         const partialRead = await probe('light-buffer', [...points, at(POINTS.floor)], floorGroup());
         // Global, still mix: the whole layer.
         m.light({ type: 'global', blend: 'mix', color: M_LIGHT.color, energy: M_LIGHT.energy });
@@ -526,6 +569,7 @@ export async function checkMix(
           partial: points.map((point, i) => ({ read: partialRead[i], w: pointWeight(point, mAt, M_LIGHT.range, 1) })),
           partialFloor: partialRead[points.length],
           global,
+          texelsPerUnit: lightTexelsPerUnit(vp, size),
         }, floor, M_TARGET);
         return { ok: verdict.ok, detail: `${verdict.detail}; ${counts}` };
       } finally {
@@ -549,10 +593,7 @@ export async function checkMix(
       await frames(4);
       // The rows of the same frame: P's and Q's z (column 3 of their matrix) tell a swap that never reached them.
       const [after, rows] = await Promise.all([read(), readTransforms()]);
-      const rowZ = (id: number): number => {
-        const slot = rows.entityIds.indexOf(id);
-        return slot < 0 ? NaN : rows.cpuRows[slot * 16 + 14] ?? NaN;
-      };
+      const rowZ = (id: number): number => rowZAt(rows.cpuRows, rows.entityIds.indexOf(id));
       // The light buffer's clear, the ambient: floor − ambient is the tab's global light.
       const [ar, ag, ab, intensity] = engine.lighting.ambient;
       const ambient: Rgb = [ar * intensity, ag * intensity, ab * intensity];
@@ -584,8 +625,10 @@ export async function checkMix(
       ]);
       const ids = { p: p.id, q: q.id };
       const slots = { p: rows.entityIds.indexOf(ids.p), q: rows.entityIds.indexOf(ids.q) };
+      // Their rows' z in that frame: the equal depths the tie stands on.
+      const rowZ = { p: rowZAt(rows.cpuRows, slots.p), q: rowZAt(rows.cpuRows, slots.q) };
       return listVerdict({
-        inside, outside, limit, depths, overlap, slots, ids, rows: { ids: rows.entityIds.length, count: rows.entityCount },
+        inside, outside, limit, depths, overlap, slots, ids, rowZ, rows: { ids: rows.entityIds.length, count: rows.entityCount },
       }, floor, M_TARGET);
     });
   } finally {

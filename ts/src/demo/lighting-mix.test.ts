@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  checkMix, fp16Ulp, lightTexelCentre, listVerdict, mixOrderVerdict, mixReplacesVerdict, pointWeight,
-  M_TARGET, P_COLOR, Q_COLOR, R_COLOR, ORDER_READS, type ListReads, type OrderRead, type SwapRead,
+  checkMix, fp16Ulp, lightTexelCentre, lightTexelsPerUnit, listVerdict, mixOrderVerdict, mixReplacesVerdict, pointWeight,
+  M_TARGET, P_COLOR, Q_COLOR, R_COLOR, ORDER_READS, type ListReads, type MixReads, type OrderRead, type SwapRead,
 } from './lighting-mix';
 import { createTestReporter } from './types';
 import { Camera, orthographic } from '../camera';
@@ -85,18 +85,32 @@ describe('fp16Ulp, pointWeight, lightTexelCentre', () => {
       expect(again[1]).toBeCloseTo(c[1], 9);
     }
   });
+
+  it("lightTexelsPerUnit: the light buffer's texels per world unit on its coarser axis", () => {
+    // The 1080p view, 35.56 x 20 units: 960 x 540 texels are 27 per unit on both axes (vp is f32: 5 digits).
+    const vp = orthographic(-160 / 9, 160 / 9, -10, 10, -1, 1000);
+    expect(lightTexelsPerUnit(vp, [960, 540])).toBeCloseTo(27, 5);
+    expect(lightTexelsPerUnit(vp, [480, 540])).toBeCloseTo(13.5, 5);
+    expect(lightTexelsPerUnit(vp, [960, 270])).toBeCloseTo(13.5, 5);
+    // A missing canvas: halfResolution gives a 1 x 1 light buffer.
+    expect(lightTexelsPerUnit(vp, [1, 1])).toBeCloseTo(9 / 320, 5);
+  });
 });
 
 describe('mixReplacesVerdict', () => {
   const ws = [0.75, 0.5];
-  const read = (partial: (w: number) => Rgb, full: Rgb = M_TARGET, global: Rgb = M_TARGET) => ({
+  // The M2's 1960 x 1248 canvas: a light buffer 980 texels wide over the 35.2 units fitView shows.
+  const M2_DENSITY = 980 / 35.2;
+  const read = (partial: (w: number) => Rgb, full: Rgb = M_TARGET, global: Rgb = M_TARGET): MixReads => ({
     full: rgba(full),
     floor: rgba(F),
     partial: ws.map((w) => ({ read: rgba(partial(w)), w })),
     partialFloor: rgba(F),
     global: [rgba(global), rgba(global), rgba(global)],
+    texelsPerUnit: M2_DENSITY,
   });
   const right = (w: number) => composite(F, [straight(M_TARGET, w)]);
+  const below = "below the partial weights' validated domain (8 and up)";
 
   it('passes the rule: the target at weight 1, floor·(1 − w) + target·w, the whole layer as a global light', () => {
     const v = mixReplacesVerdict(read(right), F, M_TARGET);
@@ -140,13 +154,57 @@ describe('mixReplacesVerdict', () => {
 
   it('refuses partial points away from weights 0.75 and 0.5: a missing canvas snaps both to the view centre, w = 0', () => {
     // At w = 0 the reference is the floor itself, which FLOOR always matches.
-    const at = (w0: number, w1: number) => mixReplacesVerdict({ ...read(right), partial: [w0, w1].map((w) => ({ read: rgba(right(w)), w })) }, F, M_TARGET);
-    const centre = at(0, 0);
+    const at = (w0: number, w1: number, texelsPerUnit = M2_DENSITY) =>
+      mixReplacesVerdict({ ...read(right), partial: [w0, w1].map((w) => ({ read: rgba(right(w)), w })), texelsPerUnit }, F, M_TARGET);
+    // No canvas: a 1 x 1 light buffer over the 35.56 units of the 1080p view, far below 8 texels per unit.
+    const centre = at(0, 0, 9 / 320);
     expect(centre.ok).toBe(false);
-    expect(centre.detail).toContain('the partial points sit at w 0.000 and 0.000, not 0.750 and 0.500');
+    expect(centre.detail).toContain('the partial points sit at w 0.000 and 0.000, not 0.750 and 0.500 '
+      + '(the texel snapping moves a weight by at most 0.029 from 8 texels per unit up; this light buffer has 0.028)');
+    expect(centre.detail).toContain(`light buffer 0.028 texels per world unit, ${below}`);
     // The texel snapping moves a weight by up to 0.029 (half a texel's diagonal at 8 texels per unit, over range 3).
     expect(at(0.73, 0.52).ok).toBe(true);
     expect(at(0.75, 0.46).detail).toContain('the partial points sit at w 0.750 and 0.460');
+    // At the M2's density too: no other weight passes, however dense the light buffer.
+    expect(at(0, 0).ok).toBe(false);
+  });
+
+  it("prints the light buffer's texels per world unit, and marks a run below 8, where the snapping alone can refuse correct code", () => {
+    // The weights the texel centres get on a 305 x 612 canvas (4.318 texels per unit), read where the shader evaluated them.
+    const coarse: MixReads = { ...read(right), partial: [0.713, 0.483].map((w) => ({ read: rgba(right(w)), w })), texelsPerUnit: 152 / 35.2 };
+    const refused = mixReplacesVerdict(coarse, F, M_TARGET);
+    expect(refused.ok).toBe(false);
+    expect(refused.detail).toContain('target·w against FLOOR 0.185, 0.170, 0.295 read in the same frame; '
+      + `light buffer 4.318 texels per world unit, ${below}, where the texel snapping alone can move a weight by more than 0.029 and fail correct code; global`);
+    expect(refused.detail).toContain('the partial points sit at w 0.713 and 0.483, not 0.750 and 0.500 '
+      + '(the texel snapping moves a weight by at most 0.029 from 8 texels per unit up; this light buffer has 4.318)');
+    // The M2's 28 texels per unit, weights 0.750 and 0.498: no mark.
+    const m2 = mixReplacesVerdict({ ...read(right), partial: [0.75, 0.498].map((w) => ({ read: rgba(right(w)), w })) }, F, M_TARGET);
+    expect(m2.ok).toBe(true);
+    expect(m2.detail).toContain('read in the same frame; light buffer 27.841 texels per world unit; global');
+    expect(m2.detail).not.toContain('below the');
+    // 8 is the domain's edge, inside it.
+    expect(mixReplacesVerdict({ ...read(right), texelsPerUnit: 8 }, F, M_TARGET).detail).not.toContain('below the');
+  });
+
+  it('the texels per unit change no verdict, and only add their part to the detail', () => {
+    const densityPart = /; light buffer [^;]*/;
+    const fixtures: MixReads[] = [
+      read(right), read(() => M_TARGET), read(right, F), read(right, M_TARGET, sum(F, M_TARGET)),
+      { ...read(right), partial: [0.713, 0.483].map((w) => ({ read: rgba(right(w)), w })) },
+      { ...read(right), partial: [0, 0].map((w) => ({ read: rgba(right(w)), w })) },
+      { ...read(right), partialFloor: rgba(sum(F, [0.1, 0.1, 0.1])) },
+    ];
+    for (const [i, f] of fixtures.entries()) {
+      const at = (texelsPerUnit: number) => mixReplacesVerdict({ ...f, texelsPerUnit }, F, M_TARGET);
+      const dense = at(M2_DENSITY);
+      for (const texelsPerUnit of [8, 7.99, 152 / 35.2, 9 / 320]) {
+        const v = at(texelsPerUnit);
+        expect(v.ok, `fixture ${i} at ${texelsPerUnit} texels per unit`).toBe(dense.ok);
+        expect(v.detail.replace(densityPart, '').replace(/; this light buffer has [\d.]+/, ''), `fixture ${i}`)
+          .toBe(dense.detail.replace(densityPart, '').replace(/; this light buffer has [\d.]+/, ''));
+      }
+    }
   });
 
   it('prints the FLOOR the partial reads are judged against, and holds it to one fp16 ULP of the first FLOOR read', () => {
@@ -211,6 +269,22 @@ describe('mixOrderVerdict', () => {
     expect(added.ok).toBe(false);
     expect(added.detail).toContain('the mix lights are added like add');
     expect(added.detail).not.toContain('R is drawn after');
+  });
+
+  it('names the nearer of the class order and added like add: with an ambient within TOL only it tells them apart', () => {
+    // floor + R + P (added like add) lies 0.02 from P + R + (floor − ambient) (the class order) in every channel.
+    const ambient: Rgb = [0.02, 0.02, 0.02];
+    const summed = sum(F, R_COLOR, P_COLOR);
+    const added = mixOrderVerdict(reads(P_COLOR, { pOnly: summed }), swap(Q_COLOR, { pOnly: summed }), F, ambient);
+    expect(added.ok).toBe(false);
+    expect(added.detail).toContain('the mix lights are added like add (P_ONLY 1.185, 0.920, 0.545 = floor + R + P)');
+    expect(added.detail).not.toContain('R is drawn after');
+    // The class order, under the same ambient: nearer its own formula, named as before.
+    const late = sum(P_COLOR, R_COLOR, F.map((c, i) => c - ambient[i]) as Rgb);
+    const order = mixOrderVerdict(reads(P_COLOR, { pOnly: late }), swap(Q_COLOR, { pOnly: late }), F, ambient);
+    expect(order.ok).toBe(false);
+    expect(order.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY − P = 0.165, 0.650, 0.275 = R + floor − ambient');
+    expect(order.detail).not.toContain('added like add');
   });
 
   it("names a class order broken under the tab's global light, which is drawn after the mix lights too", () => {
@@ -283,7 +357,7 @@ describe('mixOrderVerdict', () => {
 describe('listVerdict', () => {
   const right: ListReads = {
     inside: rgba(M_TARGET), outside: rgba(F), limit: 1003, depths: { inside: 1002.985, outside: 1003.015 },
-    overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 }, rows: { ids: 16, count: 16 },
+    overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 }, rowZ: { p: -1, q: -1 }, rows: { ids: 16, count: 16 },
   };
 
   it('passes the rule: listed just inside the limit, not just outside; at equal depths the higher id, against the slots', () => {
@@ -307,23 +381,34 @@ describe('listVerdict', () => {
     expect(v.detail).toContain('cannot tell the id rule from slot order');
   });
 
-  it("names P's .transparent() next to the slots when P, the lower id, is on top, and the slots alone for Q", () => {
-    // P (.transparent()) has the lower id: a transparent-last order puts it on top as surely as slot order does.
+  it("names the slots or the ids reversed when the lower id is on top, and P's .transparent() too when it is P", () => {
+    // Where the slots and the ids disagree the lower id has the later slot: a reversed id tie-break puts it on top as
+    // surely as slot order does. P (.transparent()) has the lower id: a transparent-last order puts it on top too.
     const p = listVerdict({ ...right, overlap: rgba(P_COLOR) }, F, M_TARGET);
     expect(p.ok).toBe(false);
-    expect(p.detail).toContain("at equal depths P, the lower id, is on top: the order follows the slots, or P's .transparent() moves it after Q "
-      + "(check 'Mix order follows depth' tells them apart)");
+    expect(p.detail).toContain('at equal depths P, the lower id, is on top: the order follows the slots or the ids reversed '
+      + "(one read cannot tell those two apart), or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)");
     // Q with the lower id and the later slot: P's .transparent() would put P on top, not Q.
     const q = listVerdict({ ...right, overlap: rgba(Q_COLOR), ids: { p: 121, q: 120 }, slots: { p: 13, q: 15 } }, F, M_TARGET);
     expect(q.ok).toBe(false);
-    expect(q.detail).toContain('at equal depths Q, the lower id, is on top: the order follows the slots');
+    expect(q.detail).toContain('at equal depths Q, the lower id, is on top: the order follows the slots or the ids reversed '
+      + '(one read cannot tell those two apart)');
     expect(q.detail).not.toContain('.transparent()');
   });
 
-  it("prints M's listed limit, FAR_EPS and M's two depths, and the rows' ids against their count", () => {
+  it("prints M's listed limit, FAR_EPS and M's two depths, P's and Q's row z, and the rows' ids against their count", () => {
     expect(listVerdict(right, F, M_TARGET).detail).toBe('M 2.000, 1.000, 0.500 just inside its listed limit, at depth 1002.985, '
       + 'and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (limit 1003.000, the far plane + its range; FAR_EPS 0.015); '
-      + 'overlap Q at equal depths; ids P 120, Q 121; slots P 15, Q 13; 16 ids for 16 rows');
+      + 'overlap Q at equal depths (row z P -1.000, Q -1.000); ids P 120, Q 121; slots P 15, Q 13; 16 ids for 16 rows');
+  });
+
+  it('prints the row z that show depths which never reached the rows: the premise of the tie, read in the same frame', () => {
+    // P left at depth 1 and Q at 2: P is nearer, and on top, while the cause blames the order.
+    const lost = listVerdict({ ...right, overlap: rgba(P_COLOR), rowZ: { p: -1, q: -2 } }, F, M_TARGET);
+    expect(lost.ok).toBe(false);
+    expect(lost.detail).toContain('overlap P at equal depths (row z P -1.000, Q -2.000)');
+    // A light with no row: 'none'.
+    expect(listVerdict({ ...right, slots: { p: -1, q: 13 }, rowZ: { p: NaN, q: -1 } }, F, M_TARGET).detail).toContain('(row z P none, Q -1.000)');
   });
 
   it('tells M drawn off its target just inside its limit from M not drawn there', () => {
@@ -377,7 +462,7 @@ interface FakeHandle {
 }
 
 /** The light orders the model draws in: `modelEngine`'s doc says which is which. */
-type Rule = 'list' | 'slot' | 'mixFirst' | 'transparentLast' | 'bucket';
+type Rule = 'list' | 'slot' | 'mixFirst' | 'transparentLast' | 'bucket' | 'idDesc';
 
 /**
  * An engine whose probe reads a model of the light buffer: the ambient, then
@@ -387,9 +472,11 @@ type Rule = 'list' | 'slot' | 'mixFirst' | 'transparentLast' | 'bucket';
  * front and by id; 'transparentLast': the class, then `.transparent()` last,
  * then back to front and by id; 'bucket': the cull's buckets as master drew
  * the lights on a 32-lane GPU, opaque rows then transparent rows, each in slot
- * order), each through lightLayer at its weight (pointWeight, a global light
- * 1). The tab's global light is one of them, as on the GPU: a 3D add light at
- * z 0, spawned before the sub-scene (slot 0, a lower id), never culled.
+ * order; 'idDesc': the step-7 rule with its id tie-break reversed, the lower
+ * id drawn last), each through lightLayer at its weight (pointWeight, a
+ * global light 1). The tab's global light is one of them, as on the GPU: a 3D
+ * add light at z 0, spawned before the sub-scene (slot 0, a lower id), never
+ * culled.
  * readEntityTransforms holds each row's translation (a 2D row's z is −depth)
  * and every id. With `fp16TowardZero` each blend's result is stored as the M2
  * stores it, rounded toward zero to fp16; without it, exact.
@@ -448,6 +535,7 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
       transparentLast: () => [...lights].sort((a, b) => (mixLast(a) - mixLast(b))
         || (Number(a.h.isTransparent) - Number(b.h.isTransparent)) || (b.depth - a.depth) || (a.id - b.id)),
       bucket: () => [...lights.filter((l) => !l.h.isTransparent), ...lights.filter((l) => l.h.isTransparent)],
+      idDesc: () => [...lights].sort((a, b) => (mixLast(a) - mixLast(b)) || (b.depth - a.depth) || (b.id - a.id)),
     };
     const ordered = order[rule]();
     // Each blend's result stored in fp16 (toward zero, as on the M2) or kept exact.
@@ -528,10 +616,24 @@ describe('checkMix', () => {
     // What the details print from the rows and the view: P's and Q's row z after the swap, M's listed
     // limit, the ids column (the tab's global light, the floor, Q, R and P after M's despawn).
     const [replaces, order, list] = reporter.results();
-    expect(replaces.detail).toContain('against FLOOR 0.185, 0.170, 0.295 read in the same frame');
+    // The 1920 x 1080 canvas: a 960 x 540 light buffer over the 35.56 x 20 units of the view.
+    expect(replaces.detail).toContain('against FLOOR 0.185, 0.170, 0.295 read in the same frame; light buffer 27.000 texels per world unit; global');
     expect(order.detail).toContain('row z P -2.000, Q -1.000');
     expect(list.detail).toContain('(limit 1003.000, the far plane + its range; FAR_EPS 0.015)');
     expect(list.detail).toContain('slots P 4, Q 2; 5 ids for 5 rows');
+  });
+
+  it("with no canvas: both partial points at the view centre, w = 0, and the first check fails naming the 1 x 1 light buffer's density", async () => {
+    stubs();
+    vi.stubGlobal('document', { getElementById: () => null });
+    const { engine } = modelEngine('list');
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces] = reporter.results();
+    expect(replaces.status).toBe('fail');
+    expect(replaces.detail).toContain('the partial points sit at w 0.000 and 0.000, not 0.750 and 0.500 '
+      + '(the texel snapping moves a weight by at most 0.029 from 8 texels per unit up; this light buffer has 0.028)');
+    expect(replaces.detail).toContain("light buffer 0.028 texels per world unit, below the partial weights' validated domain (8 and up)");
   });
 
   it('on plain slot order, every light in row order: the order and the tie fail', async () => {
@@ -558,8 +660,23 @@ describe('checkMix', () => {
     const [replaces, order, list] = reporter.results();
     expect([replaces.status, order.status, list.status]).toEqual(['pass', 'fail', 'fail']);
     expect(order.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q');
-    expect(list.detail).toContain("at equal depths P, the lower id, is on top: the order follows the slots, or P's .transparent() moves it after Q "
-      + "(check 'Mix order follows depth' tells them apart)");
+    expect(list.detail).toContain('at equal depths P, the lower id, is on top: the order follows the slots or the ids reversed '
+      + "(one read cannot tell those two apart), or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)");
+  });
+
+  it("on the id tie-break reversed, the lower id drawn last: 'Mix order' passes, 'Light list' names the ids reversed next to the slots, over equal row z", async () => {
+    stubs();
+    const { engine } = modelEngine('idDesc');
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    // P has the lower id and the later slot (4 against Q's 2): the reversed ids put it on top as the slots would,
+    // and with P's and Q's depths apart, check 2 sees no tie at all.
+    expect([replaces.status, order.status, list.status]).toEqual(['pass', 'pass', 'fail']);
+    expect(list.detail).toContain('at equal depths P, the lower id, is on top: the order follows the slots or the ids reversed '
+      + "(one read cannot tell those two apart), or P's .transparent() moves it after Q (check 'Mix order follows depth' tells that one apart)");
+    // The premise, read in the same frame: P's and Q's rows hold the same z.
+    expect(list.detail).toContain('overlap P at equal depths (row z P -1.000, Q -1.000); ids P 123, Q 124; slots P 4, Q 2');
   });
 
   it('with every blend rounded toward zero in fp16, as on the M2: three passes, and R_ONLY reads as it did there', async () => {
