@@ -75,7 +75,7 @@ const Q_AT: Xy = [7.5, 0];
 const R_RANGE = 5;
 /** P's and Q's range: OVERLAP lies 1.5 from each centre. */
 const PQ_RANGE = 3;
-/** R's depth: the nearest light (a root 2D light's world z is −depth), yet drawn under P and Q, as an add light. */
+/** R's depth: the nearest of R, P and Q (a root 2D light's world z is −depth), yet drawn under P and Q, as an add light. */
 const R_DEPTH = 0.5;
 /** P's depth: nearer than Q, so on top of it where they overlap. */
 const P_DEPTH = 1;
@@ -97,6 +97,28 @@ export const POINTS: { mIn: Xy; floor: Xy; away: Xy; pOnly: Xy; overlap: Xy; qOn
 };
 /** The partial-weight points, world units right of M: weights about 0.75 and 0.5 at falloff 1. */
 const PARTIAL_OFFSETS = [0.75, 1.5];
+/** M's weights at PARTIAL_OFFSETS, falloff 1: 1 − offset/range, 0.75 and 0.5. */
+const PARTIAL_WEIGHTS = PARTIAL_OFFSETS.map((dx) => 1 - dx / M_LIGHT.range);
+/**
+ * The coarsest light buffer WEIGHT_TOL is derived for, in texels per world
+ * unit: the density the tab's step-6 checks are validated from
+ * (VALIDATED_TEXELS_PER_UNIT in lighting-directional.ts), which this framing
+ * (SUB_HALF_WIDTH, the same) reaches on a canvas at least 320 px tall at
+ * zoom 1, or about 564 px wide where fitView zooms out.
+ */
+const MIN_TEXELS_PER_UNIT = 8;
+/**
+ * How far a partial point's weight may sit from PARTIAL_WEIGHTS: the point is
+ * read at the centre of its light-buffer texel, at most half a texel away on
+ * each axis, √2/2 of a texel in all, and a weight 1 − d/range moves by at
+ * most that over the range. At MIN_TEXELS_PER_UNIT that is √2/16 world units,
+ * 0.029 of weight (the M2's 1960×1248 canvas, 28 texels per unit, moved them
+ * by 0.002 at most). A missing or zero-sized canvas snaps both points to the
+ * view centre, beyond M's range: w = 0, where the reference is FLOOR itself.
+ * Below MIN_TEXELS_PER_UNIT the snapping alone can move a weight further: a
+ * refusal there may mean the canvas.
+ */
+const WEIGHT_TOL = Math.SQRT1_2 / (MIN_TEXELS_PER_UNIT * M_LIGHT.range);
 /** The order check's reads before the depth swap: the overlap must hold over all of them. */
 export const ORDER_READS = 10;
 /** Per-channel tolerance on a light-buffer value that sums lights, and for naming what a wrong read looks like. */
@@ -208,7 +230,8 @@ function partialCause(read: Rgba, base: Rgb, target: Rgb, w: number): string {
 
 /**
  * 'Mix light replaces the light buffer': FLOOR within TOL of the tab's
- * `floor`; M_IN within one fp16 ULP of `target` at weight 1; each partial
+ * `floor`; M_IN within one fp16 ULP of `target` at weight 1; the partial
+ * points at weights within WEIGHT_TOL of PARTIAL_WEIGHTS, and each partial
  * read within PARTIAL_TOL of floor·(1 − w) + target·w, the floor read in the
  * same frame; and the three global reads within one fp16 ULP of `target`.
  */
@@ -216,6 +239,11 @@ export function mixReplacesVerdict(reads: MixReads, floor: Rgb, target: Rgb): Ve
   const problems: string[] = [];
   if (!close(reads.floor, floor)) problems.push(`FLOOR is not the tab's floor, ${rgb(floor)}`);
   if (!withinUlp(reads.full, target)) problems.push(fullCause(reads.full, rgbOf(reads.floor), target));
+  const ws = reads.partial.map(({ w }) => w);
+  if (!(ws.length === PARTIAL_WEIGHTS.length && ws.every((w, i) => Math.abs(w - PARTIAL_WEIGHTS[i]) <= WEIGHT_TOL))) {
+    problems.push(`the partial points sit at w ${ws.map((w) => w.toFixed(3)).join(' and ')}, `
+      + `not ${PARTIAL_WEIGHTS.map((w) => w.toFixed(3)).join(' and ')} (the texel snapping moves a weight by at most ${WEIGHT_TOL.toFixed(3)})`);
+  }
   const base = rgbOf(reads.partialFloor);
   const partial = reads.partial.map(({ read, w }) => ({ read, w, off: maxChannelDiff(read, composite(base, [straight(target, w)])) }));
   for (const { read, w, off } of partial) {
@@ -240,11 +268,29 @@ export interface OrderRead {
   floor: Rgba;
 }
 
+/** A cause of 'Mix order follows depth', and the values it judged. */
+interface Cause {
+  cause: string;
+  values: string;
+}
+
 /** Why P_ONLY or Q_ONLY, where only its own mix light and R reach, is not that light's colour. */
-function onlyCause(value: Rgba, light: Rgb, floor: Rgb): string {
-  if (close(value, plus(light, R_COLOR))) return 'R is drawn after the mix lights: add and sub come first';
-  if (close(value, plus(plus(floor, R_COLOR), light))) return 'the mix lights are added like add';
-  return 'P_ONLY or Q_ONLY is not its own light';
+function onlyCause(point: 'P_ONLY' | 'Q_ONLY', value: Rgba, name: 'P' | 'Q', light: Rgb, floor: Rgb): Cause {
+  if (close(value, plus(light, R_COLOR))) {
+    return { cause: 'R is drawn after the mix lights: add and sub come first', values: `${point} ${rgb(value)} = ${name} + R` };
+  }
+  if (close(value, plus(plus(floor, R_COLOR), light))) {
+    return { cause: 'the mix lights are added like add', values: `${point} ${rgb(value)} = floor + R + ${name}` };
+  }
+  return {
+    cause: `${point} is not its own light`,
+    values: `${rgb(value)} against ${name} ${rgb(light)}, ${ulpsOff(value, light).toFixed(1)} fp16 ULP off`,
+  };
+}
+
+/** The values of one read of the order check, all but its overlap. */
+function orderValues(read: OrderRead): string {
+  return `P_ONLY ${rgb(read.pOnly)}; Q_ONLY ${rgb(read.qOnly)}; R_ONLY ${rgb(read.rOnly)}; FLOOR ${rgb(read.floor)}`;
 }
 
 /**
@@ -255,42 +301,53 @@ function onlyCause(value: Rgba, light: Rgb, floor: Rgb): string {
  * is read as 'P' or 'Q' within TOL (P_COLOR and Q_COLOR are far enough apart
  * for that), otherwise as its values, and a wrong overlap names the rule it
  * follows instead. A cause found in several reads is named once, at the
- * first, with how many reads show it.
+ * first, with the values it judged there and how many reads show it.
  */
 export function mixOrderVerdict(before: readonly OrderRead[], after: OrderRead, floor: Rgb): Verdict {
-  const found = new Map<string, { where: string; reads: number }>();
-  const note = (where: string, cause: string): void => {
-    const seen = found.get(cause);
-    if (seen) seen.reads++;
-    else found.set(cause, { where, reads: 1 });
-  };
+  const found = new Map<string, { where: string; values: string; reads: number }>();
   const all = [...before.map((read, i) => ({ read, where: `before ${i}` })), { read: after, where: 'after' }];
   for (const { read, where } of all) {
-    // Once per read: P_ONLY and Q_ONLY often show the same cause.
-    const causes = new Set<string>();
-    if (!withinUlp(read.pOnly, P_COLOR)) causes.add(onlyCause(read.pOnly, P_COLOR, floor));
-    if (!withinUlp(read.qOnly, Q_COLOR)) causes.add(onlyCause(read.qOnly, Q_COLOR, floor));
-    if (!close(read.rOnly, plus(floor, R_COLOR))) causes.add('R_ONLY is not floor + R');
-    if (!close(read.floor, floor)) causes.add("FLOOR is not the tab's floor");
-    for (const cause of causes) note(where, cause);
+    // Once per read, with the first values: P_ONLY and Q_ONLY often show the same cause.
+    const causes = new Map<string, string>();
+    const add = ({ cause, values }: Cause): void => {
+      if (!causes.has(cause)) causes.set(cause, values);
+    };
+    if (!withinUlp(read.pOnly, P_COLOR)) add(onlyCause('P_ONLY', read.pOnly, 'P', P_COLOR, floor));
+    if (!withinUlp(read.qOnly, Q_COLOR)) add(onlyCause('Q_ONLY', read.qOnly, 'Q', Q_COLOR, floor));
+    if (!close(read.rOnly, plus(floor, R_COLOR))) {
+      add({ cause: 'R_ONLY is not floor + R', values: `${rgb(read.rOnly)} against ${rgb(plus(floor, R_COLOR))}` });
+    }
+    if (!close(read.floor, floor)) add({ cause: "FLOOR is not the tab's floor", values: `${rgb(read.floor)} against ${rgb(floor)}` });
+    for (const [cause, values] of causes) {
+      const seen = found.get(cause);
+      if (seen) seen.reads++;
+      else found.set(cause, { where, values, reads: 1 });
+    }
   }
   const labels = before.map((read) => overlapLabel(read.overlap));
   const steady = labels.every((label) => label === labels[0]);
   const first = steady ? labels[0] : labels.join(' / ');
   const last = overlapLabel(after.overlap);
   const isPq = (label: string): boolean => label === 'P' || label === 'Q';
+  // One phase of the overlap: the colour read, and what it is against what it should be.
+  const phase = (label: string, value: Rgba, want: 'P' | 'Q'): string =>
+    `${rgb(value)} (${label === want ? want : `${isPq(label) ? label : 'neither'}, want ${want}`})`;
   let rule: string | null = null;
   if (!steady) rule = 'the overlap changes from read to read: the order does not come from the ECS state alone';
   else if (first === 'Q' && last === 'P') rule = 'the order is reversed: the nearer mix light is drawn first';
   else if (first === 'Q' && last === 'Q') rule = 'the overlap follows the ids or the slots, not the depths: Q has the higher id and the later slot';
   else if (first === 'P' && last === 'P') rule = 'P stays on top whatever the depths: its .transparent() moves it after Q';
-  else if (!(first === 'P' && last === 'Q')) rule = `the overlap is neither P nor Q ${isPq(first) ? 'after the swap' : 'with P nearer'}`;
+  else if (!(first === 'P' && last === 'Q')) {
+    rule = `the overlap is neither P nor Q in a phase: with P nearer ${before.length > 0 ? phase(first, before[0].overlap, 'P') : 'no read'}, `
+      + `after the swap ${phase(last, after.overlap, 'Q')}`;
+  }
   const problems = [
     ...(rule === null ? [] : [rule]),
-    ...[...found].map(([cause, { where, reads }]) => `${where}: ${cause}${reads > 1 ? ` (${reads} of ${all.length} reads)` : ''}`),
+    ...[...found].map(([cause, { where, values, reads }]) => `${where}${reads > 1 ? ` (${reads} of ${all.length} reads)` : ''}: ${cause} (${values})`),
   ];
   const detail = `overlap ${first} over ${before.length} reads with P nearer, ${last} after the swap; `
-    + `after it P_ONLY ${rgb(after.pOnly)}; Q_ONLY ${rgb(after.qOnly)}; R_ONLY ${rgb(after.rOnly)}; FLOOR ${rgb(after.floor)}`;
+    + (before.length > 0 ? `before it (read 0) ${orderValues(before[0])}; ` : '')
+    + `after it ${orderValues(after)}`;
   return { ok: problems.length === 0, detail: problems.length > 0 ? `${detail}; ${problems.join('; ')}` : detail };
 }
 

@@ -97,6 +97,17 @@ describe('mixReplacesVerdict', () => {
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('does not bring its whole layer to its target');
   });
+
+  it('refuses partial points away from weights 0.75 and 0.5: a missing canvas snaps both to the view centre, w = 0', () => {
+    // At w = 0 the reference is the floor itself, which FLOOR always matches.
+    const at = (w0: number, w1: number) => mixReplacesVerdict({ ...read(right), partial: [w0, w1].map((w) => ({ read: rgba(right(w)), w })) }, F, M_TARGET);
+    const centre = at(0, 0);
+    expect(centre.ok).toBe(false);
+    expect(centre.detail).toContain('the partial points sit at w 0.000 and 0.000, not 0.750 and 0.500');
+    // The texel snapping moves a weight by up to 0.029 (half a texel's diagonal at 8 texels per unit, over range 3).
+    expect(at(0.73, 0.52).ok).toBe(true);
+    expect(at(0.75, 0.46).detail).toContain('the partial points sit at w 0.750 and 0.460');
+  });
 });
 
 describe('mixOrderVerdict', () => {
@@ -148,6 +159,39 @@ describe('mixOrderVerdict', () => {
     const v = mixOrderVerdict(before, at(Q_COLOR), F);
     expect(v.ok).toBe(false);
     expect(v.detail).toContain('changes from read to read');
+  });
+
+  it('names both phases, with the colour read in each, when the overlap is neither P nor Q', () => {
+    const odd: Rgb = [0.7, 0.25, 0.7];
+    const cases: Array<[Rgb, Rgb, string]> = [
+      [Q_COLOR, odd, 'with P nearer 0.250, 0.250, 1.000 (Q, want P), after the swap 0.700, 0.250, 0.700 (neither, want Q)'],
+      [odd, Q_COLOR, 'with P nearer 0.700, 0.250, 0.700 (neither, want P), after the swap 0.250, 0.250, 1.000 (Q)'],
+      [odd, P_COLOR, 'with P nearer 0.700, 0.250, 0.700 (neither, want P), after the swap 1.000, 0.250, 0.250 (P, want Q)'],
+    ];
+    for (const [before, after, phases] of cases) {
+      const v = mixOrderVerdict(reads(before), at(after), F);
+      expect(v.ok).toBe(false);
+      expect(v.detail).toContain(`the overlap is neither P nor Q in a phase: ${phases}`);
+    }
+  });
+
+  it('gives each cause the values it judged, and prints a read before the swap too', () => {
+    // R_ONLY and FLOOR wrong before the swap only, P_ONLY wrong in every read.
+    const odd: Rgb = [0.5, 0.5, 0.5];
+    const v = mixOrderVerdict(reads(P_COLOR, { pOnly: odd, rOnly: sum(F, [0, 0.25, 0]), floor: [0.1, 0.1, 0.1] }), at(Q_COLOR, { pOnly: odd }), F);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('before it (read 0) P_ONLY 0.500, 0.500, 0.500; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.420, 0.295; FLOOR 0.100, 0.100, 0.100; '
+      + 'after it P_ONLY 0.500, 0.500, 0.500; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295');
+    expect(v.detail).toContain('before 0 (11 of 11 reads): P_ONLY is not its own light (0.500, 0.500, 0.500 against P 1.000, 0.250, 0.250, 1024.0 fp16 ULP off)');
+    expect(v.detail).toContain('before 0 (10 of 11 reads): R_ONLY is not floor + R (0.185, 0.420, 0.295 against 0.185, 0.670, 0.295)');
+    expect(v.detail).toContain("before 0 (10 of 11 reads): FLOOR is not the tab's floor (0.100, 0.100, 0.100 against 0.185, 0.170, 0.295)");
+  });
+
+  it('names the values of the class-order and added-like-add causes too', () => {
+    const late = mixOrderVerdict(reads(P_COLOR, { pOnly: sum(P_COLOR, R_COLOR) }), at(Q_COLOR), F);
+    expect(late.detail).toContain('R is drawn after the mix lights: add and sub come first (P_ONLY 1.000, 0.750, 0.250 = P + R)');
+    const added = mixOrderVerdict(reads(P_COLOR, { qOnly: sum(F, R_COLOR, Q_COLOR) }), at(Q_COLOR), F);
+    expect(added.detail).toContain('the mix lights are added like add (Q_ONLY 0.435, 0.920, 1.295 = floor + R + Q)');
   });
 });
 
