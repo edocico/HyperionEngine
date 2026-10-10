@@ -165,8 +165,8 @@ const PARTIAL_TOL = 0.004;
  */
 const FAR_EPS = 0.015;
 /**
- * How far M's row z may sit from −depth before 'Light list' blames M's depth
- * rather than the list: its depths near 1003 are no f32 integers, and f32
+ * How far M's row z may sit from −depth, at either read of M, before 'Light
+ * list' blames M's depth: its depths near 1003 are no f32 integers, and f32
  * values there lie 6.1e-5 apart.
  */
 const M_ROW_Z_TOL = 1e-3;
@@ -394,7 +394,9 @@ const rowZText = (z: number): string => (Number.isNaN(z) ? 'none' : z.toFixed(3)
  * follows instead. P's and Q's row z after the swap, read in the same frame,
  * must hold the depths it set (z = −depth, within SWAP_Z_EPS): otherwise the
  * read is refused whatever its overlap, which was drawn at other depths than
- * the ones it is judged against; a light with no row (NaN) is only printed. A
+ * the ones it is judged against; a light with no row (NaN) is only printed.
+ * When P stays on top, its rule offers a swap that never reached the rows
+ * only while the rows leave it open (one missing, the other at its depth). A
  * cause found in several reads is named once, at the first, with the values
  * it judged there and how many reads show it. `ambient` is the light buffer's
  * clear: floor − ambient is what the tab's global light adds, which a broken
@@ -434,13 +436,17 @@ export function mixOrderVerdict(before: readonly OrderRead[], after: SwapRead, f
   const wantZ = { p: -P_DEPTH_AFTER, q: -Q_DEPTH_AFTER };
   const wantAfter = `want ${wantZ.p.toFixed(3)}, ${wantZ.q.toFixed(3)}`;
   const unswapped = (['p', 'q'] as const).some((k) => Number.isFinite(after.rowZ[k]) && Math.abs(after.rowZ[k] - wantZ[k]) > SWAP_Z_EPS);
+  // The rows leave open whether the swap reached them only with a row missing and the other at
+  // its depth: otherwise `unswapped` decides it.
+  const undecided = !unswapped && (['p', 'q'] as const).some((k) => !Number.isFinite(after.rowZ[k]));
   let rule: string | null = null;
   if (!steady) rule = 'the overlap changes from read to read: the order does not come from the ECS state alone';
   else if (first === 'Q' && last === 'P') rule = 'the order is reversed: the nearer mix light is drawn first';
   else if (first === 'Q' && last === 'Q') rule = 'the overlap follows the ids or the slots, not the depths: Q has the higher id and the later slot';
   else if (first === 'P' && last === 'P') {
-    rule = 'P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
-      + `(its buffer rewritten only when the light count changes), or the swap never reached the rows (${rowsAfter}; ${wantAfter})`;
+    const stale = 'the light list is stale (its buffer rewritten only when the light count changes)';
+    rule = 'P stays on top whatever the depths: its .transparent() moves it after Q, '
+      + (undecided ? `${stale}, or the swap never reached the rows (${rowsAfter}; ${wantAfter})` : `or ${stale}`);
   } else if (!(first === 'P' && last === 'Q')) {
     rule = `the overlap is neither P nor Q in a phase: with P nearer ${before.length > 0 ? phase(first, before[0].overlap, 'P') : 'no read'}, `
       + `after the swap ${phase(last, after.overlap, 'Q')}`;
@@ -484,11 +490,14 @@ export interface ListReads {
  * 'Light list: exact cull, id at equal depth': M_IN within one fp16 ULP of
  * `target` with M just inside its listed limit (otherwise: not drawn, near
  * `floor`, or drawn off its target), and within TOL of `floor` just outside
- * it. M drawn just outside is blamed on its depth when M's row z there, read
- * in the same frame, is not −depth (beyond M_ROW_Z_TOL: a lost SetDepth, a
- * clamped depth); otherwise on the list's test when M was listed though
- * outside (the grouping's margin), on LightAccumStage when M was drawn though
- * unlisted. M's row z and listing at both reads are printed. The overlap at
+ * it. The inside read is refused whatever M_IN shows when M's row z there,
+ * read in the same frame, is not −depth (beyond M_ROW_Z_TOL): M drawn at its
+ * target from another depth (a lost SetDepth leaves it at 0) never tested the
+ * limit. M drawn just outside is blamed on its depth when M's row z there is
+ * not −depth (a lost SetDepth, a clamped depth); otherwise on the list's test
+ * when M was listed though outside (the grouping's margin, or a bounds z
+ * other than M's row z), on LightAccumStage when M was drawn though unlisted.
+ * M's row z and listing at both reads are printed. The overlap at
  * equal depths counts only with both lights in the rows read back, at the
  * same row z there (read in the same frame: a SetDepth that never reached its
  * row leaves the nearer light on top, which may be the higher id), and where
@@ -502,7 +511,11 @@ export interface ListReads {
 export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict {
   const { inside, outside, limit, depths, mRowZ, mListed, overlap, slots, ids, rowZ, rows } = reads;
   const problems: string[] = [];
-  if (!withinUlp(inside, target)) {
+  if (Number.isFinite(mRowZ.inside) && Math.abs(mRowZ.inside + depths.inside) > M_ROW_Z_TOL) {
+    // Whatever M_IN shows: M was drawn at another depth than just inside its limit (a lost
+    // SetDepth leaves M at 0, drawn at its target).
+    problems.push(`M's depth did not reach its row at the inside read (row z ${rowZText(mRowZ.inside)}, set depth ${depths.inside.toFixed(3)})`);
+  } else if (!withinUlp(inside, target)) {
     problems.push(close(inside, floor)
       ? 'M is not drawn just inside its listed limit, the far plane + its range'
       : `M is drawn just inside its listed limit, but not at its target: ${ulpsOff(inside, target).toFixed(1)} fp16 ULP off`);
@@ -511,7 +524,8 @@ export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict 
     if (Number.isFinite(mRowZ.outside) && Math.abs(mRowZ.outside + depths.outside) > M_ROW_Z_TOL) {
       problems.push(`M's depth did not reach its row (row z ${rowZText(mRowZ.outside)}, set depth ${depths.outside.toFixed(3)})`);
     } else if (mListed.outside) {
-      problems.push("M is still drawn just outside its listed limit, listed though outside: the list keeps the grouping's margin, not the cull's exact test");
+      problems.push("M is still drawn just outside its listed limit, listed though outside: the list's test keeps it "
+        + "(the grouping's margin instead of the cull's exact test, or a bounds z other than M's row z)");
     } else {
       problems.push('M is still drawn just outside its listed limit, drawn though unlisted: LightAccumStage draws beyond the list');
     }

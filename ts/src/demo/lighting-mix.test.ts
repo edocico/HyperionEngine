@@ -363,16 +363,29 @@ describe('mixOrderVerdict', () => {
     expect(added.detail).toContain('the mix lights are added like add (Q_ONLY 0.435, 0.920, 1.295 = floor + R + Q)');
   });
 
-  it("prints P's and Q's row z after the swap, and names a stale list and a lost swap next to P's .transparent()", () => {
+  it("prints P's and Q's row z after the swap, and offers a lost swap next to P's .transparent() and a stale list only where a row is missing", () => {
+    // Both rows hold the swap: the rule does not offer a swap that never reached them.
     const v = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR), F, AMBIENT);
     expect(v.detail).toContain('after it P_ONLY 1.000, 0.250, 0.250; Q_ONLY 0.250, 0.250, 1.000; R_ONLY 0.185, 0.670, 0.295; FLOOR 0.185, 0.170, 0.295; row z P -3.000, Q -2.000');
-    expect(v.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
-      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows (row z P -3.000, Q -2.000 after it; want -3.000, -2.000)');
+    expect(v.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, or the light list is stale '
+      + '(its buffer rewritten only when the light count changes)');
+    expect(v.detail).not.toContain('the swap never reached the rows');
     expect(v.detail).not.toContain('the depth swap did not reach the rows');
-    // The rows say which: here they never took the swap, and the read is refused for it too.
+    // Both rows present, off the swap: the read is refused for it, and the rows are named once.
     const lost = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: -1, q: -4 }), F, AMBIENT);
-    expect(lost.detail).toContain('(row z P -1.000, Q -4.000 after it; want -3.000, -2.000)');
+    expect(lost.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, or the light list is stale '
+      + '(its buffer rewritten only when the light count changes)');
     expect(lost.detail).toContain('the depth swap did not reach the rows: row z P -1.000, Q -4.000 after it, want -3.000, -2.000');
+    expect(lost.detail).not.toContain('the swap never reached the rows');
+    // A row missing and the other at its depth: the rows cannot decide, and the rule still offers a lost swap.
+    const missing = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: NaN, q: -2 }), F, AMBIENT);
+    expect(missing.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q, the light list is stale '
+      + '(its buffer rewritten only when the light count changes), or the swap never reached the rows (row z P none, Q -2.000 after it; want -3.000, -2.000)');
+    expect(missing.detail).not.toContain('the depth swap did not reach the rows');
+    // A row missing and the other off its depth: the refusal names the rows, the rule does not.
+    const missed = mixOrderVerdict(reads(P_COLOR), swap(P_COLOR, {}, { p: NaN, q: -4 }), F, AMBIENT);
+    expect(missed.detail).toContain('the depth swap did not reach the rows: row z P none, Q -4.000 after it, want -3.000, -2.000');
+    expect(missed.detail).not.toContain('the swap never reached the rows');
     // A light with no row reads 'none'.
     const none = mixOrderVerdict(reads(P_COLOR), swap(Q_COLOR, {}, { p: NaN, q: -2 }), F, AMBIENT);
     expect(none.ok).toBe(true);
@@ -386,7 +399,8 @@ describe('listVerdict', () => {
     mRowZ: { inside: -1002.985, outside: -1003.015 }, mListed: { inside: true, outside: false },
     overlap: rgba(Q_COLOR), slots: { p: 15, q: 13 }, ids: { p: 120, q: 121 }, rowZ: { p: -1, q: -1 }, rows: { ids: 16, count: 16 },
   };
-  const margin = "M is still drawn just outside its listed limit, listed though outside: the list keeps the grouping's margin, not the cull's exact test";
+  const margin = "M is still drawn just outside its listed limit, listed though outside: the list's test keeps it "
+    + "(the grouping's margin instead of the cull's exact test, or a bounds z other than M's row z)";
 
   it('passes the rule: listed just inside the limit, not just outside; at equal depths the higher id, against the slots', () => {
     expect(listVerdict(right, F, M_TARGET).ok).toBe(true);
@@ -422,6 +436,22 @@ describe('listVerdict', () => {
       mListed: { inside: true, outside: true } }, F, M_TARGET);
     expect(f32.detail).toContain(margin);
     expect(f32.detail).not.toContain("M's depth did not reach its row");
+  });
+
+  it("refuses the inside read when M's row z there is not -depth, whatever M_IN shows", () => {
+    // M's first runtime SetDepth lost: M left at depth 0, drawn at its target, never near its limit.
+    const lost = listVerdict({ ...right, mRowZ: { inside: 0, outside: -1003.015 } }, F, M_TARGET);
+    expect(lost.ok).toBe(false);
+    expect(lost.detail).toContain("M's depth did not reach its row at the inside read (row z 0.000, set depth 1002.985)");
+    // A depth that went past the limit leaves M undrawn: its depth is named, not the list.
+    const past = listVerdict({ ...right, inside: rgba(F), mRowZ: { inside: -2005.97, outside: -1003.015 } }, F, M_TARGET);
+    expect(past.ok).toBe(false);
+    expect(past.detail).toContain("M's depth did not reach its row at the inside read (row z -2005.970, set depth 1002.985)");
+    expect(past.detail).not.toContain('M is not drawn just inside its listed limit');
+    // Correct reads still pass, on the f32 rows the engine writes too; a missing row is only printed.
+    expect(listVerdict(right, F, M_TARGET).ok).toBe(true);
+    expect(listVerdict({ ...right, mRowZ: { inside: Math.fround(-1002.985), outside: Math.fround(-1003.015) } }, F, M_TARGET).ok).toBe(true);
+    expect(listVerdict({ ...right, mRowZ: { inside: NaN, outside: -1003.015 } }, F, M_TARGET).ok).toBe(true);
   });
 
   it('blames LightAccumStage for M drawn just outside its limit though the list left it out', () => {
@@ -810,9 +840,10 @@ describe('checkMix', () => {
     const reporter = createTestReporter();
     await checkMix(engine, reporter, [], F, vi.fn());
     const [replaces, order, list] = reporter.results();
-    // M stays at depth 0: listed and drawn at both of its reads.
+    // M stays at depth 0: listed and drawn at both of its reads, which are both refused for it.
     expect([replaces.status, order.status, list.status]).toEqual(['pass', 'pass', 'fail']);
     expect(list.detail).toContain('at depth 1002.985 (row z 0.000, listed), and 2.000, 1.000, 0.500 just outside, at depth 1003.015 (row z 0.000, listed)');
+    expect(list.detail).toContain("M's depth did not reach its row at the inside read (row z 0.000, set depth 1002.985)");
     expect(list.detail).toContain("M's depth did not reach its row (row z 0.000, set depth 1003.015)");
     expect(list.detail).not.toContain("grouping's margin");
   });
