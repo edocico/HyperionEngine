@@ -31,9 +31,10 @@ export const OPAQUE_DRAW_BUCKETS = NUM_PRIM_TYPES * BUCKETS_PER_TYPE;
  * Layout: [0..13] opaque (7 types x 2 buckets), [14..27] transparent (7 types x 2 buckets).
  *
  * Light2D (type 6) is filed like any other type: bucket 1 for a texture of tier
- * > 0, the transparent half for `.transparent()`. A plain light fills only slot
- * 12, but LightAccumStage draws all four (`LIGHT2D_ARG_SLOTS`). The waste of the
- * usually-empty three is uniform, which is the point — a variable bucket count per type would break the flat
+ * > 0, the transparent half for `.transparent()`. Nothing draws those four
+ * buckets since round step 7: LightAccumStage draws the light list that
+ * deriveLightGroups builds on the CPU with the same sphere test. Their waste is
+ * uniform, which is the point — a variable bucket count per type would break the flat
  * `blendOffset + primType * BUCKETS_PER_TYPE + bucket` indexing in `cull.wgsl`
  * and put a branch in the hot loop.
  */

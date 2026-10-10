@@ -2,19 +2,23 @@ import type { FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import type { LightGroup } from '../light-groups';
 import { SCENE_HDR_FORMAT } from '../formats';
-import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
 import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
 
-/** RenderPrimitive 6. */
-const LIGHT2D_PRIM_TYPE = 6;
-
 /**
- * The indirect-args slots CullPass fills with visible lights: both material
- * buckets of type 6, in both blend modes. `.transparent()` on a light only
- * moves it to the transparent buckets; accumulation is additive either way.
+ * The one blend state of the light pipeline (round step 7): premultiplied
+ * "over" on colour, rgb + dst·(1 − a). light-accum.wgsl returns alpha 0 for an
+ * add or sub light, which keeps dst whole, dst + c: what {one, one} gave, bit
+ * for bit. A mix light returns (color·w, w): dst·(1 − w) + color·w. The alpha
+ * component keeps dst's alpha, the clear's 1, whatever a light returns; nobody
+ * reads it (the prelude's applyLighting samples rgb).
  */
-export const LIGHT2D_ARG_SLOTS = [0, TRANSPARENT_BUCKET_OFFSET].flatMap((blend) =>
-  Array.from({ length: BUCKETS_PER_TYPE }, (_, b) => blend + LIGHT2D_PRIM_TYPE * BUCKETS_PER_TYPE + b));
+export const LIGHT_BLEND: GPUBlendState = {
+  color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
+};
+
+/** The light list buffer's first capacity, in lights (256 bytes); it grows to the next power of two. */
+export const MIN_LIGHT_ORDER_CAPACITY = 64;
 
 /**
  * Soft-shadow hardness k of point and spot lights: their apparent angle is at
@@ -54,21 +58,20 @@ const LIGHT_UNIFORM_SIZE = 80;
 const MAX_SHADOW_STEPS = 0x3fffffff;
 
 /**
- * Accumulates the visible Light2Ds of ONE light group into one layer of the
- * light buffer (Phase 17; light layers, design 2026-09-26). A stage of
- * LightGroupsPass, not a graph node.
+ * Accumulates the lights of ONE light group into one layer of the light buffer
+ * (Phase 17; light layers, design 2026-09-26). A stage of LightGroupsPass, not
+ * a graph node. The target is `halfResolution`, the SDF's texels, in
+ * `SCENE_HDR_FORMAT`, cleared to the ambient light.
  *
- * The target is `halfResolution`, the same texels as the signed SDF, in
- * `SCENE_HDR_FORMAT` with an additive blend, cleared to the ambient light. The
- * lights are one instanced indirect draw per Light2D bucket (CullPass wrote
- * the counts); the vertex stage drops every light whose mask misses the
- * group's layers. A point or spot light is a quad of its range; a global or
- * directional light covers the screen. See light-accum.wgsl for the falloff,
- * the spot cone, the sun's direction and the shadow march.
- *
- * Every group has its own 256-byte uniform slice, all written once in
- * `prepare()`: a writeBuffer between the render passes of one frame would land
- * only with its last write, and every group would read it.
+ * Since round step 7 it draws the frame's light list (`deriveLightGroups`)
+ * through ONE pipeline with a premultiplied "over" blend (LIGHT_BLEND), in ONE
+ * direct instanced draw per group: instance i is the list's i-th light, so
+ * neither the cull's order nor `indirect-first-instance` reaches the lights.
+ * The vertex stage drops a light whose mask misses the group's layers; see
+ * light-accum.wgsl for the shapes, the shadows and the blend modes. The
+ * uniform slices and the list are written once, in `prepare()`: a writeBuffer
+ * between the passes of one frame would land only with its last write. The
+ * list's buffer is this stage's own: an HMR probe runs setup() then destroy().
  */
 export class LightAccumStage {
   /** WGSL shader source (`light-accum.wgsl`). Set before calling `setup()`. */
@@ -82,8 +85,13 @@ export class LightAccumStage {
   private readonly bindGroups = new Map<number, { group: GPUBindGroup; sdf: GPUTextureView }>();
   private vertexBuffer: GPUBuffer | null = null;
   private indexBuffer: GPUBuffer | null = null;
-  private indirectBuffer: GPUBuffer | null = null;
-  private columns: GPUBuffer[] = [];
+  /** The light list, `light-order`: grow-only, written once per frame in prepare(). */
+  private orderBuffer: GPUBuffer | null = null;
+  private orderCapacity = 0;
+  /** This frame's list length, set by every prepare(): a frame never draws an earlier one's list. */
+  private lightCount = 0;
+  /** The pool's columns, by binding: transforms (1), primParams (3), renderMeta (4). */
+  private columns: Array<[number, GPUBuffer]> = [];
   private device: GPUDevice | null = null;
 
   setup(device: GPUDevice, resources: ResourcePool): void {
@@ -99,19 +107,28 @@ export class LightAccumStage {
     this.indexBuffer = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
 
-    this.columns = ['entity-transforms', 'visible-indices', 'prim-params', 'render-meta'].map((name) => {
+    const columns: Array<[number, string]> = [[1, 'entity-transforms'], [3, 'prim-params'], [4, 'render-meta']];
+    this.columns = columns.map(([binding, name]) => {
       const buffer = resources.getBuffer(name);
       if (!buffer) throw new Error(`LightAccumStage.setup: missing '${name}' in ResourcePool`);
-      return buffer;
+      return [binding, buffer];
     });
-    this.indirectBuffer = resources.getBuffer('indirect-args') ?? null;
+    // Created now, so that every bind group is valid from the first frame,
+    // an empty list included.
+    this.orderCapacity = MIN_LIGHT_ORDER_CAPACITY;
+    this.orderBuffer = device.createBuffer({
+      size: this.orderCapacity * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      label: 'light-order',
+    });
 
     const vsFs = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
     this.bindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: vsFs, buffer: { type: 'uniform', minBindingSize: LIGHT_UNIFORM_SIZE } },
         { binding: 1, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // transforms
-        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, // visibleIndices
+        // The light list, read by vs_main only. 4 bytes: one u32, the least an array<u32> binds.
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage', minBindingSize: 4 } },
         { binding: 3, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // primParams
         { binding: 4, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // renderMeta
         { binding: 5, visibility: vsFs, texture: { sampleType: 'unfilterable-float' } }, // signed SDF (vs_main reads its size: directionalRay)
@@ -119,7 +136,6 @@ export class LightAccumStage {
     });
 
     const module = device.createShaderModule({ code: LightAccumStage.SHADER_SOURCE });
-    const add: GPUBlendComponent = { operation: 'add', srcFactor: 'one', dstFactor: 'one' };
     this.pipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayout] }),
       vertex: {
@@ -127,13 +143,17 @@ export class LightAccumStage {
         entryPoint: 'vs_main',
         buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }],
       },
-      fragment: { module, entryPoint: 'fs_main', targets: [{ format: SCENE_HDR_FORMAT, blend: { color: add, alpha: add } }] },
+      fragment: { module, entryPoint: 'fs_main', targets: [{ format: SCENE_HDR_FORMAT, blend: LIGHT_BLEND }] },
       primitive: { topology: 'triangle-list' },
     });
   }
 
-  /** One slice per group, written in one call. Grow-only. */
-  prepare(device: GPUDevice, frame: FrameState, groups: readonly LightGroup[]): void {
+  /**
+   * One uniform slice per group and the frame's light list, each written in
+   * one call. Both buffers grow, never shrink, and a growth drops the cached
+   * bind groups. `lightOrder`: `LightGroups.lightOrder`, slots in draw order.
+   */
+  prepare(device: GPUDevice, frame: FrameState, groups: readonly LightGroup[], lightOrder: Uint32Array<ArrayBuffer>): void {
     if (!this.pipeline) return;
     const count = Math.max(1, groups.length);
     if (!this.uniformBuffer || count > this.slices) {
@@ -155,11 +175,26 @@ export class LightAccumStage {
       new Uint32Array(data, base + 76, 1)[0] = groups[g]?.layers ?? 0;
     }
     device.queue.writeBuffer(this.uniformBuffer, 0, data);
+
+    this.lightCount = lightOrder.length;
+    if (!this.orderBuffer || lightOrder.length > this.orderCapacity) {
+      let capacity = Math.max(this.orderCapacity, MIN_LIGHT_ORDER_CAPACITY);
+      while (capacity < lightOrder.length) capacity *= 2;
+      this.orderBuffer?.destroy();
+      this.orderBuffer = device.createBuffer({
+        size: capacity * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: 'light-order',
+      });
+      this.orderCapacity = capacity;
+      this.bindGroups.clear();
+    }
+    if (lightOrder.length > 0) device.queue.writeBuffer(this.orderBuffer, 0, lightOrder);
   }
 
-  /** Clear `target` to the ambient light, then add every light of group `g`, shadowed by `sdf`. */
+  /** Clear `target` to the ambient light, then draw the frame's light list into group `g`, shadowed by `sdf`. */
   encode(encoder: GPUCommandEncoder, g: number, target: GPUTextureView, sdf: GPUTextureView, frame: FrameState): void {
-    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer || !this.indirectBuffer) return;
+    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer) return;
     const bindGroup = this.bindGroupFor(g, sdf);
     if (!bindGroup) return;
     const [r, gr, b, intensity] = frame.ambient ?? [0, 0, 0, 1];
@@ -175,19 +210,23 @@ export class LightAccumStage {
     pass.setVertexBuffer(0, this.vertexBuffer);
     pass.setIndexBuffer(this.indexBuffer, 'uint16');
     pass.setBindGroup(0, bindGroup);
-    for (const slot of LIGHT2D_ARG_SLOTS) pass.drawIndexedIndirect(this.indirectBuffer, slot * 20);
+    // Instance i is the list's i-th light, firstInstance 0 (no
+    // indirect-first-instance). WebGPU blends in primitive order: the list's
+    // order is the blend order.
+    if (this.lightCount > 0) pass.drawIndexed(6, this.lightCount, 0, 0, 0);
     pass.end();
   }
 
   private bindGroupFor(g: number, sdf: GPUTextureView): GPUBindGroup | null {
-    if (!this.device || !this.bindGroupLayout || !this.uniformBuffer || g >= this.slices) return null;
+    if (!this.device || !this.bindGroupLayout || !this.uniformBuffer || !this.orderBuffer || g >= this.slices) return null;
     const cached = this.bindGroups.get(g);
     if (cached && cached.sdf === sdf) return cached.group;
     const group = this.device.createBindGroup({
       layout: this.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer, offset: g * SLICE, size: LIGHT_UNIFORM_SIZE } },
-        ...this.columns.map((buffer, i) => ({ binding: i + 1, resource: { buffer } })),
+        ...this.columns.map(([binding, buffer]) => ({ binding, resource: { buffer } })),
+        { binding: 2, resource: { buffer: this.orderBuffer } },
         { binding: 5, resource: sdf },
       ],
     });
@@ -199,15 +238,18 @@ export class LightAccumStage {
     this.uniformBuffer?.destroy();
     this.vertexBuffer?.destroy();
     this.indexBuffer?.destroy();
+    this.orderBuffer?.destroy();
     this.uniformBuffer = null;
     this.vertexBuffer = null;
     this.indexBuffer = null;
+    this.orderBuffer = null;
+    this.orderCapacity = 0;
+    this.lightCount = 0;
     this.slices = 0;
     this.bindGroups.clear();
     this.pipeline = null;
     this.bindGroupLayout = null;
     this.columns = [];
-    this.indirectBuffer = null;
     this.device = null;
   }
 }

@@ -1,31 +1,36 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { LightAccumStage, LIGHT2D_ARG_SLOTS, SLICE } from './light-accum-stage';
+import { readFileSync } from 'node:fs';
+import { LightAccumStage, LIGHT_BLEND, MIN_LIGHT_ORDER_CAPACITY, SLICE } from './light-accum-stage';
 import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
-import { BUCKETS_PER_TYPE, TRANSPARENT_BUCKET_OFFSET } from './cull-pass';
+import { BLEND_MIX } from '../light-groups';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
 import { bindingDecls, callGraph, functionBody, functionParams, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
 import { structSize } from '../../shaders/uniform-layout';
 
-// LightAccumStage accumulates the visible Light2Ds of ONE light group into one
-// layer of the light buffer (design 2026-09-26). Every group has its own
-// 256-byte uniform slice, written once per frame: a writeBuffer between the
-// render passes of one frame would land only with its last write.
+// LightAccumStage accumulates the lights of ONE light group into one layer of
+// the light buffer (design 2026-09-26). Every group has its own 256-byte
+// uniform slice, written once per frame: a writeBuffer between the render
+// passes of one frame would land only with its last write. Since round step 7
+// every group draws the frame's ONE light list (deriveLightGroups), in one
+// direct draw, through ONE pipeline with a premultiplied "over" blend.
 
-function setUp() {
+const POOL_BUFFERS = ['entity-transforms', 'visible-indices', 'indirect-args', 'render-meta', 'prim-params'];
+
+function setUp(poolBuffers = POOL_BUFFERS) {
   const g = globalThis as Record<string, unknown>;
   g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
   g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
 
   const pipelines: GPURenderPipelineDescriptor[] = [];
-  const buffers: Array<{ size: number; usage: number; destroyed: boolean }> = [];
+  const buffers: Array<{ size: number; usage: number; label?: string; destroyed: boolean }> = [];
   const bindGroups: GPUBindGroupDescriptor[] = [];
-  const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
+  const writes: Array<{ buffer: unknown; offset: number; data: ArrayBuffer }> = [];
   const layouts: GPUBindGroupLayoutDescriptor[] = [];
   const device = {
     createBuffer: (d: GPUBufferDescriptor) => {
-      const b = { size: d.size, usage: d.usage, destroyed: false, destroy() { b.destroyed = true; } };
+      const b = { size: d.size, usage: d.usage, label: d.label, destroyed: false, destroy() { b.destroyed = true; } };
       buffers.push(b);
       return b;
     },
@@ -35,40 +40,61 @@ function setUp() {
     createRenderPipeline: (d: GPURenderPipelineDescriptor) => { pipelines.push(d); return {}; },
     createBindGroup: (d: GPUBindGroupDescriptor) => { bindGroups.push(d); return { d }; },
     queue: {
-      writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
-        writes.push({ buffer, data: data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
+      // dataOffset and size count elements for a typed array, bytes for an ArrayBuffer (WebGPU's rule).
+      writeBuffer: (buffer: unknown, offset: number, data: ArrayBuffer | ArrayBufferView, dataOffset = 0, size?: number) => {
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        const unit = data instanceof ArrayBuffer ? 1 : ((data as unknown as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1);
+        const start = dataOffset * unit;
+        writes.push({ buffer, offset, data: bytes.slice(start, size === undefined ? bytes.length : start + size * unit).buffer });
       },
     },
   } as unknown as GPUDevice;
 
   const pool = new ResourcePool();
-  for (const name of ['entity-transforms', 'visible-indices', 'indirect-args', 'render-meta', 'prim-params']) {
-    pool.setBuffer(name, { name } as unknown as GPUBuffer);
+  /** The pool's buffers, by name: the stage must never destroy one (an HMR probe runs setup() then destroy()). */
+  const poolBuffer = new Map<string, { name: string; destroyed: boolean; destroy(): void }>();
+  for (const name of poolBuffers) {
+    const b = { name, destroyed: false, destroy() { b.destroyed = true; } };
+    poolBuffer.set(name, b);
+    pool.setBuffer(name, b as unknown as GPUBuffer);
   }
   const stage = new LightAccumStage();
   stage.setup(device, pool);
   const frame = (over: Partial<FrameState> = {}) =>
     ({ canvasWidth: 800, canvasHeight: 600, cameraViewProjection: new Float32Array(16), ...over }) as FrameState;
   const uniform = () => buffers.filter((b) => (b.usage & GPUBufferUsage.UNIFORM) !== 0 && !b.destroyed).at(-1)!;
+  /** The light list's buffer: the stage's only STORAGE buffer. */
+  const list = () => buffers.filter((b) => (b.usage & GPUBufferUsage.STORAGE) !== 0 && !b.destroyed).at(-1)!;
 
   const encode = (g: number, target: GPUTextureView, sdf: GPUTextureView, f = frame()) => {
-    const passes: Array<{ desc: GPURenderPassDescriptor; draws: number[]; groups: unknown[] }> = [];
+    const passes: Array<{ desc: GPURenderPassDescriptor; draws: number[]; indexed: number[][]; groups: unknown[] }> = [];
     const encoder = {
       beginRenderPass: (desc: GPURenderPassDescriptor) => {
-        const rec = { desc, draws: [] as number[], groups: [] as unknown[] };
+        const rec = { desc, draws: [] as number[], indexed: [] as number[][], groups: [] as unknown[] };
         passes.push(rec);
         return {
           setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, end() {},
           setBindGroup: (_i: number, bg: unknown) => { rec.groups.push(bg); },
           drawIndexedIndirect: (_b: GPUBuffer, offset: number) => { rec.draws.push(offset); },
+          drawIndexed: (...args: number[]) => { rec.indexed.push(args); },
         };
       },
     } as unknown as GPUCommandEncoder;
     stage.encode(encoder, g, target, sdf, f);
     return passes[0];
   };
-  return { stage, device, pipelines, buffers, bindGroups, writes, layouts, frame, uniform, encode };
+  return { stage, device, pipelines, buffers, bindGroups, writes, layouts, pool, poolBuffer, frame, uniform, list, encode };
 }
+
+/** drawIndexed's five arguments, WebGPU's defaults filled in. */
+const direct = (args: number[]) => [args[0], args[1] ?? 1, args[2] ?? 0, args[3] ?? 0, args[4] ?? 0];
+/** The resource a recorded bind group (the mock returns { d: descriptor }) binds at `binding`. */
+const bindingOf = (bg: unknown, binding: number) =>
+  [...(bg as { d: GPUBindGroupDescriptor }).d.entries].find((e) => e.binding === binding)!.resource;
+/** A frame without lights. */
+const NO_LIGHTS = new Uint32Array(0);
+/** A frame's light list: slots in draw order. */
+const lights = (...slots: number[]) => Uint32Array.from(slots);
 
 const view = (name: string) => ({ name }) as unknown as GPUTextureView;
 const groups3 = [{ layers: 0b001, sdfSet: 0 }, { layers: 0b010, sdfSet: 1 }, { layers: 0b100, sdfSet: -1 }];
@@ -78,7 +104,7 @@ describe('LightAccumStage', () => {
 
   it('writes one 256-byte slice per group, once, with the group layers at byte 76', () => {
     const { stage, device, writes, uniform, frame } = setUp();
-    stage.prepare(device, frame({ shadowSteps: 12 }), groups3);
+    stage.prepare(device, frame({ shadowSteps: 12 }), groups3, NO_LIGHTS);
     expect(SLICE).toBe(256);
     expect(uniform().size).toBe(3 * 256);
     const mine = writes.filter((w) => w.buffer === uniform());
@@ -97,7 +123,7 @@ describe('LightAccumStage', () => {
     const sunMultiplier = Number(/(\d+)u \* u\.shadowSteps/.exec(body('sunShadow'))?.[1]);
     expect(sunMultiplier).toBe(4);
     const written = (shadowSteps: number) => {
-      stage.prepare(device, frame({ shadowSteps }), groups3);
+      stage.prepare(device, frame({ shadowSteps }), groups3, NO_LIGHTS);
       return new Uint32Array(writes.filter((w) => w.buffer === uniform()).at(-1)!.data, 64, 1)[0];
     };
     for (const s of [2 ** 30, 2 ** 31, 3 * 2 ** 30, 2 ** 30 + 5, 2 ** 32 + 7, 0x3fffffff]) {
@@ -117,68 +143,176 @@ describe('LightAccumStage', () => {
 
   it('binds slice g: offset g * 256, the 80 bytes of LightUniform', () => {
     const { stage, device, frame, bindGroups, encode } = setUp();
-    stage.prepare(device, frame(), groups3);
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
     encode(2, view('layer2'), view('sdf'));
     const entry = [...bindGroups.at(-1)!.entries].find((e) => e.binding === 0)!;
     expect(entry.resource).toMatchObject({ offset: 2 * 256, size: 80 });
   });
 
-  // Review 2026-09-26: `.transparent()` is only a blend flag, but CullPass
-  // files a light that has it under the transparent buckets (26-27), which
-  // this stage never drew, so the light lit nothing while the grouping counted
-  // it. Lights are additive: both blend modes draw the same.
-  it('clears its target to the ambient light and draws the Light2D buckets of both blend modes', () => {
+  // Round step 7: every light comes from deriveLightGroups' list, in its order
+  // (add and sub, then mix; world z back to front; external id), one DIRECT
+  // draw per group. No indirect record, so no indirect-first-instance, and
+  // `.transparent()` or a tier > 0 texture no longer moves a light later.
+  it('clears its target to the ambient light, then draws the whole list in one direct draw, firstInstance 0', () => {
     const { stage, device, frame, encode } = setUp();
-    stage.prepare(device, frame(), groups3);
+    stage.prepare(device, frame(), groups3, lights(5, 9, 2));
     const target = view('layer0');
     const pass = encode(0, target, view('sdf'), frame({ ambient: [0.2, 0.4, 0.6, 0.5] }));
     const attachment = [...pass.desc.colorAttachments][0]!;
     expect(attachment.view).toBe(target);
     expect(attachment.loadOp).toBe('clear');
     expect(attachment.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
-    expect(LIGHT2D_ARG_SLOTS).toEqual([12, 13, 26, 27]);
-    expect(pass.draws).toEqual([240, 260, 520, 540]);
+    expect(pass.draws).toEqual([]);
+    expect(pass.indexed.map(direct)).toEqual([[6, 3, 0, 0, 0]]);
   });
 
-  it('draws every slot CullPass can file a Light2D under, and only those', () => {
-    // cull.wgsl: argSlot = blendOffset + primType * BUCKETS_PER_TYPE + bucket,
-    // bucket 1 for a tier > 0 texture, blendOffset 14 for bit 8.
-    const reachable = new Set<number>();
-    for (const transparent of [false, true]) {
-      for (const texturedTier of [false, true]) {
-        reachable.add((transparent ? TRANSPARENT_BUCKET_OFFSET : 0) + 6 * BUCKETS_PER_TYPE + (texturedTier ? 1 : 0));
-      }
+  it('draws the same list into every group: the vertex stage drops a light whose mask misses the group', () => {
+    const { stage, device, frame, encode } = setUp();
+    stage.prepare(device, frame(), groups3, lights(5, 9, 2));
+    for (let g = 0; g < groups3.length; g++) {
+      expect(encode(g, view(`layer${g}`), view('sdf')).indexed.map(direct), `group ${g}`).toEqual([[6, 3, 0, 0, 0]]);
     }
-    expect(new Set(LIGHT2D_ARG_SLOTS)).toEqual(reachable);
+  });
+
+  it('an empty list still clears the layer to the ambient, and draws nothing', () => {
+    const { stage, device, frame, encode } = setUp();
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
+    const pass = encode(0, view('layer0'), view('sdf'), frame({ ambient: [0.2, 0.4, 0.6, 0.5] }));
+    expect([...pass.desc.colorAttachments][0]!.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
+    expect(pass.indexed).toEqual([]);
+    expect(pass.draws).toEqual([]);
+  });
+
+  it("never draws an earlier frame's list: a frame without lights draws none", () => {
+    const { stage, device, frame, encode } = setUp();
+    stage.prepare(device, frame(), groups3, lights(5, 9));
+    expect(encode(0, view('layer0'), view('sdf')).indexed.map(direct)).toEqual([[6, 2, 0, 0, 0]]);
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
+    const pass = encode(0, view('layer0'), view('sdf'));
+    expect(pass.indexed).toEqual([]);
+    expect(pass.draws).toEqual([]);
+  });
+
+  it('writes the list once per frame, in prepare(), at offset 0; encode() writes nothing', () => {
+    const { stage, device, frame, writes, list, encode } = setUp();
+    stage.prepare(device, frame(), groups3, lights(5, 9, 2));
+    const mine = writes.filter((w) => w.buffer === list());
+    expect(mine).toHaveLength(1);
+    expect(mine[0].offset).toBe(0);
+    expect([...new Uint32Array(mine[0].data)]).toEqual([5, 9, 2]);
+    const before = writes.length;
+    for (let g = 0; g < groups3.length; g++) encode(g, view(`layer${g}`), view('sdf'));
+    expect(writes.length).toBe(before);
+  });
+
+  it('binding 2 is the list: vertex-only read-only storage with minBindingSize 4, a stage-private buffer', () => {
+    const { stage, device, frame, layouts, list, pool, poolBuffer, encode } = setUp();
+    const entry = [...layouts[0].entries].find((e) => e.binding === 2)!;
+    expect(entry.visibility).toBe(GPUShaderStage.VERTEX);
+    expect(entry.buffer).toEqual({ type: 'read-only-storage', minBindingSize: 4 });
+    expect(pool.getBuffer('light-order')).toBeUndefined();
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
+    expect(pool.getBuffer('light-order')).toBeUndefined();
+    // Created in setup(): every bind group is valid from the first frame, an empty one included.
+    expect(list()).toMatchObject({ size: MIN_LIGHT_ORDER_CAPACITY * 4, label: 'light-order' });
+    const bound = (bindingOf(encode(0, view('t'), view('sdf')).groups[0], 2) as GPUBufferBinding).buffer;
+    expect(bound).toBe(list());
+    expect([...poolBuffer.values()]).not.toContain(bound);
+  });
+
+  it('an HMR probe on the same pool (setup(), then destroy()) leaves the live stage its own list buffer', () => {
+    // renderer.ts probes a reloaded shader with a throwaway LightGroupsPass on
+    // the LIVE pool: a list buffer registered there, or shared, would die with it.
+    const { stage, device, frame, pool, list, encode } = setUp();
+    const own = list();
+    const probe = new LightAccumStage();
+    probe.setup(device, pool);
+    probe.destroy();
+    stage.prepare(device, frame(), groups3, lights(5, 9, 2));
+    const bound = (bindingOf(encode(0, view('t'), view('sdf')).groups[0], 2) as GPUBufferBinding).buffer;
+    expect(bound).toBe(own);
+    expect(own.destroyed).toBe(false);
+    expect(pool.getBuffer('light-order')).toBeUndefined();
+  });
+
+  it('grows the list buffer to the next power of two, never shrinks it, and rebuilds the cached bind groups only when it grows', () => {
+    const { stage, device, frame, list, encode } = setUp();
+    const sdf = view('sdf');
+    stage.prepare(device, frame(), groups3, lights(1, 2, 3));
+    const small = list();
+    const first = encode(0, view('t'), sdf).groups[0];
+    stage.prepare(device, frame(), groups3, new Uint32Array(1000));
+    const big = list();
+    expect(small.destroyed).toBe(true);
+    expect(big.size).toBe(1024 * 4);
+    const grown = encode(0, view('t'), sdf).groups[0];
+    expect(grown).not.toBe(first);
+    expect((bindingOf(grown, 2) as GPUBufferBinding).buffer).toBe(big);
+    stage.prepare(device, frame(), groups3, lights(1, 2));
+    expect(list()).toBe(big);
+    expect(encode(0, view('t'), sdf).groups[0]).toBe(grown);
+  });
+
+  it('creates the list buffer STORAGE | COPY_DST, in setup() and when it grows: prepare() fills it with writeBuffer', () => {
+    // The mock writeBuffer checks no usage: without COPY_DST at either site
+    // every other test passes, and only the GPU rejects the write.
+    const { stage, device, frame, buffers } = setUp();
+    const created = () => buffers.filter((b) => b.label === 'light-order').map((b) => ({ size: b.size, usage: b.usage }));
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    expect(created()).toEqual([{ size: MIN_LIGHT_ORDER_CAPACITY * 4, usage }]);
+    stage.prepare(device, frame(), groups3, new Uint32Array(MIN_LIGHT_ORDER_CAPACITY + 1));
+    expect(created()).toEqual([{ size: MIN_LIGHT_ORDER_CAPACITY * 4, usage }, { size: MIN_LIGHT_ORDER_CAPACITY * 8, usage }]);
   });
 
   it('reuses a group bind group until its SDF view or the uniform buffer changes', () => {
     const { stage, device, frame, encode } = setUp();
-    stage.prepare(device, frame(), groups3);
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
     const sdf = view('sdf');
     const first = encode(0, view('t'), sdf).groups[0];
     expect(encode(0, view('t'), sdf).groups[0]).toBe(first);
     expect(encode(0, view('t'), view('other sdf')).groups[0]).not.toBe(first);
     // More groups: a bigger buffer, so every cached group is stale.
     const again = encode(0, view('t'), sdf).groups[0];
-    stage.prepare(device, frame(), [...groups3, { layers: 0b1000, sdfSet: -1 }]);
+    stage.prepare(device, frame(), [...groups3, { layers: 0b1000, sdfSet: -1 }], NO_LIGHTS);
     expect(encode(0, view('t'), sdf).groups[0]).not.toBe(again);
   });
 
   it('grows the uniform buffer with the groups, and never shrinks it', () => {
     const { stage, device, frame, uniform } = setUp();
-    stage.prepare(device, frame(), groups3);
+    stage.prepare(device, frame(), groups3, NO_LIGHTS);
     const big = uniform();
-    stage.prepare(device, frame(), groups3.slice(0, 1));
+    stage.prepare(device, frame(), groups3.slice(0, 1), NO_LIGHTS);
     expect(uniform()).toBe(big);
     expect(big.destroyed).toBe(false);
   });
 
-  it('blends additively into an HDR target', () => {
+  it('needs neither visible-indices nor indirect-args from the pool', () => {
+    const { stage, device, frame, encode } = setUp(['entity-transforms', 'render-meta', 'prim-params']);
+    stage.prepare(device, frame(), groups3, lights(1));
+    expect(encode(0, view('t'), view('sdf')).indexed.map(direct)).toEqual([[6, 1, 0, 0, 0]]);
+  });
+
+  it('destroy() destroys the list buffer and no pool buffer', () => {
+    const { stage, device, frame, list, poolBuffer } = setUp();
+    stage.prepare(device, frame(), groups3, lights(1, 2));
+    const mine = list();
+    stage.destroy();
+    expect(mine.destroyed).toBe(true);
+    for (const [name, b] of poolBuffer) expect(b.destroyed, name).toBe(false);
+  });
+
+  it('one pipeline, premultiplied "over" into an HDR target: rgb + dst·(1 − a), and the alpha keeps the clear value', () => {
+    // A fragment alpha of 0 (add, sub) keeps dst whole: dst + c, what
+    // {one, one} gave. Alpha w (mix): dst·(1 − w) + target·w.
     const { pipelines } = setUp();
+    expect(pipelines).toHaveLength(1);
     const target = [...(pipelines[0].fragment?.targets ?? [])][0]!;
     expect(target.format).toBe(SCENE_HDR_FORMAT);
-    expect(target.blend?.color).toEqual({ operation: 'add', srcFactor: 'one', dstFactor: 'one' });
+    expect(target.blend).toBe(LIGHT_BLEND);
+    expect(LIGHT_BLEND).toEqual({
+      color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+      alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
+    });
   });
 });
 
@@ -357,5 +491,54 @@ describe('light-accum.wgsl', () => {
 
   it('LightUniform stays 80 bytes: step 6 adds no uniform', () => {
     expect(structSize(lightShaderSource, 'LightUniform')).toBe(80);
+  });
+});
+
+describe('light-accum.wgsl: the light list and the blend modes (round step 7)', () => {
+  it('vs_main takes its light from the list by instance index; nothing reads visibleIndices', () => {
+    expect(body('vs_main')).toMatch(/let\s+e\s*=\s*lightOrder\[\s*instanceIdx\s*\]\s*;/);
+    const code = stripComments(lightShaderSource);
+    expect(code).not.toMatch(/\bvisibleIndices\b/);
+    expect(code).toMatch(/@group\(0\)\s*@binding\(2\)\s*var<storage,\s*read>\s*lightOrder\s*:\s*array<u32>\s*;/);
+    expect(bindingDecls(lightShaderSource).find((b) => b.binding === 2)?.name).toBe('lightOrder');
+    expect(reachableFrom(lightShaderSource, 'fs_main').has('lightOrder')).toBe(false);  // vertex-only, like its layout entry
+  });
+
+  it('fs_main returns (c, 0) for add and sub, and (color·w, w) for mix, w its intensity clamped to [0, 1]', () => {
+    const fs = body('fs_main');
+    const returns = [...fs.matchAll(/return\s+([^;]+);/g)].map((m) => m[1].replace(/\s+/g, ''));
+    expect(returns.sort()).toEqual(['vec4f(c,0.0)', 'vec4f(color*w,w)']);
+    expect(fs).toMatch(/let\s+w\s*=\s*clamp\(\s*intensity\s*,\s*0\.0\s*,\s*1\.0\s*\)\s*;/);
+    expect(fs).toMatch(/if\s*\(\s*blend\s*==\s*BLEND_MIX\s*\)\s*\{/);
+    expect(fs).toMatch(/if\s*\(\s*blend\s*==\s*BLEND_SUB\s*\)\s*\{\s*c\s*=\s*-c\s*;/);
+    // The add and sub arithmetic of before step 7: the over blend adds c whole.
+    expect(fs).toMatch(/var\s+c\s*=\s*color\s*\*\s*intensity\s*;/);
+    // The weight is the WHOLE intensity (decision 3: falloff × cone × shadow):
+    // the mix branch comes after the last factor, never between two of them.
+    expect(fs.indexOf('if (blend == BLEND_MIX)')).toBeGreaterThan(fs.lastIndexOf('intensity *='));
+  });
+
+  it('the blend field is read once, in fs_main, with the wire values of Rust and of the light list: a 3 blends like add', () => {
+    const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
+    const shift = Number(/pub const RENDER_META_LIGHT_BLEND_SHIFT: u32 = (\d+);/.exec(rust)?.[1]);
+    const modes = new Map([.../pub enum LightBlendMode \{([^}]*)\}/.exec(rust)![1].matchAll(/(\w+)\s*=\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
+    const code = stripComments(lightShaderSource);
+    const ids = new Map([...code.matchAll(/const\s+([A-Z_]+)\s*:\s*u32\s*=\s*(\d+)u\s*;/g)].map((m) => [m[1], Number(m[2])]));
+    expect(shift).toBe(14);
+    expect(ids.get('LIGHT_BLEND_SHIFT')).toBe(shift);
+    expect(ids.get('BLEND_SUB')).toBe(modes.get('Sub'));
+    expect(ids.get('BLEND_MIX')).toBe(modes.get('Mix'));
+    // The CPU list draws exactly what the shader mixes after everything else.
+    expect(ids.get('BLEND_MIX')).toBe(BLEND_MIX);
+    expect(code.match(/>>\s*LIGHT_BLEND_SHIFT/g)).toHaveLength(1);
+    expect(body('fs_main')).toMatch(/let\s+blend\s*=\s*\(\s*renderMeta\[e \* 2u \+ 1u\]\s*>>\s*LIGHT_BLEND_SHIFT\s*\)\s*&\s*3u\s*;/);
+    // Equality only: `>= BLEND_MIX` would mix a 3 that the list sorts with add.
+    expect(code).not.toMatch(/[<>]=?\s*BLEND_(?:MIX|SUB)\b/);
+  });
+
+  it('the header no longer says mix is added like add', () => {
+    // At HEAD the phrase breaks across two comment lines: "(added" / "// like `add`)".
+    expect(lightShaderSource.slice(0, lightShaderSource.indexOf('struct LightUniform'))).not.toMatch(/added\s+(?:\/\/\s*)?like\s+`?add/);
+    expect(lightShaderSource).toMatch(/Not yet: the `sprite` light type \(discarded\)\./);
   });
 });

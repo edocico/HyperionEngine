@@ -20,6 +20,7 @@ function makeFrame(lines?: Float32Array): FrameState {
     renderMeta: new Uint32Array(0),
     texIndices: new Uint32Array(0),
     primParams: new Float32Array(0),
+    entityIds: new Uint32Array(0),
     cameraViewProjection: new Float32Array(16),
     canvasWidth: 800,
     canvasHeight: 600,

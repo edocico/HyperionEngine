@@ -229,7 +229,7 @@ describe('the kernels declare the constants of transparent-sort-constants.ts', (
   it('the gather reads the transparent buckets of types 0-5 and nothing else', () => {
     expect(FIRST_TRANSPARENT_ARG).toBe(TRANSPARENT_BUCKET_OFFSET);
     expect(GATHER_REGIONS).toBe(6 * BUCKETS_PER_TYPE);
-    // 26/27 (Light2D) stay LightAccumStage's.
+    // Records 26/27 (transparent Light2Ds) are read by nothing since round step 7: lights are drawn from the CPU light list.
     expect(FIRST_TRANSPARENT_ARG + GATHER_REGIONS).toBe(TOTAL_DRAW_BUCKETS - BUCKETS_PER_TYPE);
   });
 

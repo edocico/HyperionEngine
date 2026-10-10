@@ -33,7 +33,7 @@ Le decisioni della §0 sono dell'utente.
 **Obiettivo.** Le primitive trasparenti di tipo 0-5 si disegnano **dal fondo al davanti per z di mondo** (`entity-bounds.z`). A parità di z sta davanti l'id più alto (D2). Senza overflow (§6.3) l'ordine è deterministico da un frame all'altro, e tutto passa in **un solo draw**.
 
 **Fuori perimetro. Queste cose non cambiano:**
-- Le pipeline opache, l'occluder, `LightAccumStage` (legge ancora i bucket 26/27), la selezione e i 28 bucket del cull. `cull.wgsl` non cambia; `CullPass` prende soltanto la costante condivisa della capacità (§6.4), con lo stesso valore.
+- Le pipeline opache, l'occluder, `LightAccumStage` (legge ancora i bucket 26/27), la selezione e i 28 bucket del cull. `cull.wgsl` non cambia; `CullPass` prende soltanto la costante condivisa della capacità (§6.4), con lo stesso valore. 🆕 Dal passo 7 del giro `LightAccumStage` disegna la lista CPU delle luci, e i bucket 26/27 non li legge più nessuno.
 - Un trasparente alla stessa z di un opaco sovrapposto resta nascosto, per il `depthCompare: 'less'` stretto. È così già oggi.
 - I trasparenti non ricevono il contorno di selezione: `SelectionSeedPass` disegna solo i bucket 0/1. È così già oggi.
 - La chiave è la z di mondo perché la camera guarda sempre lungo -Z. Una camera che ruota o prospettica richiederebbe la profondità di vista come chiave. Non esiste oggi.
@@ -486,7 +486,7 @@ Due slot, `transparent-gather` e `transparent-sort`, con probe = un `Transparent
 | `n = 1`, `n` non multiplo di 1024 | I thread inattivi attraversano ogni barriera senza contare, marcare né scrivere |
 | Visibili > B (conteggio sbagliato) | `n = B`, flag di overflow nell'header, visibile dalla readback. **L'insieme disegnato non è deterministico**: il taglio cade dentro una regione, in un punto deciso dall'ordine degli atomic del cull. È accettabile solo perché l'overflow vuol dire che il conteggio della CPU è sbagliato. Le verifiche GPU pretendono `overflow == 0` (§7.3.3) |
 | Parità di z dopo il riuso degli id | Resta davanti l'id più alto, che dopo 1 048 576 spawn cumulativi non è più per forza il più recente (D2). L'ordine resta deterministico; per ordinare gli sprite si usa `.depth()` |
-| Light2D `.transparent()` | Escluso dal gather: i bucket 26/27 restano a `LightAccumStage` |
+| Light2D `.transparent()` | Escluso dal gather: i bucket 26/27 restano a `LightAccumStage` (🆕 dal passo 7 del giro nessuno li legge: `LightAccumStage` disegna la lista CPU delle luci) |
 | Tipo ≥ 7 in `renderMeta` | Il cull lo mette già a 6 (bucket 26/27); l'uber fa lo stesso clamp e 6 → `culledVertex` |
 | Mode A | Stesso renderer nel render worker; i campi arrivano perché `rs` viene inoltrato intero. Il problema del mondo vuoto resta com'è |
 

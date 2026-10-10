@@ -5,6 +5,7 @@ import type { EntityHandle } from '../entity-handle';
 import type { HookFn } from '../game-loop';
 import { pixelCheck, fmt, fitView, frames } from './probe-checks';
 import { checkDirectional } from './lighting-directional';
+import { checkMix } from './lighting-mix';
 
 const entities: EntityHandle[] = [];
 const hooks: HookFn[] = [];
@@ -49,7 +50,7 @@ function buildPanel(onShadow: (v: number) => void, onLit: (on: boolean) => void)
 
 const section: DemoSection = {
   name: 'lighting',
-  label: 'Lighting (point / spot / directional / global, shadows, lit vs unlit)',
+  label: 'Lighting (point / spot / directional / global, add / mix, shadows, lit vs unlit)',
 
   async setup(engine: Hyperion, reporter: TestReporter) {
     const lighting = engine.lighting;
@@ -172,6 +173,11 @@ const section: DemoSection = {
     // or its checks. The view comes back before the lights start moving.
     const floor = AMBIENT.map((c, i) => c + GLOBAL_LIGHT.color[i] * GLOBAL_LIGHT.energy) as [number, number, number];
     await checkDirectional(engine, reporter, entities, floor, () => fitView(engine, 0, 0, SCENE_HALF_WIDTH));
+
+    // ── 7. The light list and the mix blend, on a sub-scene below this one ──
+    // (round step 7): M turns global for a moment, and the view comes back
+    // before the lights start moving.
+    await checkMix(engine, reporter, entities, floor, () => fitView(engine, 0, 0, SCENE_HALF_WIDTH));
 
     // ── Motion: the point light circles, the spot sweeps ──────────────
     let t = 0;

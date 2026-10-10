@@ -1,0 +1,49 @@
+{
+  "node": "v24.21.0",
+  "arch": "arm64",
+  "sink": 7800,
+  "results": [
+    {
+      "lights": 300,
+      "receivers": 1000,
+      "calls": 1000,
+      "warmup": 300,
+      "headMedianMs": 0.06585450000000037,
+      "masterMedianMs": 0.026250000000004547,
+      "deltaMs": 0.039604499999995824,
+      "pairedDeltaMedianMs": 0.039063499999983264,
+      "headP10Ms": 0.06333300000000008,
+      "headP90Ms": 0.07033300000000509,
+      "masterP10Ms": 0.026125000000007503,
+      "masterP90Ms": 0.02883299999999167
+    },
+    {
+      "lights": 1000,
+      "receivers": 1000,
+      "calls": 1000,
+      "warmup": 300,
+      "headMedianMs": 0.19970800000001532,
+      "masterMedianMs": 0.045624999999972715,
+      "deltaMs": 0.1540830000000426,
+      "pairedDeltaMedianMs": 0.15404150000000527,
+      "headP10Ms": 0.19845900000001393,
+      "headP90Ms": 0.2075000000000955,
+      "masterP10Ms": 0.0454579999999396,
+      "masterP90Ms": 0.04599999999999227
+    },
+    {
+      "lights": 10000,
+      "receivers": 1000,
+      "calls": 1000,
+      "warmup": 300,
+      "headMedianMs": 2.170375000000149,
+      "masterMedianMs": 0.22895900000003166,
+      "deltaMs": 1.9414160000001175,
+      "pairedDeltaMedianMs": 1.9396874999998772,
+      "headP10Ms": 2.15487499999972,
+      "headP90Ms": 2.2456660000000284,
+      "masterP10Ms": 0.22858300000007148,
+      "masterP90Ms": 0.24245799999994233
+    }
+  ]
+}

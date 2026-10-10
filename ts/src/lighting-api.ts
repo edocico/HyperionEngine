@@ -84,7 +84,9 @@ export interface LightingQuality {
    * amortisation. All three break frame-to-frame determinism, and all three
    * are exactly what one would reach for under performance pressure — hence a
    * flag rather than a convention. Default true. Like `cascades` it belongs to
-   * the `gi` backend, so it changes nothing yet.
+   * the `gi` backend, so it changes nothing yet. The lit backend needs none of
+   * the three, and no flag: on one device its light buffer is a function of
+   * the frame's state, every light drawn in one fixed order (round step 7).
    */
   deterministic: boolean;
 }
@@ -123,6 +125,11 @@ export class LightingAPI {
    * It also reports `shadowedGlobalLight`: a global light in view asks for
    * shadows, which the lit backend never casts from a global light (the
    * renderer warns once in dev builds).
+   *
+   * It carries the frame's light list too (round step 7): `lightOrder`, the
+   * slots of the lights the cull keeps, in the order they are drawn, and
+   * `lightIds`, their external ids (the order is described at
+   * `LightBlendMode`).
    *
    * Every distinct SDF set costs a full SDF flood — about 1.8 ms at 1080p on
    * an integrated GPU — and there is no cap, so this is where to look when a
@@ -165,11 +172,12 @@ export class LightingAPI {
 
   /**
    * The engine's ambient light: the clear colour of every light group's light
-   * buffer, the base every lit surface receives before the light entities add
-   * to it (a `sub` light takes from it). Not a `global` light, which is an
-   * entity added on top of it and limited to its layers (a per-layer ambient).
-   * Unlike every other light in the scene it is genuinely free: the clear
-   * happens anyway.
+   * buffer, the base every lit surface receives before the light entities
+   * combine into it — an `add` light adds to it, a `sub` light takes from it,
+   * a `mix` light moves it toward its own colour (`LightBlendMode`). Not a
+   * `global` light, which is an entity drawn on top of it and limited to its
+   * layers (a per-layer ambient). Unlike every other light in the scene it is
+   * genuinely free: the clear happens anyway.
    *
    * @param color `'#rrggbb'`, `'#rgb'`, or `[r, g, b]` in 0-1.
    * @param intensity Multiplier applied on the GPU side. Default 1.

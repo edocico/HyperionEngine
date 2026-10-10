@@ -31,7 +31,9 @@ Given a change (a diff range or a list of files), check each pass it touches:
    entries, read or not; going over returns an invalid pipeline without throwing.
 7. **Indirect draws.** `drawIndexedIndirect(buffer, slot * 20)`: slot + 1 within the 28-entry,
    560-byte `indirect-args`; a non-zero `firstInstance` needs the `indirect-first-instance` device
-   feature. For Light2D, LIGHT2D_ARG_SLOTS must be every slot cull.wgsl can fill (12, 13, 26, 27).
+   feature. Lights take no indirect record since round step 7: `LightAccumStage` makes one direct
+   `drawIndexed(6, k, 0, 0, 0)` per light group over its own `light-order` buffer (firstInstance 0,
+   no feature).
    The uber transparent draw is `drawIndexedIndirect(transparent-args, 0)`: its 64-byte header is
    DrawIndexedIndirect {6, n, 0, 0, 0} at word 0, DispatchIndirect {ceil(n/1024), 1, 1} at byte 20,
    raw/limit/overflow/stamp at words 8-11 — `prepare()` resets it, the gather fills it; firstInstance
@@ -61,6 +63,13 @@ Given a change (a diff range or a list of files), check each pass it touches:
     `transparent-order` and `transparent-args` are created by `createRenderer`; `entity-ids` is
     uploaded there when `entityIdsGeneration` changes, scatter frames included, and nothing in
     `execute()` may call `writeBuffer` on a buffer an earlier pass of the same submit reads.
+13. **The light list (round step 7).** `LightAccumStage` has ONE pipeline, blend `LIGHT_BLEND`
+    (colour {add, one, one-minus-src-alpha}, alpha {add, zero, one}): add or sub return alpha 0,
+    which must stay `{one, one}` bit for bit. Its `light-order` buffer is the stage's own (created
+    in `setup()`, destroyed in `destroy()`, never in the pool), grows to the next power of two,
+    never shrinks, drops the cached bind groups when it grows, and is written once, in
+    `prepare()`, which also sets the light count; binding 2 is VERTEX-only `read-only-storage`
+    with `minBindingSize: 4`.
 
 Method: read the pass, its shader and its test side by side; compute sizes and offsets explicitly
 rather than trusting comments. For each problem report file:line, the rule broken, the concrete

@@ -246,8 +246,8 @@ export function retryDeviceFeatures(requested: readonly GPUFeatureName[]): GPUFe
 export function indirectFirstInstanceWarning(deviceFeatures: ReadonlySet<string>): string | null {
   if (deviceFeatures.has('indirect-first-instance')) return null;
   return "[Hyperion] The GPU device lacks 'indirect-first-instance': indirect draws with a non-zero "
-    + 'firstInstance are no-ops, so only opaque tier-0 quads will render. Every other primitive type '
-    + 'and every transparent entity is missing.';
+    + 'firstInstance are no-ops, so only opaque quads on texture tier 0 (untextured ones included) render among '
+    + 'the opaque entities, and only they cast shadows or get an outline. Lights and transparent entities still draw.';
 }
 
 /**

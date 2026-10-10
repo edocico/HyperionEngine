@@ -1,0 +1,42 @@
+[
+  {
+    "label": "1d19575",
+    "cullPath": "subgroup",
+    "n": 2304,
+    "changed": 176,
+    "maxSteps": 1,
+    "maxAbs": 0.0009765625,
+    "lights": {
+      "first": [
+        {
+          "id": 2,
+          "slot": 2
+        },
+        {
+          "id": 3,
+          "slot": 3
+        },
+        {
+          "id": 4,
+          "slot": 4
+        }
+      ],
+      "second": [
+        {
+          "id": 2,
+          "slot": 2
+        },
+        {
+          "id": 3,
+          "slot": 3
+        },
+        {
+          "id": 4,
+          "slot": 1
+        }
+      ]
+    },
+    "permuted": true,
+    "refusals": []
+  }
+]

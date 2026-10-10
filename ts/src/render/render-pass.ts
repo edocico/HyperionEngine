@@ -5,6 +5,13 @@ export interface FrameState {
   renderMeta: Uint32Array;     // 2 u32/entity
   texIndices: Uint32Array;     // 1 u32/entity
   primParams: Float32Array;    // 8 f32/entity
+  /**
+   * Slot -> external id (`GPURenderState.entityIds`): the tie-break of the
+   * light list (`deriveLightGroups`, round step 7). The renderer passes the
+   * column as it got it; a short one is the transport bug `uploadEntityIds`
+   * warns about.
+   */
+  entityIds: Uint32Array;
   cameraViewProjection: Float32Array; // mat4x4
   canvasWidth: number;
   canvasHeight: number;

@@ -27,8 +27,10 @@ function setUp() {
   g.GPUTextureUsage ??= { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };
 
   const textures: Tex[] = [];
+  const buffers: Array<{ size: number; usage: number }> = [];
+  const writes: Array<{ buffer: unknown; data: ArrayBuffer }> = [];
   const device = {
-    createBuffer: (d: GPUBufferDescriptor) => ({ size: d.size, usage: d.usage, destroy() {} }),
+    createBuffer: (d: GPUBufferDescriptor) => { const b = { size: d.size, usage: d.usage, destroy() {} }; buffers.push(b); return b; },
     createShaderModule: () => ({}),
     createBindGroupLayout: () => ({}),
     createPipelineLayout: () => ({}),
@@ -42,7 +44,12 @@ function setUp() {
         destroy() { t.destroyed = true; },
       };
     },
-    queue: { writeBuffer() {}, writeTexture() {} },
+    queue: {
+      writeBuffer: (buffer: unknown, _o: number, data: ArrayBuffer | ArrayBufferView) => {
+        writes.push({ buffer, data: data instanceof ArrayBuffer ? data.slice(0) : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength) });
+      },
+      writeTexture() {},
+    },
   } as unknown as GPUDevice;
 
   const pool = new ResourcePool();
@@ -60,13 +67,18 @@ function setUp() {
   /** Render one frame. Returns the events: one per render pass (its target) or stage name. */
   const frame = (lightGroups: LightGroups | undefined, w = 128, h = 64, withStage = false) => {
     const f = { canvasWidth: w, canvasHeight: h, cameraViewProjection: new Float32Array(16), lightGroups } as unknown as FrameState;
-    const events: Array<{ kind: 'pass'; target: View; sdf?: View } | { kind: 'stage'; name: string }> = [];
+    const events: Array<{ kind: 'pass'; target: View; sdf?: View; indexed: number[][]; indirect: number[] } | { kind: 'stage'; name: string }> = [];
     const encoder = {
       beginRenderPass: (desc: GPURenderPassDescriptor) => {
-        const ev = { kind: 'pass' as const, target: [...desc.colorAttachments][0]!.view as unknown as View, sdf: undefined as View | undefined };
+        const ev = {
+          kind: 'pass' as const, target: [...desc.colorAttachments][0]!.view as unknown as View, sdf: undefined as View | undefined,
+          indexed: [] as number[][], indirect: [] as number[],
+        };
         events.push(ev);
         return {
-          setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, drawIndexedIndirect() {}, draw() {}, end() {},
+          setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, draw() {}, end() {},
+          drawIndexed: (...args: number[]) => { ev.indexed.push(args); },
+          drawIndexedIndirect: (_b: GPUBuffer, offset: number) => { ev.indirect.push(offset); },
           setBindGroup: (_i: number, bg: { entries: GPUBindGroupEntry[] }) => {
             const sdf = bg.entries.find((e) => e.binding === 5);
             if (sdf) ev.sdf = sdf.resource as unknown as View;
@@ -80,15 +92,19 @@ function setUp() {
   };
   const label = (v: View) => `${v.tex.desc.label}${v.d?.baseArrayLayer !== undefined ? `#${v.d.baseArrayLayer}` : ''}`;
   const passes = (events: ReturnType<typeof frame>) =>
-    events.filter((e): e is { kind: 'pass'; target: View; sdf?: View } => e.kind === 'pass');
-  return { pass, pool, textures, frame, label, passes, device };
+    events.filter((e): e is { kind: 'pass'; target: View; sdf?: View; indexed: number[][]; indirect: number[] } => e.kind === 'pass');
+  /** LightAccumStage's light-list buffer: the only STORAGE buffer the node creates. */
+  const listBuffer = () => buffers.filter((b) => (b.usage & GPUBufferUsage.STORAGE) !== 0).at(-1);
+  return { pass, pool, textures, frame, label, passes, device, writes, listBuffer };
 }
 
-function groups(gs: Array<[number, number]>, sets: number[]): LightGroups {
+/** A frame's LightGroups; `lightOrder`: the light list's slots, in draw order. */
+function groups(gs: Array<[number, number]>, sets: number[], lightOrder: number[] = []): LightGroups {
   return {
     groups: gs.map(([layers, sdfSet]) => ({ layers, sdfSet })),
     sdfSets: sets.map((occluderLayers) => ({ occluderLayers })),
     layerToGroup: [0, 0], multiBitReceiver: false, shadowedGlobalLight: false, lightMasks: [], occluderMasks: [],
+    lightOrder: Uint32Array.from(lightOrder), lightIds: Uint32Array.from(lightOrder),
   };
 }
 
@@ -150,12 +166,30 @@ describe('LightGroupsPass', () => {
     expect(sampled.d?.dimension).toBe('2d-array');
   });
 
-  it('without lightGroups, one group of every layer over one set of every caster: today\'s frame', () => {
+  it('without lightGroups, one group of every layer over one set of every caster, and no light (only tests come here)', () => {
     const { frame, label, passes } = setUp();
-    const got = passes(frame(undefined)).map((e) => label(e.target));
+    const events = passes(frame(undefined));
+    const got = events.map((e) => label(e.target));
     expect(got[0]).toBe('light-seed');
     expect(got.at(-1)).toBe('light-buffer#0');
-    expect(got.filter((l) => l.startsWith('light-buffer'))).toHaveLength(1);
+    const accum = events.filter((e) => label(e.target).startsWith('light-buffer'));
+    expect(accum).toHaveLength(1);
+    // Cleared to the ambient, nothing drawn: neither a direct draw nor the
+    // four indirect bucket draws of before step 7.
+    expect(accum[0].indexed).toEqual([]);
+    expect(accum[0].indirect).toEqual([]);
+  });
+
+  it("hands the frame's light list to every group: written once in prepare(), drawn whole into each layer", () => {
+    const { frame, label, passes, writes, listBuffer } = setUp();
+    const before = writes.length;
+    const events = frame(groups([[1, 0], [2, -1], [4, 0]], [5], [8, 3, 6, 1]));
+    const listWrites = writes.slice(before).filter((w) => w.buffer === listBuffer());
+    expect(listWrites).toHaveLength(1);
+    expect([...new Uint32Array(listWrites[0].data)]).toEqual([8, 3, 6, 1]);
+    const accum = passes(events).filter((e) => label(e.target).startsWith('light-buffer'));
+    expect(accum.map((e) => label(e.target))).toEqual(['light-buffer#0', 'light-buffer#2', 'light-buffer#1']);
+    for (const e of accum) expect(e.indexed.map((a) => a.slice(0, 2)), label(e.target)).toEqual([[6, 4]]);
   });
 
   it('no shadowed light: no seed and no flood at all', () => {

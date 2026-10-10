@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { straight, over, composite, measuredLayer, backToFront, expectedOverlap, maxChannelDiff, type Rgb } from './blend-expect';
+import {
+  straight, over, composite, measuredLayer, backToFront, expectedOverlap, maxChannelDiff, lightLayer, lightsBackToFront, expectedLight,
+  type Rgb,
+} from './blend-expect';
 
 const CLEAR: Rgb = [0.067, 0.067, 0.067];
 
@@ -97,5 +100,50 @@ describe('expectedOverlap', () => {
 describe('maxChannelDiff', () => {
   it('is the largest absolute per-channel difference, alpha ignored', () => {
     expect(maxChannelDiff([0.1, 0.5, 0.9, 1], [0.2, 0.2, 0.9, 0])).toBeCloseTo(0.3, 12);
+  });
+});
+
+// ── Lights (round step 7): LightAccumStage's premultiplied "over" blend ──────
+
+describe('lightLayer: what one light does to the light buffer at weight w', () => {
+  const below: Rgb = [0.2, 0.4, 0.6];
+
+  it('add keeps what is below and adds colour × w; sub takes it away', () => {
+    [0.7, 0.9, 0.6].forEach((v, c) => expect(over(below, lightLayer({ blend: 'add', color: [1, 1, 0], weight: 0.5 }))[c]).toBeCloseTo(v, 12));
+    [-0.3, -0.1, 0.6].forEach((v, c) => expect(over(below, lightLayer({ blend: 'sub', color: [1, 1, 0], weight: 0.5 }))[c]).toBeCloseTo(v, 12));
+  });
+
+  it('mix at weight w is straight(colour, w): below · (1 − w) + colour · w, the colour itself at w = 1', () => {
+    expect(lightLayer({ blend: 'mix', color: [2, 1, 0.5], weight: 0.25 })).toEqual(straight([2, 1, 0.5], 0.25));
+    expect(over(below, lightLayer({ blend: 'mix', color: [2, 1, 0.5], weight: 1 }))).toEqual([2, 1, 0.5]);
+    expect(over(below, lightLayer({ blend: 'mix', color: [2, 1, 0.5], weight: 0 }))).toEqual(below);
+  });
+});
+
+describe('lightsBackToFront: the light list order', () => {
+  it('add and sub before mix, whatever their depth or id', () => {
+    const lights = [
+      { blend: 'mix' as const, depth: 5, id: 1 }, { blend: 'add' as const, depth: 0, id: 9 }, { blend: 'sub' as const, depth: 1, id: 2 },
+    ];
+    expect(lightsBackToFront(lights).map((l) => l.id)).toEqual([2, 9, 1]);
+  });
+
+  it('within a class the larger depth first, then the higher id last; the input is not reordered', () => {
+    const lights = [
+      { blend: 'mix' as const, depth: 1, id: 4 }, { blend: 'mix' as const, depth: 2, id: 8 }, { blend: 'mix' as const, depth: 1, id: 3 },
+    ];
+    expect(lightsBackToFront(lights).map((l) => l.id)).toEqual([8, 3, 4]);
+    expect(lights.map((l) => l.id)).toEqual([4, 8, 3]);
+  });
+});
+
+describe('expectedLight', () => {
+  it('a full-weight mix light covers an add light nearer than it: the class comes before the depth', () => {
+    const floor: Rgb = [0.2, 0.2, 0.3];
+    const got = expectedLight(floor, [
+      { blend: 'add', depth: 0.5, id: 3, color: [0, 0.5, 0], weight: 1 },
+      { blend: 'mix', depth: 1, id: 4, color: [1, 0.25, 0.25], weight: 1 },
+    ]);
+    expect(got).toEqual([1, 0.25, 0.25]);
   });
 });

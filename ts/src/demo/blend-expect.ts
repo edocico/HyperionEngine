@@ -74,3 +74,49 @@ export function expectedOverlap(bg: Rgb, sprites: readonly SortedSprite[]): Rgb 
 export function maxChannelDiff(a: readonly number[], b: readonly number[]): number {
   return Math.max(...[0, 1, 2].map((c) => Math.abs(a[c] - b[c])));
 }
+
+// ── Lights (round step 7) ────────────────────────────────────────────────────
+// LightAccumStage blends every light with ONE premultiplied "over":
+// rgb + dst · (1 − a). An add light returns (c·w, 0), a sub one (−c·w, 0), a
+// mix one (c·w, w), c its colour × energy and w its weight (its intensity) at
+// the texel. The light list draws add and sub before mix, then back to front.
+
+/** A light's blend mode, as LightBlendMode in entity-handle.ts. */
+export type LightBlend = 'add' | 'sub' | 'mix';
+
+/** A light as the light list orders it, and its colour × energy and weight at one texel. */
+export interface ExpectedLight {
+  readonly blend: LightBlend;
+  /** A root 2D light's depth: its world z is -depth (a child's composes its parents'). */
+  readonly depth: number;
+  readonly id: number;
+  readonly color: Rgb;
+  readonly weight: number;
+}
+
+/** What one light does to the light buffer: add and sub keep it and add ±c·w, mix is straight(c, w). */
+export function lightLayer(light: Pick<ExpectedLight, 'blend' | 'color' | 'weight'>): Layer {
+  if (light.blend === 'mix') return straight(light.color, light.weight);
+  const s = light.blend === 'sub' ? -light.weight : light.weight;
+  return { keep: [1, 1, 1], add: [light.color[0] * s, light.color[1] * s, light.color[2] * s] };
+}
+
+/**
+ * The light list's order, written apart from the engine's comparator
+ * (render/light-groups.ts) so that a wrong key there cannot pass here too: add
+ * and sub before mix, then the larger depth first (back to front), then the
+ * higher id last.
+ */
+export function lightsBackToFront<T extends { blend: LightBlend; depth: number; id: number }>(lights: readonly T[]): T[] {
+  const cls = (l: T): number => (l.blend === 'mix' ? 1 : 0);
+  return [...lights].sort((a, b) => (cls(a) - cls(b)) || (b.depth - a.depth) || (a.id - b.id));
+}
+
+/**
+ * The light buffer where `lights` reach, over `base`: the ambient and every
+ * add or sub light not in `lights` (a mix light left out would be drawn among
+ * them, by its depth, not under them).
+ */
+export function expectedLight(base: Rgb, lights: readonly ExpectedLight[]): Rgb {
+  return composite(base, lightsBackToFront(lights).map(lightLayer));
+}

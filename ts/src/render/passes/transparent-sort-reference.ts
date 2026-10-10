@@ -52,21 +52,12 @@ import {
   TILE,
   TILES_OFFSET,
   WORKGROUP_SIZE,
+  sortableZBits,
 } from './transparent-sort-constants';
 
-// ── Keys ─────────────────────────────────────────────────────────────────────
+export { sortableZBits };
 
-/**
- * The z key (design §5.1), from the bits of `entity-bounds[slot].z` as the
- * gather computes it: -0 becomes +0 by an integer compare (no float operation
- * touches z), then the flip that makes unsigned order follow float order — a
- * negative z has every bit inverted, a positive one gets the sign bit set.
- */
-export function sortableZBits(bits: number): number {
-  let zb = bits >>> 0;
-  if (zb === 0x80000000) zb = 0;
-  return ((zb & 0x80000000) !== 0 ? ~zb : zb | 0x80000000) >>> 0;
-}
+// ── Keys ─────────────────────────────────────────────────────────────────────
 
 /** The 8-bit digit of pass `pass`: passes 0-2 read `lo` (the id), 3-6 read `hi` (the z key). */
 export function digitOf(lo: number, hi: number, pass: number): number {

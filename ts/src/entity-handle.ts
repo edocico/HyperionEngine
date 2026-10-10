@@ -26,8 +26,10 @@ export const enum RenderPrimitiveType {
   BoxShadow = 5,
   /**
    * A 2D light. The one primitive type the ForwardPass never draws — no shader
-   * is registered for it, so the per-type pipeline loop never finds it and
-   * `LightAccumStage` (inside LightGroupsPass) reads its draw bucket directly.
+   * is registered for it, so the per-type pipeline loop never finds it.
+   * `LightAccumStage` (inside LightGroupsPass) draws every light in view from
+   * the frame's light list, which `deriveLightGroups` builds on the CPU (round
+   * step 7), not from the cull's buckets.
    */
   Light2D = 6,
 }
@@ -45,11 +47,15 @@ export const enum RenderPrimitiveType {
  *   appear at the edge the light comes from as the view pans. A shadowed sun
  *   marches every texel of the light buffer once per light group its layers
  *   reach.
- * - `global`: a uniform light over the layers in its mask, added on top of
- *   `engine.lighting.setAmbient()` (a masked one is a per-layer ambient). No
- *   position, no direction and no shadows in the lit backend:
- *   `shadowIntensity` is ignored (the renderer warns once in dev builds). Use
- *   `directional` for a sun.
+ * - `global`: a uniform light over the layers in its mask, combined with
+ *   `engine.lighting.setAmbient()` by its blend mode: added on top of it by
+ *   default (a masked one is a per-layer ambient), while with blend `'mix'`
+ *   it sets its layers to its `color` × `energy` (as half float, over a
+ *   finite buffer: see {@link LightBlendMode} for a texel that is not),
+ *   replacing the ambient and every `add` or `sub` light there. No position,
+ *   no direction and no shadows in the lit backend: `shadowIntensity` is
+ *   ignored (the renderer warns once in dev builds). Use `directional` for a
+ *   sun.
  * - `sprite`: not drawn yet.
  *
  * The axis of a spot or directional light is its local +x in world space, and
@@ -62,7 +68,35 @@ export const enum RenderPrimitiveType {
  */
 export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
 
-/** How a light combines into the accumulation buffer. */
+/**
+ * How a light combines into the light buffer of its layers, which every frame
+ * starts at the ambient light (`engine.lighting.setAmbient()`). With `c` the
+ * light's `color` × `energy` and `w` its intensity at a pixel (the attenuation
+ * (1 − d/range)^falloff × spot cone × shadow, from 0 to 1; the shadow alone
+ * for a directional light, 1 for a global light):
+ * - `add` (the default): buffer + c·w.
+ * - `sub`: buffer − c·w. Nothing clamps the buffer at 0: where `sub` lights
+ *   take more than there is, it goes negative (a lit sprite shows 0 in those
+ *   channels), and a `mix` light drawn later starts from that negative value.
+ * - `mix`: buffer·(1 − w) + c·w, toward the light's colour by its intensity.
+ *   Where `w` is 1 the buffer becomes exactly `c` (as half float) over a
+ *   finite buffer: the light replaces the ambient and every `add` or `sub`
+ *   light under it. A texel that already holds a NaN, or an infinity (an
+ *   `add` light or a sum of lights past half-float range, 65504, on hardware
+ *   that rounds to infinity), gives c + dst·0 = NaN: a mix does not clear it.
+ *   `energy` scales the colour it moves toward, not how far it moves.
+ *
+ * The order (round step 7): every `add` and `sub` light first, then every
+ * `mix` light; within each class back to front by world z (a root 2D light's
+ * z is −{@link EntityHandle.depth}, so the larger depth first, and a child's
+ * is its world z, its depth composed with its parents'; a root 3D light's is
+ * its `position()` z, a child's its world z), then by external id, the higher
+ * id last, so on top (the newest light only while ids are fresh, as for
+ * transparent sprites). `add` and `sub` lights commute up to rounding in the
+ * half-float buffer (a few steps where several overlap): the order decides
+ * which `mix` light ends on top. It comes from the ECS state alone, never from
+ * the GPU's culling, so a still scene lights the same from frame to frame.
+ */
 export type LightBlendMode = 'add' | 'sub' | 'mix';
 
 /**
@@ -74,7 +108,10 @@ const LIGHT_TYPE_IDS: Record<LightType, number> = {
   point: 0, spot: 1, directional: 2, global: 3, sprite: 4,
 };
 
-/** Wire values for `renderMeta` bits 14-15. */
+/**
+ * Wire values for `renderMeta` bits 14-15. 3 is unclaimed: Rust keeps it as
+ * sent, and the light list and `light-accum.wgsl` sort and draw it like `add`.
+ */
 const LIGHT_BLEND_IDS: Record<LightBlendMode, number> = { add: 0, sub: 1, mix: 2 };
 
 /**
@@ -102,7 +139,9 @@ export interface LightOptions {
    * `Float32Array` write: 1e39 is finite in JS, not in f32), and Rust rejects
    * a non-finite `SetPrimParams0` whole, so the light loses its colour too and
    * lights nothing.
-   * - `point`, `spot`: the light's radius, which is also its culling radius.
+   * - `point`, `spot`: the light's radius, which is also its culling radius:
+   *   a light whose z is more than `range` outside the camera's near-far span
+   *   lights nothing (see {@link EntityHandle.light}).
    * - `directional`: the length of its shadows, which fade out toward the end
    *   (0 or less casts none, `-Infinity` included; `Infinity` casts endless
    *   ones). Sent clamped to the finite f32 range, so any number but NaN
@@ -132,7 +171,10 @@ export interface LightOptions {
    * warning, once). See {@link EntityHandle.shadows}.
    */
   shadowIntensity?: number;
-  /** Default `'add'`. */
+  /**
+   * How the light combines into its layers' light buffer, and when it is
+   * drawn: see {@link LightBlendMode}. Default `'add'`.
+   */
   blend?: LightBlendMode;
   /** The layers this light lights (see `lightLayers()`). Default `0xffff` (all). 0 lights nothing. */
   layers?: number;
@@ -343,8 +385,14 @@ export class EntityHandle implements Disposable {
    * by world z. At the SAME depth, two overlapping OPAQUE sprites are drawn in
    * no defined order; two transparent ones by id, the higher id in front (the
    * newest entity only while ids are fresh); an opaque one hides a transparent
-   * one. Give sprites different depths to order them. On a 3D entity, which takes its
-   * z from `position()`, it is ignored (a warning in dev builds). Returns `this`.
+   * one. Give sprites different depths to order them. On a 2D light it orders
+   * the light list (round step 7): within a blend class the larger depth is
+   * drawn first and the smaller one on top, the higher id at equal depths (see
+   * {@link LightBlendMode}); a point or spot light whose world depth (its own,
+   * composed with its parents' for a child) is outside −1 − range to
+   * 1000 + range (the default camera) is culled and lights nothing. On a 3D
+   * entity, which takes its z from `position()`, it is ignored (a warning in
+   * dev builds). Returns `this`.
    */
   depth(d: number): this {
     this.check();
@@ -356,7 +404,9 @@ export class EntityHandle implements Disposable {
   /**
    * Mark entity as transparent: alpha-blended, drawn after the opaque ones,
    * with no depth write, back to front by world z (at equal z the higher id
-   * is in front). Returns `this`.
+   * is in front). On a light it changes nothing on screen: every light is
+   * drawn from one list, in the order of {@link LightBlendMode} (round step
+   * 7). Returns `this`.
    */
   transparent(): this {
     this.check();
@@ -579,11 +629,24 @@ export class EntityHandle implements Disposable {
    * Turn this entity into a 2D light.
    *
    * A light is an ordinary ECS entity, so it inherits position, hierarchy
-   * (a torch parented to a character), spawn/despawn, GPU frustum culling,
+   * (a torch parented to a character), spawn/despawn, frustum culling (for a
+   * light, the cull's test, run on the CPU by the light list, round step 7),
    * snapshot and replay for free — which is why a point or spot light's
    * `range` also drives its culling radius rather than needing a separate
    * call (global and directional lights light the whole view and are never
    * culled). Aim a spot or a sun with `rotation()` (see {@link LightType}).
+   *
+   * Lights are drawn in one fixed order, described at {@link LightBlendMode}:
+   * `add` and `sub` first, then `mix`, each back to front by world z, then by
+   * id. A light's z orders and culls it, and never moves what it lights: a
+   * root 2D light's z is −{@link EntityHandle.depth}, a child's its world z
+   * (its depth composed with its parents'); a root 3D light's is the z of
+   * `position()`, a child's its world z. Like any entity, a point or spot
+   * light is culled, and lights nothing, when that world z is more than
+   * `range` outside the camera's near-far span: with the default camera a 2D
+   * light's world depth must stay within [−1 − range, 1000 + range], a 3D
+   * light's world z within [−1000 − range, 1 + range]. Global and directional
+   * lights are never culled.
    *
    * `color` and `energy` stay separate here on purpose. The GPU buffer gets
    * them premultiplied (that is what frees a `primParams` slot for

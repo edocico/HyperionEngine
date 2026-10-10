@@ -229,4 +229,24 @@ describe('LightingAPI — groups (light layers)', () => {
     expect(groups.shadowedGlobalLight).toBe(true);
     expect(groups.sdfSets).toEqual([]);
   });
+
+  it("reports the light list in draw order, keyed by the render state's entity ids (round step 7)", () => {
+    const MIX = 2;  // LightBlendMode::Mix, at bits 14-15 (light-groups.test.ts ties both to Rust)
+    const renderMeta = new Uint32Array([
+      0, (LIGHT | (MIX << 14) | (0xffff << 16)) >>> 0, // slot 0: mix at z 0, id 5
+      0, (LIGHT | (0xffff << 16)) >>> 0,                // slot 1: add at z 0.5, id 9
+      0, (LIGHT | (0xffff << 16)) >>> 0,                // slot 2: add at z 0, id 2
+    ]);
+    const bounds = new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 1, 0, 0, 0, 1]);
+    const rs = emptyRenderState({ entityCount: 3, renderMeta, bounds, primParams: new Float32Array(24), entityIds: new Uint32Array([5, 9, 2]) });
+    const groups = withState(rs, () => view).groups!;
+    expect([...groups.lightOrder]).toEqual([2, 1, 0]);
+    expect([...groups.lightIds]).toEqual([2, 9, 5]);
+  });
+
+  it("orders by slot when the render state has no id column (makeRenderState's default)", () => {
+    const renderMeta = new Uint32Array([0, (LIGHT | (0xffff << 16)) >>> 0, 0, (LIGHT | (0xffff << 16)) >>> 0]);
+    const rs = emptyRenderState({ entityCount: 2, renderMeta, bounds: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1]), primParams: new Float32Array(16) });
+    expect([...withState(rs, () => view).groups!.lightIds]).toEqual([0, 1]);
+  });
 });

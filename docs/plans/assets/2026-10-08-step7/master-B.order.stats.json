@@ -1,0 +1,124 @@
+[
+  {
+    "label": "1d19575",
+    "K": 3,
+    "apart": 1,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      1.1904296875,
+      1.662109375,
+      1.435546875,
+      1
+    ],
+    "list": null,
+    "lights": [
+      {
+        "id": 6,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 7,
+        "slot": 2,
+        "workgroup": 0
+      },
+      {
+        "id": 8,
+        "slot": 3,
+        "workgroup": 0
+      }
+    ],
+    "minSlotDistance": 1,
+    "refusals": []
+  },
+  {
+    "label": "1d19575",
+    "K": 3,
+    "apart": 256,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 6,
+    "overflow": false,
+    "changedReads": 136,
+    "unstablePoints": 270,
+    "maxSteps": 1,
+    "centre": [
+      1.1904296875,
+      1.6611328125,
+      1.435546875,
+      1
+    ],
+    "list": null,
+    "lights": [
+      {
+        "id": 10,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 266,
+        "slot": 257,
+        "workgroup": 1
+      },
+      {
+        "id": 522,
+        "slot": 513,
+        "workgroup": 2
+      }
+    ],
+    "minSlotDistance": 256,
+    "refusals": []
+  },
+  {
+    "label": "1d19575",
+    "K": 4,
+    "apart": 1024,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 8,
+    "overflow": true,
+    "changedReads": 140,
+    "unstablePoints": 340,
+    "maxSteps": 2,
+    "centre": [
+      1.736328125,
+      2.14453125,
+      1.646484375,
+      1
+    ],
+    "list": null,
+    "lights": [
+      {
+        "id": 524,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 1548,
+        "slot": 1025,
+        "workgroup": 4
+      },
+      {
+        "id": 2572,
+        "slot": 2049,
+        "workgroup": 8
+      },
+      {
+        "id": 3596,
+        "slot": 3073,
+        "workgroup": 12
+      }
+    ],
+    "minSlotDistance": 1024,
+    "refusals": []
+  }
+]

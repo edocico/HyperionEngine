@@ -1,0 +1,266 @@
+[
+  {
+    "label": "83a9b9d",
+    "K": 3,
+    "apart": 1,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      1.1904296875,
+      1.662109375,
+      1.435546875,
+      1
+    ],
+    "list": {
+      "lightOrder": [
+        1,
+        2,
+        3
+      ],
+      "lightIds": [
+        1,
+        2,
+        3
+      ]
+    },
+    "lights": [
+      {
+        "id": 1,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 2,
+        "slot": 2,
+        "workgroup": 0
+      },
+      {
+        "id": 3,
+        "slot": 3,
+        "workgroup": 0
+      }
+    ],
+    "minSlotDistance": 1,
+    "refusals": []
+  },
+  {
+    "label": "83a9b9d",
+    "K": 3,
+    "apart": 256,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      1.1904296875,
+      1.662109375,
+      1.435546875,
+      1
+    ],
+    "list": {
+      "lightOrder": [
+        1,
+        257,
+        513
+      ],
+      "lightIds": [
+        5,
+        261,
+        517
+      ]
+    },
+    "lights": [
+      {
+        "id": 5,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 261,
+        "slot": 257,
+        "workgroup": 1
+      },
+      {
+        "id": 517,
+        "slot": 513,
+        "workgroup": 2
+      }
+    ],
+    "minSlotDistance": 256,
+    "refusals": []
+  },
+  {
+    "label": "83a9b9d",
+    "K": 4,
+    "apart": 1024,
+    "blend": "add",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      1.736328125,
+      2.146484375,
+      1.6474609375,
+      1
+    ],
+    "list": {
+      "lightOrder": [
+        1,
+        1025,
+        2049,
+        3073
+      ],
+      "lightIds": [
+        519,
+        1543,
+        2567,
+        3591
+      ]
+    },
+    "lights": [
+      {
+        "id": 519,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 1543,
+        "slot": 1025,
+        "workgroup": 4
+      },
+      {
+        "id": 2567,
+        "slot": 2049,
+        "workgroup": 8
+      },
+      {
+        "id": 3591,
+        "slot": 3073,
+        "workgroup": 12
+      }
+    ],
+    "minSlotDistance": 1024,
+    "refusals": []
+  },
+  {
+    "label": "83a9b9d",
+    "K": 3,
+    "apart": 256,
+    "blend": "mix",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      0.25,
+      0.5,
+      1,
+      1
+    ],
+    "list": {
+      "lightOrder": [
+        1,
+        257,
+        513
+      ],
+      "lightIds": [
+        3593,
+        3849,
+        4105
+      ]
+    },
+    "lights": [
+      {
+        "id": 3593,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 3849,
+        "slot": 257,
+        "workgroup": 1
+      },
+      {
+        "id": 4105,
+        "slot": 513,
+        "workgroup": 2
+      }
+    ],
+    "minSlotDistance": 256,
+    "refusals": []
+  },
+  {
+    "label": "83a9b9d",
+    "K": 4,
+    "apart": 1024,
+    "blend": "mix",
+    "reads": 240,
+    "cullPath": "subgroup",
+    "distinctGrids": 1,
+    "overflow": false,
+    "changedReads": 0,
+    "unstablePoints": 0,
+    "maxSteps": 0,
+    "centre": [
+      1,
+      0.875,
+      0.25,
+      1
+    ],
+    "list": {
+      "lightOrder": [
+        1,
+        1025,
+        2049,
+        3073
+      ],
+      "lightIds": [
+        4107,
+        5131,
+        6155,
+        7179
+      ]
+    },
+    "lights": [
+      {
+        "id": 4107,
+        "slot": 1,
+        "workgroup": 0
+      },
+      {
+        "id": 5131,
+        "slot": 1025,
+        "workgroup": 4
+      },
+      {
+        "id": 6155,
+        "slot": 2049,
+        "workgroup": 8
+      },
+      {
+        "id": 7179,
+        "slot": 3073,
+        "workgroup": 12
+      }
+    ],
+    "minSlotDistance": 1024,
+    "refusals": []
+  }
+]

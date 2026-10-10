@@ -218,7 +218,7 @@ finalOutput = _HDREmulationScale * (color * finalModulate + finalAdditve);
 
 - ✅ **Nessun limite al numero di luci per oggetto.** La sovrapposizione diventa fill rate, non branching.
 - ✅ Il costo per luce è **fill rate sull'area coperta**, indipendente da quanti sprite illumina — l'opposto di A.
-- ✅ In Unity la **luce globale è letteralmente il clear color** del light buffer: costa zero. (In Hyperion il clear è l'ambient del motore, `setAmbient`; una luce `global` è un'entità additiva e mascherata, un ambient per layer, e nel backend `lit` non proietta ombre.)
+- ✅ In Unity la **luce globale è letteralmente il clear color** del light buffer: costa zero. (In Hyperion il clear è l'ambient del motore, `setAmbient`; una luce `global` è un'entità mascherata, additiva di default (un ambient per layer) e sostitutiva col blend `mix` (passo 7), e nel backend `lit` non proietta ombre.)
 - ✅ Half-res dimezza il costo con perdita accettabile: Unity lo documenta come *"good performance with almost no noticeable artifact in most situations"*.
 - ⚠️ Vincolo dal sorgente Unity: *"Normals and Light textures have to be of the same renderTextureScale, to prevent any sampling artifacts"*.
 - ❌ Perde i dettagli fini della luce sui bordi.
@@ -362,6 +362,8 @@ Due letture:
                     out = albedo * (ambient + light)
 ```
 
+> 🆕 **Passo 7 del giro.** Nel backend `lit` le luci si fondono con un «over» premoltiplicato, dalla lista che `deriveLightGroups` costruisce sulla CPU (§7.3): add e sub restituiscono alpha 0, al bit come il blend additivo del diagramma, un `mix` (colore·w, w).
+
 **Primo punto di unificazione:** entrambi i backend producono **la stessa risorsa finale**, `light-buffer` (`rgba16float`, risoluzione ridotta). Il `ForwardPass` non sa quale backend è attivo. Cambiare backend è un `rebuildGraph()`, non una modifica agli shader.
 
 **Secondo punto di unificazione:** entrambi consumano `scene-sdf`. Il costo del JFA è pagato una volta sola.
@@ -373,7 +375,7 @@ Due letture:
 | Elemento | Perché regge |
 |---|---|
 | **Luce = entità ECS** | `Position` è già `Vec3`, `Rotation` è già `Quat`. Una point light 3D è la stessa entità con una z diversa. Gerarchia, spawn/despawn, snapshot, replay funzionano identici |
-| **Culling delle luci via `CullPass`** | Il test è già sfera-frustum su 6 piani in 3D. Con una camera prospettica funziona **così com'è**, senza una riga di modifica |
+| **Culling delle luci** | Il test è sfera-frustum su 6 piani in 3D da entrambi i lati: nel cull GPU (`CullPass`) e, dal passo 7 del giro, nella lista delle luci sulla CPU (`deriveLightGroups`), che decide quali luci il frame disegna, con la stessa formula sugli stessi piani (`extractFrustumPlanes`); il `CullPass` archivia ancora le luci nei bucket del tipo 6, che nessuno legge. Con una camera prospettica funziona **così com'è** da entrambi i lati, senza una riga di modifica |
 | **Il pattern "backend intercambiabile"** | È esattamente il meccanismo con cui si aggiungerebbe `clustered` come terzo backend |
 | **Il protocollo dei comandi** | `SetPrimParams0/1` e i bit di `renderMeta` sono agnostici rispetto alla dimensionalità |
 | **HDR + tonemap + bloom** | Prerequisito comune a 2D e 3D |
@@ -422,7 +424,9 @@ Una luce è un'entità con `RenderPrimitive(6)`. Non un oggetto in una lista sep
 
 Il culling gratuito è più importante di quanto sembri: una mappa con 5.000 torce paga solo le ~50 sullo schermo, e la logica esiste già.
 
-**Costo strutturale:** `indirect-args` passa da 24 a 28 bucket (7 tipi × 2 × 2), da 480 a 560 byte; `visible-indices` da 9,6 a 11,2 MB. Tre dei quattro bucket del tipo 6 restano inutilizzati. È **spreco uniforme** che non introduce casi speciali in `cull.wgsl` e non rompe il check #4 di `wgsl-validator`.
+> 🆕 **Dal passo 7 del giro** quel test sfera-frustum gira sulla CPU, nella lista delle luci di `deriveLightGroups`, ed è lui a decidere quali luci si disegnano; il `CullPass` archivia ancora le luci nei bucket del tipo 6, che nessuno legge più.
+
+**Costo strutturale:** `indirect-args` passa da 24 a 28 bucket (7 tipi × 2 × 2), da 480 a 560 byte; `visible-indices` da 9,6 a 11,2 MB. Tre dei quattro bucket del tipo 6 restano inutilizzati (🆕 dal passo 7 del giro nessuno legge i quattro bucket del tipo 6: `LightAccumStage` disegna la lista CPU). È **spreco uniforme** che non introduce casi speciali in `cull.wgsl` e non rompe il check #4 di `wgsl-validator`.
 
 **Le luci non vengono disegnate dal ForwardPass**: basta non registrare uno shader per `primType 6` in `SHADER_SOURCES`. Il loop `for (const [primType, pipeline] of this.pipelines)` semplicemente non le trova.
 
@@ -549,12 +553,14 @@ JFAPass ×N          → sdf-iter-0..N    │  JFAPass invariato
   ↓ scene-sdf                          │
 LightCullPass       → tile-light-list ─┘  compute, tile 16×16 (opzionale)
   ↓
-LightAccumPass      → light-buffer        render, blend additivo
+LightAccumPass      → light-buffer        render, «over» premoltiplicato (passo 7)
   ↓
 ForwardPass         → scene-hdr           legge light-buffer via @group(2)
   ↓
 BloomPass / FXAATonemapPass → swapchain
 ```
+
+> 🆕 **Passo 7 del giro.** L'accumulo (oggi `LightAccumStage`, dentro `LightGroupsPass`) non legge più `visible-indices` né i bucket del tipo 6: disegna la lista CPU delle luci, con un «over» premoltiplicato (§7.3).
 
 Nessun pass di illuminazione scrive `swapchain` o `scene-hdr`: il vincolo "un solo writer per risorsa" è rispettato.
 
@@ -566,15 +572,15 @@ Tile 16×16 (`@workgroup_size(16,16)` = 256 invocazioni, esattamente il default 
 
 ### 7.3 `LightAccumPass` (render)
 
-Target: `light-buffer`, `rgba16float`, **metà risoluzione per asse**. Blend `{operation:'add', srcFactor:'one', dstFactor:'one'}` — renderabile e blendabile in **core**.
+Target: `light-buffer`, `rgba16float`, **metà risoluzione per asse**. Blend «over» premoltiplicato, colore `{add, one, one-minus-src-alpha}` e alpha `{add, zero, one}` (dal passo 7; prima `{one, one}`, che l'«over» con alpha 0 riproduce al bit) — renderabile e blendabile in **core**.
 
-**Clear color = l'ambient del motore** (`setAmbient`), per ogni gruppo: costa zero. Una luce `global` non è il clear: è un quad a schermo intero additivo e mascherato (un ambient per layer), e nel backend `lit` non proietta ombre.
+**Clear color = l'ambient del motore** (`setAmbient`), per ogni gruppo: costa zero. Una luce `global` non è il clear: è un quad a schermo intero mascherato, additivo di default (un ambient per layer) e sostitutivo col blend `mix`, e nel backend `lit` non proietta ombre.
 
-Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (`drawIndexedIndirect` sul bucket del tipo 6 — l'`instanceCount` l'ha già scritto il `CullPass`). Nel fragment, per ciascun pixel:
+Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (dal passo 7 una `drawIndexed` diretta per gruppo sulla lista che `deriveLightGroups` ordina sulla CPU; prima una `drawIndexedIndirect` per bucket del tipo 6). Nel fragment, per ciascun pixel:
 
 1. Attenuazione radiale/conica dai parametri della luce.
 2. Se `shadowIntensity > 0`: **sphere marching sulla SDF** dal pixel verso il centro della luce.
-3. Blend mode (Add / Sub / Mix) in-shader.
+3. Blend mode in-shader, sotto l'unico «over» della pipeline: Add (c, 0), Sub (−c, 0), Mix (colore·w, w) con w = intensità (passo 7, nota sotto).
 4. Il `lightMask` si applica in lettura, nel ForwardPass (§7.4).
 
 > 🆕 **Corretto 2026-09-26: così non si può.** Un unico buffer in screen-space ha già sommato tutte le luci, e il ForwardPass non ha più modo di separarle per layer. La maschera è implementata con **un light buffer per gruppo di layer**, come i batch di sorting layer di Unity 2D: `deriveLightGroups` forma i gruppi a ogni frame dai valori di maschera in vista, e `LightGroupsPass` (un solo nodo del grafo, set-major) accumula ogni gruppo nel proprio layer di un `2d-array`. Anche le ombre sono per layer: un occluder manca dalla SDF dei gruppi che non ombreggia. Spec: `2026-09-26-phase17-light-layer-groups-design.md`.
@@ -600,6 +606,8 @@ ph = h;
 > 🆕 **Implementato 2026-09-26, con due correzioni misurate.** Resta il termine originale `h/t` (non Aaltonen), ma confrontato con l'angolo **reale** della luce: `min(1/k, sourceRadius / D)`. Con `k` da solo la luce ha un raggio che cresce con la distanza del pixel (`D/k`). Una luce accanto a un muro oscurava così anche il lato aperto, del 23-42% e a bande radiali. Inoltre un pixel dentro un occluder prima ne esce, poi marcia, e la penombra si misura dal punto d'uscita. Infine un raggio che finisce i passi estrapola l'ultima distanza libera fino alla luce. Dettagli in `light-accum.wgsl` e nei commit `2c77d87` e `1675a92`. Il budget di default è **48 passi**, non 16-32: a 24 i raggi che radono una faccia finivano i passi e facevano filtrare luce dietro i muri, mentre 48 costa il 2% in più di `light-accum` (commit `0815e58`).
 
 > 🆕 **Ombre directional, passo 6 del giro (implementate 2026-10-04 e 2026-10-05).** Una luce directional splende verso il suo asse +x locale (`lightFacing`, lo stesso helper dello spot): `rotation(-Math.PI/2)` la fa splendere verso il basso dello schermo, perché il mondo è y-up. `vs_main` calcola il raggio verso la luce in texel dell'SDF (a ogni vertice, uguale per tutti i vertici della luce; proiezione come vettore, w = 0, esatta perché il motore costruisce solo camere ortografiche) e la lunghezza dell'ombra, il `range` della luce in texel. Il fragment marcia (`sunShadow`) fino a min(range, uscita dall'SDF), e oltre l'SDF conta come illuminato: la lettura clampata ripeterebbe il bordo all'infinito, e la regola dei passi finiti, estrapolata all'infinito, darebbe 0. L'angolo è fisso, `u.sourceFraction`: 0,02 rad (circa 1,15°), la larghezza della penombra per unità di distanza, cioè circa il **diametro** angolare della sorgente; è l'angolo di ogni point al bordo del suo range (1/k = 0,125 rad sarebbe 13 volte il diametro del sole vero, 0,0093 rad). Un caster a distanza t dal pixel ombreggia a forza piena fino a 3/4 del range, poi sfuma con una smoothstep fino a 0. Il sole marcia con un budget di passi quadruplo, `4u * u.shadowSteps` (192 al default di 48; sotto-decisione 2 (b) del proprietario): i raggi di un sole allineato agli assi strisciano lungo le facce dei caster parallele a loro per tutta la loro lunghezza, 1-2 texel a passo. Resta un residuo per i caster lunghi più di circa 7 unità (a 1080p, zoom 1) lungo quei raggi: a `rotation(0)` circa lo 0,1 % del light buffer della scena del banco del passo 6 sbaglia di più di 0,1 del sole (`assets/2026-09-30-step6/grid-x4-m2.json`). Un caster fuori schermo non proietta nulla; la comparsa al bordo dal lato del sole è al §17, punto 1. Le luci `global` non proiettano ombre nel backend `lit`. Costo nel §13.2; A/B dell'angolo in `assets/2026-09-30-step6/penumbra-ab-m2.json`.
+
+> 🆕 **Una lista per tutte le luci e il blend `mix`, passo 7 del giro (2026-10-08).** Ogni Light2D che il test **esatto** del cull tiene entra in una lista costruita sulla CPU da `deriveLightGroups`, ordinata per classe di blend (add e sub, poi mix), z di mondo dal fondo al davanti (`sortableZBits`) e id esterno. `LightAccumStage` la disegna con una draw diretta per gruppo: WebGPU fonde nell'ordine delle primitive, quindi l'ordine è quello della lista e non quello degli atomici del cull, e serve niente `indirect-first-instance`. Add e sub restituiscono alpha 0 (al bit come `{one, one}`), un mix (colore·w, w), w = attenuazione (1 − d/range)^falloff × cono × ombra, limitata a [0, 1]. Ricerca `wf_c4b94385-585`.
 
 **Step count**: `bevy_light_2d` usa 32, jason.today 32, Yaazarai indica *"the optimal case seems to be 32-64 steps"*, davidtme (marzo 2026) *"approximately 10-20 steps per pixel"* con SDF. **16–32 è la fascia di lavoro.**
 
@@ -745,7 +753,7 @@ Gli altri numeri che circolano, elencati per non doverli ricercare:
 | **9** | **`castsShadow`** | l'entità entra nel seed occluder |
 | **10** | **`receivesLight`** | opt-in illuminazione. Sprite unlit saltano il lookup |
 | **11-13** | **`lightType`** | `Point=0`, `Spot=1`, `Directional=2`, `Global=3`, `Sprite=4`. **Riservati: `Point3D=5`, `Spot3D=6`, `Area=7`** |
-| **14-15** | **`lightBlendMode`** | `Add=0`, `Sub=1`, `Mix=2` |
+| **14-15** | **`lightBlendMode`** | `Add=0`, `Sub=1`, `Mix=2`; il 3 non è assegnato, e lista e shader lo trattano come `Add` (passo 7) |
 | **16-31** | **`lightMask`** | 16 layer |
 
 Esattamente 32 bit. **Zero nuove colonne SoA, zero nuovi export WASM, stride dello staging invariato.**
@@ -835,6 +843,8 @@ HRC le descrive come *"a single-shot scene-agnostic radiance transfer algorithm"
 
 Non usa accumulo temporale, blue noise, jitter né history buffer. Lo sphere marching con step fissi è puramente funzionale dello stato della scena.
 
+> 🆕 **Vero alla lettera dal passo 7 del giro.** Prima l'ordine delle luci lo decidevano gli atomici del cull, e due ordini danno texel diversi di qualche passo fp16 (su master la permutazione del banco ne cambiava 176 su 2304, di un passo, in Mode B come in Mode C, `assets/2026-10-08-step7/master-B.permute.stats.json` e `master-C.permute.stats.json`; quattro luci a 1024 slot l'una dall'altra arrivavano ad almeno due passi (un limite inferiore: la corsa ha superato le 8 griglie tenute), `master-B.order.stats.json`). Ora l'ordine viene dallo stato ECS, e il primo passo della catena SDF (`LOAD_PASS`) legge solo l'alpha del seed, quindi l'ordine dei caster (ancora quello del cull, visibile nel rg del seed) non arriva all'SDF: sullo stesso device il light buffer è funzione pura delle righe (id esterni compresi), qualunque sia il loro slot, e di camera, canvas, ambient e qualità (fra device, §10.4).
+
 ### 10.3 Caveat: determinismo ≠ stabilità temporale
 
 - **Determinismo**: a parità di input, output identico. ✅ Garantito da entrambi i backend.
@@ -868,6 +878,9 @@ muro.castsShadow(true).receivesLight(true).lightLayers(0b11);
 const sole = engine.spawn()
   .rotation(-Math.PI / 3)                 // da in alto a sinistra verso in basso a destra (mondo y-up)
   .light({ type: 'directional', color: '#fff4e0', energy: 1.2, range: 40, shadowIntensity: 1 });
+
+// Una luce mix porta il light buffer verso colore × energia col peso della sua intensità; fra mix sovrapposte vince la più vicina
+const finestra = engine.spawn({ mode: '2d' }).position(40, 60).depth(1).light({ type: 'point', blend: 'mix', color: '#80a0ff', energy: 1, range: 150, falloff: 0 });
 
 engine.lighting.setBackend('lit');      // 'off' | 'lit' | 'gi'
 engine.lighting.setAmbient('#101828', 1.0);

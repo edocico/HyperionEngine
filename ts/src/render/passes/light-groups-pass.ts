@@ -8,8 +8,9 @@ import { LightAccumStage } from './light-accum-stage';
 
 /**
  * The lit backend's frame when nothing supplied `FrameState.lightGroups`: one
- * group of every layer, shadowed by one set of every caster. That is exactly
- * the single-buffer lighting that existed before light layers.
+ * group of every layer, one set of every caster, and NO light: the light list
+ * is born in deriveLightGroups' scan (round step 7). The renderer gives every
+ * frame of a lit graph its groups, so only tests come here.
  */
 const EVERYTHING: LightGroups = {
   groups: [{ layers: 0xffff, sdfSet: 0 }],
@@ -19,6 +20,8 @@ const EVERYTHING: LightGroups = {
   shadowedGlobalLight: false,
   lightMasks: [],
   occluderMasks: [],
+  lightOrder: new Uint32Array(0),
+  lightIds: new Uint32Array(0),
 };
 
 /**
@@ -95,7 +98,7 @@ export class LightGroupsPass implements RenderPass {
     const [width, height] = halfResolution(frame.canvasWidth, frame.canvasHeight);
     this.seed.prepare(device, frame, lg.sdfSets);
     this.chain.prepare(device, width, height);
-    this.accum.prepare(device, frame, lg.groups);
+    this.accum.prepare(device, frame, lg.groups, lg.lightOrder);
   }
 
   execute(encoder: GPUCommandEncoder, frame: FrameState, resources: ResourcePool, stage?: (name: string) => void): void {

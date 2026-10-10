@@ -1,7 +1,17 @@
 // Light accumulation (Phase 17, Task 9; directional shadows: round 2026-09-27,
-// step 6): every visible Light2D, added into the half-resolution light buffer.
-// The buffer is cleared to the ambient light, and ForwardPass multiplies lit
-// sprites by it.
+// step 6; one light list and the mix blend: step 7): the lights in view, drawn
+// into the half-resolution light buffer in the order of the frame's light
+// list. The buffer is cleared to the ambient light, and ForwardPass multiplies
+// lit sprites by it.
+//
+// The list (lightOrder, built on the CPU by deriveLightGroups) holds every
+// Light2D the cull's exact sphere test keeps: add and sub lights first, then
+// mix lights, each class back to front by world z, then by external id (the
+// higher id later, in front). ONE premultiplied "over" blend serves every blend
+// mode: rgb + dst * (1 - a). An add or sub light returns alpha 0, so it adds
+// (or takes away) its light, bit for bit as the additive blend did before step
+// 7. A mix light returns (color * w, w), w its intensity: the buffer moves
+// toward the light's colour, dst * (1 - w) + color * w.
 //
 // Point and spot lights are a quad covering their range, around the light's
 // position. The transform's scale is ignored, because a light's extent IS its
@@ -17,8 +27,7 @@
 // lights never cast shadows in the lit backend: their shadowIntensity is
 // ignored.
 //
-// Not yet: the `sprite` light type (discarded) and the `mix` blend mode (added
-// like `add`).
+// Not yet: the `sprite` light type (discarded).
 
 // Scalars after the matrix only: see src/shaders/uniform-layout.test.ts.
 struct LightUniform {
@@ -36,7 +45,10 @@ struct LightUniform {
 
 @group(0) @binding(0) var<uniform> u: LightUniform;
 @group(0) @binding(1) var<storage, read> transforms: array<mat4x4f>;
-@group(0) @binding(2) var<storage, read> visibleIndices: array<u32>;
+// The frame's light list, slots in draw order: instance i draws the i-th
+// light. Written once per frame by LightAccumStage.prepare(); every group
+// draws all of it (vs_main drops a light outside the group's layers).
+@group(0) @binding(2) var<storage, read> lightOrder: array<u32>;
 @group(0) @binding(3) var<storage, read> primParams: array<f32>;
 @group(0) @binding(4) var<storage, read> renderMeta: array<u32>;
 // The signed SDF: (nearest-opposite u, v, valid, inside), see sdf-jfa.wgsl.
@@ -51,7 +63,12 @@ const SPOT: u32 = 1u;
 const DIRECTIONAL: u32 = 2u;
 const GLOBAL: u32 = 3u;
 const SPRITE: u32 = 4u;
+// Blend modes, renderMeta bits 14-15 (LightBlendMode in components.rs,
+// LIGHT_BLEND_IDS in entity-handle.ts, BLEND_MIX in light-groups.ts). 0 is
+// add; the unclaimed 3 blends like add, here and in the light list, which
+// draws BLEND_MIX, and only it, after the others.
 const BLEND_SUB: u32 = 1u;
+const BLEND_MIX: u32 = 2u;
 
 // A sun's shadow keeps full strength for this fraction of its length, then
 // fades out (sunFade).
@@ -114,7 +131,7 @@ fn vs_main(
     @location(0) position: vec3f,
     @builtin(instance_index) instanceIdx: u32,
 ) -> VertexOutput {
-    let e = visibleIndices[instanceIdx];
+    let e = lightOrder[instanceIdx];
     var out: VertexOutput;
     // Not in this group's layers: a degenerate triangle, nothing rasterised.
     // A light with mask 0 lights nothing.
@@ -355,10 +372,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         intensity *= mix(1.0, sunShadow(in.screenUV, in.sunRay), shadowStrength);
     }
 
+    let blend = (renderMeta[e * 2u + 1u] >> LIGHT_BLEND_SHIFT) & 3u;
+    if (blend == BLEND_MIX) {
+        // Toward the light's colour by its intensity: dst * (1 - w) + color * w
+        // under the over blend. w is in [0, 1] by construction (falloff, cone
+        // and shadow each are); the clamp keeps a pow that overshoots 1 from
+        // turning the blend into an extrapolation.
+        let w = clamp(intensity, 0.0, 1.0);
+        return vec4f(color * w, w);
+    }
     var c = color * intensity;
-    if (((renderMeta[e * 2u + 1u] >> LIGHT_BLEND_SHIFT) & 3u) == BLEND_SUB) {
+    if (blend == BLEND_SUB) {
         c = -c;
     }
-    // Alpha 0: the buffer's alpha stays at the clear value (1).
+    // Alpha 0: the over blend keeps dst whole and adds c, as {one, one} did.
     return vec4f(c, 0.0);
 }

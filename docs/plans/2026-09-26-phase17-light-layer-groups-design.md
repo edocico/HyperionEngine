@@ -46,10 +46,10 @@ Limiti accettati, da documentare:
 
 `render/light-groups.ts` esporta una funzione pura, `deriveLightGroups(input): LightGroups`. È testabile headless e gira ogni frame sul lato render, solo quando il grafo live è illuminato.
 
-**Input:** `renderMeta`, `primParams` e `bounds` di `GPURenderState`, `entityCount`, e i piani del frustum della camera (`extractFrustumPlanes`).
+**Input:** `renderMeta`, `primParams` e `bounds` di `GPURenderState`, `entityCount`, e i piani del frustum della camera (`extractFrustumPlanes`) e, dal passo 7, `entityIds` (lo spareggio della lista delle luci).
 
 **Passo 1, raccolta.** Una scansione di `renderMeta` parola 1:
-- **luci**: i valori distinti di maschera delle luci che **possono raggiungere lo schermo**. Si usa lo stesso test sfera-frustum del CullPass, con il raggio *ingrandito* (×1,01 + 1e-3) in modo che l'insieme CPU sia un sovrainsieme di quello GPU. Una globale o direzionale ha raggio f32::MAX ed è sempre dentro.
+- **luci**: i valori distinti di maschera delle luci che **possono raggiungere lo schermo**. Si usa lo stesso test sfera-frustum del CullPass, con il raggio *ingrandito* (×1,01 + 1e-3) in modo che l'insieme CPU sia un sovrainsieme di quello GPU. Una globale o direzionale ha raggio f32::MAX ed è sempre dentro. Dal passo 7 la stessa scansione costruisce la **lista delle luci** (`lightOrder`, `lightIds`), col test **esatto** del cull; ogni luce della lista è anche fra le chiavi (`drawn || inView`).
 - **`shadowedLayers`**: l'OR delle maschere delle luci visibili che proiettano ombra. È lo stesso test dello shader (`shadowedLightType`): point, spot o directional con `clamp(primParams[7], 0, 1) > 0`. Una directional conta solo con `range` (`primParams[3]`) > 0: a 0 o meno `sunShadow` esce prima di leggere l'SDF, e nessuno leggerebbe il suo flood (review wf_cf354af4-c53). Le globali non proiettano ombre nel backend `lit`: `shadowIntensity` è ignorata, e il renderer avvisa una volta in dev (`shadowedGlobalLight`).
 - **occluder**: i valori distinti di maschera normalizzati (0 → 0xFFFF) degli occluder che possono raggiungere lo schermo, con lo stesso test conservativo. L'SDF è screen-space, quindi un occluder fuori schermo non conta niente. Non filtrarli invece creerebbe set inutili da 1,8 ms.
 - **`receiverLayers`**: l'OR di `1 << layerOf(mask)` sui ricevitori delle primitive che campionano il light buffer (quad e gradient, `LIT_PRIMITIVE_TYPES`; review 2026-09-26) ~~senza filtro frustum. Un gruppo in più costa poco.~~ **in vista, con lo stesso test conservativo delle luci** (review 2026-09-26: un layer fuori schermo i cui caster in vista differiscono riceve un SDF set tutto suo, +1,84 ms per pixel che nessuno campiona). `layerOf(0) = 0`, altrimenti il bit più basso. Se un ricevitore ha più di un bit si alza il flag `multiBitReceiver`.
@@ -75,6 +75,7 @@ interface LightGroups {
   shadowedGlobalLight: boolean;
   /** For the debug readout: the distinct values that split the groups. */
   lightMasks: number[]; occluderMasks: number[];
+  lightOrder: Uint32Array; lightIds: Uint32Array;
 }
 ```
 
@@ -103,7 +104,7 @@ for set s:
     sdfChain(s)        1 + iterationsForDimension(maxDim) passes, power-of-two steps, over seed → sdfA/sdfB
     for group g with sdfSet == s:
         accumulate(g)  render pass on lightBuffer layer g, clear = ambient,
-                       Light2D buckets (args 12, 13, 26, 27), uniform slice {…, groupLayers = g.layers},
+                       the light list, one direct draw (args 12, 13, 26, 27 until round step 7), uniform slice {…, groupLayers = g.layers},
                        SDF = final ping-pong texture of s
 for group g with sdfSet == -1:
     accumulate(g)      SDF = noOccluder
@@ -160,6 +161,7 @@ Riferimento: iGPU AMD RDNA 3, 1080p, design §13.2.
 | +1 caster set distinto | +1,8 ms (seed + catena) | **nessuna** |
 | Luce che colpisce k gruppi | disegnata e marciata k volte | — |
 | Lato CPU | 0,02 ms a 10k entità, ≈ 0,2 ms a 100k, solo col grafo illuminato | — |
+| Lista delle luci (passo 7) | +0,04 ms con 300 luci (0,037-0,040 in quattro corse, tre delle quali in `assets/2026-10-08-step7/list-cost/`), +0,15 ms con 1000, +1,9 ms con 10 000 (2,2 ms la chiamata intera): `deriveLightGroups` di `4d6956f` meno quello di master (`1d19575`) sullo stesso frame, luci point tutte in vista a z distinte più 1000 ricevitori, misurato il 2026-10-10 (mediana di 1000 chiamate, Node 24.21.0, M2 Pro; harness e corse in `assets/2026-10-08-step7/list-cost/`) | due `Uint32Array` per frame (`lightOrder`, `lightIds`) |
 
 ## 8. Test e verifica
 
