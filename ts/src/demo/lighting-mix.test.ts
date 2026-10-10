@@ -306,6 +306,19 @@ describe('listVerdict', () => {
     expect(v.detail).toContain('cannot tell the id rule from slot order');
   });
 
+  it("names P's .transparent() next to the slots when P, the lower id, is on top, and the slots alone for Q", () => {
+    // P (.transparent()) has the lower id: a transparent-last order puts it on top as surely as slot order does.
+    const p = listVerdict({ ...right, overlap: rgba(P_COLOR) }, F, M_TARGET);
+    expect(p.ok).toBe(false);
+    expect(p.detail).toContain("at equal depths P, the lower id, is on top: the order follows the slots, or P's .transparent() moves it after Q "
+      + "(check 'Mix order follows depth' tells them apart)");
+    // Q with the lower id and the later slot: P's .transparent() would put P on top, not Q.
+    const q = listVerdict({ ...right, overlap: rgba(Q_COLOR), ids: { p: 121, q: 120 }, slots: { p: 13, q: 15 } }, F, M_TARGET);
+    expect(q.ok).toBe(false);
+    expect(q.detail).toContain('at equal depths Q, the lower id, is on top: the order follows the slots');
+    expect(q.detail).not.toContain('.transparent()');
+  });
+
   it("prints M's listed limit, FAR_EPS and M's two depths, and the rows' ids against their count", () => {
     expect(listVerdict(right, F, M_TARGET).detail).toBe('M 2.000, 1.000, 0.500 just inside its listed limit, at depth 1002.985, '
       + 'and 0.185, 0.170, 0.295 just outside, at depth 1003.015 (limit 1003.000, the far plane + its range; FAR_EPS 0.015); '
@@ -363,19 +376,22 @@ interface FakeHandle {
 }
 
 /** The light orders the model draws in: `modelEngine`'s doc says which is which. */
-type Rule = 'list' | 'slot' | 'mixFirst';
+type Rule = 'list' | 'slot' | 'mixFirst' | 'transparentLast' | 'bucket';
 
 /**
  * An engine whose probe reads a model of the light buffer: the ambient, then
  * every light the exact far-plane test keeps, in the order `rule` gives
  * ('list': the step-7 rule, blend-expect's oracle; 'slot': the rows;
  * 'mixFirst': the class order inverted, mix before add and sub, then back to
- * front and by id), each through lightLayer at its weight (pointWeight, a
- * global light 1). The tab's global light is one of them, as on the GPU: a 3D
- * add light at z 0, spawned before the sub-scene (slot 0, a lower id), never
- * culled. readEntityTransforms holds each row's translation (a 2D row's z is
- * −depth) and every id. With `fp16TowardZero` each blend's result is stored as
- * the M2 stores it, rounded toward zero to fp16; without it, exact.
+ * front and by id; 'transparentLast': the class, then `.transparent()` last,
+ * then back to front and by id; 'bucket': the cull's buckets as master drew
+ * the lights on a 32-lane GPU, opaque rows then transparent rows, each in slot
+ * order), each through lightLayer at its weight (pointWeight, a global light
+ * 1). The tab's global light is one of them, as on the GPU: a 3D add light at
+ * z 0, spawned before the sub-scene (slot 0, a lower id), never culled.
+ * readEntityTransforms holds each row's translation (a 2D row's z is −depth)
+ * and every id. With `fp16TowardZero` each blend's result is stored as the M2
+ * stores it, rounded toward zero to fp16; without it, exact.
  */
 function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZero?: boolean } = {}) {
   const unavailable = 'The debug probe needs the main-thread renderer of a dev build';
@@ -424,9 +440,15 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZ
       return { h, blend: o.blend ?? 'add', depth: h.d, id: h.id, color, weight, listed: o.type === 'global' || h.d <= farDepth + range };
     }).filter((l) => l.listed);
     const mixLast = (l: { blend: LightBlend }): number => (l.blend === 'mix' ? 1 : 0);
-    const ordered = rule === 'list' ? lightsBackToFront(lights)
-      : rule === 'mixFirst' ? [...lights].sort((a, b) => (mixLast(b) - mixLast(a)) || (b.depth - a.depth) || (a.id - b.id))
-      : lights;
+    const order: Record<Rule, () => typeof lights> = {
+      list: () => lightsBackToFront(lights),
+      slot: () => lights,
+      mixFirst: () => [...lights].sort((a, b) => (mixLast(b) - mixLast(a)) || (b.depth - a.depth) || (a.id - b.id)),
+      transparentLast: () => [...lights].sort((a, b) => (mixLast(a) - mixLast(b))
+        || (Number(a.h.isTransparent) - Number(b.h.isTransparent)) || (b.depth - a.depth) || (a.id - b.id)),
+      bucket: () => [...lights.filter((l) => !l.h.isTransparent), ...lights.filter((l) => l.h.isTransparent)],
+    };
+    const ordered = order[rule]();
     // Each blend's result stored in fp16 (toward zero, as on the M2) or kept exact.
     const store = (c: Rgb): Rgb => (opts.fp16TowardZero ? c.map(f16TowardZero) as Rgb : c);
     return rgba(ordered.reduce<Rgb>((dst, l) => store(over(dst, lightLayer(l))), AMBIENT));
@@ -511,7 +533,7 @@ describe('checkMix', () => {
     expect(list.detail).toContain('slots P 4, Q 2; 5 ids for 5 rows');
   });
 
-  it('on slot order (the cull of a small scene on a 32-lane GPU): the order and the tie fail', async () => {
+  it('on plain slot order, every light in row order: the order and the tie fail', async () => {
     stubs();
     const { engine } = modelEngine('slot');
     const reporter = createTestReporter();
@@ -522,6 +544,21 @@ describe('checkMix', () => {
       ['Light list: exact cull, id at equal depth', 'fail'],
     ]);
     expect(reporter.results()[2].detail).toContain('follows the slots');
+  });
+
+  it.each([
+    ['transparentLast', "a .transparent() light after the others of its class (a class key with renderMeta bit 8)"],
+    ['bucket', "the cull's buckets, opaque before transparent, as master drew the lights on a 32-lane GPU"],
+  ] as const)("on %s, %s: 'Mix order' names P's .transparent(), 'Light list' does not blame the slots alone", async (rule, _order) => {
+    stubs();
+    const { engine } = modelEngine(rule);
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    const [replaces, order, list] = reporter.results();
+    expect([replaces.status, order.status, list.status]).toEqual(['pass', 'fail', 'fail']);
+    expect(order.detail).toContain('P stays on top whatever the depths: its .transparent() moves it after Q');
+    expect(list.detail).toContain("at equal depths P, the lower id, is on top: the order follows the slots, or P's .transparent() moves it after Q "
+      + "(check 'Mix order follows depth' tells them apart)");
   });
 
   it('with every blend rounded toward zero in fp16, as on the M2: three passes, and R_ONLY reads as it did there', async () => {

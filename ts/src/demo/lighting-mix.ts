@@ -417,7 +417,9 @@ export interface ListReads {
  * `floor`, or drawn off its target), and within TOL of `floor` just outside
  * it. The overlap at equal depths counts only where slot order and the ids
  * disagree, (id Q > id P) !== (slot Q > slot P), and with both lights in the
- * rows read back; it must then be the light with the higher id.
+ * rows read back; it must then be the light with the higher id. The lower id
+ * on top follows the slots, or, when it is P, P's `.transparent()` too (a
+ * transparent-last order): 'Mix order follows depth' tells the two apart.
  */
 export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict {
   const { inside, outside, limit, depths, overlap, slots, ids, rows } = reads;
@@ -435,8 +437,11 @@ export function listVerdict(reads: ListReads, floor: Rgb, target: Rgb): Verdict 
   if (slots.p < 0 || slots.q < 0) {
     problems.push(`P or Q has no slot in the rows read back${rows.ids < rows.count ? `: their ids column is short, ${rows.ids} ids for ${rows.count} rows` : ''}`);
   } else if ((ids.q > ids.p) === (slots.q > slots.p)) problems.push('the slots agree with the ids: the read cannot tell the id rule from slot order');
-  else if (seen === lower) problems.push(`at equal depths ${lower}, the lower id, is on top: the order follows the slots`);
-  else if (seen !== higher) problems.push('at equal depths the overlap is neither P nor Q');
+  else if (seen === lower) {
+    // P is `.transparent()`: an order that draws such a light after the others of its class puts P on top too.
+    problems.push(`at equal depths ${lower}, the lower id, is on top: the order follows the slots`
+      + (lower === 'P' ? ", or P's .transparent() moves it after Q (check 'Mix order follows depth' tells them apart)" : ''));
+  } else if (seen !== higher) problems.push('at equal depths the overlap is neither P nor Q');
   const detail = `M ${rgb(inside)} just inside its listed limit, at depth ${depths.inside.toFixed(3)}, `
     + `and ${rgb(outside)} just outside, at depth ${depths.outside.toFixed(3)} `
     + `(limit ${limit.toFixed(3)}, the far plane + its range; FAR_EPS ${FAR_EPS}); `
