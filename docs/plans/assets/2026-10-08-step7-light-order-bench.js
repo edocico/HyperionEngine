@@ -97,9 +97,14 @@ async () => {
   //   cull order (the slots) and the list's coincide, which step7-stats
   //   checks on the recorded `lights`. Reads `layers` (the two groups). On a
   //   step-7 page it then needs window.__step7OldLightAccum, master's
-  //   light-accum.wgsl as a string (it reads visibleIndices), set by an
-  //   earlier evaluate_script that pastes the output of
-  //   `git show 1d19575:ts/src/shaders/light-accum.wgsl | jq -Rs .`:
+  //   light-accum.wgsl as a string (it reads visibleIndices). The procedure
+  //   in use: .claude/skills/gpu-check/scripts/load-bench.js sets it, with
+  //     window.__benchSpec.globals = { __step7OldLightAccum: '/old-light-accum.wgsl' }
+  //   from the asset server started by
+  //     gpu-infra.sh up --git /old-light-accum.wgsl=1d19575:ts/src/shaders/light-accum.wgsl
+  //   Any way of setting the global works; the fallback is an earlier
+  //   evaluate_script that pastes the output of
+  //   `git show 1d19575:ts/src/shaders/light-accum.wgsl | jq -Rs .`. Then
   //   engine.recompileShader('light-accum', old), a wait for
   //   LightAccumStage.SHADER_SOURCE === old and a new graph, `oldShaderLayers`,
   //   and step 7's shader put back the same way in a `finally`. On master
@@ -142,9 +147,12 @@ async () => {
   //   settledAt(41) and the same read: the 40 left unchanged
   //   (`remainingChanged` 0), the centres of the destroyed at the ambient.
   //   Records lightOrder.length (100, then 40) and the worst fp16 steps of
-  //   each read (`worstUlps`). A destroyed buffer still bound would make the
-  //   probe reject with its validation error; the console (only favicon.ico's
-  //   404) is for whoever runs it to read.
+  //   each read (`worstUlps`). A destroyed buffer still bound would not make
+  //   the probe reject: the probe's error scope wraps only its own compute
+  //   submit, so the frame's validation error would surface as an uncaptured
+  //   GPU error in the console (which the GPU legs read: only favicon.ico's
+  //   404 belongs there), and the centre values of the grow reads would still
+  //   catch it.
   // - scene { phase, resize = false }: the screenshots of Mode A, and the same
   //   scene measured in B and C. Phase 1: the clear in B and C (in Mode A the
   //   page is freshly loaded), the camera at (0, 0), zoom 1,
@@ -480,7 +488,8 @@ async () => {
     engine.recompileShader('light-accum', source);
     await until(`light-accum (${what}) to go live (a shader the GPU rejects keeps the previous source: see the console)`,
       () => LightAccumStage.SHADER_SOURCE === source && renderer.graph !== before);
-    await frames(SETTLE_FRAMES);
+    await byDeadline(frames(SETTLE_FRAMES), performance.now() + WAIT_MS, WAIT_MS,
+      `${SETTLE_FRAMES} frames after light-accum (${what}) went live (did requestAnimationFrame stop?)`);
     return true;
   };
   /**
@@ -496,7 +505,8 @@ async () => {
     engine.recompileShader('cull', rawCull);
     await until(`a new render graph with the ${what} cull (a GPU rejection keeps the previous graph: see the console)`,
       () => renderer.graph !== before && litLive());
-    await frames(SETTLE_FRAMES);
+    await byDeadline(frames(SETTLE_FRAMES), performance.now() + WAIT_MS, WAIT_MS,
+      `${SETTLE_FRAMES} frames after the graph with the ${what} cull went live (did requestAnimationFrame stop?)`);
   };
 
   // ── Entities and scenes ────────────────────────────────────────────────
@@ -539,7 +549,8 @@ async () => {
   const settleScene = async () => {
     await settledAt(entities.filter((h) => h.alive).length);
     await until('light-groups in the live render graph', litLive);
-    await frames(SETTLE_FRAMES);
+    await byDeadline(frames(SETTLE_FRAMES), performance.now() + WAIT_MS, WAIT_MS,
+      `${SETTLE_FRAMES} frames after the scene settled (did requestAnimationFrame stop?)`);
   };
 
   // ── regress ────────────────────────────────────────────────────────────
@@ -550,7 +561,7 @@ async () => {
     const old = window.__step7OldLightAccum;
     if (step7Page) {
       if (typeof old !== 'string' || old.length === 0) {
-        throw new Error("on a step-7 page 'regress' also reads master's shader in step 7's stage: set window.__step7OldLightAccum first, with an evaluate_script that pastes the output of `git show 1d19575:ts/src/shaders/light-accum.wgsl | jq -Rs .`");
+        throw new Error("on a step-7 page 'regress' also reads master's shader in step 7's stage: set window.__step7OldLightAccum first, with .claude/skills/gpu-check/scripts/load-bench.js and window.__benchSpec.globals = { __step7OldLightAccum: '/old-light-accum.wgsl' }, the asset server started by `gpu-infra.sh up --git /old-light-accum.wgsl=1d19575:ts/src/shaders/light-accum.wgsl` (any way of setting it works; the fallback: an evaluate_script that pastes the output of `git show 1d19575:ts/src/shaders/light-accum.wgsl | jq -Rs .`)");
       }
       if (!old.includes('visibleIndices') || old === LightAccumStage.SHADER_SOURCE) {
         throw new Error("window.__step7OldLightAccum is not master's light-accum.wgsl (which reads visibleIndices): set it again from 1d19575");
@@ -843,7 +854,9 @@ async () => {
     }
     const depths = SCENE_DEPTHS[phase];
     for (const name of ['R', 'P', 'Q']) await untilDepth(s[name], depths[name], name);
-    await frames(engine.mode === 'A' ? MODE_A_FRAMES : SETTLE_FRAMES);
+    const settle = engine.mode === 'A' ? MODE_A_FRAMES : SETTLE_FRAMES;
+    await byDeadline(frames(settle), performance.now() + WAIT_MS, WAIT_MS,
+      `${settle} frames after the phase-${phase} scene settled (did requestAnimationFrame stop?)`);
     const names = phase === 3 ? ['R', 'P', 'Q'] : ['M', 'R', 'P', 'Q'];
     const lights = lightsOf(names.map((n) => s[n]));
     if (phase === 3) {
