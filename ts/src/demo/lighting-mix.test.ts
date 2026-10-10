@@ -6,9 +6,10 @@ import {
 import { createTestReporter } from './types';
 import { Camera, orthographic } from '../camera';
 import { CameraAPI } from '../camera-api';
-import { composite, lightLayer, lightsBackToFront, straight, type LightBlend, type Rgb } from './blend-expect';
+import { composite, lightLayer, lightsBackToFront, over, straight, type LightBlend, type Rgb } from './blend-expect';
+import { BLEND_MIX, deriveLightGroups } from '../render/light-groups';
 import type { Hyperion } from '../hyperion';
-import type { EntityHandle } from '../entity-handle';
+import { RenderPrimitiveType, type EntityHandle } from '../entity-handle';
 import type { Rgba } from './probe-checks';
 
 // The Lighting tab's floor (ambient + its global light) under the sub-scene.
@@ -20,6 +21,39 @@ const GLOBAL_LIGHT = { color: [0.25, 0.2, 0.35] as Rgb, energy: 0.5 };
 const G: Rgb = [0.125, 0.1, 0.175];
 const rgba = (c: readonly number[]): Rgba => [c[0], c[1], c[2], 1];
 const sum = (...cs: Rgb[]): Rgb => cs.reduce((a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+
+/**
+ * `x` rounded toward zero to an fp16 value: how the M2 stores its light-buffer
+ * blends. The grow gate's centres (docs/plans/assets/2026-10-08-step7/
+ * gate-m2-grow-B.json) and harness-task5-B.json's R_ONLY, 0.669 for 0.670,
+ * sit on the largest fp16 at or below the exact sum. Math.f16round rounds to
+ * nearest instead.
+ */
+function f16TowardZero(x: number): number {
+  if (x === 0 || !Number.isFinite(x)) return x;
+  const a = Math.abs(x);
+  if (a >= 65504) return Math.sign(x) * 65504;
+  // floor(log2) can land one too high just below a power of two.
+  let e = Math.floor(Math.log2(a));
+  if (2 ** e > a) e--;
+  else if (2 ** (e + 1) <= a) e++;
+  const ulp = 2 ** (Math.max(e, -14) - 10);
+  return Math.sign(x) * Math.floor(a / ulp) * ulp;
+}
+
+describe("f16TowardZero (the model's fp16 rounding)", () => {
+  it('keeps every fp16 value and takes any other to the next fp16 value toward zero', () => {
+    for (const v of [1, 0.25, 2, 1.5, 0.669921875, 2 ** -24, 3 * 2 ** -20, -0.5]) expect(f16TowardZero(v)).toBe(v);
+    expect(f16TowardZero(0.67)).toBe(0.669921875);
+    expect(f16TowardZero(0.1)).toBe(0.0999755859375);
+    // Round to nearest gives -0.300048828125 and 0.0001000165939331: toward zero stays below in magnitude.
+    expect(f16TowardZero(-0.3)).toBe(-0.2998046875);
+    expect(f16TowardZero(1e-4)).toBe(0.00009995698928833008);
+    // Just below a power of two, where floor(log2) is one too high.
+    expect(f16TowardZero(8 - 2 ** -49)).toBe(8 - 2 ** -8);
+    expect(f16TowardZero(1.5 * 2 ** -24)).toBe(2 ** -24);
+  });
+});
 
 describe('fp16Ulp, pointWeight, lightTexelCentre', () => {
   it('fp16Ulp: 2^(floor(log2|v|) - 10), 2^-24 below the normal range', () => {
@@ -340,9 +374,10 @@ type Rule = 'list' | 'slot' | 'mixFirst';
  * global light 1). The tab's global light is one of them, as on the GPU: a 3D
  * add light at z 0, spawned before the sub-scene (slot 0, a lower id), never
  * culled. readEntityTransforms holds each row's translation (a 2D row's z is
- * −depth) and every id.
+ * −depth) and every id. With `fp16TowardZero` each blend's result is stored as
+ * the M2 stores it, rounded toward zero to fp16; without it, exact.
  */
-function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean } = {}) {
+function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean; fp16TowardZero?: boolean } = {}) {
   const unavailable = 'The debug probe needs the main-thread renderer of a dev build';
   const global: FakeHandle = {
     id: 119, is2D: false, x: 500, y: 500, d: 0, isTransparent: false,
@@ -392,7 +427,9 @@ function modelEngine(rule: Rule, opts: { probeUnavailable?: boolean } = {}) {
     const ordered = rule === 'list' ? lightsBackToFront(lights)
       : rule === 'mixFirst' ? [...lights].sort((a, b) => (mixLast(b) - mixLast(a)) || (b.depth - a.depth) || (a.id - b.id))
       : lights;
-    return rgba(composite(AMBIENT, ordered.map((l) => lightLayer(l))));
+    // Each blend's result stored in fp16 (toward zero, as on the M2) or kept exact.
+    const store = (c: Rgb): Rgb => (opts.fp16TowardZero ? c.map(f16TowardZero) as Rgb : c);
+    return rgba(ordered.reduce<Rgb>((dst, l) => store(over(dst, lightLayer(l))), AMBIENT));
   };
   const probe = async (request: { target: string; world: [number, number][]; layer?: number }) => {
     requests.push(request);
@@ -485,6 +522,45 @@ describe('checkMix', () => {
       ['Light list: exact cull, id at equal depth', 'fail'],
     ]);
     expect(reporter.results()[2].detail).toContain('follows the slots');
+  });
+
+  it('with every blend rounded toward zero in fp16, as on the M2: three passes, and R_ONLY reads as it did there', async () => {
+    stubs();
+    const { engine } = modelEngine('list', { fp16TowardZero: true });
+    const reporter = createTestReporter();
+    await checkMix(engine, reporter, [], F, vi.fn());
+    expect(reporter.results().map(({ name, status, detail }) => [name, status, status === 'pass' ? '' : detail])).toEqual([
+      ['Mix light replaces the light buffer', 'pass', ''],
+      ['Mix order follows depth', 'pass', ''],
+      ['Light list: exact cull, id at equal depth', 'pass', ''],
+    ]);
+    // R, then the global light (back to front), each sum rounded down: 0.669 in green, as harness-task5-B.json
+    // printed on the M2, where round to nearest gives 0.670.
+    expect(reporter.results()[1].detail).toContain('R_ONLY 0.185, 0.669, 0.295');
+  });
+
+  it("puts M's row at its listed limit ± FAR_EPS through the real deriveLightGroups: listed just inside; just outside, unlisted but among the group keys", async () => {
+    stubs();
+    const { engine, handles } = modelEngine('list');
+    await checkMix(engine, createTestReporter(), [], F, vi.fn());
+    // The two depths checkMix gave M around its listed limit, and the view it read M in (restoreView is a mock: the camera stays).
+    const m = handles[1];
+    const [inside, outside] = m.calls.filter((c) => c.startsWith('depth ')).map((c) => Number(c.slice('depth '.length)));
+    const groupsAt = (depth: number) => deriveLightGroups({
+      entityCount: 1,
+      // A point mix light (type bits 11-13 zero) on every layer.
+      renderMeta: Uint32Array.of(0, (RenderPrimitiveType.Light2D | (BLEND_MIX << 14) | (0xffff << 16)) >>> 0),
+      primParams: Float32Array.of(...M_TARGET, m.lightOptions!.range!, 0, 0, 0, 0),
+      // A root 2D light's row: z = -depth in f32, as the engine stores it; its radius, its range.
+      bounds: Float32Array.of(m.x, m.y, -depth, m.lightOptions!.range!),
+      cameraViewProjection: engine.cam.viewProjection,
+      entityIds: Uint32Array.of(m.id),
+    });
+    expect([...groupsAt(inside).lightIds]).toEqual([m.id]);
+    const culled = groupsAt(outside);
+    expect([...culled.lightOrder]).toEqual([]);
+    // The grouping's margin (range x 1.01 + 0.001) still keeps it: its mask stays a group key.
+    expect(culled.lightMasks).toEqual([0xffff]);
   });
 
   it("on the class order inverted, mix before add, under the tab's global light: the checks name the class order and M drawn off its target", async () => {
