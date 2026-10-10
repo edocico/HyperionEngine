@@ -176,6 +176,22 @@ test("summarizeRegress refuses when master's lights are not in id order by slot,
   assert.equal(noLeg.layers[0].stage, null);
 });
 
+test("summarizeRegress refuses a step-7 run whose old shader (its FNV-1a hash) is not the shader master ran; equal hashes, or one missing, pass", () => {
+  // The bench records shaders.live on every page, and shaders.old on a step-7 page: the shader served as master's.
+  const master = masterRun({ shaders: { live: '407a7243' } });
+  const same = summarizeRegress(master, step7Run({ shaders: { live: '0badc0de', old: '407a7243' } }));
+  assert.deepEqual(same.refusals, []);
+  assert.equal(same.ok, true);
+  const other = summarizeRegress(master, step7Run({ shaders: { live: '0badc0de', old: '12345678' } }));
+  assert.equal(other.ok, false);
+  assert.deepEqual(other.refusals, [
+    "step 7's old shader (12345678) is not the shader master ran (407a7243): the stage and shader legs would compare against another shader",
+  ]);
+  // Only two recorded hashes can disagree.
+  assert.deepEqual(summarizeRegress(masterRun(), step7Run({ shaders: { live: '0badc0de', old: '12345678' } })).refusals, []);
+  assert.deepEqual(summarizeRegress(master, step7Run({ shaders: { live: '0badc0de' } })).refusals, []);
+});
+
 // ── details ──────────────────────────────────────────────────────────────
 
 test('LIGHTING_DETAIL_CHECKS: the step-3 and the step-6 checks of the Lighting tab, whose details step 7 must not move', () => {

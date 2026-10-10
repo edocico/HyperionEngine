@@ -234,8 +234,10 @@ export function summarizePermute(bench, { cull = 'subgroup' } = {}) {
  * order, and a difference would be the order's, not step 7's); master's
  * lights in more than one cull workgroup; a cull path other than `cull` on
  * either side; a step-7 run without `oldShaderLayers` (stage and shader are
- * then null). Throws without a `regress` result on either side, or when the
- * runs read different numbers of layers.
+ * then null); a step-7 run whose old shader is not the one master ran, when
+ * both runs recorded its FNV-1a hash (`shaders.old` on the step-7 page,
+ * `shaders.live` on master's). Throws without a `regress` result on either
+ * side, or when the runs read different numbers of layers.
  */
 export function summarizeRegress(master, step7, { cull = 'subgroup' } = {}) {
   const m = resultsOf(master, 'regress').at(-1);
@@ -261,6 +263,11 @@ export function summarizeRegress(master, step7, { cull = 'subgroup' } = {}) {
   if (m.cullPath !== cull) refusals.push(`master's cull path is ${m.cullPath}, want ${cull}`);
   if (s.cullPath !== cull) refusals.push(`step 7's cull path is ${s.cullPath}, want ${cull}`);
   if (!old) refusals.push("the step-7 run has no oldShaderLayers: run regress on the step-7 page with window.__step7OldLightAccum set (master's light-accum.wgsl)");
+  const oldHash = s.shaders?.old;
+  const masterHash = m.shaders?.live;
+  if (typeof oldHash === 'string' && typeof masterHash === 'string' && oldHash !== masterHash) {
+    refusals.push(`step 7's old shader (${oldHash}) is not the shader master ran (${masterHash}): the stage and shader legs would compare against another shader`);
+  }
   if (mLayers.length === 0) refusals.push('no layer was read');
 
   const layers = mLayers.map((mg, i) => {
