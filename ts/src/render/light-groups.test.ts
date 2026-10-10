@@ -521,7 +521,7 @@ describe('deriveLightGroups: the light list (round step 7)', () => {
 
   it('lists what the cull draws as a light: a mask-0 light, a sprite light, a type past Light2D; the unclaimed blend 3 sorts with add', () => {
     // vs_main drops a mask-0 light in every group, fs_main discards a sprite
-    // light until step 8, and cull.wgsl clamps a type past 6 to Light2D.
+    // light until step 8, and cull.wgsl clamps a type past Light2D to Light2D.
     const SPRITE = 4, PAST_LAST = LIGHT2D + 1;
     expect(drawn(scene([light(0, 0, { id: 1 }), light(0xffff, 0, { id: 2, type: SPRITE }), drawable(PAST_LAST, 0xffff, { id: 3 }), drawable(RECV, 0, { id: 4 })])))
       .toEqual([1, 2, 3]);
