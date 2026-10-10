@@ -269,7 +269,8 @@ known gap and not a regression: a "gone after destroy" pixel check proves nothin
 or C. The same gap leaves the canvas ELEMENT at the HTML default 300 × 150 on a fresh
 `?mode=A&bench` page until the render worker presents its first frame (the canvas is transferred to
 it): in Mode A read the canvas size after a frame was drawn, never right after a resize (round step
-7, 2026-10-10: the same page read 1960 × 1248 once its tabs had drawn).
+7, 2026-10-10: the same page read 1960 × 1248 once its tabs had drawn; the leg's verdict is
+`docs/plans/assets/2026-10-08-step7/legs/task-9c-result.json`).
 
 **State that travels by message.** The lighting quality and the sort's inputs (`transparentCount`,
 `entityIdsGeneration`) reach the render worker too, and only a screenshot shows it. The Lighting
@@ -280,7 +281,8 @@ tab moves its lights every tick, so two of its screenshots never match: build a 
 in front: 202, 126, 51 along its gradient. The light list's id tie-break (round step 7) needs
 `entityIds` in the render worker too: checked by the step-7 bench's `scene` phase 3 in
 `?mode=A&bench` (2026-10-10, `83a9b9d`: at equal depths Q, the higher id, is in front of P, with
-its slot below P's; A, B and the expected colours equal at 18 of 18 points). The quality (README M6c in
+its slot below P's; A, B and the expected colours equal at 18 of 18 points,
+`docs/plans/assets/2026-10-08-step7/modeA-vs-B/pixels.json`). The quality (README M6c in
 `docs/plans/assets/2026-09-29-mac-m2/`, not re-run): `shadowSteps` 4 against 48 on a static lit
 scene changes 6.35 % of the canvas.
 

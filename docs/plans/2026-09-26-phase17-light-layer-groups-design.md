@@ -161,7 +161,7 @@ Riferimento: iGPU AMD RDNA 3, 1080p, design §13.2.
 | +1 caster set distinto | +1,8 ms (seed + catena) | **nessuna** |
 | Luce che colpisce k gruppi | disegnata e marciata k volte | — |
 | Lato CPU | 0,02 ms a 10k entità, ≈ 0,2 ms a 100k, solo col grafo illuminato | — |
-| Lista delle luci (passo 7) | +0,04 ms con 300 luci (0,037-0,040 in quattro corse), +0,15 ms con 1000, +1,9 ms con 10 000 (2,2 ms la chiamata intera): `deriveLightGroups` di `4d6956f` meno quello di master (`1d19575`) sullo stesso frame, luci point tutte in vista a z distinte più 1000 ricevitori, misurato il 2026-10-10 (mediana di 1000 chiamate, Node 24.21.0, M2 Pro) | due `Uint32Array` per frame (`lightOrder`, `lightIds`) |
+| Lista delle luci (passo 7) | +0,04 ms con 300 luci (0,037-0,040 in quattro corse), +0,15 ms con 1000, +1,9 ms con 10 000 (2,2 ms la chiamata intera): `deriveLightGroups` di `4d6956f` meno quello di master (`1d19575`) sullo stesso frame, luci point tutte in vista a z distinte più 1000 ricevitori, misurato il 2026-10-10 (mediana di 1000 chiamate, Node 24.21.0, M2 Pro; harness e corse in `assets/2026-10-08-step7/list-cost/`) | due `Uint32Array` per frame (`lightOrder`, `lightIds`) |
 
 ## 8. Test e verifica
 
