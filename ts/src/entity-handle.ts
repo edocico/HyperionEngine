@@ -93,9 +93,8 @@ export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
  * id last, so on top (the newest light only while ids are fresh, as for
  * transparent sprites). `add` and `sub` lights commute up to rounding in the
  * half-float buffer (a step or two where several overlap): the order decides
- * which `mix` light ends on top. It
- * comes from the ECS state alone, never from the GPU's culling, so a still
- * scene lights the same from frame to frame.
+ * which `mix` light ends on top. It comes from the ECS state alone, never from
+ * the GPU's culling, so a still scene lights the same from frame to frame.
  */
 export type LightBlendMode = 'add' | 'sub' | 'mix';
 
@@ -171,7 +170,10 @@ export interface LightOptions {
    * warning, once). See {@link EntityHandle.shadows}.
    */
   shadowIntensity?: number;
-  /** How the light combines into its layers' light buffer, and when it is drawn: see {@link LightBlendMode}. Default `'add'`. */
+  /**
+   * How the light combines into its layers' light buffer, and when it is
+   * drawn: see {@link LightBlendMode}. Default `'add'`.
+   */
   blend?: LightBlendMode;
   /** The layers this light lights (see `lightLayers()`). Default `0xffff` (all). 0 lights nothing. */
   layers?: number;
