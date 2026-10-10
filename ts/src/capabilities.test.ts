@@ -286,7 +286,7 @@ describe("describeAdapter", () => {
 // an RTX 4060: 0 pixels without the feature, drawn with it. Only bucket 0
 // (opaque tier-0 quads) survives among them. Transparent entities (the uber draw
 // of transparent-args, phase 5b) and lights (one direct draw per light group,
-// round step 7) draw from firstInstance 0, so they never needed it.
+// round step 7) draw from firstInstance 0, so they no longer need it.
 describe("selectDeviceFeatures", () => {
   it("requests indirect-first-instance whenever the adapter offers it", () => {
     const features = selectDeviceFeatures(new Set(["indirect-first-instance"]), null, false);
