@@ -112,7 +112,11 @@ export function lightsBackToFront<T extends { blend: LightBlend; depth: number; 
   return [...lights].sort((a, b) => (cls(a) - cls(b)) || (b.depth - a.depth) || (a.id - b.id));
 }
 
-/** The light buffer where `lights` reach, over `base` (the ambient and every light not listed). */
+/**
+ * The light buffer where `lights` reach, over `base`: the ambient and every
+ * add or sub light not in `lights` (a mix light left out would be drawn among
+ * them, by its depth, not under them).
+ */
 export function expectedLight(base: Rgb, lights: readonly ExpectedLight[]): Rgb {
   return composite(base, lightsBackToFront(lights).map(lightLayer));
 }
