@@ -1,0 +1,146 @@
+{
+  "B": {
+    "task1Live": "407a7243",
+    "recaptureLive": "407a7243",
+    "task1Lights": [
+      {
+        "id": 3601,
+        "slot": 4
+      },
+      {
+        "id": 3602,
+        "slot": 5
+      },
+      {
+        "id": 3603,
+        "slot": 6
+      },
+      {
+        "id": 3604,
+        "slot": 7
+      },
+      {
+        "id": 3605,
+        "slot": 8
+      }
+    ],
+    "recaptureLights": [
+      {
+        "id": 4,
+        "slot": 4
+      },
+      {
+        "id": 5,
+        "slot": 5
+      },
+      {
+        "id": 6,
+        "slot": 6
+      },
+      {
+        "id": 7,
+        "slot": 7
+      },
+      {
+        "id": 8,
+        "slot": 8
+      }
+    ],
+    "layers": [
+      {
+        "sameData": true,
+        "count": [
+          2304,
+          2304
+        ]
+      },
+      {
+        "sameData": true,
+        "count": [
+          2304,
+          2304
+        ]
+      }
+    ],
+    "cullPath": [
+      "subgroup",
+      "subgroup"
+    ],
+    "list": [
+      null,
+      null
+    ]
+  },
+  "C": {
+    "task1Live": "407a7243",
+    "recaptureLive": "407a7243",
+    "task1Lights": [
+      {
+        "id": 9,
+        "slot": 4
+      },
+      {
+        "id": 10,
+        "slot": 5
+      },
+      {
+        "id": 11,
+        "slot": 6
+      },
+      {
+        "id": 12,
+        "slot": 7
+      },
+      {
+        "id": 13,
+        "slot": 8
+      }
+    ],
+    "recaptureLights": [
+      {
+        "id": 4,
+        "slot": 4
+      },
+      {
+        "id": 5,
+        "slot": 5
+      },
+      {
+        "id": 6,
+        "slot": 6
+      },
+      {
+        "id": 7,
+        "slot": 7
+      },
+      {
+        "id": 8,
+        "slot": 8
+      }
+    ],
+    "layers": [
+      {
+        "sameData": true,
+        "count": [
+          2304,
+          2304
+        ]
+      },
+      {
+        "sameData": true,
+        "count": [
+          2304,
+          2304
+        ]
+      }
+    ],
+    "cullPath": [
+      "subgroup",
+      "subgroup"
+    ],
+    "list": [
+      null,
+      null
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "refusals": [],
+  "layers": [
+    {
+      "whole": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      },
+      "stage": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      },
+      "shader": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      }
+    },
+    {
+      "whole": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      },
+      "stage": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      },
+      "shader": {
+        "n": 2304,
+        "identical": 2304,
+        "withinUlp": 2304,
+        "maxAbs": 0,
+        "worst": null
+      }
+    }
+  ],
+  "cullPath": {
+    "master": "subgroup",
+    "step7": "subgroup"
+  },
+  "labels": {
+    "master": "1d19575",
+    "step7": "83a9b9d"
+  }
+}
