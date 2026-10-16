@@ -32,9 +32,12 @@ case "$file" in
   The prelude is the ONLY place that declares the primitive bindings (groups 0, 1, 2),
   CameraUniform (80 B), VertexOutput, OCCLUDER_PASS/castsInto and the lighting block
   (applyLighting). Changing a binding means changing render/primitive-bindings.ts,
-  ForwardPass (group 2 too) and OccluderSeedStage together; CameraUniform also means both
-  camera writers. It is composed into all 7 modules (6 per-type + the uber). Run
-    npx --prefix ts vitest run --root ts src/render/primitive-shaders.test.ts
+  ForwardPass (group 2 too) and OccluderSeedStage together; group 1, sampleTier and the
+  two lines of sampleTierOrWhite that turn v over are also copied, text for text, in
+  shaders/light-accum.wgsl (LightAccumStage, round step 8; light-accum-stage.test.ts
+  compares them, with cookieLayers); CameraUniform also means both camera writers.
+  It is composed into all 7 modules (6 per-type + the uber). Run
+    npx --prefix ts vitest run --root ts src/render/primitive-shaders.test.ts src/render/passes/light-accum-stage.test.ts
   and the wgsl-validator agent before committing."
     ;;
   */shaders/primitives/*.wgsl)

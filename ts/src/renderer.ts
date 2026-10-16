@@ -365,7 +365,8 @@ export async function createRenderer(
 
   // --- 4. Populate texture views + sampler in ResourcePool ---
   // A tier that grows replaces its view and destroys the old texture, so the
-  // pool is refreshed on every growth; ForwardPass rebinds when it sees it.
+  // pool is refreshed on every growth; every TextureTierBinding (ForwardPass,
+  // OccluderSeedStage, LightAccumStage) rebinds when it sees it.
   const registerTextureViews = (): void => {
     for (let tier = 0; tier < 4; tier++) {
       resources.setTextureView(`tier${tier}`, textureManager.getTierView(tier));

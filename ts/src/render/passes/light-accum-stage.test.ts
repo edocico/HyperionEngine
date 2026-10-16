@@ -640,8 +640,9 @@ describe('light-accum.wgsl: the light list and the blend modes (round step 7)', 
     expect(fs).toMatch(/if\s*\(\s*blend\s*==\s*BLEND_SUB\s*\)\s*\{\s*c\s*=\s*-c\s*;/);
     // The add and sub arithmetic of before step 7: the over blend adds c whole.
     expect(fs).toMatch(/var\s+c\s*=\s*color\s*\*\s*intensity\s*;/);
-    // The weight is the WHOLE intensity (decision 3: falloff × cone × shadow):
-    // the mix branch comes after the last factor, never between two of them.
+    // The weight is the WHOLE intensity (decision 3: the attenuation × cone ×
+    // shadow; a sprite light's, its cookie's alpha × shadow): the mix branch
+    // comes after the last factor, never between two of them.
     expect(fs.indexOf('if (blend == BLEND_MIX)')).toBeGreaterThan(fs.lastIndexOf('intensity *='));
   });
 

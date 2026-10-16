@@ -3,7 +3,9 @@ import type { ResourcePool } from './resource-pool';
 /**
  * Bind group layouts the primitive prelude declares, shared by every pipeline that
  * runs a composed primitive module: the ForwardPass opaque pipelines, its uber pipeline
- * and the occluder pipelines (OccluderSeedStage, groups 0 and 1 only).
+ * and the occluder pipelines (OccluderSeedStage, groups 0 and 1 only). Group 1, the
+ * texture tiers, also serves LightAccumStage (round step 8: a sprite light's cookie),
+ * whose light-accum.wgsl declares it as the prelude does.
  */
 
 /** Group 0: camera, transforms, visible indices, then the per-entity columns the fragment stage may read too. */
@@ -32,7 +34,8 @@ const GROUP1 = ['tier0', 'tier1', 'tier2', 'tier3', 'texSampler', 'ovf0', 'ovf1'
 /**
  * The group-1 layout the prelude declares: four texture tiers, the
  * sampler, four overflow tiers. All primitive pipelines share it, whether or
- * not the shader samples a texture.
+ * not the shader samples a texture, and so does LightAccumStage's light
+ * pipeline (round step 8: a sprite light's cookie).
  */
 export function textureTierLayoutEntries(): GPUBindGroupLayoutEntry[] {
   return GROUP1.map((name, binding): GPUBindGroupLayoutEntry => name === 'texSampler'

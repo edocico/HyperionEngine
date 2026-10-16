@@ -46,11 +46,11 @@ Limiti accettati, da documentare:
 
 `render/light-groups.ts` esporta una funzione pura, `deriveLightGroups(input): LightGroups`. È testabile headless e gira ogni frame sul lato render, solo quando il grafo live è illuminato.
 
-**Input:** `renderMeta`, `primParams` e `bounds` di `GPURenderState`, `entityCount`, e i piani del frustum della camera (`extractFrustumPlanes`) e, dal passo 7, `entityIds` (lo spareggio della lista delle luci).
+**Input:** `renderMeta`, `primParams` e `bounds` di `GPURenderState`, `entityCount`, e i piani del frustum della camera (`extractFrustumPlanes`) e, dal passo 7, `entityIds` (lo spareggio della lista delle luci); dal passo 8 `texIndices` (il cookie di una luce sprite) e, quando il renderer li dà, `textureLayersUsed` (i layer in uso degli otto array delle texture, `textureLayerCounts`).
 
 **Passo 1, raccolta.** Una scansione di `renderMeta` parola 1:
 - **luci**: i valori distinti di maschera delle luci che **possono raggiungere lo schermo**. Si usa lo stesso test sfera-frustum del CullPass, con il raggio *ingrandito* (×1,01 + 1e-3) in modo che l'insieme CPU sia un sovrainsieme di quello GPU. Una globale o direzionale ha raggio f32::MAX ed è sempre dentro. Dal passo 7 la stessa scansione costruisce la **lista delle luci** (`lightOrder`, `lightIds`), col test **esatto** del cull; ogni luce della lista è anche fra le chiavi (`drawn || inView`).
-- **`shadowedLayers`**: l'OR delle maschere delle luci visibili che proiettano ombra. È lo stesso test dello shader (`shadowedLightType`): point, spot o directional con `clamp(primParams[7], 0, 1) > 0`. Una directional conta solo con `range` (`primParams[3]`) > 0: a 0 o meno `sunShadow` esce prima di leggere l'SDF, e nessuno leggerebbe il suo flood (review wf_cf354af4-c53). Le globali non proiettano ombre nel backend `lit`: `shadowIntensity` è ignorata, e il renderer avvisa una volta in dev (`shadowedGlobalLight`).
+- **`shadowedLayers`**: l'OR delle maschere delle luci visibili che proiettano ombra. È lo stesso test dello shader (`shadowedLightType`): point, spot, directional o sprite con `clamp(primParams[7], 0, 1) > 0`. Una regola per ogni tipo ombreggiato (passo 8 del giro, sotto-decisione 3 (c)): conta solo con `range` (`primParams[3]`) > 0, perché a 0 o meno nessuno leggerebbe il suo flood: `sunShadow` esce prima di leggere l'SDF (review wf_cf354af4-c53), point e spot scartano ogni pixel a `d >= range` prima della marcia, e `vs_main` scarta la sprite. Una sprite conta solo con una texture che questo renderer ha caricato, secondo `untexturedPredicate`: layer ≠ 0 e, coi layer in uso, sotto quelli del suo array; senza colonna `texIndices` conta come texturizzata (un flood di troppo costa tempo, uno di meno costerebbe ombre). Le globali non proiettano ombre nel backend `lit`: `shadowIntensity` è ignorata, e il renderer avvisa una volta in dev (`shadowedGlobalLight`).
 - **occluder**: i valori distinti di maschera normalizzati (0 → 0xFFFF) degli occluder che possono raggiungere lo schermo, con lo stesso test conservativo. L'SDF è screen-space, quindi un occluder fuori schermo non conta niente. Non filtrarli invece creerebbe set inutili da 1,8 ms.
 - **`receiverLayers`**: l'OR di `1 << layerOf(mask)` sui ricevitori delle primitive che campionano il light buffer (quad e gradient, `LIT_PRIMITIVE_TYPES`; review 2026-09-26) ~~senza filtro frustum. Un gruppo in più costa poco.~~ **in vista, con lo stesso test conservativo delle luci** (review 2026-09-26: un layer fuori schermo i cui caster in vista differiscono riceve un SDF set tutto suo, +1,84 ms per pixel che nessuno campiona). `layerOf(0) = 0`, altrimenti il bit più basso. Se un ricevitore ha più di un bit si alza il flag `multiBitReceiver`.
 
@@ -73,6 +73,8 @@ interface LightGroups {
   multiBitReceiver: boolean;
   /** Una luce globale in vista chiede ombre (shadowIntensity > 0): il backend `lit` la ignora, e il renderer avvisa una volta in dev. */
   shadowedGlobalLight: boolean;
+  /** Passo 8: una luce sprite della lista non ha una texture che questo renderer ha caricato (`untexturedPredicate`), quindi non accende nulla; il renderer avvisa una volta in dev, con gli id esterni di `untexturedSpriteIds(groups, input)`. */
+  untexturedSpriteLight: boolean;
   /** For the debug readout: the distinct values that split the groups. */
   lightMasks: number[]; occluderMasks: number[];
   lightOrder: Uint32Array; lightIds: Uint32Array;
@@ -89,7 +91,7 @@ Costo misurato del prototipo (Node 24, dati sintetici, senza filtro frustum): 0,
 
 ### 5.1 Il nodo `light-groups` (`LightGroupsPass`)
 
-Sostituisce i nodi `occluder-seed`, `sdf-0..N` e `light-accum`. Legge `visible-indices`, `entity-transforms`, `indirect-args`, `render-meta`, `tex-indices` e `prim-params`; scrive `light-buffer`.
+Sostituisce i nodi `occluder-seed`, `sdf-0..N` e `light-accum`. Legge `visible-indices`, `entity-transforms`, `indirect-args`, `render-meta`, `tex-indices` (i caster e, dal passo 8, anche `LightAccumStage`: il cookie di una luce sprite) e `prim-params`; scrive `light-buffer`.
 
 Possiede le sue texture, dimensionate a `halfResolution` del canvas ogni frame, grow-only sul numero di layer:
 - `seed` e il ping-pong `sdfA`/`sdfB` (JFA_FORMAT), **riusati** da ogni set;

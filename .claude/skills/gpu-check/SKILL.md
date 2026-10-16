@@ -154,10 +154,15 @@ Expected today (2026-09-27, the checks read pixels through the probe): every tab
 **Input at 2/6** — its 4 checks wait for real keyboard/click/pointer/scroll input (⏳), which is
 not a regression. Primitives (MSDF), Rendering FX (Tonemap stub) and Debug Tools each skip one
 check. In Mode A most checks skip: §7 has the list. Lighting, Rendering FX and
-Lifecycle take a few seconds: wait ~7 s on them. **2D Twins** (6 checks) holds the one check of
-scatter format 0 and the transparent-sort checks: run it with `?mode=C` too, where its row check
+Lifecycle take a few seconds: wait ~7 s on them. Lighting loads its sprite cookie and up to 64
+filler textures of 1 px per entry, which double the cookie's tier while a sprite light draws: 15,
+16, 32 and 64 fillers at entries 1-4 of a fresh page. Nothing unloads them, so from the fifth
+entry the tier is at its 256-layer cap and 'Cookie tier grows while the light draws' skips: reload
+the page to run it again. **2D Twins** (7 checks) holds the one check of scatter format 0, the
+transparent-sort checks and 'Textured quad and line show their image upright' (a textured quad and
+a textured line read upright, round step 8): run it with `?mode=C` too, where its row check
 must report scatter frames (Mode B uploads every row, so there it reports 0) and 'Transparent sort
-under churn' runs (in Mode B it skips: 5/6 passed · 1 skipped). Its setup takes several seconds
+under churn' runs (in Mode B it skips: 6/7 passed · 1 skipped). Its setup takes several seconds
 (texture load, 10-frame reads): wait for it. `window.__hyperion` is the live facade for anything
 the tabs do not check.
 
@@ -284,7 +289,10 @@ in front: 202, 126, 51 along its gradient. The light list's id tie-break (round 
 its slot below P's; A, B and the expected colours equal at 18 of 18 points over the three phases,
 `docs/plans/assets/2026-10-08-step7/modeA-vs-B/pixels.json`). The quality (README M6c in
 `docs/plans/assets/2026-09-29-mac-m2/`, not re-run): `shadowSteps` 4 against 48 on a static lit
-scene changes 6.35 % of the canvas.
+scene changes 6.35 % of the canvas. Textures do not travel: in Mode A `loadTexture` throws (no
+main-thread renderer) and the render worker's tier arrays hold one placeholder layer, so a sprite
+light never lights there (round step 8, a declared limitation), and the Lighting tab's four sprite
+checks skip (`no main-thread renderer`), spawning nothing.
 
 ## Report
 

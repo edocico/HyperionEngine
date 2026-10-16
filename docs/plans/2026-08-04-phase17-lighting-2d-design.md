@@ -171,7 +171,7 @@ Verificati sul sorgente Bikeshed della spec (`spec/index.bs` e `wgsl/index.bs` s
 | `maxComputeInvocationsPerWorkgroup` | **256** core, **128** compat | Tile 16×16 ok in core, 8×8 per coprire compat |
 | `maxComputeWorkgroupStorageSize` | **16 KiB** = 4096 u32 | Ampio per liste luce per-tile |
 | Float atomics in WGSL | **non esistono** | ❌ L'accumulo HDR **deve** usare blending additivo hardware in render pass, non `atomicAdd` |
-| `binding_array` in WGSL | proposal **Draft**, non implementata | ❌ Niente bindless. Cookie texture → `texture_2d_array` o atlas |
+| `binding_array` in WGSL | proposal **Draft**, non implementata | ❌ Niente bindless. Cookie texture → `texture_2d_array` o atlas. 🆕 Dal passo 8 del giro il cookie è un layer dei tier del motore, letto col gruppo 1 del preludio (§7.3, nota della luce sprite) |
 | Runtime-sized array in `uniform` | vietato | La lista luci va in uno **storage buffer** |
 | `textureSample` in control flow non uniforme | **errore di compilazione** | ❌ Nel loop luci obbligatorio `textureSampleLevel`. Coincide col check #7 di `wgsl-validator` |
 | Preprocessore WGSL | non esiste | Variantizzazione via `override` (solo scalari) o templating TS |
@@ -310,7 +310,7 @@ Utile per calibrare l'ambizione rispetto ai tre mercati. Il metro migliore è il
 
 | | Table stakes (ci si aspetta che ci sia) | Premium (differenzia) |
 |---|---|---|
-| **Tipi di luce** | point, spot, global/ambient | freeform poligonale, sprite/cookie, line light |
+| **Tipi di luce** | point, spot, global/ambient | freeform poligonale, sprite/cookie (✅ passo 8 del giro), line light |
 | **Ombre** | hard shadow da occluder | **soft shadow con penombra variabile**, self-shadow, sprite shadow |
 | **Materiali** | tinta e intensità | **normal map**, specular, height/parallax |
 | **Organizzazione** | light layer / mask | blend style multipli, per-layer batching |
@@ -417,7 +417,7 @@ Una luce è un'entità con `RenderPrimitive(6)`. Non un oggetto in una lista sep
 | Gerarchia (torcia attaccata al personaggio) | `Parent` / `Children` + `propagate_transforms` |
 | Ciclo di vita spawn/despawn | `EntityMap`, slot GPU, `queue_despawn` |
 | Upload parziale | `DirtyTracker` + `ScatterPass` |
-| **Frustum culling delle luci sulla GPU** | `CullPass` con `BoundingRadius` = raggio della luce |
+| **Frustum culling delle luci sulla GPU** | `CullPass` con `BoundingRadius` = raggio della luce (per una sprite `range·√2`, la semidiagonale del suo quadrato: passo 8 del giro) |
 | **Snapshot / restore** | HSNP v3 — determinismo e time-travel per Lumière |
 | Replay / command tape | `CommandTapeRecorder`, `ReplayPlayer` |
 | API fluente | `EntityHandle` |
@@ -578,7 +578,7 @@ Target: `light-buffer`, `rgba16float`, **metà risoluzione per asse**. Blend «o
 
 Una draw instanced, un'istanza per luce visibile, quad che copre il raggio (dal passo 7 una `drawIndexed` diretta per gruppo sulla lista che `deriveLightGroups` ordina sulla CPU; prima una `drawIndexedIndirect` per bucket del tipo 6). Nel fragment, per ciascun pixel:
 
-1. Attenuazione radiale/conica dai parametri della luce.
+1. Attenuazione radiale/conica dai parametri della luce. Per una luce sprite (passo 8 del giro) il cookie al posto dell'attenuazione: il colore per l'rgb del cookie, e l'intensità è la sua alpha.
 2. Se `shadowIntensity > 0`: **sphere marching sulla SDF** dal pixel verso il centro della luce.
 3. Blend mode in-shader, sotto l'unico «over» della pipeline: Add (c, 0), Sub (−c, 0), Mix (colore·w, w) con w = intensità (passo 7, nota sotto).
 4. Il `lightMask` si applica in lettura, nel ForwardPass (§7.4).
@@ -608,6 +608,8 @@ ph = h;
 > 🆕 **Ombre directional, passo 6 del giro (implementate 2026-10-04 e 2026-10-05).** Una luce directional splende verso il suo asse +x locale (`lightFacing`, lo stesso helper dello spot): `rotation(-Math.PI/2)` la fa splendere verso il basso dello schermo, perché il mondo è y-up. `vs_main` calcola il raggio verso la luce in texel dell'SDF (a ogni vertice, uguale per tutti i vertici della luce; proiezione come vettore, w = 0, esatta perché il motore costruisce solo camere ortografiche) e la lunghezza dell'ombra, il `range` della luce in texel. Il fragment marcia (`sunShadow`) fino a min(range, uscita dall'SDF), e oltre l'SDF conta come illuminato: la lettura clampata ripeterebbe il bordo all'infinito, e la regola dei passi finiti, estrapolata all'infinito, darebbe 0. L'angolo è fisso, `u.sourceFraction`: 0,02 rad (circa 1,15°), la larghezza della penombra per unità di distanza, cioè circa il **diametro** angolare della sorgente; è l'angolo di ogni point al bordo del suo range (1/k = 0,125 rad sarebbe 13 volte il diametro del sole vero, 0,0093 rad). Un caster a distanza t dal pixel ombreggia a forza piena fino a 3/4 del range, poi sfuma con una smoothstep fino a 0. Il sole marcia con un budget di passi quadruplo, `4u * u.shadowSteps` (192 al default di 48; sotto-decisione 2 (b) del proprietario): i raggi di un sole allineato agli assi strisciano lungo le facce dei caster parallele a loro per tutta la loro lunghezza, 1-2 texel a passo. Resta un residuo per i caster lunghi più di circa 7 unità (a 1080p, zoom 1) lungo quei raggi: a `rotation(0)` circa lo 0,1 % del light buffer della scena del banco del passo 6 sbaglia di più di 0,1 del sole (`assets/2026-09-30-step6/grid-x4-m2.json`). Un caster fuori schermo non proietta nulla; la comparsa al bordo dal lato del sole è al §17, punto 1. Le luci `global` non proiettano ombre nel backend `lit`. Costo nel §13.2; A/B dell'angolo in `assets/2026-09-30-step6/penumbra-ab-m2.json`.
 
 > 🆕 **Una lista per tutte le luci e il blend `mix`, passo 7 del giro (2026-10-08).** Ogni Light2D che il test **esatto** del cull tiene entra in una lista costruita sulla CPU da `deriveLightGroups`, ordinata per classe di blend (add e sub, poi mix), z di mondo dal fondo al davanti (`sortableZBits`) e id esterno. `LightAccumStage` la disegna con una draw diretta per gruppo: WebGPU fonde nell'ordine delle primitive, quindi l'ordine è quello della lista e non quello degli atomici del cull, e serve niente `indirect-first-instance`. Add e sub restituiscono alpha 0 (al bit come `{one, one}`), un mix (colore·w, w), w = attenuazione (1 − d/range)^falloff × cono × ombra, limitata a [0, 1]. Ricerca `wf_c4b94385-585`.
+
+> 🆕 **La luce sprite, passo 8 del giro (2026-10-14).** Una luce `sprite` è il quadrato di semilato `range` attorno alla sua posizione, girato col suo asse +x locale come lo spot (`spriteAxes` in `light-accum.wgsl`: il facing di `lightFacing` e l'asse laterale girato col segno del determinante della parte 2×2, così il cookie si specchia come l'immagine di un quad); il raggio di culling è la sua semidiagonale, `range·√2`, calcolata in Rust e saturata a `f32::MAX`. Forma e colori vengono dal cookie, la texture dell'entità (`loadTexture` + `.texture()`), nei tier del motore: `LightAccumStage` lega come gruppo 1 il layout del preludio (`textureTierLayoutEntries()`, con un `TextureTierBinding` risolto dal pool a ogni `encode`) e come binding 6 la colonna `tex-indices`, e `light-accum.wgsl` ha una copia di `sampleTier`, legata al preludio da un test, campionata a LOD 0. Niente falloff né cono: la luce è colore × rgb × alpha del cookie (un mix va verso colore × rgb col peso dell'alpha), e il cookie è diritto come ogni immagine dei tier, la prima riga verso il +y locale. Le ombre partono dal centro, come per una point (`pointShadow`), e `light-groups.ts` conta le sprite ombreggiate nello stesso commit dello shader. Sotto-decisioni del controller (piano del giro, §2): 1 (a) lo specchio col segno del determinante, con `cullMode: 'none'` esplicito nella pipeline delle luci; 2 (e) le immagini dei tier diritte in ogni primitiva (`sampleTierOrWhite` gira v dopo la risposta bianca, e il cookie copia quelle due righe); 3 (c) una luce ombreggiata apre un set SDF solo con `range` > 0, e una sprite solo con una texture; 4 (a)+(c)+(d) il layer 0 di ogni array non accende nulla (`vs_main`), un layer oltre il suo array si scarta (`fs_main`, `cookieLayers`), e sulla CPU un solo predicato, `untexturedPredicate`, conta come senza texture anche un layer pari o oltre quelli in uso del suo array; D3 (a) i check in una sotto-scena del tab Lighting in (200, 0); D4 (d') l'avviso. Piano `2026-10-14-step8-sprite-light-plan.md`, evidenze in `docs/plans/assets/2026-10-14-step8/`. Le sprite prima non disegnavano nulla; con una texture ora disegnano il cookie e, ombreggiate, aprono un set SDF; senza texture restano spente, con un avviso dev (`untexturedSpriteLight`, una volta, dopo un secondo di frame illuminati senza caricamenti di texture in corso).
 
 **Step count**: `bevy_light_2d` usa 32, jason.today 32, Yaazarai indica *"the optimal case seems to be 32-64 steps"*, davidtme (marzo 2026) *"approximately 10-20 steps per pixel"* con SDF. **16–32 è la fascia di lavoro.**
 
@@ -769,10 +771,10 @@ Esattamente 32 bit. **Zero nuove colonne SoA, zero nuovi export WASM, stride del
 | slot | nome | note |
 |---|---|---|
 | 0-2 | `colorR/G/B` | HDR — **energy premoltiplicata nel colore** |
-| 3 | `range` | raggio in unità mondo (point, spot); per una directional, la lunghezza dell'ombra |
+| 3 | `range` | raggio in unità mondo (point, spot); per una sprite, il semilato del suo quadrato (raggio di culling `range·√2`); per una directional, la lunghezza dell'ombra |
 | 4 | `innerCos` | coseno angolo interno (Spot) / `height` (Point, per normal map) |
 | 5 | `outerCos` | coseno angolo esterno (Spot) |
-| 6 | `falloff` | esponente di attenuazione |
+| 6 | `falloff` | esponente di attenuazione (point, spot); la sprite non ne ha: la sua forma è il cookie |
 | 7 | `shadowIntensity` | `0` = nessuna ombra; ignorata sulle `global` nel backend `lit` |
 
 8 su 8. Premoltiplicare l'energy libera lo slot per `shadowIntensity`.
@@ -845,6 +847,8 @@ Non usa accumulo temporale, blue noise, jitter né history buffer. Lo sphere mar
 
 > 🆕 **Vero alla lettera dal passo 7 del giro.** Prima l'ordine delle luci lo decidevano gli atomici del cull, e due ordini danno texel diversi di qualche passo fp16 (su master la permutazione del banco ne cambiava 176 su 2304, di un passo, in Mode B come in Mode C, `assets/2026-10-08-step7/master-B.permute.stats.json` e `master-C.permute.stats.json`; quattro luci a 1024 slot l'una dall'altra arrivavano ad almeno due passi (un limite inferiore: la corsa ha superato le 8 griglie tenute), `master-B.order.stats.json`). Ora l'ordine viene dallo stato ECS, e il primo passo della catena SDF (`LOAD_PASS`) legge solo l'alpha del seed, quindi l'ordine dei caster (ancora quello del cull, visibile nel rg del seed) non arriva all'SDF: sullo stesso device il light buffer è funzione pura delle righe (id esterni compresi), qualunque sia il loro slot, e di camera, canvas, ambient e qualità (fra device, §10.4).
 
+> 🆕 **E dei contenuti dei tier (passo 8 del giro).** Il light buffer dipende anche dai contenuti dei layer dei tier a cui puntano gli indici delle righe: l'alpha di un caster texturizzato, che dà forma alla sua ombra (già prima), e dal passo 8 il cookie di una luce sprite. Quei layer si caricano per URL (`loadTexture`), fuori dal tape, dallo snapshot e da `state_hash`: un replay su una pagina fresca campiona quello che quei layer contengono lì.
+
 ### 10.3 Caveat: determinismo ≠ stabilità temporale
 
 - **Determinismo**: a parità di input, output identico. ✅ Garantito da entrambi i backend.
@@ -881,6 +885,11 @@ const sole = engine.spawn()
 
 // Una luce mix porta il light buffer verso colore × energia col peso della sua intensità; fra mix sovrapposte vince la più vicina
 const finestra = engine.spawn({ mode: '2d' }).position(40, 60).depth(1).light({ type: 'point', blend: 'mix', color: '#80a0ff', energy: 1, range: 150, falloff: 0 });
+
+// Una luce sprite: il quadrato di semilato `range`, girato con la luce, prende forma e colori dal cookie (la texture dell'entità)
+const cookie = await engine.loadTexture('/textures/vetrata.png');
+const vetrata = engine.spawn({ mode: '2d' }).position(-20, 10).rotation(Math.PI / 8).texture(cookie)
+  .light({ type: 'sprite', color: '#ffffff', energy: 1.5, range: 30, shadowIntensity: 1 });
 
 engine.lighting.setBackend('lit');      // 'off' | 'lit' | 'gi'
 engine.lighting.setAmbient('#101828', 1.0);

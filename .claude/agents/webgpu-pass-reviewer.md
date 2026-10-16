@@ -51,7 +51,10 @@ Given a change (a diff range or a list of files), check each pass it touches:
    `getPreferredCanvasFormat()`.
 10. **Rebinding after reallocation.** A texture or buffer that grows is a new object: every cached
     bind group holding the old view must be rebuilt (texture tiers, grow-only light buffer), and a
-    destroyed resource must never reach a submit.
+    destroyed resource must never reach a submit. Every holder of the texture tiers resolves its
+    `TextureTierBinding` from the pool every frame: `ForwardPass` in `execute()`,
+    `OccluderSeedStage` and, since round step 8, `LightAccumStage` (a sprite light's cookie) in
+    every `encode()`.
 11. **Render graph declarations.** One blind writer per resource; a pass drawing over the graph's
     output (`loadOp: 'load'`) reads AND writes `swapchain`. GPU profiler contract: `execute`'s 4th
     argument `stage` exists only while the profiler measures, and never for a node with
@@ -69,7 +72,14 @@ Given a change (a diff range or a list of files), check each pass it touches:
     in `setup()`, destroyed in `destroy()`, never in the pool), grows to the next power of two,
     never shrinks, drops the cached bind groups when it grows, and is written once, in
     `prepare()`, which also sets the light count; binding 2 is VERTEX-only `read-only-storage`
-    with `minBindingSize: 4`.
+    with `minBindingSize: 4`. Since round step 8 (sprite lights) its pipeline layout has a second
+    group, the prelude's group 1 (`textureTierLayoutEntries()`, FRAGMENT), bound in every
+    `encode()`, with no draw while the pool lacks a tier view; group 0's binding 6 is the pool's
+    `tex-indices`, VERTEX-only `read-only-storage` with `minBindingSize: 4`, which the stage reads
+    and never registers. Its storage buffers are 5 of 8 in the vertex stage (bindings 1, 2, 3, 4,
+    6) and 3 of 8 in the fragment stage (1, 3, 4). The pipeline is `cullMode: 'none'`: a sprite
+    light under a mirroring transform is wound clockwise, and `'back'`, which the entity pipelines
+    keep, would drop it.
 
 Method: read the pass, its shader and its test side by side; compute sizes and offsets explicitly
 rather than trusting comments. For each problem report file:line, the rule broken, the concrete

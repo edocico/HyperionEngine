@@ -68,7 +68,8 @@ function raySphereT(
  * @param grid - Optional SpatialGrid for accelerated candidate lookup.
  * @param renderMeta - Optional SoA render metadata (2 u32 per entity). When
  *   given, lights (primType Light2D) are never hit: a light's bounding sphere
- *   is its range, and a global light's covers the world.
+ *   is its range (a sprite light's, range·√2), and a global or directional
+ *   light's covers the world.
  * @returns The entityId of the closest intersected sphere, or null if no hit.
  */
 export function hitTestRay(
