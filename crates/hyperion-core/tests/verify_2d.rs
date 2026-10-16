@@ -195,3 +195,107 @@ fn d7_a_2d_twin_at_depth_d_shares_its_row_with_a_3d_twin_at_z_minus_d() {
     assert_close(&t2, &t3, "transform");
     assert_close(&b2, &b3, "bounds");
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Sprite light (round step 8): a square of half-side `range` that turns
+// with the light, shaped by its cookie, the texture index any entity takes.
+// ─────────────────────────────────────────────────────────────────
+
+fn light_type(id: u32, t: u8) -> Command {
+    let mut p = [0u8; 16];
+    p[0] = t;
+    p[2..4].copy_from_slice(&1u16.to_le_bytes()); // layer 0
+    cmd(CommandType::SetLightFlags, id, p)
+}
+fn texture(id: u32, packed: u32) -> Command {
+    let mut p = [0u8; 16];
+    p[0..4].copy_from_slice(&packed.to_le_bytes());
+    cmd(CommandType::SetTextureLayer, id, p)
+}
+
+#[test]
+fn d8_a_sprite_light_culls_on_its_half_diagonal_and_carries_its_cookie_in_both_archetypes() {
+    // An overflow-tier layer, where a PNG cookie lands on a BC/ASTC device.
+    const COOKIE: u32 = (1 << 31) | (2 << 16) | 3;
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, true), spawn(1, false)]);
+    let mut cmds = Vec::new();
+    for id in [0, 1] {
+        cmds.push(floats(CommandType::SetPosition, id, &[5.0, 6.0, 0.0]));
+        cmds.push(floats(CommandType::SetRotation2D, id, &[0.7]));
+        cmds.push(floats(CommandType::SetScale, id, &[40.0, 40.0, 1.0]));
+        cmds.push(primitive(id, 6));
+        cmds.push(light_type(id, 4)); // LightType::Sprite
+        cmds.push(floats(CommandType::SetPrimParams0, id, &[1.0, 0.8, 0.6, 12.0]));
+        cmds.push(texture(id, COOKIE));
+    }
+    e.process_commands(&cmds);
+    e.update(1.0 / 60.0);
+
+    let want = 12.0f32 * std::f32::consts::SQRT_2;
+    let (t2, b2) = gpu_row(&e, 0);
+    let (t3, b3) = gpu_row(&e, 1);
+    assert_eq!(&b2[..3], &[5.0, 6.0, 0.0]);
+    assert_eq!(b2[3], want, "the radius is range * sqrt(2), scale and rotation ignored");
+    assert_close(&t2, &t3, "transform");
+    assert_close(&b2, &b3, "bounds");
+
+    for (id, format) in [(0u32, 0u32), (1, 1)] {
+        let slot = e.render_state.get_slot(e.entity_map.get(id).unwrap()).unwrap() as usize;
+        assert_eq!(e.render_state.gpu_tex_indices()[slot], COOKIE, "id {id}: the tex-indices column");
+        let row = staged(&e, id).expect("the light is staged in the frame that set it up");
+        assert_eq!(row[31], format, "id {id}: a 2D root travels as format 0, a 3D one as format 1");
+        assert_eq!(f32::from_bits(row[19]), want, "id {id}: the staged radius");
+        assert_eq!(row[21] & 0xFF, 6, "id {id}: Light2D");
+        assert_eq!((row[21] >> 11) & 0b111, 4, "id {id}: the sprite type in renderMeta");
+        assert_eq!(row[22], COOKIE, "id {id}: the staged texture index");
+    }
+}
+
+#[test]
+fn d9_a_texture_set_frames_before_the_light_and_a_cookie_cleared_or_changed_alone_reach_the_gpu() {
+    // SetTextureLayer and SetLightFlags mark only `meta` dirty: each change
+    // must still be staged and reach the tex-indices column.
+    const COOKIE: u32 = (1 << 31) | 3;
+    const COOKIE2: u32 = (1 << 31) | 4;
+    let mut e = Engine::new();
+    e.process_commands(&[spawn(0, true), spawn(1, false)]);
+    e.process_commands(&[texture(0, COOKIE), texture(1, COOKIE)]);
+    e.update(1.0 / 60.0);
+    let slot = |e: &Engine, id: u32| e.render_state.get_slot(e.entity_map.get(id).unwrap()).unwrap() as usize;
+    let want = 12.0f32 * std::f32::consts::SQRT_2;
+
+    let mut cmds = Vec::new();
+    for id in [0, 1] {
+        cmds.push(primitive(id, 6));
+        cmds.push(light_type(id, 4)); // LightType::Sprite, no texture command
+        cmds.push(floats(CommandType::SetPrimParams0, id, &[1.0, 0.8, 0.6, 12.0]));
+    }
+    e.process_commands(&cmds);
+    e.update(1.0 / 60.0);
+    for id in [0u32, 1] {
+        let row = staged(&e, id).expect("the light commands stage the row");
+        assert_eq!(row[22], COOKIE, "id {id}: the texture set a frame earlier");
+        assert_eq!((row[21] >> 11) & 0b111, 4, "id {id}: the sprite type");
+        assert_eq!(f32::from_bits(row[19]), want, "id {id}: the radius");
+        assert_eq!(e.render_state.gpu_tex_indices()[slot(&e, id)], COOKIE, "id {id}: the tex-indices column");
+    }
+
+    // Cleared alone: layer 0, the light draws nothing again.
+    e.process_commands(&[texture(0, 0), texture(1, 0)]);
+    e.update(1.0 / 60.0);
+    for id in [0u32, 1] {
+        let row = staged(&e, id).expect("SetTextureLayer alone stages the row");
+        assert_eq!(row[22], 0, "id {id}: the cleared index");
+        assert_eq!(f32::from_bits(row[19]), want, "id {id}: the radius unchanged");
+        assert_eq!(e.render_state.gpu_tex_indices()[slot(&e, id)], 0, "id {id}: the tex-indices column");
+    }
+
+    // Changed alone.
+    e.process_commands(&[texture(0, COOKIE2), texture(1, COOKIE2)]);
+    e.update(1.0 / 60.0);
+    for id in [0u32, 1] {
+        assert_eq!(staged(&e, id).expect("staged again")[22], COOKIE2, "id {id}: the new cookie");
+        assert_eq!(e.render_state.gpu_tex_indices()[slot(&e, id)], COOKIE2, "id {id}: the tex-indices column");
+    }
+}

@@ -52,9 +52,13 @@ pub struct Velocity(pub Vec3);
 pub struct ModelMatrix(pub [f32; 16]);
 
 /// Packed texture layer index for per-entity texture lookup.
-/// Encoding: `(tier << 16) | layer` where tier selects which Texture2DArray
-/// and layer selects which slice within it.
-/// Default 0 = tier 0, layer 0 (white fallback).
+/// Encoding: `(overflow << 31) | (tier << 16) | layer`: the tier (bits 16-18)
+/// selects which Texture2DArray, the layer (bits 0-15) the slice within it,
+/// and the overflow bit the rgba8 overflow arrays (a PNG or JPEG on a device
+/// with a compressed format; `packTextureIndex` in texture-manager.ts).
+/// Default 0 = tier 0, layer 0: white on a primitive (the prelude's
+/// `sampleTierOrWhite`), and no light at all on a sprite light, whose cookie
+/// it is (round step 8).
 #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
 #[repr(C)]
 pub struct TextureLayerIndex(pub u32);
@@ -100,10 +104,13 @@ pub struct RenderPrimitive(pub u8);
 /// because a 3D light will need them apart.
 ///
 /// Slot 3 (`range`) lives here and nowhere else. On a point or spot light it
-/// is the light's extent; on a directional light, the length of its shadows.
-/// It drives `BoundingRadius` through `systems::update_bounding_radii`, except
-/// on global and directional lights, which light the whole screen and get
-/// `f32::MAX`. Slot 4 doubles as `height` for point lights once normal maps
+/// is the light's extent; on a sprite light, the half-side of its square,
+/// which turns with the light (round step 8); on a directional light, the
+/// length of its shadows. It drives `BoundingRadius` through
+/// `systems::update_bounding_radii` (a sprite light's is range * sqrt(2), the
+/// square's half-diagonal, saturated at `f32::MAX`), except on global and
+/// directional lights, which light the whole screen and get `f32::MAX`.
+/// Slot 4 doubles as `height` for point lights once normal maps
 /// land.
 ///
 /// Flags are deliberately NOT bit-packed into a spare `f32` here: the
@@ -355,6 +362,9 @@ pub enum LightType {
     Spot = 1,
     Directional = 2,
     Global = 3,
+    /// A cookie light (round step 8): a square of half-side `range`, turned
+    /// with the light, in the shape and colours of its texture
+    /// (`TextureLayerIndex`); without one it lights nothing.
     Sprite = 4,
     // 5 = Point3D, 6 = Spot3D, 7 = Area — reserved, see above.
 }

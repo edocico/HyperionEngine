@@ -1985,6 +1985,48 @@ mod tests {
         assert_eq!(gpu_radius(&engine), 80.0, "back to its range");
     }
 
+    #[test]
+    fn switching_a_light_to_sprite_reaches_the_gpu_bounds() {
+        // SetLightFlags and SetPrimParams0 mark only `meta` dirty; the staged
+        // row carries this frame's radius.
+        let mut engine = Engine::new();
+        engine.process_commands(&[spawn_cmd(0)]);
+        let mut prim = [0u8; 16];
+        prim[0] = crate::components::PRIM_TYPE_LIGHT2D;
+        let range = |r: f32| {
+            let mut p = [0u8; 16];
+            p[12..16].copy_from_slice(&r.to_le_bytes());
+            Command { cmd_type: CommandType::SetPrimParams0, entity_id: 0, payload: p }
+        };
+        let set_type = |t: u8| {
+            let mut p = [0u8; 16];
+            p[0] = t;
+            p[2..4].copy_from_slice(&1u16.to_le_bytes());
+            Command { cmd_type: CommandType::SetLightFlags, entity_id: 0, payload: p }
+        };
+        engine.process_commands(&[
+            Command { cmd_type: CommandType::SetRenderPrimitive, entity_id: 0, payload: prim },
+            range(80.0),
+        ]);
+        engine.update(FIXED_DT);
+        let e = engine.entity_map.get(0).unwrap();
+        let slot = engine.render_state.get_slot(e).unwrap() as usize;
+        let gpu_radius = |engine: &Engine| engine.render_state.gpu_bounds()[slot * 4 + 3];
+        assert_eq!(gpu_radius(&engine), 80.0);
+
+        engine.process_commands(&[set_type(crate::components::LightType::Sprite as u8)]);
+        engine.update(FIXED_DT);
+        assert_eq!(gpu_radius(&engine), 80.0 * std::f32::consts::SQRT_2, "a sprite light culls on its half-diagonal");
+
+        engine.process_commands(&[range(20.0)]);
+        engine.update(FIXED_DT);
+        assert_eq!(gpu_radius(&engine), 20.0 * std::f32::consts::SQRT_2, "a range change alone re-stages it");
+
+        engine.process_commands(&[set_type(crate::components::LightType::Point as u8)]);
+        engine.update(FIXED_DT);
+        assert_eq!(gpu_radius(&engine), 20.0, "back to its range");
+    }
+
     #[cfg(feature = "dev-tools")]
     #[test]
     fn snapshot_v3_light_flags_roundtrip() {

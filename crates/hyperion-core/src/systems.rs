@@ -225,8 +225,10 @@ pub fn update_bounding_radii(world: &mut World) {
         radius.0 = world_matrix_radius(&matrix.0);
     }
 
-    // A light's culling radius is its range, and range has exactly one source
-    // of truth: `primParams[3]`, the same slot the accumulation shader reads.
+    // A light's culling radius comes from its range (the range itself; for a
+    // sprite light, whose square turns with it, range * sqrt(2)), and range
+    // has exactly one source of truth: `primParams[3]`, the same slot the
+    // accumulation shader reads.
     // Mirroring it into `BoundingRadius` from the TypeScript producer instead
     // would hold until someone set range through `raw-api.ts` and forgot the
     // second write, at which point the light culls against a stale radius and
@@ -234,9 +236,9 @@ pub fn update_bounding_radii(world: &mut World) {
     //
     // This query runs SECOND on purpose, and the order is a correctness
     // invariant, not style: `SpawnEntity` gives *every* entity a `ModelMatrix`
-    // (command_processor.rs:632 and :649, both archetypes), so the pass above
-    // matches lights too and would otherwise leave them with a radius derived
-    // from the light quad's scale.
+    // (`process_commands`: its single and its batch spawn, both archetypes),
+    // so the pass above matches lights too and would otherwise leave them with
+    // a radius derived from the light quad's scale.
     //
     // `BoundsOverride` still wins — `SetBoundingRadius` is the documented way
     // to pin a radius, and a light is no exception.
@@ -277,11 +279,17 @@ pub fn update_bounding_radii(world: &mut World) {
         // A light's transform scale does NOT affect its culling radius: a
         // light's extent is its range. Negative and non-finite ranges collapse
         // to 0 rather than reaching the sphere-frustum test.
+        //
+        // A sprite light's square turns with it (round step 8): its corners
+        // lie range * sqrt(2) from its centre, saturated at f32::MAX (the
+        // product overflows past about 2.4e38), like a global light's radius.
         let range = params.0[3];
-        radius.0 = if range.is_finite() && range > 0.0 {
-            range
-        } else {
+        radius.0 = if !(range.is_finite() && range > 0.0) {
             0.0
+        } else if kind == LightType::Sprite as u8 {
+            (range * std::f32::consts::SQRT_2).min(f32::MAX)
+        } else {
+            range
         };
     }
 }
@@ -769,8 +777,8 @@ mod tests {
     }
 
     #[test]
-    fn point_spot_and_sprite_lights_keep_their_range() {
-        for kind in [LightType::Point, LightType::Spot, LightType::Sprite] {
+    fn point_and_spot_lights_keep_their_range() {
+        for kind in [LightType::Point, LightType::Spot] {
             let mut world = World::new();
             let e = spawn_light(&mut world, 50.0, 1.0);
             world
@@ -779,6 +787,109 @@ mod tests {
             update_bounding_radii(&mut world);
             assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 50.0, "{kind:?}");
         }
+    }
+
+    // --- Round step 8: a sprite light is a square of half-side `range` that
+    // turns with the light, so it culls on its half-diagonal. ---
+
+    fn spawn_sprite_light(world: &mut World, range: f32, scale: f32) -> hecs::Entity {
+        let e = spawn_light(world, range, scale);
+        world
+            .insert_one(e, LightFlags::new(LightType::Sprite, LightBlendMode::Add, 1))
+            .unwrap();
+        e
+    }
+
+    #[test]
+    fn sprite_light_radius_is_its_range_times_sqrt_2() {
+        for range in [50.0f32, 3.0, 0.1, 1.0e6] {
+            let mut world = World::new();
+            let e = spawn_sprite_light(&mut world, range, 1.0);
+            update_bounding_radii(&mut world);
+            // Bit for bit the f32 product.
+            assert_eq!(
+                world.get::<&BoundingRadius>(e).unwrap().0,
+                range * std::f32::consts::SQRT_2,
+                "range {range}"
+            );
+        }
+    }
+
+    #[test]
+    fn sprite_light_radius_reaches_its_farthest_corner_at_any_rotation() {
+        // Turned by `a`, the square reaches range * (|cos a| + |sin a|).
+        let range = 50.0f32;
+        let mut world = World::new();
+        let e = spawn_sprite_light(&mut world, range, 1.0);
+        update_bounding_radii(&mut world);
+        let r = f64::from(world.get::<&BoundingRadius>(e).unwrap().0);
+        let ulps = 2.0 * f64::from(f32::EPSILON); // the f32 rounding of the product
+        let mut widest = 0.0f64;
+        for deg in 0..=360 {
+            let a = f64::from(deg).to_radians();
+            let reach = f64::from(range) * (a.cos().abs() + a.sin().abs());
+            assert!(reach <= r * (1.0 + ulps), "{deg} deg: a corner {reach} past the radius {r}");
+            widest = widest.max(reach);
+        }
+        assert!(widest >= r * (1.0 - ulps), "the radius is the half-diagonal, no more: {widest} vs {r}");
+    }
+
+    #[test]
+    fn sprite_light_radius_ignores_a_scaled_rotated_parent() {
+        // Parent x3 and 0.7 rad, light x40 and -1.1 rad: a matrix-derived
+        // radius would be about 104; the square ignores the matrix.
+        let mut world = World::new();
+        let parent = world.spawn((
+            Position(Vec3::new(100.0, -20.0, 0.0)),
+            Rotation(Quat::from_rotation_z(0.7)),
+            Scale(Vec3::splat(3.0)),
+            ModelMatrix::default(),
+            Active,
+        ));
+        let light = spawn_sprite_light(&mut world, 50.0, 40.0);
+        world.insert_one(light, Parent(0)).unwrap();
+        world.get::<&mut Rotation>(light).unwrap().0 = Quat::from_rotation_z(-1.1);
+        transform_system(&mut world);
+        propagate_transforms(&mut world, &HashMap::from([(0u32, parent), (1u32, light)]));
+        let m = world.get::<&ModelMatrix>(light).unwrap().0;
+        assert!((Vec3::new(m[0], m[1], m[2]).length() - 120.0).abs() < 1e-3, "premise: world x scale 3 * 40");
+        assert!((m[12] - 100.0).abs() < 1e-3, "premise: composed with the parent");
+        update_bounding_radii(&mut world);
+        assert_eq!(world.get::<&BoundingRadius>(light).unwrap().0, 50.0 * std::f32::consts::SQRT_2);
+    }
+
+    #[test]
+    fn sprite_light_radius_saturates_at_f32_max() {
+        // range * sqrt(2) overflows past about 2.4e38: saturated like a
+        // global light's radius, never an infinity in the snapshot.
+        assert!((f32::MAX * std::f32::consts::SQRT_2).is_infinite(), "premise");
+        for range in [2.5e38f32, f32::MAX] {
+            let mut world = World::new();
+            let e = spawn_sprite_light(&mut world, range, 1.0);
+            update_bounding_radii(&mut world);
+            assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, f32::MAX, "range {range}");
+        }
+    }
+
+    #[test]
+    fn sprite_light_radius_rejects_non_positive_and_non_finite_range() {
+        for bad in [-1.0f32, -0.0, 0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut world = World::new();
+            let e = spawn_sprite_light(&mut world, bad, 1.0);
+            update_bounding_radii(&mut world);
+            let r = world.get::<&BoundingRadius>(e).unwrap().0;
+            assert_eq!(r.to_bits(), 0, "range {bad} must collapse to +0.0, got {r}");
+        }
+    }
+
+    #[test]
+    fn bounds_override_pins_a_sprite_light_radius_too() {
+        let mut world = World::new();
+        let e = spawn_sprite_light(&mut world, 300.0, 1.0);
+        world.insert_one(e, BoundsOverride).unwrap();
+        world.insert_one(e, BoundingRadius(12.0)).unwrap();
+        update_bounding_radii(&mut world);
+        assert_eq!(world.get::<&BoundingRadius>(e).unwrap().0, 12.0);
     }
 
     #[test]
