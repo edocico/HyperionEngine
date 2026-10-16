@@ -105,12 +105,15 @@ export interface GpuErrorWitness {
 }
 
 /**
- * Counts the GPU errors of the frame's own submit, which reach the device's
+ * Counts every uncaptured GPU error on the main-thread device (a dropped
+ * frame's submit, a tier growth's copy, a texture upload), which reaches its
  * `uncapturederror` event: the probe's error scope covers its own dispatch
- * only, so a dropped frame leaves it answering the last good pixels. A
- * plugin (`engine.use`, for `gpu.device`) under `name`, replacing one a dead
- * run left; never preventDefault (the console keeps the errors). `null`,
- * nothing installed, without a main-thread renderer (Mode A, headless).
+ * only, so a dropped frame leaves it answering the last good pixels; a frame
+ * the renderer scopes for a transparent-sort readback keeps its errors in
+ * that scope. A plugin (`engine.use`, for `gpu.device`) under `name`,
+ * replacing one a dead run left; never preventDefault (the console keeps the
+ * errors). `null`, nothing installed, without a main-thread renderer (Mode A,
+ * headless).
  */
 export function gpuErrorWitness(engine: Hyperion, name = 'harness-gpu-error-witness'): GpuErrorWitness | null {
   let count = 0;

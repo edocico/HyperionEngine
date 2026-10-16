@@ -251,6 +251,16 @@ describe('gpuErrorWitness', () => {
     expect(witness.count).toBe(2);
   });
 
+  it('counts every error but keeps only the first 10 messages', () => {
+    const device = new EventTarget();
+    const { engine } = pluginEngine(device);
+    const witness = gpuErrorWitness(engine)!;
+    for (let i = 0; i < 12; i++) device.dispatchEvent(gpuError(`e${i}`));
+    expect(witness.count).toBe(12);
+    expect(witness.messages).toEqual(Array.from({ length: 10 }, (_, i) => `e${i}`));
+    witness.stop();
+  });
+
   it('replaces a witness a dead run left installed, and never cancels the event: the console keeps it', () => {
     const device = new EventTarget();
     const { engine } = pluginEngine(device);
