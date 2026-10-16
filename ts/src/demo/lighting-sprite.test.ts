@@ -167,6 +167,18 @@ describe('cookieVerdict', () => {
     expect(cookieVerdict([all], ENERGY).ok).toBe(false);
     expect(cookieVerdict([{ ...cookieRead(0), floor: [NaN, NaN, NaN, 1] }], ENERGY).ok).toBe(false);
   });
+
+  it('a block off within its code names up to four such blocks, each read and the value it wants', () => {
+    // The light at 1.1 times its value: every block keeps its code.
+    const scaled = cookieRead(0);
+    scaled.values = scaled.values.map((v) => rgba(sum(F, [1.1 * (v[0] - F[0]), 1.1 * (v[1] - F[1]), 1.1 * (v[2] - F[2])])));
+    expect(cookieVerdict([scaled], ENERGY).detail).toBe('blocks 0° 0/16; at 0°: 16 blocks off within their codes: '
+      + '(0,0) read (0.185, 0.170, 2.495) want (0.185, 0.170, 2.295), (1,0) read (0.918, 0.170, 2.495) want (0.852, 0.170, 2.295), '
+      + '(2,0) read (1.652, 0.170, 2.495) want (1.518, 0.170, 2.295), (3,0) read (2.385, 0.170, 2.495) want (2.185, 0.170, 2.295)');
+    const one = cookieRead(0);
+    one.values[5] = rgba(sum(one.values[5], [0.04, 0, 0]));
+    expect(cookieVerdict([one], ENERGY).detail).toBe('blocks 0° 15/16; at 0°: 1 blocks off within their codes: (1,1) read (0.892, 0.837, 2.295) want (0.852, 0.837, 2.295)');
+  });
 });
 
 describe('mixVerdict', () => {
@@ -187,7 +199,13 @@ describe('mixVerdict', () => {
     expect(mixVerdict(read(target), ENERGY).detail).toContain("the mix weight ignores the cookie's alpha (the target at every block)");
     const nan = read((i, j) => blockMix(F, i, j, ENERGY));
     nan.values[0] = [NaN, NaN, NaN, 1];
-    expect(mixVerdict(nan, ENERGY)).toEqual({ ok: false, detail: 'mix 0° 15/16; 1 blocks off: (0,0)' });
+    expect(mixVerdict(nan, ENERGY)).toEqual({ ok: false, detail: 'mix 0° 15/16; 1 blocks off: (0,0) read (NaN, NaN, NaN) want (0.000, 0.000, 2.000)' });
+  });
+
+  it('any other miss names up to four blocks, each read and the value it wants', () => {
+    // The mix at 1.1 times its value.
+    const scaled = read((i, j) => blockMix(F, i, j, ENERGY).map((v) => 1.1 * v));
+    expect(mixVerdict(scaled, ENERGY).detail).toContain('mix 0° 0/16; 16 blocks off: (0,0) read (0.000, 0.000, 2.200) want (0.000, 0.000, 2.000), ');
   });
 });
 
@@ -494,6 +512,8 @@ describe('checkSprite', () => {
     expect(r.results[1].detail).toMatch(/^16 -> 32 layers \(15 fillers, layers 2-16\), cookie 30° and 0°, 0 GPU errors/);
     expect(r.results[0].detail).toMatch(/^blocks 0° 16\/16, 90° 16\/16, 30° 16\/16, y-mirrored 0° 16\/16, x-mirrored 0° 16\/16; mix 0° 16\/16; 0 GPU errors since the cookie loaded; cookie overflow tier 0 layer 1;/);
     expect(r.results[3].detail).toContain('1 group(s), 1 SDF set(s)');
+    // The floor read the expected values were built from, after the index (the GPU legs anchor the prefix up to it).
+    expect(r.results[0].detail).toContain('; cookie overflow tier 0 layer 1; floor 0.185, 0.170, 0.295; ');
     // layerToGroup [0, 0]: the floor's layer 0 is group 0, the sub-scene's one group: every read asks for it.
     expect(new Set(r.requests.map((q) => `${q.target}#${q.layer}`))).toEqual(new Set(['light-buffer#0']));
     // The floor, K, L and the wall; every one destroyed, and in the tab's list.

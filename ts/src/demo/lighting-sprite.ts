@@ -259,7 +259,7 @@ export interface CookieRead {
 
 const same = (i: number, j: number): [number, number] => [i, j];
 
-/** floor + blockLight of the expected block at every centre; a failure names the symmetry, a missing mirror, the alpha or the misreads. NaN-safe. */
+/** floor + blockLight of the expected block at every centre; a failure names the symmetry, a missing mirror, the alpha, the misreads, or up to four blocks off within their codes, each read and the value it wants. NaN-safe. */
 export function cookieVerdict(reads: readonly CookieRead[], energy: number): Verdict {
   const parts: string[] = [];
   const causes: string[] = [];
@@ -301,7 +301,8 @@ export function cookieVerdict(reads: readonly CookieRead[], energy: number): Ver
     }
     const misread = decoded.filter((d) => !shows(d, want(d.i, d.j))).slice(0, 4)
       .map((d) => `(${d.i},${d.j}) read ${d.got ? `(${d.got.i},${d.got.j}) a ${d.got.a.toFixed(2)}` : 'unlit'}`);
-    causes.push(`${at}: ${wrong.length} blocks off${misread.length > 0 ? `: ${misread.join(', ')}` : ' within their codes: a value off by more than TOL (or not finite)'}`);
+    const offBy = wrong.slice(0, 4).map(({ i, j }) => `(${i},${j}) read (${fmt(r.values[j * BLOCKS + i].slice(0, 3))}) want (${fmt(plus(r.floor, blockLight(...want(i, j), energy)))})`);
+    causes.push(`${at}: ${wrong.length} blocks off${misread.length > 0 ? `: ${misread.join(', ')}` : ` within their codes: ${offBy.join(', ')}`}`);
   }
   return { ok, detail: [`blocks ${parts.join(', ')}`, ...causes].join('; ') };
 }
@@ -312,7 +313,7 @@ export function blockMix(floor: readonly number[], i: number, j: number, energy:
   return over([floor[0], floor[1], floor[2]], straight([energy * r, energy * g, energy * b], a));
 }
 
-/** K in mix, unturned: blockMix at every centre; names a mix added like add or a weight blind to alpha. NaN-safe. */
+/** K in mix, unturned: blockMix at every centre; names a mix added like add, a weight blind to alpha, or up to four blocks off, each read and the value it wants. NaN-safe. */
 export function mixVerdict(r: CookieRead, energy: number): Verdict {
   const near = (n: number, want: readonly number[]): boolean => maxChannelDiff(r.values[n], want) <= TOL;
   const off = BLOCK_ORDER.filter(({ i, j }, n) => !near(n, blockMix(r.floor, i, j, energy)));
@@ -326,7 +327,7 @@ export function mixVerdict(r: CookieRead, energy: number): Verdict {
     ? 'mix added like add (floor + target × alpha)'
     : BLOCK_ORDER.every(({ i, j }, n) => near(n, target(i, j)))
       ? "the mix weight ignores the cookie's alpha (the target at every block)"
-      : `${off.length} blocks off: ${off.slice(0, 4).map(({ i, j }) => `(${i},${j})`).join(', ')}`;
+      : `${off.length} blocks off: ${off.slice(0, 4).map(({ i, j }) => `(${i},${j}) read (${fmt(r.values[j * BLOCKS + i].slice(0, 3))}) want (${fmt(blockMix(r.floor, i, j, energy))})`).join(', ')}`;
   return { ok: false, detail: `${detail}; ${cause}` };
 }
 
@@ -535,7 +536,7 @@ export async function checkSprite(
       const floorCause = floorOff ? `; the floor reads ${fmt(reads[0].floor.slice(0, 3))}, not the tab's ${fmt(floor)}: another light reaches the sub-scene` : '';
       const errors = witness ? `${witness.count} GPU errors since the cookie loaded${witness.count > 0 ? ` (${witness.messages.slice(0, 2).join(' | ')})` : ''}` : 'no GPU error witness: no main-thread device';
       const ok = verdict.ok && mix.ok && !floorOff && witness !== null && witness.count === 0;
-      return { ok, detail: `${verdict.detail}; ${mix.detail}${floorCause}; ${errors}; ${index}; ${density()}` };
+      return { ok, detail: `${verdict.detail}; ${mix.detail}${floorCause}; ${errors}; ${index}; floor ${fmt(reads[0].floor.slice(0, 3))}; ${density()}` };
     });
 
     // ── 2. The cookie's tier grows while K draws, with no GPU error ─────
