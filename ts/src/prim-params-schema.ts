@@ -41,6 +41,11 @@ export const PRIM_PARAMS_SCHEMA: Partial<Record<RenderPrimitiveType, Record<stri
     width: 4, dashLen: 5, gapLen: 6,
     widthUnit: 7, // 0 local units, 1 screen pixels
   },
+  // An MSDF glyph samples its atlas raw: the rect is in texture coordinates
+  // (u from the left, v from the image's top row), and msdf_vs mixes it along
+  // the glyph's local axes, so atlasV0 is the v at the glyph's bottom edge
+  // (local −y) and atlasV1 the v at its top (round step 8 left msdf out of
+  // the upright image rule of sampleTierOrWhite).
   [RenderPrimitiveType.SDFGlyph]: {
     atlasU0: 0, atlasV0: 1, atlasU1: 2, atlasV1: 3,
     screenPxRange: 4, colorR: 5, colorG: 6, colorB: 7,
@@ -60,10 +65,12 @@ export const PRIM_PARAMS_SCHEMA: Partial<Record<RenderPrimitiveType, Record<stri
   // Light2D. `colorR/G/B` are HDR with energy already premultiplied — that
   // premultiplication happens at the API boundary, not here, which is what
   // frees slot 7 for `shadowIntensity`. `range` (slot 3) is the single source
-  // of truth for a point or spot light's culling radius; on a directional
-  // light it is the length of its shadows (global and directional lights are
-  // never culled). `shadowIntensity` is ignored on a global light (lit
-  // backend).
+  // of truth for a point, spot or sprite light's culling radius (a sprite
+  // light's: range·√2, the half-diagonal of its square of half-side range); on
+  // a directional light it is the length of its shadows (global and
+  // directional lights are never culled). `shadowIntensity` is ignored on a
+  // global light (lit backend). A sprite light ignores `innerCos`, `outerCos`
+  // and `falloff`: its cookie, the entity's texture, is its shape.
   [RenderPrimitiveType.Light2D]: {
     colorR: 0, colorG: 1, colorB: 2, range: 3,
     innerCos: 4, outerCos: 5, falloff: 6, shadowIntensity: 7,

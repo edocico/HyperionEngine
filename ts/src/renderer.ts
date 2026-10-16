@@ -39,7 +39,7 @@ import { CAP as SORT_CAPACITY, HEADER_BYTES as SORT_HEADER_BYTES } from './rende
 import { LightGroupsPass } from './render/passes/light-groups-pass';
 import { SdfChainStage } from './render/passes/sdf-chain-stage';
 import { LightAccumStage } from './render/passes/light-accum-stage';
-import { deriveLightGroups } from './render/light-groups';
+import { deriveLightGroups, untexturedSpriteIds } from './render/light-groups';
 import { followLightingBackend, unsupportedLightingQuality } from './render/lighting-backend';
 import { DEFAULT_LIGHTING_QUALITY, type LightingQuality } from './lighting-api';
 import { SelectionManager } from './selection';
@@ -59,6 +59,7 @@ import { DebugProbe } from './render/debug-probe';
 import { TransparentSortProbe } from './render/transparent-sort-probe';
 import {
   normalizeTransparentCount, nextFrameStamp, uploadEntityIds, missingSortInputs, overCapacityWarning,
+  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS,
 } from './render/frame-inputs';
 import { MAX_GPU_ENTITIES } from './types';
 import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
@@ -542,6 +543,11 @@ export async function createRenderer(
   const reportedQuality = new Set<keyof LightingQuality>();
   let warnedMultiBitReceiver = false;
   let warnedShadowedGlobalLight = false;
+  // Round step 8: once per renderer, dev builds, after UNTEXTURED_SPRITE_MS
+  // of lit time with no texture load in flight: a load in flight pauses the
+  // count, so a texture still loading is no fault and loads elsewhere do not
+  // hide a missing one.
+  const untexturedSpriteWarning = persistentWarning(UNTEXTURED_SPRITE_MS);
 
   // --- 8b''. Transparent sort inputs (phase 5b §4.2-4.3) ---
   // Closure locals, not pass state: they must survive graph swaps and the
@@ -1064,6 +1070,9 @@ export async function createRenderer(
         if (dev && frameState.lightGroups.shadowedGlobalLight && !warnedShadowedGlobalLight) {
           warnedShadowedGlobalLight = true;
           console.warn("[Hyperion] A global light has shadowIntensity > 0: global lights cast no shadows in the lit backend (no position, no direction), so it is ignored. Use type 'directional' for a sun.");
+        }
+        if (dev && untexturedSpriteWarning.update(frameState.lightGroups.untexturedSpriteLight, textureManager.pendingLoads > 0, performance.now())) {
+          console.warn(untexturedSpriteMessage(untexturedSpriteIds(frameState.lightGroups, frameState)));
         }
       }
 

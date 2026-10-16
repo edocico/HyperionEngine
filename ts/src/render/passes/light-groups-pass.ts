@@ -18,6 +18,7 @@ const EVERYTHING: LightGroups = {
   layerToGroup: [0, 0],
   multiBitReceiver: false,
   shadowedGlobalLight: false,
+  untexturedSpriteLight: false,
   lightMasks: [],
   occluderMasks: [],
   lightOrder: new Uint32Array(0),

@@ -107,7 +107,7 @@ function groups(gs: Array<[number, number]>, sets: number[], lightOrder: number[
   return {
     groups: gs.map(([layers, sdfSet]) => ({ layers, sdfSet })),
     sdfSets: sets.map((occluderLayers) => ({ occluderLayers })),
-    layerToGroup: [0, 0], multiBitReceiver: false, shadowedGlobalLight: false, lightMasks: [], occluderMasks: [],
+    layerToGroup: [0, 0], multiBitReceiver: false, shadowedGlobalLight: false, untexturedSpriteLight: false, lightMasks: [], occluderMasks: [],
     lightOrder: Uint32Array.from(lightOrder), lightIds: Uint32Array.from(lightOrder),
   };
 }

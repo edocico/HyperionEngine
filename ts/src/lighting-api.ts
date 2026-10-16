@@ -126,6 +126,14 @@ export class LightingAPI {
    * shadows, which the lit backend never casts from a global light (the
    * renderer warns once in dev builds).
    *
+   * And `untexturedSpriteLight` (round step 8): a sprite light in the light
+   * list has no texture (layer 0 of its packed index), so it lights nothing
+   * until it has one. The flag is readable in every build; only the warning
+   * is dev-only: the renderer warns once, when the flag has held for a second
+   * of lit frames with no texture load in flight. Await the texture before
+   * spawning, `const cookie = await engine.loadTexture(url)`. Textures do not
+   * load in Mode A.
+   *
    * It carries the frame's light list too (round step 7): `lightOrder`, the
    * slots of the lights the cull keeps, in the order they are drawn, and
    * `lightIds`, their external ids (the order is described at

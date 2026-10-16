@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { selectTier, TIER_SIZES, packTextureIndex, unpackTextureIndex, TextureManager, mipLevelCount } from "./texture-manager";
 import { KTX2_MAGIC } from './ktx2-parser';
 
@@ -711,5 +711,41 @@ describe("onViewsChanged", () => {
     tm.ensureOverflowCapacity(2, 1);
     expect(changed).toHaveBeenCalledTimes(1);
     expect(tm.getOverflowTierView(2)).not.toBe(placeholder);
+  });
+});
+
+// Round step 8: the renderer's untextured-sprite warning pauses while a
+// texture load is in flight (TextureManager.pendingLoads).
+describe("pendingLoads", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  /** A macrotask: every promise chain a settled fetch started has run. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("counts a load from its call until its promise settles, resolved or rejected; a cached URL never enters", async () => {
+    const replies = new Map<string, { resolve: (response: unknown) => void; reject: (err: Error) => void }>();
+    vi.stubGlobal("fetch", vi.fn((url: string) => new Promise((resolve, reject) => { replies.set(url, { resolve, reject }); })));
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: () => {} })));
+    const ok = { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+    const tm = new TextureManager(createMockDevice());
+    expect(tm.pendingLoads).toBe(0);
+    const loads = Array.from({ length: 7 }, (_, k) => tm.loadTexture(`t${k}.png`));
+    expect(replies.size, "6 fetches at once").toBe(6);
+    expect(tm.pendingLoads, "6 fetching, 1 queued").toBe(7);
+    const priority = tm.loadTextureWithPriority("p.png", 1);
+    expect(tm.pendingLoads, "and one by priority").toBe(8);
+    replies.get("t0.png")!.resolve(ok);
+    await loads[0];
+    await settle();
+    expect(tm.pendingLoads, "a resolved load leaves").toBe(7);
+    replies.get("t1.png")!.reject(new Error("offline"));
+    await expect(loads[1]).rejects.toThrow("offline");
+    await settle();
+    expect(tm.pendingLoads, "a rejected load leaves").toBe(6);
+    for (const url of ["t2.png", "t3.png", "t4.png", "t5.png", "t6.png", "p.png"]) replies.get(url)!.resolve(ok);
+    await Promise.all([...loads.slice(2), priority]);
+    await settle();
+    expect(tm.pendingLoads).toBe(0);
+    await tm.loadTexture("t0.png");
+    expect(tm.pendingLoads, "a cached URL never enters").toBe(0);
   });
 });

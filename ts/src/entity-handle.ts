@@ -56,24 +56,74 @@ export const enum RenderPrimitiveType {
  *   no direction and no shadows in the lit backend: `shadowIntensity` is
  *   ignored (the renderer warns once in dev builds). Use `directional` for a
  *   sun.
- * - `sprite`: not drawn yet.
+ * - `sprite`: a cookie light (round step 8). It lights the square of side
+ *   2·`range` around its position, turned with its axis (below), in the
+ *   shape and colours of its cookie: the entity's texture. Await the handle
+ *   before spawning, `const cookie = await engine.loadTexture(url);
+ *   engine.spawn({ mode: '2d' }).texture(cookie).light({ type: 'sprite', … })`
+ *   (`.texture()` and `.light()` in either order, in the same turn): the
+ *   light lights nothing until its texture lands, so an `await` inside the
+ *   chain leaves it dark for the frames the load takes. A texel lights
+ *   `color` × `energy` × its rgb × its alpha (`add`, `sub`); a `mix` sprite
+ *   light moves the buffer toward `color` × `energy` × rgb by that alpha. No
+ *   falloff and no cone (`falloff`, `innerAngle` and `outerAngle` are
+ *   ignored): bake a falloff into the cookie's alpha. The image lies on the
+ *   square upright, as on a textured quad: its first row along the light's
+ *   local +y edge, its first column along −x; a negative y-scale mirrors it
+ *   top to bottom, a negative x-scale left to right, both a half turn. Use a
+ *   square PNG or JPEG: it is stretched to its tier's square (64, 128, 256
+ *   or 512 px), and a smaller image is upscaled and blurred. A KTX2 cookie is
+ *   not resized: it must be square, exactly its tier's size and stored top
+ *   row first (orientation 'rd': `KTXorientation` is not read); a smaller
+ *   one fills only the corner at the light's local (−x, +y), a larger one
+ *   fails to upload. Keep a
+ *   transparent border of a few texels (the square's edge is not
+ *   anti-aliased in the half-resolution light buffer), and give fully
+ *   transparent texels the colour of their opaque neighbours (rgb and alpha
+ *   are filtered apart). Texels hold straight alpha and are sampled
+ *   bilinearly at full resolution only: a cookie with more texels across
+ *   than its square spans in the light buffer (half the canvas) is
+ *   undersampled, and fine detail shimmers as the light moves or turns. With
+ *   `shadowIntensity` > 0 it casts shadows from its centre, like a point
+ *   light of its range, whatever the cookie. Its culling radius is the
+ *   square's half-diagonal, `range`·√2. Layer 0 of a packed index never
+ *   holds a texture (index 0, the default, and the layer every tier array
+ *   reserves): a sprite light there lights nothing, and the renderer warns
+ *   once in dev builds when one stays so for a second of lit frames with no
+ *   texture load in flight. Any other index samples what its layer holds on
+ *   this renderer: a layer never loaded holds zeroes (no light in an rgba8
+ *   or BC7 array; ASTC decodes them to its error colour, opaque magenta or
+ *   NaN) and a layer past the end of its array is discarded, both without a
+ *   warning, while a layer loaded with another texture lights that one.
+ *   Handles are valid only in the session that loaded them: a tape or a
+ *   snapshot recorded elsewhere names layers this page may hold differently.
+ *   In Mode A textures do not load (`loadTexture` throws) and the render
+ *   worker's arrays hold one layer, so every sprite light lights nothing
+ *   there.
  *
- * The axis of a spot or directional light is its local +x in world space, and
- * the light shines TOWARD it: `rotation(angle)` aims it. 0 shines right,
+ * The axis of a spot, directional or sprite light is its local +x in world
+ * space: a spot or a sun shines TOWARD it, and a sprite light's square turns
+ * with it. `rotation(angle)` aims it. 0 shines right,
  * `rotation(-Math.PI / 2)` shines down the screen (the world is y-up), and
  * `rotation(Math.atan2(dy, dx))` shines along (dx, dy). A parent's rotation
- * composes into it and a negative x-scale mirrors it in its own frame (it
- * then shines along its −x); the size of the scale is ignored, because a
- * light's extent is its range.
+ * and mirror compose into it (the world transform decides: a rig flipped
+ * with `scale(-1, 1)` mirrors its lights with it), and a negative x-scale
+ * mirrors it in its own frame (a spot or a sun then shines along its −x; a
+ * sprite light's cookie is mirrored left to right, by a negative y-scale top
+ * to bottom, and turned half a turn by both); the size of the scale is
+ * ignored, because a light's extent is its range. An x-scale of 0 aims it
+ * along world +x.
  */
 export type LightType = 'point' | 'spot' | 'directional' | 'global' | 'sprite';
 
 /**
  * How a light combines into the light buffer of its layers, which every frame
  * starts at the ambient light (`engine.lighting.setAmbient()`). With `c` the
- * light's `color` × `energy` and `w` its intensity at a pixel (the attenuation
+ * light's `color` × `energy` (a sprite light's also × its cookie's rgb at the
+ * pixel) and `w` its intensity at a pixel (the attenuation
  * (1 − d/range)^falloff × spot cone × shadow, from 0 to 1; the shadow alone
- * for a directional light, 1 for a global light):
+ * for a directional light, the cookie's alpha × shadow for a sprite light, 1
+ * for a global light):
  * - `add` (the default): buffer + c·w.
  * - `sub`: buffer − c·w. Nothing clamps the buffer at 0: where `sub` lights
  *   take more than there is, it goes negative (a lit sprite shows 0 in those
@@ -141,7 +191,12 @@ export interface LightOptions {
    * lights nothing.
    * - `point`, `spot`: the light's radius, which is also its culling radius:
    *   a light whose z is more than `range` outside the camera's near-far span
-   *   lights nothing (see {@link EntityHandle.light}).
+   *   lights nothing (see {@link EntityHandle.light}). 0 or less: the light
+   *   lights nothing and casts no shadow (no SDF flood).
+   * - `sprite`: half the side of its square. Its culling radius is the
+   *   square's half-diagonal, `range`·√2 (at most the largest f32): a sprite
+   *   light whose z is more than that outside the near-far span lights
+   *   nothing.
    * - `directional`: the length of its shadows, which fade out toward the end
    *   (0 or less casts none, `-Infinity` included; `Infinity` casts endless
    *   ones). Sent clamped to the finite f32 range, so any number but NaN
@@ -166,9 +221,10 @@ export interface LightOptions {
    */
   falloff?: number;
   /**
-   * Shadow strength: 0 = none (default), 1 = fully opaque. Point, spot and
-   * directional lights; ignored on a global light in the lit backend (a dev
-   * warning, once). See {@link EntityHandle.shadows}.
+   * Shadow strength: 0 = none (default), 1 = fully opaque. Point, spot,
+   * directional and sprite lights (a sprite light casts from its centre);
+   * ignored on a global light in the lit backend (a dev warning, once). See
+   * {@link EntityHandle.shadows}.
    */
   shadowIntensity?: number;
   /**
@@ -354,7 +410,8 @@ export class EntityHandle implements Disposable {
    * only the angle about Z, so a tilt from the quaternion form is dropped at
    * the next physics step.
    *
-   * On a spot or directional light it aims the light (see {@link LightType}).
+   * On a spot or directional light it aims the light, on a sprite light it
+   * turns its square and its cookie (see {@link LightType}).
    */
   rotation(angleOrQx: number, qy?: number, qz?: number, qw?: number): this {
     this.check();
@@ -388,9 +445,10 @@ export class EntityHandle implements Disposable {
    * one. Give sprites different depths to order them. On a 2D light it orders
    * the light list (round step 7): within a blend class the larger depth is
    * drawn first and the smaller one on top, the higher id at equal depths (see
-   * {@link LightBlendMode}); a point or spot light whose world depth (its own,
-   * composed with its parents' for a child) is outside −1 − range to
-   * 1000 + range (the default camera) is culled and lights nothing. On a 3D
+   * {@link LightBlendMode}); a point, spot or sprite light whose world depth
+   * (its own, composed with its parents' for a child) is outside −1 − range to
+   * 1000 + range (the default camera; range·√2 for a sprite light) is culled
+   * and lights nothing. On a 3D
    * entity, which takes its z from `position()`, it is ignored (a warning in
    * dev builds). Returns `this`.
    */
@@ -421,7 +479,16 @@ export class EntityHandle implements Disposable {
     return this;
   }
 
-  /** Set entity texture layer. Returns `this` for chaining. */
+  /**
+   * Set the entity's texture: a handle from `engine.loadTexture()`. A quad or
+   * a bezier shows the image upright in its local frame (round step 8): its
+   * first row along local +y, its first column along local −x; a line shows
+   * it as a quad turned along start→end, its first row on the left of the
+   * direction. An MSDF glyph takes its atlas rect instead (`atlasU0`…`atlasV1`,
+   * see `PRIM_PARAMS_SCHEMA`). On a sprite light it is the cookie, the light's
+   * shape: await the handle before the spawn chain, not inside it (see
+   * {@link LightType}). Returns `this` for chaining.
+   */
   texture(handle: TextureHandle): this {
     this.check();
     this._producer!.setTextureLayer(this._id, handle);
@@ -631,22 +698,28 @@ export class EntityHandle implements Disposable {
    * A light is an ordinary ECS entity, so it inherits position, hierarchy
    * (a torch parented to a character), spawn/despawn, frustum culling (for a
    * light, the cull's test, run on the CPU by the light list, round step 7),
-   * snapshot and replay for free — which is why a point or spot light's
-   * `range` also drives its culling radius rather than needing a separate
-   * call (global and directional lights light the whole view and are never
-   * culled). Aim a spot or a sun with `rotation()` (see {@link LightType}).
+   * snapshot and replay for free — which is why a point, spot or sprite
+   * light's `range` also drives its culling radius (a sprite light's is
+   * `range`·√2) rather than needing a separate call (global and directional
+   * lights light the whole view and are never culled). Aim a spot or a sun,
+   * and turn a sprite light, with `rotation()`. A sprite light takes its shape
+   * from its texture, `.texture(cookie)` in the same turn as this call, either
+   * order, with the handle awaited before the chain (`const cookie = await
+   * engine.loadTexture(url)`), and lights nothing until it has one (see
+   * {@link LightType}).
    *
    * Lights are drawn in one fixed order, described at {@link LightBlendMode}:
    * `add` and `sub` first, then `mix`, each back to front by world z, then by
    * id. A light's z orders and culls it, and never moves what it lights: a
    * root 2D light's z is −{@link EntityHandle.depth}, a child's its world z
    * (its depth composed with its parents'); a root 3D light's is the z of
-   * `position()`, a child's its world z. Like any entity, a point or spot
-   * light is culled, and lights nothing, when that world z is more than
-   * `range` outside the camera's near-far span: with the default camera a 2D
-   * light's world depth must stay within [−1 − range, 1000 + range], a 3D
-   * light's world z within [−1000 − range, 1 + range]. Global and directional
-   * lights are never culled.
+   * `position()`, a child's its world z. Like any entity, a point, spot or
+   * sprite light is culled, and lights nothing, when that world z is more than
+   * its culling radius (`range`; `range`·√2 for a sprite light) outside the
+   * camera's near-far span: with the default camera a 2D point or spot light's
+   * world depth must stay within [−1 − range, 1000 + range], a 3D one's world
+   * z within [−1000 − range, 1 + range]. Global and directional lights are
+   * never culled.
    *
    * `color` and `energy` stay separate here on purpose. The GPU buffer gets
    * them premultiplied (that is what frees a `primParams` slot for
@@ -696,12 +769,15 @@ export class EntityHandle implements Disposable {
   /**
    * Shadow strength for this light: 0 casts none, 1 is fully opaque.
    *
-   * Point, spot and directional lights (a sun's shadows are `range` world
-   * units long, see {@link LightType}). A shadowed directional light marches
-   * every texel of the light buffer once per light group its layers reach. A
-   * global light never casts shadows in the lit backend: the value is stored
-   * and ignored, and the renderer warns once in dev builds. Use a directional
-   * light for a sun.
+   * Point, spot, directional and sprite lights (a sprite light casts from its
+   * centre, like a point light of its range, whatever its cookie; a sun's
+   * shadows are `range` world units long, see {@link LightType}). A shadowed
+   * light that reads no SDF (range 0 or less; a sprite light without a
+   * texture) casts no shadow and costs no shadow pass. A shadowed directional
+   * light marches every texel of the light buffer once per light group its
+   * layers reach. A global light never casts shadows in the lit backend: the
+   * value is stored and ignored, and the renderer warns once in dev builds.
+   * Use a directional light for a sun.
    *
    * Kept separate from `light()` because it is the one light parameter with a
    * real per-frame cost — `shadowIntensity > 0` is what switches on the sphere

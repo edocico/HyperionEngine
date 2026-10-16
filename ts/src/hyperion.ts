@@ -512,9 +512,22 @@ export class Hyperion implements Disposable {
   }
 
   /**
-   * Load a single texture from a URL. Returns a packed TextureHandle
-   * (tier << 16 | layer) suitable for `entity.texture(handle)`.
-   * Throws if no renderer is available.
+   * Load a single texture from a URL (`blob:` and `data:` URLs too). Returns a
+   * packed TextureHandle (overflow << 31 | tier << 16 | layer) for
+   * `entity.texture(handle)`: a quad's image, a sprite light's cookie, shown
+   * upright (the image keeps its row order: nothing is flipped at upload;
+   * see `EntityHandle.texture`). A PNG
+   * or JPEG is resized to the square of the smallest tier that holds its
+   * larger side (64, 128, 256 or 512 px; a larger image to 512) and, on a
+   * device with a compressed format (BC7/ASTC), goes to the rgba8 overflow
+   * tiers. The URL is the cache key: loading it again returns the same
+   * handle, valid in this session only. Await it before the spawn chain that
+   * uses it (see `LightType`'s `sprite`). Throws if no renderer is available:
+   * in Mode A (the render worker loads no textures) and without WebGPU, where
+   * a sprite light therefore lights nothing. Throws too when the target array
+   * of that tier (primary, or the rgba8 overflow array on a device with a
+   * compressed format) already holds 255 textures (256 layers, layer 0
+   * reserved).
    */
   async loadTexture(url: string, tier?: number): Promise<TextureHandle> {
     this.checkDestroyed();
@@ -525,7 +538,7 @@ export class Hyperion implements Disposable {
   /**
    * Load multiple textures in sequence. Returns an array of TextureHandles
    * in the same order as the input URLs. An optional `onProgress` callback
-   * is invoked after each texture finishes loading.
+   * is invoked after each texture finishes loading. Throws like `loadTexture`.
    */
   async loadTextures(
     urls: string[],

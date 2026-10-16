@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, TEXTURE_LAYER_MASK, type LightGroupsInput,
+  deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, TEXTURE_LAYER_MASK, untexturedSpriteIds, type LightGroupsInput,
 } from './light-groups';
 import { packTextureIndex } from '../texture-manager';
 import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
@@ -447,13 +447,89 @@ describe('deriveLightGroups', () => {
     expect(withPoint.shadowedGlobalLight).toBe(true);
   });
 
-  it('renderer.ts warns once, in dev builds, about a shadowed global light', () => {
-    // createRenderer needs a GPU: the wiring is pinned on the text, like the
-    // piece registration above.
+  /** renderer.ts's one-time dev warning for `flag`, pinned on the text: a guard declared once, before render(). Returns the message. */
+  function warnsOnce(flag: string, guard: string): string {
     const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
-    expect(renderer).toMatch(/let warnedShadowedGlobalLight = false;/);
+    const declaration = `let ${guard} = false;`;
+    expect(renderer.split(declaration), `${guard} declared once`).toHaveLength(2);
+    expect(renderer.indexOf(declaration), `${guard} declared before render()`).toBeLessThan(renderer.indexOf('render(state: GPURenderState'));
     const block = renderer.slice(renderer.indexOf('frameState.lightGroups = deriveLightGroups(frameState);'));
-    expect(block).toMatch(/if \(dev && frameState\.lightGroups\.shadowedGlobalLight && !warnedShadowedGlobalLight\) \{\s*warnedShadowedGlobalLight = true;\s*console\.warn\(/);
+    const branch = new RegExp(`if \\(dev && frameState\\.lightGroups\\.${flag} && !${guard}\\) \\{\\s*${guard} = true;\\s*console\\.warn\\("([^"]*)"\\);`).exec(block);
+    expect(branch, `the ${flag} warning`).not.toBeNull();
+    return branch![1];
+  }
+
+  it('renderer.ts warns once, in dev builds, about a shadowed global light', () => {
+    expect(warnsOnce('shadowedGlobalLight', 'warnedShadowedGlobalLight')).toMatch(/^\[Hyperion\] A global light has shadowIntensity > 0/);
+  });
+
+  it('renderer.ts warns once, in dev builds, about a sprite light that stays without a texture for UNTEXTURED_SPRITE_MS of lit time with no texture load in flight, naming it (round step 8)', () => {
+    const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+    const declaration = 'const untexturedSpriteWarning = persistentWarning(UNTEXTURED_SPRITE_MS);';
+    expect(renderer.split(declaration), 'declared once').toHaveLength(2);
+    expect(renderer.indexOf(declaration), 'declared before render()').toBeLessThan(renderer.indexOf('render(state: GPURenderState'));
+    const lit = renderer.slice(renderer.indexOf('frameState.lightGroups = deriveLightGroups(frameState);'), renderer.indexOf('// Dev readback (engine.debug.readTransparentSort'));
+    // The message itself: untexturedSpriteMessage (frame-inputs.test.ts).
+    expect(lit, "in the lit graph's block: paused while a texture loads, the lights named").toMatch(
+      /if \(dev && untexturedSpriteWarning\.update\(frameState\.lightGroups\.untexturedSpriteLight, textureManager\.pendingLoads > 0, performance\.now\(\)\)\) \{\s*console\.warn\(untexturedSpriteMessage\(untexturedSpriteIds\(frameState\.lightGroups, frameState\)\)\);/,
+    );
+  });
+
+  it('raises untexturedSpriteLight for a listed sprite light at layer 0 (packed index 0 among them), and for no other (round step 8)', () => {
+    const raised = (es: E[]): boolean => {
+      const s = scene(es);
+      const g = deriveLightGroups(s);
+      // untexturedSpriteIds names a light exactly when the flag is raised (these scenes carry every column).
+      expect(untexturedSpriteIds(g, s).length > 0, JSON.stringify(es)).toBe(g.untexturedSpriteLight);
+      return g.untexturedSpriteLight;
+    };
+    expect(raised([sprite(0, { tex: 0 })])).toBe(true);
+    expect(raised([sprite(0, { tex: 0x7ff80000 })]), 'only bits nobody decodes').toBe(true);
+    expect(raised([sprite(0, { tex: 0, mask: 0 })]), 'mask 0: listed, still without a cookie').toBe(true);
+    expect(raised([sprite(0), sprite(0, { tex: 0 })]), 'one among textured ones').toBe(true);
+    expect(raised([sprite(0)])).toBe(false);
+    // Layer 0 of any array is reserved: vs_main draws nothing there either.
+    expect(raised([sprite(0, { tex: packTextureIndex(0, 0, true) })]), 'overflow tier 0, layer 0').toBe(true);
+    expect(raised([sprite(0, { tex: packTextureIndex(1, 0) })]), 'tier 1, layer 0').toBe(true);
+    expect(raised([sprite(0, { tex: packTextureIndex(1, 1) })]), 'tier 1, layer 1').toBe(false);
+    // The list's members only (the cull's exact test), as LightAccumStage gets them.
+    expect(raised([sprite(0, { tex: 0, x: 100 })]), 'out of view').toBe(false);
+    expect(raised([sprite(0, { tex: 0, x: 15.02, r: 5 })]), "kept by the grouping's margin only").toBe(false);
+    expect(raised([sprite(0, { tex: 0, x: 14.98, r: 5 })]), 'just listed').toBe(true);
+    // Without a usable column: never (all or nothing, like the ids).
+    const s = scene([sprite(0, { tex: 0 }), sprite(0, { tex: 0 })]);
+    for (const texIndices of [undefined, new Uint32Array(0), s.texIndices!.slice(0, 1)]) {
+      expect(deriveLightGroups({ ...s, texIndices }).untexturedSpriteLight, `${texIndices?.length ?? 'no'} indices`).toBe(false);
+    }
+  });
+
+  it('each flag names its own type, over all eight wire values: shadowedGlobalLight a global light, untexturedSpriteLight a sprite light', () => {
+    for (let t = 0; t < 8; t++) {
+      const g = deriveLightGroups(scene([light(0xffff, 1, { type: t, r: 3.4e38, tex: 0 }), drawable(CAST | RECV)]));
+      expect(g.shadowedGlobalLight, `type ${t}`).toBe(t === GLOBAL);
+      expect(g.untexturedSpriteLight, `type ${t}`).toBe(t === SPRITE);
+    }
+    expect(deriveLightGroups(scene([drawable(RECV, 0, { tex: 0 })])).untexturedSpriteLight, 'a drawable at index 0').toBe(false);
+    // Out of view, neither flag: the global light's flag too (round plan §4, step 6).
+    const away = deriveLightGroups(scene([light(0xffff, 1, { type: GLOBAL, x: 100, r: 5 }), light(0xffff, 1, { type: SPRITE, x: 100, r: 5, tex: 0 }), drawable(CAST | RECV)]));
+    expect(away.shadowedGlobalLight, 'a global light out of view').toBe(false);
+    expect(away.untexturedSpriteLight, 'a sprite light out of view').toBe(false);
+  });
+
+  it('untexturedSpriteIds names the listed sprite lights without a texture by external id, in list order; nobody without both columns (round step 8)', () => {
+    // List order is z back to front: slot 1 (z 0.25) before slot 0 (z 0.5).
+    const s = scene([
+      sprite(0, { tex: 0, id: 42, z: 0.5 }),
+      sprite(0, { tex: packTextureIndex(1, 0), id: 7, z: 0.25 }),
+      sprite(0, { id: 57 }),
+      light(0xffff, 0, { tex: 0, id: 61 }),
+      sprite(0, { tex: 0, x: 100, id: 99 }),
+    ]);
+    const g = deriveLightGroups(s);
+    expect(untexturedSpriteIds(g, s), 'ids, not slots; a textured sprite light, a point light at index 0 and an unlisted one named by none').toEqual([7, 42]);
+    // A short column names nobody: no ids to name, or no rule.
+    expect(untexturedSpriteIds(g, { ...s, entityIds: s.entityIds!.slice(0, 2) })).toEqual([]);
+    expect(untexturedSpriteIds(g, { ...s, texIndices: s.texIndices!.slice(0, 2) })).toEqual([]);
   });
 });
 

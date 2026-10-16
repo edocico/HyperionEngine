@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   normalizeTransparentCount, normalizeIdsGeneration, nextFrameStamp,
   uploadEntityIds, missingSortInputs, overCapacityWarning,
+  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, HELD_STEP_CAP_MS,
 } from './frame-inputs';
 import { MAX_GPU_ENTITIES } from '../types';
 
@@ -165,5 +166,61 @@ describe('overCapacityWarning', () => {
     expect(overCapacityWarning(0)).toBeNull();
     expect(overCapacityWarning(MAX_GPU_ENTITIES)).toBeNull();
     expect(overCapacityWarning(MAX_GPU_ENTITIES + 1)).toContain(`MAX_GPU_ENTITIES (${MAX_GPU_ENTITIES})`);
+  });
+});
+
+// Round step 8: the dev warning for a sprite light without a texture fires
+// once the flag has held for UNTEXTURED_SPRITE_MS of lit frame time, each
+// call adding at most HELD_STEP_CAP_MS; a call with a texture load in flight
+// pauses the count (it neither adds nor resets), a call without the flag
+// resets it. Whole milliseconds: exact in f64.
+describe('persistentWarning', () => {
+  type Call = [raised: boolean, paused: boolean, now: number];
+  const run = (w: { update(raised: boolean, paused: boolean, now: number): boolean }, calls: Call[]): number[] =>
+    calls.flatMap(([raised, paused, now], i) => (w.update(raised, paused, now) ? [i] : []));
+  /** `n` calls `stepMs` apart from `start`. */
+  const ticks = (stepMs: number, n: number, start = 0, raised = true, paused = false): Call[] =>
+    Array.from({ length: n }, (_, i): Call => [raised, paused, start + i * stepMs]);
+
+  it('warns when the flag has held UNTEXTURED_SPRITE_MS (1000 ms), not before', () => {
+    expect(UNTEXTURED_SPRITE_MS).toBe(1000);
+    expect(HELD_STEP_CAP_MS).toBe(100);
+    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(8, 125)), '992 ms').toEqual([]);
+    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(8, 126)), '1000 ms').toEqual([125]);
+    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(16, 64)), '1008 ms').toEqual([63]);
+  });
+
+  it('warns once, never again, whatever follows', () => {
+    expect(run(persistentWarning(100), [...ticks(10, 11), [false, false, 110], ...ticks(10, 30, 120)])).toEqual([10]);
+  });
+
+  it('a call without the flag resets the count: a texture that lands in time raises nothing', () => {
+    expect(run(persistentWarning(100), [...ticks(10, 10), [false, false, 100], ...ticks(10, 10, 110)])).toEqual([]);
+  });
+
+  it('a call with a texture load in flight neither adds nor resets, and the paused gap is not bridged', () => {
+    expect(run(persistentWarning(100), [...ticks(10, 6), ...ticks(10, 50, 60, true, true), ...ticks(10, 7, 560)])).toEqual([61]);
+    expect(run(persistentWarning(100), ticks(10, 500, 0, true, true)), 'a load always in flight').toEqual([]);
+  });
+
+  it('one call adds at most HELD_STEP_CAP_MS, and slow frames still warn', () => {
+    expect(run(persistentWarning(1000), [[true, false, 0], [true, false, 5000], [true, false, 5008]]), 'a 5-s stall').toEqual([]);
+    expect(run(persistentWarning(1000), ticks(250, 11)), '250-ms frames').toEqual([10]);
+  });
+});
+
+describe('untexturedSpriteMessage', () => {
+  it('names up to three sprite lights by id, then how many more; says why the light is dark and what to do', () => {
+    expect(untexturedSpriteMessage([42])).toMatch(/^\[Hyperion\] Sprite light 42 has no texture/);
+    expect(untexturedSpriteMessage([42, 57])).toMatch(/^\[Hyperion\] Sprite lights 42, 57 have no texture/);
+    expect(untexturedSpriteMessage([42, 57, 61, 70, 71])).toMatch(/^\[Hyperion\] Sprite lights 42, 57, 61 and 2 more have no texture/);
+    expect(untexturedSpriteMessage([])).toMatch(/^\[Hyperion\] A sprite light has no texture/);
+    for (const ids of [[], [42], [42, 57, 61, 70, 71]]) {
+      const message = untexturedSpriteMessage(ids);
+      expect(message).toContain('no texture load in flight');
+      expect(message).toContain('const cookie = await engine.loadTexture(url)');
+      expect(message).toMatch(/rejected/);
+      expect(message).toMatch(/Mode A/);
+    }
   });
 });

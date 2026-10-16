@@ -603,6 +603,17 @@ export class TextureManager {
     return this.priorityQueue.size;
   }
 
+  /**
+   * Loads in flight (round step 8): fetching, or queued, plain or by
+   * priority. A load counts from its `loadTexture`/`loadTextureWithPriority`
+   * call until its promise has settled, resolved or rejected; a cached URL
+   * never counts. The renderer's untextured-sprite warning pauses while this
+   * is above 0. Not `total - loaded`: a rejected load never raises `loaded`.
+   */
+  get pendingLoads(): number {
+    return this.activeFetches + this.fetchQueue.length + this.priorityQueue.size;
+  }
+
   private drainFetchQueue(): void {
     while (this.activeFetches < MAX_CONCURRENT_FETCHES) {
       // Priority queue takes precedence over FIFO queue

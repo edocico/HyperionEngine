@@ -55,6 +55,14 @@ export interface LightGroups {
    * warns once (dev builds); use a directional light for a sun.
    */
   shadowedGlobalLight: boolean;
+  /**
+   * A sprite light in the light list has no texture (untexturedPredicate: the
+   * layer of its packed index is 0), and light-accum.wgsl draws nothing for
+   * it (round step 8). The renderer warns once (dev builds) when it holds for
+   * UNTEXTURED_SPRITE_MS of lit time with no texture load in flight. Never
+   * raised without a usable `texIndices` column.
+   */
+  untexturedSpriteLight: boolean;
   /** The distinct light mask values in view: what splits the groups. */
   lightMasks: number[];
   /** The distinct occluder mask values in view, 0 normalised to 0xFFFF. */
@@ -241,6 +249,7 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
   let receiverLayers = 0;
   let multiBitReceiver = false;
   let shadowedGlobalLight = false;
+  let untexturedSpriteLight = false;
 
   for (let i = 0; i < entityCount; i++) {
     const word = renderMeta[i * 2 + 1];
@@ -260,6 +269,8 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
       // spot, directional or sprite, with a shadow strength above 0. A global
       // light's strength is ignored there: flag it for the renderer's warning.
       const type = (word >>> LIGHT_TYPE_SHIFT) & 7;
+      // Listed only, as LightAccumStage gets the lights: the renderer's warning.
+      if (drawn && type === SPRITE && untextured(i)) untexturedSpriteLight = true;
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
       if (strength > 0) {
         if (SHADOWED[type] === 1) {
@@ -339,8 +350,26 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
     layerToGroup: [table[0] >>> 0, table[1] >>> 0],
     multiBitReceiver,
     shadowedGlobalLight,
+    untexturedSpriteLight,
     lightMasks: lights,
     occluderMasks: occluders,
     ...orderLights(listed, renderMeta, bounds, ids),
   };
+}
+
+/**
+ * The external ids of the listed sprite lights without a texture
+ * (untexturedPredicate), in list order: the ones the renderer's dev warning
+ * names (round step 8). Empty unless `entityIds` covers `entityCount` (a slot
+ * is no id to name) and `texIndices` does (no rule without it).
+ */
+export function untexturedSpriteIds(groups: Pick<LightGroups, 'lightOrder' | 'lightIds'>, input: LightGroupsInput): number[] {
+  if (input.entityIds === undefined || input.entityIds.length < input.entityCount) return [];
+  const untextured = untexturedPredicate(input);
+  const ids: number[] = [];
+  for (let j = 0; j < groups.lightOrder.length; j++) {
+    const slot = groups.lightOrder[j];
+    if (((input.renderMeta[slot * 2 + 1] >>> LIGHT_TYPE_SHIFT) & 7) === SPRITE && untextured(slot)) ids.push(groups.lightIds[j]);
+  }
+  return ids;
 }

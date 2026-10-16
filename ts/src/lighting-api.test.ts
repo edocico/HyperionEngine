@@ -244,6 +244,18 @@ describe('LightingAPI — groups (light layers)', () => {
     expect([...groups.lightIds]).toEqual([2, 9, 5]);
   });
 
+  it('reports a sprite light without a texture (untexturedSpriteLight), from the render state\'s tex-indices column (round step 8)', () => {
+    const SPRITE = 4;  // LightType::Sprite, at bits 11-13
+    const renderMeta = new Uint32Array([0, (LIGHT | (SPRITE << 11) | (0xffff << 16)) >>> 0]);
+    const rs = (texIndices?: Uint32Array) => emptyRenderState({
+      entityCount: 1, renderMeta, bounds: new Float32Array([0, 0, 0, 1]), primParams: new Float32Array(8), ...(texIndices ? { texIndices } : {}),
+    });
+    expect(withState(rs(new Uint32Array([0])), () => view).groups!.untexturedSpriteLight).toBe(true);
+    expect(withState(rs(new Uint32Array([(1 << 16) | 1])), () => view).groups!.untexturedSpriteLight).toBe(false);
+    // makeRenderState's default column is empty: shorter than entityCount, ignored whole.
+    expect(withState(rs(), () => view).groups!.untexturedSpriteLight).toBe(false);
+  });
+
   it("orders by slot when the render state has no id column (makeRenderState's default)", () => {
     const renderMeta = new Uint32Array([0, (LIGHT | (0xffff << 16)) >>> 0, 0, (LIGHT | (0xffff << 16)) >>> 0]);
     const rs = emptyRenderState({ entityCount: 2, renderMeta, bounds: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1]), primParams: new Float32Array(16) });
