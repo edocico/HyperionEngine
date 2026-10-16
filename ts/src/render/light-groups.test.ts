@@ -21,7 +21,7 @@ import { extractFrustumPlanes, isSphereInFrustum, orthographic } from '../camera
 //   occluder — the layers it shadows; 0 is every layer
 
 const LIGHT = LIGHT2D, CAST = 1 << 9, RECV = 1 << 10;
-const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3, SPRITE = 4;
+const POINT = 0, SPOT = 1, DIRECTIONAL = 2, GLOBAL = 3, SPRITE = 4;
 /** Light blend modes on the wire, renderMeta bits 14-15 (LightBlendMode in components.rs). */
 const ADD = 0, SUB = 1, MIX = 2;
 
@@ -305,21 +305,40 @@ describe('deriveLightGroups', () => {
     expect(deriveLightGroups(scene([sun(0), drawable(CAST | RECV)])).groups).toEqual([{ layers: 1, sdfSet: -1 }]);
   });
 
-  it('a sun whose shadow has no length (range <= 0) gets no SDF set: nothing would read the flood', () => {
+  it('a shadowed light that draws nothing (range <= 0) gets no SDF set and splits no group: nothing would read the flood', () => {
     // Review wf_cf354af4-c53 [5]: such a sun cost a seed and a full flood
     // (~1.8 ms at 1080p) every frame for an image identical to shadow 0.
-    const sun = (range: number) => light(0xffff, 1, { type: DIRECTIONAL, x: 100, r: 3.4e38, range });
-    for (const range of [0, -5]) {
-      const g = deriveLightGroups(scene([sun(range), drawable(CAST | RECV)]));
-      expect(g.sdfSets, `range ${range}`).toEqual([]);
-      expect(g.groups, `range ${range}`).toEqual([{ layers: 1, sdfSet: -1 }]);
+    // Round step 8: point and spot lights too (step 6 fixed the sun only);
+    // sprite lights: the tests of round step 8 below. Rust gives a point or
+    // spot light of range <= 0 the radius 0: listed while its centre is in view.
+    const shapes: Array<[string, Partial<E>]> = [
+      ['directional', { type: DIRECTIONAL, x: 100, r: 3.4e38 }], ['point', { type: POINT, r: 0 }], ['spot', { type: SPOT, r: 0 }],
+    ];
+    for (const [name, shape] of shapes) {
+      for (const range of [0, -5]) {
+        const g = deriveLightGroups(scene([light(0xffff, 1, { ...shape, range }), drawable(CAST | RECV)]));
+        expect(g.sdfSets, `${name}, range ${range}`).toEqual([]);
+        expect(g.groups, `${name}, range ${range}`).toEqual([{ layers: 1, sdfSet: -1 }]);
+        expect([...g.lightOrder], `${name}, range ${range}: still listed`).toEqual([0]);
+      }
+      expect(deriveLightGroups(scene([light(0xffff, 1, { ...shape, range: 0.5 }), drawable(CAST | RECV)])).sdfSets, name).toEqual([{ occluderLayers: 1 }]);
     }
-    expect(deriveLightGroups(scene([sun(0.5), drawable(CAST | RECV)])).sdfSets).toEqual([{ occluderLayers: 1 }]);
-    // Why the shader reads no SDF for it: the range is clamped at 0, so the
-    // ray's length is 0, and sunShadow returns before its first read.
+    // Nor does it split a group: layer 1, which no caster shadows, joins layer 0.
+    const merged = deriveLightGroups(scene([
+      light(0xffff, 1, { range: 0, r: 0 }), light(0xffff), drawable(RECV, 0b01), drawable(RECV, 0b10), drawable(CAST, 0b01),
+    ]));
+    expect(merged.groups).toEqual([{ layers: 0b11, sdfSet: -1 }]);
+    // Why the shader reads no SDF for them. A sun: the range is clamped at 0,
+    // so the ray's length is 0, and sunShadow returns before its first read.
     const wgsl = stripComments(readFileSync(new URL('../shaders/light-accum.wgsl', import.meta.url), 'utf8'));
     expect(functionBody(wgsl, 'directionalRay')).toMatch(/min\(\s*max\(\s*primParams\[e \* 8u \+ 3u\]\s*,\s*0\.0\s*\)/);
     expect(functionBody(wgsl, 'sunShadow')).toMatch(/if\s*\(\s*travel\s*<\s*1\.0\s*\)\s*\{\s*return\s+1\.0\s*;/);
+    // A point or spot light: fs_main discards every pixel at d >= range
+    // (all of them, d >= 0 >= range) before its march.
+    const fs = functionBody(wgsl, 'fs_main')!;
+    const cut = fs.search(/let d = distance\(in\.world, center\);\s*if \(d >= range\) \{\s*discard;\s*\}/);
+    expect(cut, 'the range discard of a point or spot light').toBeGreaterThan(-1);
+    expect(cut).toBeLessThan(fs.search(/\bpointShadow\(/));
   });
 
   it('a sun shadows only the layers in its mask', () => {

@@ -263,14 +263,12 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
       if (strength > 0) {
         if (SHADOWED[type] === 1) {
-          // Only a light that reads the flood asks for one: a sun with a
-          // range > 0; a sprite light that draws (vs_main drops one at
-          // layer 0 or with a range of 0 or less).
-          const range = primParams[i * 8 + 3];
-          const reads = type === DIRECTIONAL ? range > 0
-            : type === SPRITE ? range > 0 && !untextured(i)
-            : true;
-          if (reads) shadowedLayers |= mask;
+          // Only a light that reads the flood asks for one, and none does
+          // with a range of 0 or less: sunShadow returns before its first SDF
+          // read, fs_main discards every point or spot pixel at d >= range
+          // before its march, and vs_main drops such a sprite light, as it
+          // drops one without a texture (untexturedPredicate).
+          if (primParams[i * 8 + 3] > 0 && (type !== SPRITE || !untextured(i))) shadowedLayers |= mask;
         } else if (type === GLOBAL) {
           shadowedGlobalLight = true;
         }
