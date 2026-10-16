@@ -1,8 +1,8 @@
 // Light accumulation (Phase 17, Task 9; directional shadows: round 2026-09-27,
-// step 6; one light list and the mix blend: step 7): the lights in view, drawn
-// into the half-resolution light buffer in the order of the frame's light
-// list. The buffer is cleared to the ambient light, and ForwardPass multiplies
-// lit sprites by it.
+// step 6; one light list and the mix blend: step 7; sprite lights: step 8):
+// the lights in view, drawn into the half-resolution light buffer in the order
+// of the frame's light list. The buffer is cleared to the ambient light, and
+// ForwardPass multiplies lit sprites by it.
 //
 // The list (lightOrder, built on the CPU by deriveLightGroups) holds every
 // Light2D the cull's exact sphere test keeps: add and sub lights first, then
@@ -14,20 +14,35 @@
 // toward the light's colour, dst * (1 - w) + color * w.
 //
 // Point and spot lights are a quad covering their range, around the light's
-// position. The transform's scale is ignored, because a light's extent IS its
-// range (the same rule as its culling radius). Global and directional lights
-// cover the screen. Light2D primParams: [colorR, colorG, colorB] with energy
-// premultiplied, range, innerCos, outerCos, falloff, shadowIntensity.
+// position. A sprite light is the square of half-side `range` around its
+// position, turned with its local +x axis (spriteAxes): its corners lie
+// range * sqrt(2) away, its culling radius (systems.rs update_bounding_radii).
+// The size of the transform's scale is ignored, because a light's extent IS
+// its range (the same rule as its culling radius). Global and directional
+// lights cover the screen. Light2D primParams: [colorR, colorG, colorB] with
+// energy premultiplied, range, innerCos, outerCos, falloff, shadowIntensity; a
+// sprite light reads the colour, the range and shadowIntensity only.
 //
-// Spot and directional lights shine toward their local +x axis (lightFacing).
-// A directional light (a sun) has no position: each caster's shadow runs
-// along that axis, away from the light, for `range` world units and fades out
-// over the last quarter, at a fixed apparent angle, u.sourceFraction. Its
-// march gets 4x the step budget of a point or spot light (sunShadow). Global
-// lights never cast shadows in the lit backend: their shadowIntensity is
-// ignored.
+// Spot and directional lights shine toward their local +x axis (lightFacing),
+// and a sprite light's square turns with it. A directional light (a sun) has
+// no position: each caster's shadow runs along that axis, away from the light,
+// for `range` world units and fades out over the last quarter, at a fixed
+// apparent angle, u.sourceFraction. Its march gets 4x the step budget of a
+// point or spot light (sunShadow). Global lights never cast shadows in the lit
+// backend: their shadowIntensity is ignored.
 //
-// Not yet: the `sprite` light type (discarded).
+// A sprite light (round step 8) takes its shape from its cookie: the entity's
+// texture, in the engine's texture tiers (group 1, declared as the prelude
+// declares it), sampled at LOD 0 by sampleTier, a copy of the prelude's, at
+// the uv a textured quad gives its image, turned over at the lookup as the
+// prelude's sampleTierOrWhite turns every tier image: upright, its first row
+// along the light's local +y. No falloff and no cone: it lights
+// color * rgb * a, and a mix sprite light moves the buffer toward color * rgb
+// by a. Its shadows march from its centre, like a point light's. Without a
+// texture (layer 0 of its packed index: the untextured index 0, or the layer
+// every tier array reserves) or with a range of 0 or less it draws nothing:
+// vs_main drops it like a light outside the group. Nor does a layer past the
+// end of its array (cookieLayers), which a sample would clamp to the last one.
 
 // Scalars after the matrix only: see src/shaders/uniform-layout.test.ts.
 struct LightUniform {
@@ -54,6 +69,25 @@ struct LightUniform {
 // The signed SDF: (nearest-opposite u, v, valid, inside), see sdf-jfa.wgsl.
 // Visible to the vertex stage too: directionalRay reads its size.
 @group(0) @binding(5) var sdf: texture_2d<f32>;
+// The packed texture index of every slot (the pool's tex-indices column):
+// overflow bit 31, tier bits 16-18, layer bits 0-15. vs_main reads it for a
+// sprite light's cookie; LightAccumStage's layout makes it vertex-only.
+@group(0) @binding(6) var<storage, read> texLayerIndices: array<u32>;
+
+// Group 1: the engine's texture tiers, a sprite light's cookie (round step 8).
+// Declared exactly as primitives/prelude.wgsl declares them (bindings, names,
+// types): LightAccumStage binds the prelude's layout, textureTierLayoutEntries(),
+// through a TextureTierBinding, and light-accum-stage.test.ts compares the two.
+// FRAGMENT only: only fs_main samples a cookie.
+@group(1) @binding(0) var tier0Tex: texture_2d_array<f32>;
+@group(1) @binding(1) var tier1Tex: texture_2d_array<f32>;
+@group(1) @binding(2) var tier2Tex: texture_2d_array<f32>;
+@group(1) @binding(3) var tier3Tex: texture_2d_array<f32>;
+@group(1) @binding(4) var texSampler: sampler;
+@group(1) @binding(5) var ovf0Tex: texture_2d_array<f32>;
+@group(1) @binding(6) var ovf1Tex: texture_2d_array<f32>;
+@group(1) @binding(7) var ovf2Tex: texture_2d_array<f32>;
+@group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 
 // Light fields of renderMeta[slot*2+1] (RENDER_META_LIGHT_* in components.rs).
 const LIGHT_TYPE_SHIFT: u32 = 11u;
@@ -82,6 +116,15 @@ struct VertexOutput {
     // A directional light's shadow ray (directionalRay): the same at every
     // vertex of the light, hence flat.
     @location(3) @interpolate(flat) sunRay: vec3f,
+    // A sprite light's cookie (0 for every other light): the uv a textured
+    // quad gives its image (quad_vs: the vertex position + 0.5; fs_main turns
+    // v over before the sample, as the prelude's sampleTierOrWhite does), and
+    // the packed texture index as the prelude's finishVertex decodes it. The
+    // prelude's names: sampleTier below is its copy, text for text.
+    @location(4) uv: vec2f,
+    @location(5) @interpolate(flat) texTier: u32,
+    @location(6) @interpolate(flat) texLayer: u32,
+    @location(7) @interpolate(flat) isOverflow: u32,
 };
 
 fn lightType(e: u32) -> u32 {
@@ -102,6 +145,24 @@ fn lightFacing(m: mat4x4f) -> vec2f {
     return select(vec2f(1.0, 0.0), normalize(axis), length(axis) > 1e-6);
 }
 
+// A sprite light's axes, the columns of the result: its facing (lightFacing,
+// its local +x) and the side axis a quarter turn from it, turned over when
+// the transform mirrors: dot(side, column 1) = det / |column 0|, the sign of
+// the determinant of the matrix's 2D part (Gram-Schmidt from column 0). So
+// the cookie lies on the square as a textured quad's image lies on the quad
+// (its uv mapping: the entity pipelines cull a mirrored quad, this one culls
+// no face), mirrored by a negative x- or y-scale and turned half a turn by
+// both, whatever the scale's size. Orthonormal under any transform, a sheared
+// parent's included: the corners stay range * sqrt(2) from the centre, inside
+// the culling radius. Below lightFacing's 1e-6 (a zero x-scale) the facing is
+// world +x, as a spot's is, and the side axis follows column 1's y: a
+// degenerate frame. A zero y-scale keeps the side axis unmirrored.
+fn spriteAxes(m: mat4x4f) -> mat2x2f {
+    let facing = lightFacing(m);
+    let side = vec2f(-facing.y, facing.x);
+    return mat2x2f(facing, select(side, -side, dot(side, m[1].xy) < 0.0));
+}
+
 // A directional light's shadow ray, computed by vs_main at every vertex of the
 // light (the same value at each: one per light): the unit direction TOWARD
 // the light in texels of the bound SDF (xy), and the shadow's length, `range`
@@ -109,7 +170,9 @@ fn lightFacing(m: mat4x4f) -> vec2f {
 // (w = 0), so the camera's translation drops out. That is exact only for an
 // orthographic camera, whose clip w is the same at every point, and the only
 // kind the engine builds (camera.ts). The y flip is toScreenUV's (the world is
-// y-up, the texture y-down).
+// y-up, the texture y-down). The bounded product below assumes `texels` is
+// finite: from a zoom of about 6.8e17, length(perUnit) overflows f32 and the
+// ray is NaN (0 * inf). Nothing guards that; no camera gets there.
 fn directionalRay(e: u32) -> vec3f {
     let size = vec2f(textureDimensions(sdf));
     let clip = (u.viewProjection * vec4f(-lightFacing(transforms[e]), 0.0, 0.0)).xy;
@@ -147,9 +210,37 @@ fn vs_main(
             out.sunRay = directionalRay(e);
         }
     } else {
-        let center = transforms[e][3].xy;
+        let m = transforms[e];
+        let center = m[3].xy;
         let range = primParams[e * 8u + 3u];
-        out.world = center + position.xy * 2.0 * range;
+        if (kind == SPRITE) {
+            // Its cookie's packed index, decoded as the prelude's finishVertex
+            // decodes it.
+            let packed = texLayerIndices[e];
+            let isOverflow = (packed >> 31u) & 1u;
+            let tier = (packed >> 16u) & 0x7u;
+            let layer = packed & 0xFFFFu;
+            // No texture or no extent: nothing rasterised. Layer 0 is reserved
+            // in every tier array, primary or overflow, and never holds a
+            // texture (the untextured index 0, tier 0 layer 0, is one of
+            // them): white in an rgba8 array, transparent black in a BC7 one,
+            // ASTC's error colour (opaque magenta, or NaN) in an ASTC one, a
+            // light that would depend on the device. A range of 0 or less gets
+            // culling radius 0, which still lists the light while its centre
+            // is in view (a negative range would draw a mirrored square): drop
+            // it here. A sprite light has no shape but its cookie.
+            if (layer == 0u || !(range > 0.0)) {
+                out.position = vec4f(0.0, 0.0, 0.0, 1.0);
+                return out;
+            }
+            out.world = center + spriteAxes(m) * (position.xy * 2.0 * range);
+            out.uv = position.xy + 0.5;
+            out.texTier = tier;
+            out.texLayer = layer;
+            out.isOverflow = isOverflow;
+        } else {
+            out.world = center + position.xy * 2.0 * range;
+        }
         out.position = u.viewProjection * vec4f(out.world, 0.0, 1.0);
     }
     out.screenUV = toScreenUV(out.position);
@@ -158,7 +249,10 @@ fn vs_main(
 
 // Signed distance, in SDF texels, at `texel`: negative inside an occluder.
 // Returns a large distance when the field found no texel of the other kind
-// anywhere, which means there is no occluder in view.
+// anywhere, which means there is no occluder in view. The clamp is not dead
+// code: it holds rule (4) of the march (a sun stops at the SDF's exit), whose
+// last sample can still land on index `size` in f32. Padding the SDF (round
+// step 8c) must keep it.
 fn sdfDistance(texel: vec2i, size: vec2i) -> f32 {
     let q = clamp(texel, vec2i(0), size - vec2i(1));
     let s = textureLoad(sdf, q, 0);
@@ -171,10 +265,10 @@ fn sdfDistance(texel: vec2i, size: vec2i) -> f32 {
 }
 
 // A caster t texels from the pixel casts at this strength. `reach` <= 0: full
-// strength everywhere (point and spot lights). A sun: full strength for the
-// first SUN_FADE_START of its shadow's length, then a smoothstep down to 0 at
-// the end (C1 at both ends: no Mach band on a smooth floor). The early return
-// keeps smoothstep from ever seeing equal edges.
+// strength everywhere (point, spot and sprite lights). A sun: full strength
+// for the first SUN_FADE_START of its shadow's length, then a smoothstep down
+// to 0 at the end (C1 at both ends: no Mach band on a smooth floor). The
+// early return keeps smoothstep from ever seeing equal edges.
 fn sunFade(t: f32, reach: f32) -> f32 {
     if (reach <= 0.0) {
         return 1.0;
@@ -192,11 +286,11 @@ fn sunFade(t: f32, reach: f32) -> f32 {
 //
 // pointShadow and sunShadow choose origin, dir, travel, angle and the step
 // budget; everything below is shared. `fadeReach` > 0 (a sun): a caster t
-// texels away casts at strength sunFade(t, fadeReach). 0 (point, spot): every
-// select below takes its false operand, exactly the arithmetic of before step
-// 6. `steps`: the SDF reads after the first, both loops together:
-// u.shadowSteps for a point or spot light, as before step 6; 4x that for a
-// sun (sunShadow).
+// texels away casts at strength sunFade(t, fadeReach). 0 (point, spot,
+// sprite): every select below takes its false operand, exactly the arithmetic
+// of before step 6. `steps`: the SDF reads after the first, both loops
+// together: u.shadowSteps for a point, spot or sprite light, as before
+// step 6; 4x that for a sun (sunShadow).
 //
 // This is deliberately the ORIGINAL form, not the Aaltonen correction
 // (y = h*h / (2*ph), d = sqrt(h*h - y*y), ...). That correction assumes an
@@ -258,14 +352,18 @@ fn shadow(origin: vec2f, dir: vec2f, travel: f32, angle: f32, fadeReach: f32, st
     return clamp(res, 0.0, 1.0);
 }
 
-// A point or spot light: from the pixel toward the light's centre, at the
-// light's apparent angle min(1/k, sourceRadius / travel). Quilez's k alone
+// A point, spot or sprite light: from the pixel toward the light's centre, at
+// the light's apparent angle min(1/k, sourceRadius / travel). Quilez's k alone
 // is a CONSTANT angle, the apparent size of a light at infinity; for a torch
 // it is a light whose radius grows with the pixel's distance (travel/k), and a
 // light beside a wall then darkened pixels on the far side of it, because the
 // last steps of their march pass within h of the wall. Measured 2026-09-26:
 // free rays 23-42% darker, in radial bands. The second term is the light's
-// real size, so a far pixel sees a small light.
+// real size, so a far pixel sees a small light. It is an angular RADIUS, and
+// shadow() reads `angle` as an angular DIAMETER: the penumbra is that of a
+// source sourceRadius texels wide, half the size the name says. Tuned and
+// measured that way (2026-09-26); a factor of 2 here would widen every point,
+// spot and sprite penumbra.
 fn pointShadow(fromUV: vec2f, toUV: vec2f, sourceRadius: f32) -> f32 {
     let size = vec2i(textureDimensions(sdf));
     let fsize = vec2f(size);
@@ -305,8 +403,9 @@ fn exitDistance(origin: vec2f, dir: vec2f, size: vec2f) -> f32 {
 // (an unrotated caster's) for their whole length, 1-2 texels a step: at the
 // default 48 steps they ran out of steps over ~1% of the step-6 bench's light
 // buffer (off by more than 0.1 sun), at 192 over 0.1% at most (GPU A/B,
-// docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json). Point and spot
-// lights keep u.shadowSteps: their pixels are those of before step 6.
+// docs/plans/assets/2026-09-30-step6/penumbra-ab-m2.json). Point, spot and
+// sprite lights keep u.shadowSteps: point and spot pixels are those of before
+// step 6.
 fn sunShadow(fromUV: vec2f, ray: vec3f) -> f32 {
     let fsize = vec2f(textureDimensions(sdf));
     let origin = fromUV * fsize;
@@ -317,12 +416,67 @@ fn sunShadow(fromUV: vec2f, ray: vec3f) -> f32 {
     return shadow(origin, ray.xy, travel, u.sourceFraction, ray.z, 4u * u.shadowSteps);
 }
 
-// The light types that cast shadows in the lit backend. Never GLOBAL: it has
-// no position and no direction to cast from, and its shadowIntensity is
-// ignored. light-groups.ts counts exactly these as shadowed
-// (SHADOWED_LIGHT_TYPES); light-groups.test.ts ties the two lists.
+// The light types that cast shadows in the lit backend. A sprite light casts
+// from its centre, like a point light (round step 8). Never GLOBAL: it has no
+// position and no direction to cast from, and its shadowIntensity is ignored.
+// light-groups.ts counts exactly these as shadowed (SHADOWED_LIGHT_TYPES);
+// light-groups.test.ts ties the two lists.
 fn shadowedLightType(kind: u32) -> bool {
-    return kind == POINT || kind == SPOT || kind == DIRECTIONAL;
+    return kind == POINT || kind == SPOT || kind == DIRECTIONAL || kind == SPRITE;
+}
+
+// The texel at in.uv from the entity's tier (with overflow support), RAW like
+// the prelude's: it would sample layer 0 like any other, but vs_main drops a
+// layer-0 sprite light and fs_main discards a layer past its array
+// (cookieLayers) first. A COPY of the prelude's sampleTier
+// (primitives/prelude.wgsl), text for text, which
+// light-accum-stage.test.ts compares: a new tier changes both. LOD 0,
+// explicitly: the call sits in one light type's branch, non-uniform control
+// flow, where only an explicit level is legal, and the tiers fill mip 0 only.
+fn sampleTier(in: VertexOutput) -> vec4f {
+    var texColor: vec4f;
+    if (in.isOverflow == 0u) {
+        switch in.texTier {
+            case 1u: { texColor = textureSampleLevel(tier1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { texColor = textureSampleLevel(tier2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { texColor = textureSampleLevel(tier3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { texColor = textureSampleLevel(tier0Tex, texSampler, in.uv, in.texLayer, 0.0); }
+        }
+    } else {
+        switch in.texTier {
+            case 1u: { texColor = textureSampleLevel(ovf1Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 2u: { texColor = textureSampleLevel(ovf2Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            case 3u: { texColor = textureSampleLevel(ovf3Tex, texSampler, in.uv, in.texLayer, 0.0); }
+            default: { texColor = textureSampleLevel(ovf0Tex, texSampler, in.uv, in.texLayer, 0.0); }
+        }
+    }
+    return texColor;
+}
+
+// The layer count of the cookie's array (in.isOverflow, in.texTier). A layer
+// at or past it does not exist on this renderer (an index from a tape or a
+// snapshot of another session, or Mode A's render worker, whose arrays are
+// 1-layer placeholders), and a sample would clamp it to the last layer, white
+// in an rgba8 placeholder: fs_main discards it instead. sampleTier's arms,
+// textureNumLayers only; light-accum-stage.test.ts pins both.
+fn cookieLayers(in: VertexOutput) -> u32 {
+    var layers: u32;
+    if (in.isOverflow == 0u) {
+        switch in.texTier {
+            case 1u: { layers = textureNumLayers(tier1Tex); }
+            case 2u: { layers = textureNumLayers(tier2Tex); }
+            case 3u: { layers = textureNumLayers(tier3Tex); }
+            default: { layers = textureNumLayers(tier0Tex); }
+        }
+    } else {
+        switch in.texTier {
+            case 1u: { layers = textureNumLayers(ovf1Tex); }
+            case 2u: { layers = textureNumLayers(ovf2Tex); }
+            case 3u: { layers = textureNumLayers(ovf3Tex); }
+            default: { layers = textureNumLayers(ovf0Tex); }
+        }
+    }
+    return layers;
 }
 
 @fragment
@@ -330,35 +484,57 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let e = in.entityIdx;
     let p = e * 8u;
     let kind = lightType(e);
-    if (kind == SPRITE) {
-        discard;
-    }
-    let color = vec3f(primParams[p], primParams[p + 1u], primParams[p + 2u]);
+    var color = vec3f(primParams[p], primParams[p + 1u], primParams[p + 2u]);
     // The one read of shadowIntensity (slot 7), through the type gate.
     let shadowStrength = select(0.0, clamp(primParams[p + 7u], 0.0, 1.0), shadowedLightType(kind));
 
     var intensity = 1.0;
-    if (kind == POINT || kind == SPOT) {
+    if (kind == POINT || kind == SPOT || kind == SPRITE) {
         let m = transforms[e];
         let center = m[3].xy;
         let range = primParams[p + 3u];
-        let d = distance(in.world, center);
-        if (d >= range) {
-            discard;
-        }
-        intensity = pow(1.0 - d / range, max(primParams[p + 6u], 0.0));
+        if (kind == SPRITE) {
+            // The cookie is the shape: no falloff, no cone. vs_main drew
+            // nothing for layer 0; a layer this renderer does not hold is
+            // discarded here, never clamped to the last one. The image is
+            // upright, as every tier image is: v is turned over before the
+            // sample, the two lines of the prelude's sampleTierOrWhite, copied
+            // (light-accum-stage.test.ts ties them). The texels hold
+            // straight alpha: copyExternalImageToTexture writes them
+            // unpremultiplied (its default); a browser that decodes
+            // premultiplied (Chrome's createImageBitmap default) has already
+            // rounded rgb * a to 8 bits, so color * rgb * a stays within about
+            // 1/255 of the image's, while rgb alone can be far off where a is
+            // small. The light is color * rgb * a, and for a mix light a is
+            // the weight and color * rgb the target.
+            if (in.texLayer >= cookieLayers(in)) {
+                discard;
+            }
+            var image = in;
+            image.uv = vec2f(in.uv.x, 1.0 - in.uv.y);
+            let cookie = sampleTier(image);
+            color *= cookie.rgb;
+            intensity = cookie.a;
+        } else {
+            let d = distance(in.world, center);
+            if (d >= range) {
+                discard;
+            }
+            intensity = pow(1.0 - d / range, max(primParams[p + 6u], 0.0));
 
-        if (kind == SPOT) {
-            let facing = lightFacing(m);
-            let toPixel = select(facing, (in.world - center) / d, d > 1e-4);
-            let cosAngle = dot(facing, toPixel);
-            let innerCos = primParams[p + 4u];
-            let outerCos = primParams[p + 5u];
-            // smoothstep is undefined when its edges meet: a hard cone then.
-            let cone = select(step(outerCos, cosAngle), smoothstep(outerCos, innerCos, cosAngle), innerCos > outerCos + 1e-5);
-            intensity *= cone;
+            if (kind == SPOT) {
+                let facing = lightFacing(m);
+                let toPixel = select(facing, (in.world - center) / d, d > 1e-4);
+                let cosAngle = dot(facing, toPixel);
+                let innerCos = primParams[p + 4u];
+                let outerCos = primParams[p + 5u];
+                // smoothstep is undefined when its edges meet: a hard cone then.
+                let cone = select(step(outerCos, cosAngle), smoothstep(outerCos, innerCos, cosAngle), innerCos > outerCos + 1e-5);
+                intensity *= cone;
+            }
         }
 
+        // From the light's centre, a sprite light's too.
         if (shadowStrength > 0.0 && intensity > 0.0) {
             let lightUV = toScreenUV(u.viewProjection * vec4f(center, 0.0, 1.0));
             // The source radius in SDF texels: a fraction of the range, so it
@@ -375,9 +551,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let blend = (renderMeta[e * 2u + 1u] >> LIGHT_BLEND_SHIFT) & 3u;
     if (blend == BLEND_MIX) {
         // Toward the light's colour by its intensity: dst * (1 - w) + color * w
-        // under the over blend. w is in [0, 1] by construction (falloff, cone
-        // and shadow each are); the clamp keeps a pow that overshoots 1 from
-        // turning the blend into an extrapolation.
+        // under the over blend. w is in [0, 1] by construction (the
+        // attenuation, the cone, a cookie's alpha and the shadow each are);
+        // the clamp keeps a pow that overshoots 1 from turning the blend into
+        // an extrapolation.
         let w = clamp(intensity, 0.0, 1.0);
         return vec4f(color * w, w);
     }

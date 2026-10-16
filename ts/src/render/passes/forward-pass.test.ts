@@ -13,6 +13,7 @@ import {
 import { loadPrimitivePieces } from '../primitive-pieces.fixture';
 import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
 import { structSize } from '../../shaders/uniform-layout';
+import lightAccumSource from '../../shaders/light-accum.wgsl?raw';
 
 // The WebGPU enums the fake devices and the shared layouts read (node has no WebGPU).
 const g = globalThis as Record<string, unknown>;
@@ -373,7 +374,7 @@ describe('the composed primitive modules', () => {
 const TIERS = ['tier0Tex', 'tier1Tex', 'tier2Tex', 'tier3Tex', 'ovf0Tex', 'ovf1Tex', 'ovf2Tex', 'ovf3Tex'];
 const WHITE_AT_INDEX_0: PrimitiveLibraryName[] = ['quad', 'line', 'bezier'];
 
-describe('packed index 0 is white in every tier-sampling primitive', () => {
+describe('packed index 0: white in every tier-sampling primitive, no light in light-accum.wgsl (layer 0 there)', () => {
   it('sampleTierOrWhite returns white for packed index 0 before it samples a tier', () => {
     const fn = body(prelude, 'sampleTierOrWhite');
     // The untextured check returns white itself, as the per-file shaders did.
@@ -438,6 +439,28 @@ describe('packed index 0 is white in every tier-sampling primitive', () => {
     const reached = reachableFrom(moduleOf(name), 'fs_main');
     expect(reached.has('sampleTier')).toBe(false);
     expect(reached.has('sampleTierOrWhite')).toBe(false);
+  });
+
+  // A sprite light's cookie is its shape (round step 8): at layer 0, reserved
+  // in every array (index 0 among them), it lights NOTHING, never white nor a
+  // device-dependent reserved layer; a layer past its array is discarded.
+  it('light-accum.wgsl: layer 0 (packed index 0 among them) lights nothing, decided in vs_main before any tier is sampled; a layer past its array is discarded', () => {
+    const light = stripComments(lightAccumSource);
+    const vs = body(light, 'vs_main');
+    const untextured = vs.search(/if\s*\(\s*layer == 0u\s*\|\|[^)]*\)\s*\)\s*\{\s*out\.position = vec4f\(0\.0, 0\.0, 0\.0, 1\.0\);\s*return out;/);
+    expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
+    expect(untextured).toBeLessThan(vs.indexOf('out.uv = position.xy + 0.5;'));
+    expect(light).not.toMatch(/sampleTierOrWhite/);
+    // sampleTier samples the tiers; cookieLayers only counts their layers.
+    const readers = [...callGraph(light)].filter(([, refs]) => TIERS.some((t) => refs.has(t))).map(([name]) => name);
+    expect(readers).toEqual(['sampleTier', 'cookieLayers']);
+    expect(body(light, 'cookieLayers')).not.toMatch(/textureSample/);
+    expect(reachableFrom(light, 'fs_main').has('sampleTier')).toBe(true);
+    expect(reachableFrom(light, 'fs_main').has('cookieLayers')).toBe(true);
+    expect(reachableFrom(light, 'vs_main').has('sampleTier')).toBe(false);
+    for (const tier of TIERS) {
+      expect(body(light, 'sampleTier')).toMatch(new RegExp(`textureSampleLevel\\(\\s*${tier}\\s*,\\s*texSampler\\s*,\\s*in\\.uv\\s*,\\s*in\\.texLayer\\s*,\\s*0\\.0\\s*\\)`));
+    }
   });
 });
 

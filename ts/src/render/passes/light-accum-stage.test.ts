@@ -5,6 +5,7 @@ import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
 import { BLEND_MIX } from '../light-groups';
 import { textureTierLayoutEntries } from '../primitive-bindings';
+import { loadPrimitivePieces } from '../primitive-pieces.fixture';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
 import { bindingDecls, callGraph, functionBody, functionParams, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
@@ -662,9 +663,184 @@ describe('light-accum.wgsl: the light list and the blend modes (round step 7)', 
     expect(code).not.toMatch(/[<>]=?\s*BLEND_(?:MIX|SUB)\b/);
   });
 
-  it('the header no longer says mix is added like add', () => {
+  it('the header no longer says mix is added like add, nor that sprite lights are discarded', () => {
     // At HEAD the phrase breaks across two comment lines: "(added" / "// like `add`)".
-    expect(lightShaderSource.slice(0, lightShaderSource.indexOf('struct LightUniform'))).not.toMatch(/added\s+(?:\/\/\s*)?like\s+`?add/);
-    expect(lightShaderSource).toMatch(/Not yet: the `sprite` light type \(discarded\)\./);
+    const header = lightShaderSource.slice(0, lightShaderSource.indexOf('struct LightUniform'));
+    expect(header).not.toMatch(/added\s+(?:\/\/\s*)?like\s+`?add/);
+    expect(lightShaderSource).not.toMatch(/Not yet: the `sprite` light type/);
+    expect(header).toMatch(/A sprite light \(round step 8\) takes its shape from its cookie/);
+  });
+});
+
+// Round step 8: the sprite light. The prelude is the reference for group 1,
+// the packed-index decode, sampleTier and the textured quad's uv.
+const PRELUDE = stripComments(loadPrimitivePieces().prelude);
+const DECL = /@group\((\d+)\)\s*@binding\((\d+)\)\s*var(?:<([^>]+)>)?\s+(\w+)\s*:\s*([^;]+);/g;
+/** `<binding> <name>: <address space>type` of every declaration of group `group`, whitespace dropped. */
+const declsOf = (src: string, group: number): string[] => [...stripComments(src).matchAll(DECL)]
+  .filter((m) => Number(m[1]) === group)
+  .map((m) => `${m[2]} ${m[4]}: ${m[3] ? `<${m[3].replace(/\s+/g, '')}>` : ''}${m[5].replace(/\s+/g, '')}`);
+/** The `{ … }` block that follows `head` in `text`, braces included; fails the test when `head` is missing. */
+function blockAfter(text: string, head: string): string {
+  const at = text.indexOf(head);
+  expect(at, head).toBeGreaterThan(-1);
+  const open = text.indexOf('{', at + head.length - 1);
+  for (let i = open, depth = 0; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return text.slice(open, i + 1);
+  }
+  return text.slice(open);
+}
+const TIERS = ['tier0Tex', 'tier1Tex', 'tier2Tex', 'tier3Tex', 'ovf0Tex', 'ovf1Tex', 'ovf2Tex', 'ovf3Tex'];
+
+describe('light-accum.wgsl: the sprite light (round step 8)', () => {
+  it('declares group 1 exactly as the prelude does: the same nine bindings, names and types', () => {
+    expect(declsOf(PRELUDE, 1)).toHaveLength(9);
+    expect(declsOf(lightShaderSource, 1)).toEqual(declsOf(PRELUDE, 1));
+  });
+
+  it("every entry of both layouts is a binding the shader declares in that group; binding 6 is texLayerIndices, a read-only array<u32>", () => {
+    LightAccumStage.SHADER_SOURCE = lightShaderSource;
+    const { pipelineLayouts } = setUp();
+    const groups = [...pipelineLayouts[0].bindGroupLayouts].map((l) => descOf<GPUBindGroupLayoutDescriptor>(l));
+    const decls = bindingDecls(lightShaderSource);
+    groups.forEach((layout, group) => {
+      for (const e of layout.entries) {
+        expect(decls.some((d) => d.group === group && d.binding === e.binding), `group ${group} binding ${e.binding}`).toBe(true);
+      }
+    });
+    expect(declsOf(lightShaderSource, 0)).toContain('6 texLayerIndices: <storage,read>array<u32>');
+  });
+
+  it("sampleTier is the prelude's, text for text: the same eight arms at LOD 0, the only function that samples a tier; cookieLayers only counts their layers", () => {
+    const squash = (t: string): string => t.replace(/\s+/g, ' ').trim();
+    const reference = functionBody(PRELUDE, 'sampleTier');
+    expect(reference).not.toBeNull();
+    expect(squash(body('sampleTier'))).toBe(squash(reference!));
+    expect(functionParams(lightShaderSource, 'sampleTier')).toEqual(functionParams(PRELUDE, 'sampleTier'));
+    for (const tier of TIERS) {
+      expect(body('sampleTier')).toMatch(new RegExp(`textureSampleLevel\\(\\s*${tier}\\s*,\\s*texSampler\\s*,\\s*in\\.uv\\s*,\\s*in\\.texLayer\\s*,\\s*0\\.0\\s*\\)`));
+    }
+    const readers = [...callGraph(lightShaderSource)].filter(([, refs]) => TIERS.some((t) => refs.has(t))).map(([name]) => name);
+    expect(readers).toEqual(['sampleTier', 'cookieLayers']);
+    // cookieLayers: sampleTier's eight arms, one textureNumLayers each, nothing sampled.
+    const layers = body('cookieLayers');
+    for (const tier of TIERS) expect(layers).toMatch(new RegExp(`textureNumLayers\\(\\s*${tier}\\s*\\)`));
+    expect(layers.match(/textureNumLayers\(/g)).toHaveLength(8);
+    expect(layers).not.toMatch(/textureSample/);
+    expect(functionParams(lightShaderSource, 'cookieLayers')).toEqual(functionParams(PRELUDE, 'sampleTier'));
+    // Explicit LOD 0: non-uniform control flow, and only mip 0 is filled.
+    const code = stripComments(lightShaderSource);
+    expect(code.match(/textureSampleLevel\(/g)).toHaveLength(8);
+    expect(code.match(/textureSampleLevel\([^;]*,\s*0\.0\s*\)/g)).toHaveLength(8);
+  });
+
+  it("vs_main decodes the packed index as the prelude's finishVertex does, and hands fs_main the cookie in the prelude's varyings", () => {
+    const finish = functionBody(PRELUDE, 'finishVertex');
+    expect(finish).not.toBeNull();
+    const vs = body('vs_main');
+    for (const line of [/let isOverflow = \(packed >> 31u\) & 1u;/, /let tier = \(packed >> 16u\) & 0x7u;/, /let layer = packed & 0xFFFFu;/]) {
+      expect(finish).toMatch(line);
+      expect(vs).toMatch(line);
+    }
+    expect(vs).toMatch(/let packed = texLayerIndices\[e\];/);
+    // …and hands them on as finishVertex does: a field swapped or dropped samples another layer or another array.
+    const sprite = blockAfter(vs, 'if (kind == SPRITE) {');
+    for (const line of [/out\.texTier = tier;/, /out\.texLayer = layer;/, /out\.isOverflow = isOverflow;/]) {
+      expect(finish).toMatch(line);
+      expect(sprite).toMatch(line);
+    }
+    expect(reachableFrom(lightShaderSource, 'vs_main').has('texLayerIndices')).toBe(true);
+    expect(reachableFrom(lightShaderSource, 'fs_main').has('texLayerIndices')).toBe(false);
+    expect(lightShaderSource).toMatch(/@location\(4\)\s*uv:\s*vec2f,/);
+    expect(lightShaderSource).toMatch(/@location\(5\)\s*@interpolate\(flat\)\s*texTier:\s*u32,/);
+    expect(lightShaderSource).toMatch(/@location\(6\)\s*@interpolate\(flat\)\s*texLayer:\s*u32,/);
+    expect(lightShaderSource).toMatch(/@location\(7\)\s*@interpolate\(flat\)\s*isOverflow:\s*u32,/);
+  });
+
+  it('a sprite light at layer 0 (no texture: the untextured index 0 among them) or without extent (range 0 or less) is a degenerate triangle, dropped before its square', () => {
+    const sprite = blockAfter(body('vs_main'), 'if (kind == SPRITE) {');
+    const drop = sprite.search(/if\s*\(\s*layer == 0u\s*\|\|\s*!\(\s*range > 0\.0\s*\)\s*\)\s*\{\s*out\.position = vec4f\(0\.0, 0\.0, 0\.0, 1\.0\);\s*return out;/);
+    expect(drop).toBeGreaterThan(sprite.indexOf('let layer = packed & 0xFFFFu;'));
+    expect(drop).toBeLessThan(sprite.indexOf('out.world ='));
+  });
+
+  it("the square turns with the light (spriteAxes: its facing and a mirrored side axis), half-side range, at the textured quad's uv", () => {
+    const axes = body('spriteAxes');
+    expect(axes).toMatch(/let facing = lightFacing\(m\);/);
+    expect(axes).toMatch(/let side = vec2f\(-facing\.y, facing\.x\);/);
+    expect(axes).toMatch(/return mat2x2f\(facing, select\(side, -side, dot\(side, m\[1\]\.xy\) < 0\.0\)\);/);
+    const sprite = blockAfter(body('vs_main'), 'if (kind == SPRITE) {');
+    expect(sprite).toMatch(/out\.world = center \+ spriteAxes\(m\) \* \(position\.xy \* 2\.0 \* range\);/);
+    expect(sprite).toMatch(/out\.uv = position\.xy \+ 0\.5;/);
+    // The textured quad's mapping (quad_vs): the cookie lies on the square as an image on a quad.
+    expect(stripComments(loadPrimitivePieces().libraries[0])).toMatch(/unitQuadVertex\(position, entityIdx, position\.xy \+ 0\.5\)/);
+  });
+
+  it('fs_main: the cookie is the shape, without falloff or cone; a layer past its array is discarded; its rgb tints the colour, its alpha is the intensity', () => {
+    const fs = body('fs_main');
+    expect(fs).not.toMatch(/if\s*\(\s*kind\s*==\s*SPRITE\s*\)\s*\{\s*discard/);
+    expect(fs).toMatch(/var color = vec3f\(primParams\[p\], primParams\[p \+ 1u\], primParams\[p \+ 2u\]\);/);
+    expect(fs).toMatch(/if \(kind == POINT \|\| kind == SPOT \|\| kind == SPRITE\) \{/);
+    const sprite = blockAfter(fs, 'if (kind == SPRITE) {');
+    expect(sprite).toMatch(/if \(in\.texLayer >= cookieLayers\(in\)\) \{\s*discard;\s*\}\s*var image = in;\s*image\.uv = vec2f\(in\.uv\.x, 1\.0 - in\.uv\.y\);\s*let cookie = sampleTier\(image\);\s*color \*= cookie\.rgb;\s*intensity = cookie\.a;/);
+    // The bound's discard is the branch's only one: no range test, no falloff, no cone.
+    expect(sprite.match(/\bdiscard\b/g)).toHaveLength(1);
+    expect(sprite).not.toMatch(/\b(?:pow|distance|smoothstep|lightFacing)\b/);
+    expect(fs.match(/sampleTier\(/g)).toHaveLength(1);
+    expect(fs.match(/cookieLayers\(/g)).toHaveLength(1);
+  });
+
+  it("the cookie is turned over as the prelude's sampleTierOrWhite turns every tier image: the same two lines, right before its sample", () => {
+    const squash = (t: string): string => t.replace(/\s+/g, ' ').trim();
+    const white = functionBody(PRELUDE, 'sampleTierOrWhite');
+    expect(white).not.toBeNull();
+    const flip = /var image = in;\s*image\.uv = [^;]*;/.exec(white!);
+    expect(flip, "the prelude's flip").not.toBeNull();
+    const sprite = squash(blockAfter(body('fs_main'), 'if (kind == SPRITE) {'));
+    expect(sprite).toContain(`${squash(flip![0])} let cookie = sampleTier(image);`);
+  });
+
+  it('fs_main: falloff, range discard and cone unreachable for a sprite light; the march reachable', () => {
+    // The bound's discard (the sprite branch's own) aside, every distance,
+    // pow, discard and smoothstep of fs_main sits in the non-sprite branch,
+    // and the shared march comes after both.
+    const fs = body('fs_main').replace(/if \(in\.texLayer >= cookieLayers\(in\)\) \{\s*discard;\s*\}/, '');
+    const outer = blockAfter(fs, 'if (kind == POINT || kind == SPOT || kind == SPRITE) {');
+    const sprite = blockAfter(outer, 'if (kind == SPRITE) {');
+    const after = outer.slice(outer.indexOf(sprite) + sprite.length);
+    expect(after).toMatch(/^\s*else\s*\{/);
+    const otherwise = blockAfter(after, 'else {');
+    for (const re of [/\bdistance\(in\.world/g, /\bpow\(/g, /\bdiscard\b/g, /\bsmoothstep\(/g]) {
+      expect(fs.match(re)?.length ?? 0, String(re)).toBe(otherwise.match(re)?.length ?? 0);
+    }
+    const tail = after.slice(after.indexOf(otherwise) + otherwise.length);
+    expect(tail).toMatch(/if \(shadowStrength > 0\.0 && intensity > 0\.0\) \{[^]*\bpointShadow\(/);
+    expect(otherwise).not.toMatch(/\bpointShadow\(/);
+  });
+
+  // The step-9 list's text guards on the march (round plan §4, step 6): the
+  // sprite light marches through pointShadow and shadow() too.
+  it('pointShadow: from the pixel toward the centre, the travel checked before it divides', () => {
+    expect(body('pointShadow')).toMatch(/let travel = distance\(origin, lightPos\);\s*if \(travel < 1\.0\) \{\s*return 1\.0;\s*\}\s*let dir = \(lightPos - origin\) \/ travel;/);
+  });
+
+  it("shadow(): a pixel inside an occluder leaves it from its first read on; res starts lit and leaves clamped", () => {
+    const march = body('shadow');
+    expect(march).toMatch(/var h = sdfDistance\(vec2i\(origin\), size\);\s*var i = 0u;\s*while \(h <= 0\.0 && i < steps\) \{/);
+    expect(march).toMatch(/var res = 1\.0;/);
+    expect(march).toMatch(/return clamp\(res, 0\.0, 1\.0\);\s*$/);
+  });
+
+  it('exitDistance takes (origin, dir, size), the order sunShadow passes them in', () => {
+    expect(functionParams(lightShaderSource, 'exitDistance')).toEqual(['origin', 'dir', 'size']);
+  });
+
+  it("the light type ids are Rust's LightType (components.rs), SPRITE 4 among them", () => {
+    const rust = readFileSync(new URL('../../../../crates/hyperion-core/src/components.rs', import.meta.url), 'utf8');
+    const types = new Map([.../pub enum LightType \{([^}]*)\}/.exec(rust)![1].matchAll(/(\w+)\s*=\s*(\d+)/g)].map((m) => [m[1].toUpperCase(), Number(m[2])]));
+    expect(types).toEqual(new Map([['POINT', 0], ['SPOT', 1], ['DIRECTIONAL', 2], ['GLOBAL', 3], ['SPRITE', 4]]));
+    const ids = new Map([...stripComments(lightShaderSource).matchAll(/const\s+([A-Z_]+)\s*:\s*u32\s*=\s*(\d+)u\s*;/g)].map((m) => [m[1], Number(m[2])]));
+    for (const [name, id] of types) expect(ids.get(name), name).toBe(id);
   });
 });

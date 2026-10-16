@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, type LightGroupsInput } from './light-groups';
+import {
+  deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, TEXTURE_LAYER_MASK, type LightGroupsInput,
+} from './light-groups';
+import { packTextureIndex } from '../texture-manager';
 import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
 import { RenderPrimitiveType } from '../entity-handle';
 import { RenderPrimitiveType as SchemaPrimitiveType } from '../prim-params-schema';
@@ -18,7 +21,7 @@ import { extractFrustumPlanes, isSphereInFrustum, orthographic } from '../camera
 //   occluder — the layers it shadows; 0 is every layer
 
 const LIGHT = LIGHT2D, CAST = 1 << 9, RECV = 1 << 10;
-const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3;
+const POINT = 0, DIRECTIONAL = 2, GLOBAL = 3, SPRITE = 4;
 /** Light blend modes on the wire, renderMeta bits 14-15 (LightBlendMode in components.rs). */
 const ADD = 0, SUB = 1, MIX = 2;
 
@@ -30,6 +33,8 @@ type E = {
   /** The external id; default: the row. */
   id?: number;
   blend?: number;
+  /** The packed texture index (round step 8). The column exists only when some entity of the scene sets it. */
+  tex?: number;
 };
 
 /** Every `if (cond) { block }` of a comment-blanked WGSL body, `else if` and nested ones included. */
@@ -59,6 +64,7 @@ function scene(es: E[]): LightGroupsInput {
   const renderMeta = new Uint32Array(n * 2), primParams = new Float32Array(n * 8), bounds = new Float32Array(n * 4);
   const boundsBits = new Uint32Array(bounds.buffer);
   const entityIds = new Uint32Array(n);
+  const texIndices = es.some((e) => e.tex !== undefined) ? Uint32Array.from(es, (e) => e.tex ?? 0) : undefined;
   es.forEach((e, i) => {
     const mask = (e.mask ?? (e.kind === 'light' ? 0xffff : 0)) << 16;
     const lightWord = LIGHT | ((e.type ?? POINT) << 11) | ((e.blend ?? ADD) << 14);
@@ -73,7 +79,7 @@ function scene(es: E[]): LightGroupsInput {
     entityIds[i] = e.id ?? i;
   });
   const cameraViewProjection = new Float32Array([0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-  return { entityCount: n, renderMeta, primParams, bounds, cameraViewProjection, entityIds };
+  return { entityCount: n, renderMeta, primParams, bounds, cameraViewProjection, entityIds, ...(texIndices ? { texIndices } : {}) };
 }
 
 const light = (mask?: number, shadow = 0, extra: Partial<E> = {}): E => ({ kind: 'light', mask, shadow, ...extra });
@@ -337,8 +343,8 @@ describe('deriveLightGroups', () => {
     expect([...types].sort()).toEqual([...SHADOWED_LIGHT_TYPES].sort());
     expect(types).not.toContain(ids.get('GLOBAL'));
     // Each gated type reaches a march in fs_main. A type both lists count but
-    // no branch marches (a sprite light added to the gates in step 8 without
-    // its branch) floods an SDF set nothing reads, and never shadows.
+    // no branch marches (a type added to the gates without its march branch)
+    // floods an SDF set nothing reads, and never shadows.
     const main = functionBody(wgsl, 'fs_main')!;
     const marched = new Set<number | undefined>();
     for (const { cond, block } of branches(main)) {
@@ -358,6 +364,55 @@ describe('deriveLightGroups', () => {
     for (let t = 0; t < 8; t++) {
       const g = deriveLightGroups(scene([light(0xffff, 1, { type: t, r: 3.4e38 }), drawable(CAST | RECV)]));
       expect(g.sdfSets.length, `light type ${t}`).toBe(types.includes(t) ? 1 : 0);
+    }
+  });
+
+  // Round step 8. COOKIE: where a PNG cookie lands on a BC/ASTC device.
+  const COOKIE = packTextureIndex(0, 1, true);
+  const sprite = (shadow: number, extra: Partial<E> = {}): E => light(0xffff, shadow, { type: SPRITE, tex: COOKIE, ...extra });
+
+  it('a shadowed sprite light with a texture gets an SDF set like a point light (round step 8)', () => {
+    const on = deriveLightGroups(scene([sprite(1), drawable(CAST | RECV)]));
+    expect(on.groups).toEqual([{ layers: 1, sdfSet: 0 }]);
+    expect(on.sdfSets).toEqual([{ occluderLayers: 1 }]);
+    expect(deriveLightGroups(scene([sprite(0), drawable(CAST | RECV)])).sdfSets).toEqual([]);
+    expect(deriveLightGroups(scene([drawable(CAST | RECV), sprite(1)])).sdfSets, 'a sprite light in slot 1: its own index').toEqual([{ occluderLayers: 1 }]);
+  });
+
+  it('a shadowed sprite light that draws nothing gets no SDF set: a range of 0 or less, or no texture (layer 0)', () => {
+    // 0x7ff80000: bits nobody decodes; then reserved layers 0 of two arrays.
+    for (const extra of [{ range: 0 }, { range: -5 }, { tex: 0 }, { tex: 0x7ff80000 }, { tex: packTextureIndex(0, 0, true) }, { tex: packTextureIndex(1, 0) }]) {
+      const g = deriveLightGroups(scene([sprite(1, extra), drawable(CAST | RECV)]));
+      expect(g.sdfSets, JSON.stringify(extra)).toEqual([]);
+      expect(g.groups).toEqual([{ layers: 1, sdfSet: -1 }]);
+      expect([...g.lightOrder], 'still listed: vs_main drops it').toEqual([0]);
+    }
+    expect(deriveLightGroups(scene([sprite(1, { range: 0.5 }), drawable(CAST | RECV)])).sdfSets).toEqual([{ occluderLayers: 1 }]);
+    // Why nothing reads it: vs_main drops such a light before its square.
+    const wgsl = stripComments(readFileSync(new URL('../shaders/light-accum.wgsl', import.meta.url), 'utf8'));
+    expect(functionBody(wgsl, 'vs_main')).toMatch(/if\s*\(\s*layer == 0u\s*\|\|\s*!\(\s*range > 0\.0\s*\)\s*\)/);
+  });
+
+  it('without a usable tex-indices column every sprite light counts as textured: all or nothing, never read past it', () => {
+    const s = scene([sprite(1, { tex: 0 }), drawable(CAST | RECV)]);
+    expect(deriveLightGroups(s).sdfSets).toEqual([]);
+    for (const texIndices of [undefined, new Uint32Array(0), s.texIndices!.slice(0, 1)]) {
+      expect(deriveLightGroups({ ...s, texIndices }).sdfSets, `${texIndices?.length ?? 'no'} indices`).toEqual([{ occluderLayers: 1 }]);
+    }
+  });
+
+  it("TEXTURE_LAYER_MASK is the layer field light-accum.wgsl decodes and drops at 0: bits 0-15, whatever the tier and the overflow bit", () => {
+    expect(TEXTURE_LAYER_MASK).toBe(packTextureIndex(0, 0xffff) >>> 0);
+    const vs = functionBody(stripComments(readFileSync(new URL('../shaders/light-accum.wgsl', import.meta.url), 'utf8')), 'vs_main');
+    expect(vs).toMatch(/let layer = packed & 0xFFFFu;/);
+    expect(vs).toMatch(/if \(layer == 0u \|\|/);
+    for (const tier of [0, 1, 7]) {
+      for (const layer of [0, 1, 0xffff]) {
+        for (const overflow of [false, true]) {
+          const untextured = (packTextureIndex(tier, layer, overflow) & TEXTURE_LAYER_MASK) === 0;
+          expect(untextured, `tier ${tier}, layer ${layer}, overflow ${overflow}`).toBe(layer === 0);
+        }
+      }
     }
   });
 
@@ -520,9 +575,9 @@ describe('deriveLightGroups: the light list (round step 7)', () => {
   });
 
   it('lists what the cull draws as a light: a mask-0 light, a sprite light, a type past Light2D; the unclaimed blend 3 sorts with add', () => {
-    // vs_main drops a mask-0 light in every group, fs_main discards a sprite
-    // light until step 8, and cull.wgsl clamps a type past Light2D to Light2D.
-    const SPRITE = 4, PAST_LAST = LIGHT2D + 1;
+    // vs_main drops a mask-0 light in every group and a sprite light without
+    // a texture, and cull.wgsl clamps a type past Light2D to Light2D.
+    const PAST_LAST = LIGHT2D + 1;
     expect(drawn(scene([light(0, 0, { id: 1 }), light(0xffff, 0, { id: 2, type: SPRITE }), drawable(PAST_LAST, 0xffff, { id: 3 }), drawable(RECV, 0, { id: 4 })])))
       .toEqual([1, 2, 3]);
     // Rust stores a 3 (masked, never rejected): light-accum.wgsl draws it like add, so it sorts with add.

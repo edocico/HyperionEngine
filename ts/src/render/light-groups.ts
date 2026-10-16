@@ -88,6 +88,14 @@ export interface LightGroupsInput {
    * restore.
    */
   entityIds?: Uint32Array;
+  /**
+   * Slot -> packed texture index (round step 8): a sprite light's cookie. A
+   * sprite light without one (layer 0, TEXTURE_LAYER_MASK) draws nothing, so
+   * its shadows need no SDF. A column shorter than `entityCount`, or none, is
+   * ignored whole, and every sprite light counts as textured: a flood too
+   * many costs time, one too few would cost shadows.
+   */
+  texIndices?: Uint32Array;
 }
 
 /**
@@ -116,13 +124,14 @@ const POINT = 0;
 const SPOT = 1;
 const DIRECTIONAL = 2;
 const GLOBAL = 3;
+const SPRITE = 4;
 /**
  * The light types whose shadowIntensity makes light-accum.wgsl march the SDF:
  * its `shadowedLightType`, which light-groups.test.ts compares with this list.
  * Never GLOBAL: a global light has no position and no direction to cast from.
- * Sprite lights join in round step 8, on both sides in the same commit.
+ * A sprite light casts from its centre, like a point light (round step 8).
  */
-export const SHADOWED_LIGHT_TYPES: readonly number[] = [POINT, SPOT, DIRECTIONAL];
+export const SHADOWED_LIGHT_TYPES: readonly number[] = [POINT, SPOT, DIRECTIONAL, SPRITE];
 const SHADOWED = new Uint8Array(8);
 for (const type of SHADOWED_LIGHT_TYPES) SHADOWED[type] = 1;
 /**
@@ -135,6 +144,30 @@ for (const type of SHADOWED_LIGHT_TYPES) SHADOWED[type] = 1;
  */
 const MARGIN_SCALE = 1.01;
 const MARGIN_ADD = 1e-3;
+
+/**
+ * The layer field of a packed texture index (bits 0-15), as the prelude's
+ * finishVertex and light-accum.wgsl's vs_main decode it. Layer 0 is reserved
+ * in every tier array, primary or overflow, and never holds a texture; the
+ * untextured index 0 (tier 0, layer 0, not overflow) is one such index. A
+ * sprite light at layer 0 draws nothing (round step 8): vs_main tests
+ * `layer == 0u`, whatever the tier and the overflow bit.
+ */
+export const TEXTURE_LAYER_MASK = 0xffff;
+
+/**
+ * The one rule for a sprite light without a texture (round step 8), shared by
+ * every reader of a cookie's index (the SDF gate first). The layer of the
+ * slot's packed index is 0 (TEXTURE_LAYER_MASK), which light-accum.wgsl's
+ * vs_main draws nothing for. All or nothing, like the ids: without a usable
+ * `texIndices` column (shorter than `entityCount`, or none) no slot is
+ * untextured, since a flood too many costs time where one too few would cost
+ * shadows.
+ */
+export function untexturedPredicate(input: Pick<LightGroupsInput, 'entityCount' | 'texIndices'>): (slot: number) => boolean {
+  const tex = input.texIndices !== undefined && input.texIndices.length >= input.entityCount ? input.texIndices : null;
+  return (slot) => tex !== null && (tex[slot] & TEXTURE_LAYER_MASK) === 0;
+}
 
 /**
  * The primitive types whose shader samples the light buffer: the `lit` rows of
@@ -197,6 +230,9 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
   // All or nothing: a short column is a transport bug, and mixing ids with
   // slots as keys would compare two numberings.
   const ids = input.entityIds !== undefined && input.entityIds.length >= entityCount ? input.entityIds : null;
+  // The same all-or-nothing rule for the cookies (untexturedPredicate):
+  // without a usable column every sprite light counts as textured.
+  const untextured = untexturedPredicate(input);
   const listed: number[] = [];
 
   const lightMasks = new Set<number>();
@@ -220,16 +256,21 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
       if (!drawn && !inView(i)) continue;
       if (drawn) listed.push(i);
       lightMasks.add(mask);
-      // The shader's gate (shadowedLightType in light-accum.wgsl): point, spot
-      // or directional, with a shadow strength above 0. A global light's
-      // strength is ignored there: flag it for the renderer's warning.
+      // The shader's gate (shadowedLightType in light-accum.wgsl): point,
+      // spot, directional or sprite, with a shadow strength above 0. A global
+      // light's strength is ignored there: flag it for the renderer's warning.
       const type = (word >>> LIGHT_TYPE_SHIFT) & 7;
       const strength = Math.min(Math.max(primParams[i * 8 + 7], 0), 1);
       if (strength > 0) {
         if (SHADOWED[type] === 1) {
-          // A sun's shadow is `range` long: at 0 or less sunShadow returns
-          // before its first SDF read, so its flood would be read by nobody.
-          if (type !== DIRECTIONAL || primParams[i * 8 + 3] > 0) shadowedLayers |= mask;
+          // Only a light that reads the flood asks for one: a sun with a
+          // range > 0; a sprite light that draws (vs_main drops one at
+          // layer 0 or with a range of 0 or less).
+          const range = primParams[i * 8 + 3];
+          const reads = type === DIRECTIONAL ? range > 0
+            : type === SPRITE ? range > 0 && !untextured(i)
+            : true;
+          if (reads) shadowedLayers |= mask;
         } else if (type === GLOBAL) {
           shadowedGlobalLight = true;
         }
