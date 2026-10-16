@@ -565,6 +565,16 @@ describe('checkSprite', () => {
     expect(r.results[1].detail).toMatch(/the cookie's tier is full \(256 layers\): reload the page/);
   });
 
+  it("fails the cookie check when the floor is not the tab's: another light reaches the sub-scene (the verdicts, judged on the measured floor, pass)", async () => {
+    stubs();
+    const model = modelEngine('none');
+    const reporter = createTestReporter();
+    await checkSprite(model.engine, reporter, [], [0, 0, 0], () => {});
+    const results = reporter.results();
+    expect(results.map(({ status }) => status)).toEqual(['fail', 'pass', 'pass', 'pass']);
+    expect(results[0].detail).toContain("mix 0° 16/16; the floor reads 0.185, 0.170, 0.295, not the tab's 0.000, 0.000, 0.000: another light reaches the sub-scene; 0 GPU errors");
+  });
+
   it('the shadow points sit on opaque blocks of L, and the sub-scene is far from the tab', () => {
     // L at (8, 0), turned a quarter turn, range 4.
     for (const p of Object.values(SHADOW_POINTS)) {
