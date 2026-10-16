@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import { checkImageOrientation, checkTransparentDepth, checkTransparentSort, imageOrientationVerdict, IMAGE_QUADRANTS, ORDER_PROBE_OFFSET } from './twin-2d';
 import { maxChannelDiff, over, straight, type Rgb } from './blend-expect';
 import { createTestReporter } from './types';
+import { Camera } from '../camera';
+import { CameraAPI } from '../camera-api';
 import type { Hyperion } from '../hyperion';
 
 // The 2D Twins checks that load /textures/sort-test-128.png (review
@@ -156,5 +158,98 @@ describe('imageOrientationVerdict', () => {
     const nan = imageOrientationVerdict({ quad: [[NaN, NaN, NaN], ...reads(UPRIGHT).slice(1)], line: reads(UPRIGHT), clear: CLEAR });
     expect(nan.ok).toBe(false);
     expect(nan.detail).toContain('the quad: no quadrant within 0.03 at the upper left (NaN, NaN, NaN)');
+  });
+});
+
+// checkImageOrientation end to end on a model of the engine: the corners it
+// reads, in their order, and the line's offsets, which the pure verdict above
+// never sees.
+describe('checkImageOrientation on a model of the engine', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const CLEAR: Rgb = [0.067, 0.067, 0.067];
+
+  /**
+   * The probe draws scene-hdr only: the textured quad's uv is
+   * (p - centre) / scale + 0.5 (quad_vs), the textured line's
+   * ((x - cx - x0) / (x1 - x0), (y - cy) / width + 0.5) (line_vs, drawn along
+   * +x); sampleTierOrWhite turns v over unless `turn` is false (the image
+   * upside down, as before round step 8). Anywhere else, the clear.
+   */
+  function model(turn: boolean) {
+    interface Shape { x: number; y: number; sx: number; sy: number; line: number[] | null; tex: number; destroyed: boolean }
+    const shapes: Shape[] = [];
+    const cam = new CameraAPI(new Camera());
+    cam.setOrthographic((20 * 1920) / 1080, 20);
+    const quadrant = (u: number, v: number): Rgb => {
+      const tv = turn ? 1 - v : v;
+      return IMAGE_QUADRANTS[(tv < 0.5 ? 0 : 2) + (u < 0.5 ? 0 : 1)].rgb;
+    };
+    const at = ([px, py]: [number, number]): Rgb => {
+      for (const s of shapes) {
+        if (s.destroyed || s.tex === 0) continue;
+        if (s.line) {
+          const [x0, , x1, , w] = s.line;
+          const u = (px - s.x - x0) / (x1 - x0);
+          const v = (py - s.y) / w + 0.5;
+          if (u >= 0 && u <= 1 && v >= 0 && v <= 1) return quadrant(u, v);
+        } else {
+          const u = (px - s.x) / s.sx + 0.5;
+          const v = (py - s.y) / s.sy + 0.5;
+          if (u >= 0 && u <= 1 && v >= 0 && v <= 1) return quadrant(u, v);
+        }
+      }
+      return CLEAR;
+    };
+    const engine = {
+      mode: 'B',
+      cam,
+      batch: (fn: () => void) => fn(),
+      spawn: () => {
+        const s: Shape = { x: 0, y: 0, sx: 1, sy: 1, line: null, tex: 0, destroyed: false };
+        shapes.push(s);
+        const api = {
+          position: (x: number, y: number) => { s.x = x; s.y = y; return api; },
+          scale: (sx: number, sy: number) => { s.sx = sx; s.sy = sy; return api; },
+          line: (...p: number[]) => { s.line = p; return api; },
+          texture: (t: number) => { s.tex = t; return api; },
+          get alive() { return !s.destroyed; },
+          destroy: () => { s.destroyed = true; },
+        };
+        return api;
+      },
+      loadTexture: async () => 0x80000001,
+      debug: {
+        async probe(r: { target: string; world: [number, number][] }) {
+          if (r.target !== 'scene-hdr') throw new Error(`the model draws scene-hdr only, not ${r.target}`);
+          return { values: r.world.map((p) => [...at(p), 1]) };
+        },
+      },
+    } as unknown as Hyperion;
+    return { engine, shapes };
+  }
+
+  const run = async (turn: boolean) => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
+    const { engine, shapes } = model(turn);
+    const reporter = createTestReporter();
+    await checkImageOrientation(engine, reporter);
+    return { results: reporter.results(), shapes };
+  };
+
+  it('upright: a pass reading TL TR BL BR on both shapes, the two shapes destroyed afterwards', async () => {
+    const { results, shapes } = await run(true);
+    expect(results).toEqual([
+      { name: 'Textured quad and line show their image upright', status: 'pass', detail: expect.stringMatching(/^quad TL TR BL BR, line TL TR BL BR/) },
+    ]);
+    expect(shapes).toHaveLength(2);
+    expect(shapes.every((s) => s.destroyed)).toBe(true);
+  });
+
+  it('without the turn of v (the image before round step 8): a fail naming both shapes v flipped', async () => {
+    const { results } = await run(false);
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe('fail');
+    expect(results[0].detail).toContain('the quad is v flipped (sampleTierOrWhite does not turn v over)');
+    expect(results[0].detail).toContain('the line is v flipped');
   });
 });
