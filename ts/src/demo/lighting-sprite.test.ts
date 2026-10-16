@@ -300,8 +300,9 @@ interface FakeHandle {
  * overflow tier (16 layers, doubling). 'staleGroup': every frame after a
  * growth is dropped, each probe raising an uncaptured GPU error;
  * 'staleFirst': the same from the tier's first allocation. `full`: the tier
- * already at MAX_LAYERS_PER_TIER layers (a number: at that many), the cookie
- * cached. `stall`: that load never resolves.
+ * at its 256-layer cap (MAX_LAYERS_PER_TIER; a number: at that many layers)
+ * with 129 layers used (half plus one), the state a fifth entry in one page
+ * finds, the cookie cached. `stall`: that load never resolves.
  * `loadErrors`: uncaptured GPU errors raised while the cookie loads, the
  * pixels right.
  */
@@ -312,7 +313,7 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
   if (opts.full) {
     const layers = opts.full === true ? MAX_LAYERS_PER_TIER : opts.full;
     cache.set(COOKIE_URL, packTextureIndex(0, 1, true));
-    Object.assign(tier, { used: layers, allocated: layers });
+    Object.assign(tier, { used: layers / 2 + 1, allocated: layers });
   }
   const device = new EventTarget();
   const plugins = new Map<string, (() => void) | void>();
@@ -565,10 +566,10 @@ describe('checkSprite', () => {
     expect(filler.plugins.size).toBe(0);
   });
 
-  it('skips the growth when the tier is full (a page that entered the tab too often), the other three run', async () => {
+  it('skips the growth when the tier is at its cap (a fifth entry in one page), the other three run', async () => {
     const r = await run('none', { full: true });
     expect(r.results.map(({ status }) => status)).toEqual(['pass', 'skip', 'pass', 'pass']);
-    expect(r.results[1].detail).toContain(`the cookie's tier is full (${MAX_LAYERS_PER_TIER} layers): reload the page`);
+    expect(r.results[1].detail).toBe(`the cookie's tier is at its cap (${MAX_LAYERS_PER_TIER} layers allocated, ${MAX_LAYERS_PER_TIER / 2 + 1} used) and cannot double: reload the page to run this check again`);
   });
 
   it("skips at the texture manager's cap, not at a copy of it (MAX_LAYERS_PER_TIER mocked to 128)", async () => {
@@ -582,17 +583,17 @@ describe('checkSprite', () => {
       await checkAt128(model.engine, reporter, [], F, () => {});
       const results = reporter.results();
       expect(results.map(({ status }) => status)).toEqual(['pass', 'skip', 'pass', 'pass']);
-      expect(results[1].detail).toContain("the cookie's tier is full (128 layers): reload the page");
+      expect(results[1].detail).toBe("the cookie's tier is at its cap (128 layers allocated, 65 used) and cannot double: reload the page to run this check again");
     } finally {
       vi.doUnmock('../texture-manager');
       vi.resetModules();
     }
   });
 
-  it("under the real cap a tier at 128 layers grows to 256: a copy of the cap below the manager's would skip it", async () => {
+  it("under the real cap a tier at 128 layers (65 used: a fourth entry) grows to 256: a copy of the cap below the manager's would skip it", async () => {
     const r = await run('none', { full: 128 });
     expect(r.results.map(({ status }) => status)).toEqual(['pass', 'pass', 'pass', 'pass']);
-    expect(r.results[1].detail).toMatch(/^128 -> 256 layers/);
+    expect(r.results[1].detail).toMatch(/^128 -> 256 layers \(64 fillers, layers 65-128\)/);
   });
 
   it("fails the cookie check when the floor is not the tab's: another light reaches the sub-scene (the verdicts, judged on the measured floor, pass)", async () => {

@@ -541,7 +541,7 @@ export async function checkSprite(
     // ── 2. The cookie's tier grows while K draws, with no GPU error ─────
     const before = count();
     if (before && before.allocated >= MAX_LAYERS_PER_TIER) {
-      reporter.skip(NAMES[1], `the cookie's tier is full (${before.allocated} layers): reload the page to run this check again`);
+      reporter.skip(NAMES[1], `the cookie's tier is at its cap (${before.allocated} layers allocated, ${before.used} used) and cannot double: reload the page to run this check again`);
     } else {
       await pixelCheck(reporter, NAMES[1], engine, async (probe) => {
         if (!before) return { ok: false, detail: 'engine.debug.textureTiers() returned nothing after the cookie loaded' };
