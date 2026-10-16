@@ -43,10 +43,19 @@ import { CommandTapeRecorder } from './replay/command-tape';
 import type { CommandTape } from './replay/command-tape';
 import { PhysicsAPI } from './physics-api';
 import { LightingAPI } from './lighting-api';
+import { TIER_SIZES } from './texture-manager';
 import { textureLayerCounts } from './render/frame-inputs';
 
 const NO_DEBUG_PROBE = 'The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)';
 const PROBE_PAUSED = 'The engine is paused: the debug probe reads the next rendered frame';
+
+/** `engine.debug.textureTiers()`: the texture tiers' layer counts (round step 8). */
+export interface TextureTiersState {
+  /** The primary tiers' format, null for rgba8unorm (then PNG and JPEG go to the primary tiers too). */
+  compressedFormat: GPUTextureFormat | null;
+  /** Per tier (TIER_SIZES): layers used (the reserved layer 0 included) and allocated, primary and overflow. */
+  tiers: Array<{ size: number; layers: number; allocated: number; overflowLayers: number; overflowAllocated: number }>;
+}
 
 /**
  * Top-level engine facade. Owns the bridge, renderer, camera, game loop,
@@ -335,6 +344,25 @@ export class Hyperion implements Disposable {
         if (!probe) return Promise.reject(new Error(NO_DEBUG_PROBE));
         if (self.loop.paused) return Promise.reject(new Error(PROBE_PAUSED));
         return probe.request();
+      },
+      /**
+       * The texture tiers' layer counts now (round step 8): per tier, used
+       * (the reserved layer 0 included) and allocated, primary and rgba8
+       * overflow. `null` without a main-thread renderer (Mode A, headless).
+       */
+      textureTiers(): TextureTiersState | null {
+        const tm = self.renderer?.textureManager;
+        if (!tm) return null;
+        return {
+          compressedFormat: tm.compressedFormat,
+          tiers: TIER_SIZES.map((size, tier) => ({
+            size,
+            layers: tm.getLayerCount(tier),
+            allocated: tm.getAllocatedLayers(tier),
+            overflowLayers: tm.getOverflowLayerCount(tier),
+            overflowAllocated: tm.getOverflowAllocatedLayers(tier),
+          })),
+        };
       },
       /**
        * Toggle physics debug rendering (Phase 16). Sends CommandType 47;

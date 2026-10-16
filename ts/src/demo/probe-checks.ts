@@ -94,6 +94,53 @@ export function reportTextureLoadFailure(reporter: TestReporter, name: string, u
   else reporter.check(name, false, `cannot load ${url}: ${msg}`);
 }
 
+/** The GPU errors nobody captured on the main-thread device: see {@link gpuErrorWitness}. */
+export interface GpuErrorWitness {
+  /** Uncaptured errors since the witness was installed. */
+  readonly count: number;
+  /** Their messages, oldest first (the first 10). */
+  readonly messages: readonly string[];
+  /** Uninstalls the witness. */
+  stop(): void;
+}
+
+/**
+ * Counts the GPU errors of the frame's own submit, which reach the device's
+ * `uncapturederror` event: the probe's error scope covers its own dispatch
+ * only, so a dropped frame leaves it answering the last good pixels. A
+ * plugin (`engine.use`, for `gpu.device`) under `name`, replacing one a dead
+ * run left; never preventDefault (the console keeps the errors). `null`,
+ * nothing installed, without a main-thread renderer (Mode A, headless).
+ */
+export function gpuErrorWitness(engine: Hyperion, name = 'harness-gpu-error-witness'): GpuErrorWitness | null {
+  let count = 0;
+  const messages: string[] = [];
+  const installed = { device: null as GPUDevice | null };
+  const onError = (event: Event): void => {
+    count++;
+    if (messages.length < 10) messages.push((event as GPUUncapturedErrorEvent).error?.message ?? event.type);
+  };
+  engine.unuse(name);
+  engine.use({
+    name,
+    version: '1.0.0',
+    install(ctx) {
+      installed.device = ctx.gpu?.device ?? null;
+      installed.device?.addEventListener('uncapturederror', onError);
+      return () => installed.device?.removeEventListener('uncapturederror', onError);
+    },
+  });
+  if (!installed.device) {
+    engine.unuse(name);
+    return null;
+  }
+  return {
+    get count() { return count; },
+    get messages() { return messages; },
+    stop: () => engine.unuse(name),
+  };
+}
+
 export function near(value: number, want: number, tolerance: number): boolean {
   return Math.abs(value - want) <= tolerance;
 }

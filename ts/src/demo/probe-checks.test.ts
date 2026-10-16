@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure, viewBounds } from './probe-checks';
+import { pixelCheck, near, luminance, PROBE_TIMEOUT_MS, reportTextureLoadFailure, viewBounds, gpuErrorWitness } from './probe-checks';
 import { createTestReporter } from './types';
 import { mat4Multiply, orthographic } from '../camera';
 import type { Hyperion } from '../hyperion';
@@ -213,5 +213,59 @@ describe('reportTextureLoadFailure', () => {
     const reporter = createTestReporter();
     reportTextureLoadFailure(reporter, 'tex', '/t.png', 'boom');
     expect(reporter.results()[0]).toMatchObject({ status: 'fail', detail: 'cannot load /t.png: boom' });
+  });
+});
+
+// Round step 8: what reaches the device's uncapturederror event.
+describe('gpuErrorWitness', () => {
+  /** An engine whose use() installs a plugin on a context with `device` (or none), and unuse() runs its cleanup. */
+  function pluginEngine(device: EventTarget | null) {
+    const plugins = new Map<string, (() => void) | void>();
+    const engine = {
+      use(plugin: { name: string; install(ctx: unknown): (() => void) | void }) {
+        if (plugins.has(plugin.name)) throw new Error(`Plugin "${plugin.name}" is already installed`);
+        plugins.set(plugin.name, plugin.install({ gpu: device ? { device } : null }));
+      },
+      unuse(name: string) {
+        const cleanup = plugins.get(name);
+        if (cleanup) cleanup();
+        plugins.delete(name);
+      },
+    } as unknown as Hyperion;
+    return { engine, plugins };
+  }
+  const gpuError = (message: string): Event => Object.assign(new Event('uncapturederror', { cancelable: true }), { error: { message } });
+
+  it('counts the uncaptured GPU errors of the device and keeps their messages, until stop()', () => {
+    const device = new EventTarget();
+    const { engine, plugins } = pluginEngine(device);
+    const witness = gpuErrorWitness(engine)!;
+    expect(witness).not.toBeNull();
+    device.dispatchEvent(gpuError('Destroyed texture used in a submit'));
+    device.dispatchEvent(gpuError('second'));
+    expect(witness.count).toBe(2);
+    expect(witness.messages).toEqual(['Destroyed texture used in a submit', 'second']);
+    witness.stop();
+    expect(plugins.size).toBe(0);
+    device.dispatchEvent(gpuError('after stop'));
+    expect(witness.count).toBe(2);
+  });
+
+  it('replaces a witness a dead run left installed, and never cancels the event: the console keeps it', () => {
+    const device = new EventTarget();
+    const { engine } = pluginEngine(device);
+    const stale = gpuErrorWitness(engine)!;  // never stopped
+    const witness = gpuErrorWitness(engine)!;
+    const event = gpuError('x');
+    device.dispatchEvent(event);
+    expect(witness.count).toBe(1);
+    expect(stale.count).toBe(0);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('is null without a main-thread device (Mode A, headless), and leaves no plugin behind', () => {
+    const { engine, plugins } = pluginEngine(null);
+    expect(gpuErrorWitness(engine)).toBeNull();
+    expect(plugins.size).toBe(0);
   });
 });

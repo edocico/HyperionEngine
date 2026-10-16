@@ -14,6 +14,8 @@
 // (engine.debug.readTransparentSort) and checks it against the CPU oracle; in
 // Mode C again under spawn/despawn churn, on scatter frames that re-upload the
 // id column.
+// A last one, far off at (-80, 60) and destroyed afterwards, reads a textured
+// quad and a textured line: the image upright (round step 8).
 import type { Hyperion } from '../hyperion';
 import type { DemoSection, TestReporter } from './types';
 import type { EntityHandle } from '../entity-handle';
@@ -458,6 +460,135 @@ export async function checkTransparentSort(engine: Hyperion, reporter: TestRepor
   for (const h of scene) if (h.alive) h.destroy();
 }
 
+/** Centre of the image-orientation scene: far from the twins (|x| <= 18), the depth scene (x 22-58), the order scene (y -60) and the sort scene (x 80). */
+const IMAGE_X = -80;
+const IMAGE_Y = 60;
+/** The quad (scale 4) left of the centre, the line (from local x -3 to 3, width 2) right of it. */
+const IMAGE_QUAD_X = IMAGE_X - 5;
+const IMAGE_LINE_X = IMAGE_X + 4;
+/**
+ * sort-test-128.png's quadrants (scripts/gen-sort-test-png.mjs), from the
+ * image's top left, row by row. An opaque sprite draws their rgb: the opaque
+ * pipeline ignores the alpha (160).
+ */
+export const IMAGE_QUADRANTS: ReadonlyArray<{ name: 'TL' | 'TR' | 'BL' | 'BR'; rgb: Rgb }> = [
+  { name: 'TL', rgb: [230 / 255, 60 / 255, 60 / 255] },
+  { name: 'TR', rgb: [60 / 255, 200 / 255, 90 / 255] },
+  { name: 'BL', rgb: [60 / 255, 110 / 255, 230 / 255] },
+  { name: 'BR', rgb: [240 / 255, 200 / 255, 50 / 255] },
+];
+/** Per-channel tolerance against a quadrant: the closest two differ by 0.549, an 8-bit decode and copy by far less. */
+const IMAGE_TOLERANCE = 0.03;
+/** Where a shape's four reads lie, in their order. */
+const IMAGE_CORNERS = ['upper left', 'upper right', 'lower left', 'lower right'] as const;
+/** The square's 8 symmetries, as the quadrant (IMAGE_QUADRANTS' index) each corner shows. */
+const IMAGE_SYMMETRIES: ReadonlyArray<{ shows: readonly number[]; name: string }> = [
+  { shows: [0, 1, 2, 3], name: 'upright' },
+  { shows: [2, 3, 0, 1], name: 'v flipped (sampleTierOrWhite does not turn v over)' },
+  { shows: [1, 0, 3, 2], name: 'u flipped' },
+  { shows: [3, 2, 1, 0], name: 'half a turn off' },
+  { shows: [0, 2, 1, 3], name: 'transposed (u and v swapped)' },
+  { shows: [3, 1, 2, 0], name: 'transposed across the other diagonal' },
+  { shows: [1, 3, 0, 2], name: 'a quarter turn off' },
+  { shows: [2, 0, 3, 1], name: 'three quarters of a turn off' },
+];
+
+/** What 'Textured quad and line show their image upright' read: each shape's corners, in IMAGE_CORNERS' order, and the clear beside them. */
+export interface ImageReads {
+  quad: readonly Rgb[];
+  line: readonly Rgb[];
+  clear: Rgb;
+}
+
+/**
+ * Each read decoded to the quadrant within IMAGE_TOLERANCE; a shape passes
+ * upright. A failure names its symmetry (v flipped: the lookup does not turn
+ * v over), a flip in one library only (the line alone flipped: the flip moved
+ * into quad_vs, or a second one in line_vs; the quad alone: a second flip in
+ * quad_vs, or the flip moved into line_vs), a shape that draws nothing, or
+ * the reads no quadrant explains. NaN-safe.
+ */
+export function imageOrientationVerdict(r: ImageReads): { ok: boolean; detail: string } {
+  const decode = (v: Rgb): number => IMAGE_QUADRANTS.findIndex((q) => maxChannelDiff(v, q.rgb) <= IMAGE_TOLERANCE);
+  const shape = (name: 'quad' | 'line', reads: readonly Rgb[]) => {
+    const shows = reads.map(decode);
+    return {
+      name,
+      shows,
+      symmetry: IMAGE_SYMMETRIES.find((s) => s.shows.every((q, k) => shows[k] === q)),
+      nothing: reads.every((v) => maxChannelDiff(v, r.clear) <= IMAGE_TOLERANCE),
+      unread: reads.flatMap((v, k) => (shows[k] < 0 ? [`the ${IMAGE_CORNERS[k]} (${fmt(v)})`] : [])),
+    };
+  };
+  const quad = shape('quad', r.quad);
+  const line = shape('line', r.line);
+  const upright = (s: typeof quad): boolean => s.symmetry === IMAGE_SYMMETRIES[0];
+  const vFlipped = (s: typeof quad): boolean => s.symmetry === IMAGE_SYMMETRIES[1];
+  const causes: string[] = [];
+  if (upright(quad) && vFlipped(line)) causes.push('the line only is v flipped: one library turns v over on its own (the flip moved from sampleTierOrWhite into quad_vs, or a second flip in line_vs)');
+  else if (upright(line) && vFlipped(quad)) causes.push('the quad only is v flipped: one library turns v over on its own (a second flip in quad_vs, or the flip moved from sampleTierOrWhite into line_vs)');
+  else {
+    for (const s of [quad, line]) {
+      if (upright(s)) continue;
+      if (s.nothing) causes.push(`the ${s.name} draws nothing (the clear at its four corners)`);
+      else if (s.symmetry) causes.push(`the ${s.name} is ${s.symmetry.name}`);
+      else causes.push(`the ${s.name}: no quadrant within ${IMAGE_TOLERANCE} at ${s.unread.join(', ')}`);
+    }
+  }
+  const show = (s: typeof quad): string => `${s.name} ${s.shows.map((q) => (q < 0 ? '?' : IMAGE_QUADRANTS[q].name)).join(' ')}`;
+  return { ok: causes.length === 0, detail: [`${show(quad)}, ${show(line)} (at the upper left, upper right, lower left, lower right)`, ...causes].join('; ') };
+}
+
+/**
+ * A textured quad and a textured line, opaque, show sort-test-128.png upright
+ * (round step 8, sub-decision 2 (e)): the image's top-left quadrant at the
+ * upper left of the quad, and at the upper left of the line drawn from left
+ * to right. Its four distinct quadrants tell every symmetry of the square
+ * apart, so a v flip (the image upside down, as before round step 8) and a
+ * flip moved into one library's uv are named. Far off at (-80, 60), destroyed
+ * afterwards; the caller restores the camera.
+ */
+export async function checkImageOrientation(engine: Hyperion, reporter: TestReporter): Promise<void> {
+  const name = 'Textured quad and line show their image upright';
+  if (!engine.debug) {
+    reporter.skip(name, 'pixel probe unavailable: production build');
+    return;
+  }
+  let texture: TextureHandle;
+  try {
+    texture = await engine.loadTexture(ORDER_TEXTURE_URL);
+  } catch (err) {
+    // A skip only without a main-thread renderer (Mode A); a missing or broken texture fails.
+    reportTextureLoadFailure(reporter, name, ORDER_TEXTURE_URL, err);
+    return;
+  }
+  fitView(engine, IMAGE_X, IMAGE_Y, 9);
+  const own: EntityHandle[] = [];
+  const keep = (h: EntityHandle): EntityHandle => {
+    own.push(h);
+    entities.push(h);
+    return h;
+  };
+  engine.batch(() => {
+    keep(engine.spawn({ mode: '2d' }).position(IMAGE_QUAD_X, IMAGE_Y).scale(4, 4).texture(texture));
+    keep(engine.spawn({ mode: '2d' }).position(IMAGE_LINE_X, IMAGE_Y).line(-3, 0, 3, 0, 2).texture(texture));
+  });
+  await frames(4);
+  try {
+    await pixelCheck(reporter, name, engine, async (probe) => {
+      // A shape's four quadrant centres, in IMAGE_CORNERS' order.
+      const corners = (x: number, y: number, dx: number, dy: number): [number, number][] =>
+        [[x - dx, y + dy], [x + dx, y + dy], [x - dx, y - dy], [x + dx, y - dy]];
+      const values = (await probe('scene-hdr', [
+        ...corners(IMAGE_QUAD_X, IMAGE_Y, 1, 1), ...corners(IMAGE_LINE_X, IMAGE_Y, 1.5, 0.5), [IMAGE_X, IMAGE_Y + 4],
+      ])).map(([r, g, b]): Rgb => [r, g, b]);
+      return imageOrientationVerdict({ quad: values.slice(0, 4), line: values.slice(4, 8), clear: values[8] });
+    });
+  } finally {
+    for (const h of own) if (h.alive) h.destroy();
+  }
+}
+
 const section: DemoSection = {
   name: 'twin-2d',
   label: '2D archetype (Transform2D vs 3D twins)',
@@ -602,6 +733,8 @@ const section: DemoSection = {
     await checkTransparentDepth(engine, reporter);
     // ── 5. The transparent sort, read back (its scene is gone after) ──
     await checkTransparentSort(engine, reporter);
+    // ── 6. Images upright: a textured quad and a textured line (round step 8) ──
+    await checkImageOrientation(engine, reporter);
     fitView(engine, BLOCK_X + GAP / 2, 0, GAP / 2 + CELL * 1.5 + 1.5);
   },
 

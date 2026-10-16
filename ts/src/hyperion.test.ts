@@ -1019,6 +1019,28 @@ describe('debug API', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("textureTiers reports the texture manager's layer counts per tier, and null without a main-thread renderer (round step 8)", () => {
+    expect(Hyperion.fromParts(defaultConfig(), mockBridge(), null).debug!.textureTiers()).toBeNull();
+    const renderer = mockRenderer();
+    Object.assign(renderer.textureManager, {
+      compressedFormat: 'bc7-rgba-unorm',
+      getLayerCount: (t: number) => t,
+      getAllocatedLayers: (t: number) => 16 * t,
+      getOverflowLayerCount: (t: number) => 2 + t,
+      getOverflowAllocatedLayers: (t: number) => (t === 0 ? 16 : 0),
+    });
+    const engine = Hyperion.fromParts(defaultConfig(), mockBridge(), renderer);
+    expect(engine.debug!.textureTiers()).toEqual({
+      compressedFormat: 'bc7-rgba-unorm',
+      tiers: [
+        { size: 64, layers: 0, allocated: 0, overflowLayers: 2, overflowAllocated: 16 },
+        { size: 128, layers: 1, allocated: 16, overflowLayers: 3, overflowAllocated: 0 },
+        { size: 256, layers: 2, allocated: 32, overflowLayers: 4, overflowAllocated: 0 },
+        { size: 512, layers: 3, allocated: 48, overflowLayers: 5, overflowAllocated: 0 },
+      ],
+    });
+  });
+
   it('readTransparentSort delegates to the renderer sort probe', async () => {
     const renderer = mockRenderer();
     const readback = { n: 3 };
