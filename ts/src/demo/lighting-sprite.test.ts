@@ -314,6 +314,7 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
   }
   const device = new EventTarget();
   const plugins = new Map<string, (() => void) | void>();
+  const requests: Array<{ target: string; layer?: number }> = [];
   let frozen: FakeHandle[] | null = null;
   let nextId = 300;
   const spawn = () => {
@@ -426,6 +427,7 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
     },
     debug: opts.production ? null : {
       async probe(request: { target: string; world: [number, number][]; layer?: number }) {
+        requests.push({ target: request.target, layer: request.layer });
         if (frozen) device.dispatchEvent(Object.assign(new Event('uncapturederror'), { error: { message: 'Destroyed texture used in a submit' } }));
         return { values: request.world.map((p) => lightAt(p, frozen ?? handles)) };
       },
@@ -444,7 +446,7 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
       plugins.delete(name);
     },
   } as unknown as Hyperion;
-  return { engine, handles, tier, plugins };
+  return { engine, handles, tier, plugins, requests };
 }
 
 describe('checkSprite', () => {
@@ -489,6 +491,8 @@ describe('checkSprite', () => {
     expect(r.results[1].detail).toMatch(/^16 -> 32 layers \(15 fillers, layers 2-16\), cookie 30° and 0°, 0 GPU errors/);
     expect(r.results[0].detail).toMatch(/^blocks 0° 16\/16, 90° 16\/16, 30° 16\/16, y-mirrored 0° 16\/16, x-mirrored 0° 16\/16; mix 0° 16\/16; 0 GPU errors since the cookie loaded; cookie overflow tier 0 layer 1;/);
     expect(r.results[3].detail).toContain('1 group(s), 1 SDF set(s)');
+    // layerToGroup [0, 0]: the floor's layer 0 is group 0, the sub-scene's one group: every read asks for it.
+    expect(new Set(r.requests.map((q) => `${q.target}#${q.layer}`))).toEqual(new Set(['light-buffer#0']));
     // The floor, K, L and the wall; every one destroyed, and in the tab's list.
     expect(r.handles).toHaveLength(4);
     expect(r.handles.every((h) => h.destroyed)).toBe(true);
