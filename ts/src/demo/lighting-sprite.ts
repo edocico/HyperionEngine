@@ -15,7 +15,7 @@ import type { TestReporter } from './types';
 import { maxChannelDiff, over, straight, type Rgb } from './blend-expect';
 import { lightTexelsPerUnit } from './lighting-mix';
 import { halfResolution } from '../render/passes/occluder-seed-stage';
-import { unpackTextureIndex } from '../texture-manager';
+import { MAX_LAYERS_PER_TIER, unpackTextureIndex } from '../texture-manager';
 import {
   pixelCheck, fmt, fitView, frames, viewBounds, reportTextureLoadFailure, gpuErrorWitness, type Rgba,
 } from './probe-checks';
@@ -56,8 +56,6 @@ export const POKE_DEPTH = 1;
 export const POP_THETAS = [0, 15, 30, 45, 60, 75].map((d) => (d * Math.PI) / 180);
 /** Per-channel tolerance: far above fp16 rounding, far below the 0.5 between two block codes. */
 export const TOL = 0.03;
-/** MAX_LAYERS_PER_TIER (texture-manager.ts). */
-const MAX_LAYERS = 256;
 /** A load's bound: loadTexture has none, and a stalled load would hang the tab. */
 export const LOAD_TIMEOUT_MS = 10000;
 
@@ -542,7 +540,7 @@ export async function checkSprite(
 
     // ── 2. The cookie's tier grows while K draws, with no GPU error ─────
     const before = count();
-    if (before && before.allocated >= MAX_LAYERS) {
+    if (before && before.allocated >= MAX_LAYERS_PER_TIER) {
       reporter.skip(NAMES[1], `the cookie's tier is full (${before.allocated} layers): reload the page to run this check again`);
     } else {
       await pixelCheck(reporter, NAMES[1], engine, async (probe) => {
