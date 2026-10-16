@@ -379,8 +379,29 @@ describe('packed index 0 is white in every tier-sampling primitive', () => {
     // The untextured check returns white itself, as the per-file shaders did.
     const untextured = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);/);
     expect(untextured, 'the untextured early return').toBeGreaterThan(-1);
-    expect(fn.indexOf('sampleTier(in)')).toBeGreaterThan(untextured);
+    expect(fn.indexOf('sampleTier(image)')).toBeGreaterThan(untextured);
     expect(fn).not.toMatch(/textureSample/);
+  });
+
+  // Round step 8 (sub-decision 2 (e)): a tier image is drawn upright in its
+  // primitive's local frame, its first row along local +y. The local uv grows
+  // toward +y (quad_vs: position + 0.5) and texture memory keeps the image's
+  // row order (no flipY at upload), so sampleTierOrWhite turns v over once,
+  // after the white answer. No library changes its vertex uv, and msdf, whose
+  // atlas rect is in texture coordinates, keeps the raw sampleTier.
+  it('a tier image is drawn upright: sampleTierOrWhite turns v over after the white answer, and no vertex uv changes', () => {
+    const fn = body(prelude, 'sampleTierOrWhite');
+    const white = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);\s*\}/);
+    const flip = fn.search(/var image = in;\s*image\.uv = vec2f\(in\.uv\.x, 1\.0 - in\.uv\.y\);\s*return sampleTier\(image\);/);
+    expect(white, 'the white answer').toBeGreaterThan(-1);
+    expect(flip, 'the flip, then the raw sample').toBeGreaterThan(white);
+    expect(body(prelude, 'sampleTier'), 'sampleTier stays in texture coordinates').not.toMatch(/1\.0 - in\.uv/);
+    for (const name of ['quad', 'bezier'] as PrimitiveLibraryName[]) {
+      expect(body(moduleOf(name), fnOf(name, 'vs'))).toMatch(/unitQuadVertex\(position, entityIdx, position\.xy \+ 0\.5\)/);
+    }
+    expect(body(moduleOf('line'), fnOf('line', 'vs'))).toMatch(/finishVertex\(clipPosition, vec2f\(along, across \+ 0\.5\), entityIdx\)/);
+    expect(body(moduleOf('msdf-text'), fnOf('msdf-text', 'vs'))).toMatch(/mix\(atlasV0, atlasV1, localUV\.y\)/);
+    expect(body(moduleOf('msdf-text'), fnOf('msdf-text', 'shade'))).toMatch(/let msdf = sampleTier\(in\);/);
   });
 
   it('sampleTier is the one function that samples the tiers: all eight, with textureSampleLevel', () => {
@@ -401,8 +422,9 @@ describe('packed index 0 is white in every tier-sampling primitive', () => {
     }
   });
 
-  // A glyph with index 0 stays what the raw sample gives (on BC7/ASTC
-  // transparent black, discarded), not a solid white box.
+  // A glyph with index 0 stays what the raw sample gives (on BC7 transparent
+  // black, discarded; on ASTC the error colour, round plan §4 (4)), not a
+  // solid white box.
   it('msdf-text samples the atlas raw, without the white answer', () => {
     for (const src of [moduleOf('msdf-text'), uber]) {
       const refs = callGraph(src).get(fnOf('msdf-text', 'shade'));

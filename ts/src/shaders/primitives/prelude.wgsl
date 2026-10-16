@@ -145,9 +145,11 @@ fn unitQuadVertex(position: vec3f, entityIdx: u32, uv: vec2f) -> VertexOutput {
 }
 
 // The texel at in.uv from the entity's tier (with overflow support), RAW: a
-// packed index 0 samples tier 0 layer 0 like any other. textureSampleLevel
-// with explicit LOD 0 avoids the uniform-control-flow requirement of
-// textureSample (texTier/isOverflow vary per-instance).
+// packed index 0 samples tier 0 layer 0 like any other. in.uv is in texture
+// coordinates, (0, 0) at the image's top-left (sampleTierOrWhite turns a
+// primitive's local uv over first; msdf passes its atlas rect).
+// textureSampleLevel with explicit LOD 0 avoids the uniform-control-flow
+// requirement of textureSample (texTier/isOverflow vary per-instance).
 fn sampleTier(in: VertexOutput) -> vec4f {
     var texColor: vec4f;
     if (in.isOverflow == 0u) {
@@ -175,11 +177,24 @@ fn sampleTier(in: VertexOutput) -> vec4f {
 // there), and an all-zero BC7 block decodes to transparent black. The varyings
 // are flat, so the branch is uniform across the quad. msdf_shade must NOT use
 // this: a glyph's coverage is its texel, and white would draw a solid box.
+//
+// Any other index is an image, drawn upright (round step 8): its first row
+// along the primitive's local +y edge, its first column along local -x. The
+// local uv grows toward +y (quad_vs: position + 0.5; line_vs: across + 0.5
+// on the left of start->end), while texture memory keeps the image's row
+// order (PNG and JPEG are copied without flipY, a KTX2 is written as stored,
+// top row first), so v is turned over here, once. Never flipY at upload: a
+// KTX2's blocks could not follow. msdf stays raw (its atlas rect is in
+// texture coordinates). light-accum.wgsl copies these two lines before it
+// samples a sprite light's cookie. Before round step 8 every image was drawn
+// upside down.
 fn sampleTierOrWhite(in: VertexOutput) -> vec4f {
     if (in.isOverflow == 0u && in.texTier == 0u && in.texLayer == 0u) {
         return vec4f(1.0);
     }
-    return sampleTier(in);
+    var image = in;
+    image.uv = vec2f(in.uv.x, 1.0 - in.uv.y);
+    return sampleTier(image);
 }
 
 // The occluder seed of a fragment at least half covered: (u, v, valid,

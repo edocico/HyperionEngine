@@ -131,6 +131,15 @@ async function checkDepth(engine: Hyperion, reporter: TestReporter): Promise<voi
 /** Centre of the transparent-order scene: far from the twins (|x| <= 18, |y| <= 10 at zoom 1) and the depth scene (x ~ 34..46). */
 const ORDER_X = -80;
 const ORDER_Y = -60;
+/**
+ * Where the depth check reads each cell, from its centre: on the textured
+ * quad (scale 2) the PNG's bottom-right, yellow quadrant. Images are upright
+ * since round step 8 (sampleTierOrWhite turns v over), so the texel the probe
+ * read at local y +0.15 before sits at -0.15 now; at +0.15 the green quadrant
+ * over the teal would differ by 0.092, under the 0.1 that tells a pair's two
+ * orders apart (twin-2d.test.ts decodes the PNG).
+ */
+export const ORDER_PROBE_OFFSET: readonly [number, number] = [0.2, -0.15];
 /** The 128×128 PNG committed for the sort checks: tier 1, or an overflow tier on a BC7/ASTC device. */
 const ORDER_TEXTURE_URL = '/textures/sort-test-128.png';
 /** Per-channel tolerance on scene-hdr (rgba16float) against the closed form. */
@@ -196,7 +205,7 @@ export async function checkTransparentDepth(engine: Hyperion, reporter: TestRepo
     const cv = (Math.floor(v * height) + 0.5) / height;
     return [((cu - 0.5) * 2 - vp[12]) / vp[0], ((0.5 - cv) * 2 - vp[13]) / vp[5]];
   };
-  const [p0x, p0y] = snap(cellX(0) + 0.2, ORDER_Y + 0.15);
+  const [p0x, p0y] = snap(cellX(0) + ORDER_PROBE_OFFSET[0], ORDER_Y + ORDER_PROBE_OFFSET[1]);
   const points: [number, number][] = [
     snap(ORDER_X, ORDER_Y + 2.5),         // 0: the clear, no sprite
     snap(cellX(3) + 1.1, ORDER_Y + 0.15), // 1: cell 3's white quad, outside its textured quad

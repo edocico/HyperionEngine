@@ -25,7 +25,7 @@ fn line_vs(position: vec3f, entityIdx: u32) -> VertexOutput {
 
     // Unit quad position.xy maps [-0.5, 0.5] to line segment:
     //   x: along line (0 = start, 1 = end)
-    //   y: across line (-0.5 = left, 0.5 = right)
+    //   y: across line (-0.5 = right of start->end, 0.5 = left)
     let along = position.x + 0.5;   // [0, 1]
     let across = position.y;         // [-0.5, 0.5]
 
