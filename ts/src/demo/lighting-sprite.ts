@@ -9,6 +9,14 @@
 // The cookie: 64 x 64, 4 x 4 blocks of 16 px, block (i, j) = (85 i, 85 j,
 // 255, A) from the image's left and top, A = 255 but (2, 1) 64 and (2, 2)
 // 128. A PNG data: URL in stored deflate, the same bytes on every run.
+//
+// Nothing unloads a texture: the cookie (cached by URL, one layer) and the
+// fillers stay in tier 0's array (the overflow on a BC7/ASTC device) for the
+// page. On a fresh page each entry's fillers double it once more, 16 -> 32
+// -> 64 -> 128 -> 256 layers (15, 16, 32 and 64 fillers, 129 layers used
+// after the fourth entry): from the fifth entry the growth check skips
+// (reload the page), and a PNG or JPEG of 64 px or less loaded later takes
+// a layer past them.
 import type { Hyperion } from '../hyperion';
 import type { EntityHandle, LightOptions } from '../entity-handle';
 import type { TestReporter } from './types';
