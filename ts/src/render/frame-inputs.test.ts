@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   normalizeTransparentCount, normalizeIdsGeneration, nextFrameStamp,
   uploadEntityIds, missingSortInputs, overCapacityWarning,
-  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, HELD_STEP_CAP_MS,
+  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, HELD_STEP_CAP_MS, textureLayerCounts,
 } from './frame-inputs';
 import { MAX_GPU_ENTITIES } from '../types';
 
@@ -222,5 +222,25 @@ describe('untexturedSpriteMessage', () => {
       expect(message).toMatch(/rejected/);
       expect(message).toMatch(/Mode A/);
     }
+  });
+
+  it('says what counts as no texture since the used layers count (sub-decision 4 (c)): an index this renderer did not load', () => {
+    for (const ids of [[], [42]]) {
+      const message = untexturedSpriteMessage(ids);
+      expect(message).toContain('no texture this renderer loaded (index 0, the reserved layer 0, or a handle from another session, a tape, a snapshot or Mode A)');
+      expect(message).toContain('a handle is valid only in the session that loaded it');
+    }
+  });
+});
+
+// Round step 8 (sub-decision 4 (c)): the used layers of the eight texture
+// arrays, in the order deriveLightGroups reads them.
+describe('textureLayerCounts', () => {
+  it('lists the used layers of primary tiers 0-3, then overflow 0-3, into `out` when given one', () => {
+    const tm = { getLayerCount: (t: number) => 10 + t, getOverflowLayerCount: (t: number) => 20 + t };
+    expect([...textureLayerCounts(tm)]).toEqual([10, 11, 12, 13, 20, 21, 22, 23]);
+    const out = new Uint16Array(8);
+    expect(textureLayerCounts(tm, out)).toBe(out);
+    expect([...out]).toEqual([10, 11, 12, 13, 20, 21, 22, 23]);
   });
 });

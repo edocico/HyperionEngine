@@ -749,3 +749,43 @@ describe("pendingLoads", () => {
     expect(tm.pendingLoads, "a cached URL never enters").toBe(0);
   });
 });
+
+// Round step 8 (sub-decision 4 (c)): every handle names a layer below its
+// array's used count (getLayerCount / getOverflowLayerCount), and layer 0 is
+// reserved. light-groups.ts untexturedPredicate counts a sprite light at or
+// past that count as untextured: it must never flag a handle this manager gave.
+describe("every handle names a layer below its array's used count, layer 0 reserved", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([null, "bc7-rgba-unorm", "astc-4x4-unorm"] as const)("PNG, compressedFormat %s: layers 1 then 2, in the overflow array exactly on a compressed device", async (format) => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 64, close: () => {} })));
+    const tm = new TextureManager(createMockDevice(), { compressedFormat: format });
+    for (const [url, want] of [["a.png", 1], ["b.png", 2]] as const) {
+      const { tier, layer, overflow } = unpackTextureIndex(await tm.loadTexture(url));
+      expect({ tier, layer, overflow }, url).toEqual({ tier: 0, layer: want, overflow: format !== null });
+      expect(overflow ? tm.getOverflowLayerCount(tier) : tm.getLayerCount(tier), url).toBeGreaterThan(layer);
+    }
+  });
+
+  it("KTX2 uploaded as stored on a BC7 device (vkFormat 145, no supercompression): the primary tier, layer 1", async () => {
+    // The fixture of 'rejects direct-upload KTX2 with mismatched vkFormat', with BC7_UNORM_BLOCK.
+    const headerSize = 80;
+    const buf = new ArrayBuffer(headerSize + 24 + 64);
+    const view = new DataView(buf);
+    new Uint8Array(buf).set(KTX2_MAGIC, 0);
+    view.setUint32(12, 145, true);
+    view.setUint32(20, 64, true);
+    view.setUint32(24, 64, true);
+    view.setUint32(40, 1, true);
+    view.setUint32(44, 0, true);
+    view.setBigUint64(headerSize, BigInt(headerSize + 24), true);
+    view.setBigUint64(headerSize + 8, BigInt(64), true);
+    view.setBigUint64(headerSize + 16, BigInt(64), true);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, arrayBuffer: async () => buf })));
+    const tm = new TextureManager(createMockDevice(), { compressedFormat: "bc7-rgba-unorm" });
+    const { tier, layer, overflow } = unpackTextureIndex(await tm.loadTexture("cookie.ktx2"));
+    expect({ tier, layer, overflow }).toEqual({ tier: 0, layer: 1, overflow: false });
+    expect(tm.getLayerCount(tier)).toBeGreaterThan(layer);
+  });
+});

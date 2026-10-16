@@ -4,6 +4,13 @@ export interface FrameState {
   bounds: Float32Array;        // 4 f32/entity
   renderMeta: Uint32Array;     // 2 u32/entity
   texIndices: Uint32Array;     // 1 u32/entity
+  /**
+   * The used layers of the eight texture arrays, primary tiers 0-3 then
+   * overflow 0-3 (`textureLayerCounts`, round step 8): `deriveLightGroups`
+   * counts a sprite light whose cookie names a layer at or past its array's
+   * count as untextured. Absent: layer 0 alone is.
+   */
+  textureLayersUsed?: ArrayLike<number>;
   primParams: Float32Array;    // 8 f32/entity
   /**
    * Slot -> external id (`GPURenderState.entityIds`): the tie-break of the

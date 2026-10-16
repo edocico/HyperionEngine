@@ -43,6 +43,7 @@ import { CommandTapeRecorder } from './replay/command-tape';
 import type { CommandTape } from './replay/command-tape';
 import { PhysicsAPI } from './physics-api';
 import { LightingAPI } from './lighting-api';
+import { textureLayerCounts } from './render/frame-inputs';
 
 const NO_DEBUG_PROBE = 'The debug probe needs the main-thread renderer of a dev build (Mode B or C, not Mode A or headless)';
 const PROBE_PAUSED = 'The engine is paused: the debug probe reads the next rendered frame';
@@ -113,7 +114,8 @@ export class Hyperion implements Disposable {
     this.physicsApi = new PhysicsAPI();
     this.physicsApi._initProducer(bridge.commandBuffer);
     this.lightingApi = new LightingAPI();
-    this.lightingApi._init(bridge.commandBuffer, bridge, () => this.camera.viewProjection);
+    this.lightingApi._init(bridge.commandBuffer, bridge, () => this.camera.viewProjection,
+      () => (this.renderer ? textureLayerCounts(this.renderer.textureManager) : undefined));
     this.prefabRegistry = new PrefabRegistry(this);
     this.loop = new GameLoop((dt) => this.tick(dt));
   }

@@ -86,20 +86,20 @@ export const enum RenderPrimitiveType {
  *   undersampled, and fine detail shimmers as the light moves or turns. With
  *   `shadowIntensity` > 0 it casts shadows from its centre, like a point
  *   light of its range, whatever the cookie. Its culling radius is the
- *   square's half-diagonal, `range`·√2. Layer 0 of a packed index never
- *   holds a texture (index 0, the default, and the layer every tier array
- *   reserves): a sprite light there lights nothing, and the renderer warns
- *   once in dev builds when one stays so for a second of lit frames with no
- *   texture load in flight. Any other index samples what its layer holds on
- *   this renderer: a layer never loaded holds zeroes (no light in an rgba8
- *   or BC7 array; ASTC decodes them to its error colour, opaque magenta or
- *   NaN) and a layer past the end of its array is discarded, both without a
- *   warning, while a layer loaded with another texture lights that one.
- *   Handles are valid only in the session that loaded them: a tape or a
+ *   square's half-diagonal, `range`·√2. An index that names no texture this
+ *   renderer loaded lights nothing, and the renderer warns once in dev builds
+ *   when a sprite light stays so for a second of lit frames with no texture
+ *   load in flight: layer 0 (index 0, the default, and the layer every tier
+ *   array reserves), a layer past the end of its array (discarded), and a
+ *   layer its array allocated but never loaded (it holds zeroes: no light in
+ *   an rgba8 or BC7 array, while ASTC decodes them to its error colour,
+ *   opaque magenta or NaN, which the light then shows, with the warning). A
+ *   layer loaded with another texture lights that one, without a warning:
+ *   handles are valid only in the session that loaded them, and a tape or a
  *   snapshot recorded elsewhere names layers this page may hold differently.
  *   In Mode A textures do not load (`loadTexture` throws) and the render
  *   worker's arrays hold one layer, so every sprite light lights nothing
- *   there.
+ *   there, and the render worker warns once.
  *
  * The axis of a spot, directional or sprite light is its local +x in world
  * space: a spot or a sun shines TOWARD it, and a sprite light's square turns

@@ -11,6 +11,7 @@
  */
 import type { GPURenderState } from '../worker-bridge';
 import { MAX_GPU_ENTITIES } from '../types';
+import type { TextureManager } from '../texture-manager';
 
 /** The gather's bound: a finite count as a non-negative integer, else `entityCount`. */
 export function normalizeTransparentCount(count: number | undefined, entityCount: number): number {
@@ -155,8 +156,28 @@ export function untexturedSpriteMessage(ids: readonly number[]): string {
   const who = ids.length === 0 ? 'A sprite light has'
     : ids.length === 1 ? `Sprite light ${ids[0]} has`
     : `Sprite lights ${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ` and ${ids.length - 3} more` : ''} have`;
-  return `[Hyperion] ${who} no texture (layer 0 of its packed index: index 0, or a reserved layer) after a second of lit frames `
-    + "with no texture load in flight: a sprite light's cookie is its shape, so it lights nothing until it has one. "
+  return `[Hyperion] ${who} no texture this renderer loaded (index 0, the reserved layer 0, or a handle from another session, a tape, a snapshot or Mode A) `
+    + "after a second of lit frames with no texture load in flight: a sprite light's cookie is its shape, so it lights nothing until it has one. "
     + 'Load the texture first (const cookie = await engine.loadTexture(url)) and set .texture(cookie) with .light(); '
-    + 'a loadTexture that rejected leaves it without one, and in Mode A textures do not load (no main-thread renderer).';
+    + 'a loadTexture that rejected leaves it without one, a handle is valid only in the session that loaded it, '
+    + 'and in Mode A textures do not load (no main-thread renderer).';
+}
+
+/**
+ * The layers in use of the eight texture arrays, primary tiers 0-3 then
+ * overflow 0-3, the reserved layer 0 included (`getLayerCount`,
+ * `getOverflowLayerCount`; an array never allocated counts 0): what
+ * `deriveLightGroups` compares a sprite light's cookie with (round step 8).
+ * Every handle the manager gave names a layer below its array's count. Writes
+ * into `out` (the renderer reuses one) and returns it.
+ */
+export function textureLayerCounts(
+  tm: Pick<TextureManager, 'getLayerCount' | 'getOverflowLayerCount'>,
+  out: Uint16Array = new Uint16Array(8),
+): Uint16Array {
+  for (let tier = 0; tier < 4; tier++) {
+    out[tier] = tm.getLayerCount(tier);
+    out[4 + tier] = tm.getOverflowLayerCount(tier);
+  }
+  return out;
 }

@@ -936,6 +936,32 @@ describe('Hyperion lighting quality', () => {
     expect(engine.lighting._needsRebuild).toBe(false);
     engine.destroy();
   });
+
+  it("engine.lighting.groups reads the main-thread renderer's texture counts: a sprite light at or past its array's used layers is untextured (round step 8)", () => {
+    const SPRITE_LIGHT = (6 | (4 << 11) | (0xffff << 16)) >>> 0;  // Light2D, LightType::Sprite, every layer
+    const state = makeRenderState({
+      entityCount: 1, renderMeta: new Uint32Array([0, SPRITE_LIGHT]), bounds: new Float32Array([0, 0, 0, 1]),
+      primParams: new Float32Array(8), texIndices: new Uint32Array([(1 << 16) | 3]),  // primary tier 1, layer 3
+    });
+    const bridgeWith = (): EngineBridge => {
+      const bridge = mockBridge();
+      Object.defineProperty(bridge, 'latestRenderState', { get: () => state });
+      return bridge;
+    };
+    const used = [1, 4, 0, 0, 0, 0, 0, 0];
+    const renderer = mockRenderer();
+    Object.assign(renderer.textureManager, { getLayerCount: (t: number) => used[t], getOverflowLayerCount: (t: number) => used[4 + t] });
+    const engine = Hyperion.fromParts(defaultConfig(), bridgeWith(), renderer);
+    engine.cam.setOrthographic(20, 20);
+    expect(engine.lighting.groups!.untexturedSpriteLight, 'layer 3 below the 4 in use').toBe(false);
+    used[1] = 3;
+    expect(engine.lighting.groups!.untexturedSpriteLight, 'layer 3 at the count').toBe(true);
+    const modeA = Hyperion.fromParts(defaultConfig(), bridgeWith(), null);
+    modeA.cam.setOrthographic(20, 20);
+    expect(modeA.lighting.groups!.untexturedSpriteLight, 'no renderer on this thread: layer 0 alone').toBe(false);
+    engine.destroy();
+    modeA.destroy();
+  });
 });
 
 describe('Hyperion.create', () => {

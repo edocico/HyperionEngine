@@ -56,11 +56,13 @@ export interface LightGroups {
    */
   shadowedGlobalLight: boolean;
   /**
-   * A sprite light in the light list has no texture (untexturedPredicate: the
-   * layer of its packed index is 0), and light-accum.wgsl draws nothing for
-   * it (round step 8). The renderer warns once (dev builds) when it holds for
-   * UNTEXTURED_SPRITE_MS of lit time with no texture load in flight. Never
-   * raised without a usable `texIndices` column.
+   * A sprite light in the light list has no texture this renderer loaded
+   * (untexturedPredicate: layer 0, or a layer at or past its array's used
+   * count when `textureLayersUsed` is given), so it lights nothing (round
+   * step 8; on an ASTC device a layer its array allocated but never loaded
+   * shows the error colour instead). The renderer warns once (dev builds)
+   * when it holds for UNTEXTURED_SPRITE_MS of lit time with no texture load
+   * in flight. Never raised without a usable `texIndices` column.
    */
   untexturedSpriteLight: boolean;
   /** The distinct light mask values in view: what splits the groups. */
@@ -104,6 +106,17 @@ export interface LightGroupsInput {
    * many costs time, one too few would cost shadows.
    */
   texIndices?: Uint32Array;
+  /**
+   * The layers in use of each texture array (round step 8, sub-decision 4
+   * (c)): primary tiers 0-3, then overflow tiers 0-3, the reserved layer 0
+   * included, 0 for an array never allocated (`textureLayerCounts`). A sprite
+   * light whose cookie's layer is at or past its array's count names no
+   * texture this renderer loaded: untextured, like layer 0. A tier past 3
+   * reads tier 0's count, as sampleTier's default arm samples tier 0. Absent,
+   * or shorter than 8 (Mode A's main thread, tests): layer 0 alone is
+   * untextured.
+   */
+  textureLayersUsed?: ArrayLike<number>;
 }
 
 /**
@@ -164,17 +177,33 @@ const MARGIN_ADD = 1e-3;
 export const TEXTURE_LAYER_MASK = 0xffff;
 
 /**
- * The one rule for a sprite light without a texture (round step 8), shared by
- * every reader of a cookie's index (the SDF gate first). The layer of the
- * slot's packed index is 0 (TEXTURE_LAYER_MASK), which light-accum.wgsl's
- * vs_main draws nothing for. All or nothing, like the ids: without a usable
- * `texIndices` column (shorter than `entityCount`, or none) no slot is
- * untextured, since a flood too many costs time where one too few would cost
- * shadows.
+ * The one rule for a sprite light without a texture this renderer loaded
+ * (round step 8): the SDF gate, `untexturedSpriteLight` and
+ * `untexturedSpriteIds` all ask it. Untextured: the layer of the slot's
+ * packed index is 0 (TEXTURE_LAYER_MASK), which light-accum.wgsl's vs_main
+ * draws nothing for; or, when `textureLayersUsed` is given, a layer at or
+ * past the layers its array has in use (a handle from another session, a
+ * tape, a snapshot or Mode A: fs_main discards a layer past the array, and a
+ * layer the array allocated but never loaded holds zeroes). Every handle this
+ * renderer's TextureManager gave names a layer below its array's count, so the
+ * rule never flags a loaded cookie. The tier maps as sampleTier's arms do: a
+ * tier past 3 takes the default arm, tier 0 (never "a tier past 3 is
+ * untextured"). All or nothing, like the ids: without a usable `texIndices`
+ * column (shorter than `entityCount`, or none) no slot is untextured, since a
+ * flood too many costs time where one too few would cost shadows.
  */
-export function untexturedPredicate(input: Pick<LightGroupsInput, 'entityCount' | 'texIndices'>): (slot: number) => boolean {
+export function untexturedPredicate(input: Pick<LightGroupsInput, 'entityCount' | 'texIndices' | 'textureLayersUsed'>): (slot: number) => boolean {
   const tex = input.texIndices !== undefined && input.texIndices.length >= input.entityCount ? input.texIndices : null;
-  return (slot) => tex !== null && (tex[slot] & TEXTURE_LAYER_MASK) === 0;
+  const used = input.textureLayersUsed !== undefined && input.textureLayersUsed.length >= 8 ? input.textureLayersUsed : null;
+  return (slot) => {
+    if (tex === null) return false;
+    const packed = tex[slot];
+    const layer = packed & TEXTURE_LAYER_MASK;
+    if (layer === 0) return true;
+    if (used === null) return false;
+    const tier = (packed >>> 16) & 7;
+    return layer >= used[(packed >>> 31) * 4 + (tier < 4 ? tier : 0)];
+  };
 }
 
 /**
@@ -277,8 +306,11 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
           // Only a light that reads the flood asks for one, and none does
           // with a range of 0 or less: sunShadow returns before its first SDF
           // read, fs_main discards every point or spot pixel at d >= range
-          // before its march, and vs_main drops such a sprite light, as it
-          // drops one without a texture (untexturedPredicate).
+          // before its march, and vs_main drops such a sprite light. Nor does
+          // a sprite light untexturedPredicate flags: vs_main drops layer 0,
+          // fs_main discards a layer past its array, and a layer this renderer
+          // never loaded holds no cookie (zeroes, or ASTC's error colour, which
+          // the dev warning reports).
           if (primParams[i * 8 + 3] > 0 && (type !== SPRITE || !untextured(i))) shadowedLayers |= mask;
         } else if (type === GLOBAL) {
           shadowedGlobalLight = true;

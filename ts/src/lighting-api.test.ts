@@ -189,12 +189,12 @@ describe('LightingAPI — groups (light layers)', () => {
   const LIGHT = 6, RECV = 1 << 10;
   const view = new Float32Array([0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-  function withState(rs: GPURenderState | null, viewProjection?: () => Float32Array) {
+  function withState(rs: GPURenderState | null, viewProjection?: () => Float32Array, textureLayersUsed?: () => ArrayLike<number> | undefined) {
     const sab = new SharedArrayBuffer(HEADER + 4096);
     const producer = new BackpressuredProducer(new RingBufferProducer(sab));
     const bridge = { get latestRenderState() { return rs; } } as unknown as EngineBridge;
     const api = new LightingAPI();
-    api._init(producer, bridge, viewProjection);
+    api._init(producer, bridge, viewProjection, textureLayersUsed);
     return api;
   }
 
@@ -254,6 +254,19 @@ describe('LightingAPI — groups (light layers)', () => {
     expect(withState(rs(new Uint32Array([(1 << 16) | 1])), () => view).groups!.untexturedSpriteLight).toBe(false);
     // makeRenderState's default column is empty: shorter than entityCount, ignored whole.
     expect(withState(rs(), () => view).groups!.untexturedSpriteLight).toBe(false);
+  });
+
+  it("passes the renderer's texture counts on (the 4th accessor): a sprite light past its array's used layers is untextured (round step 8)", () => {
+    const SPRITE = 4;
+    const renderMeta = new Uint32Array([0, (LIGHT | (SPRITE << 11) | (0xffff << 16)) >>> 0]);
+    const rs = emptyRenderState({
+      entityCount: 1, renderMeta, bounds: new Float32Array([0, 0, 0, 1]), primParams: new Float32Array(8),
+      texIndices: new Uint32Array([(1 << 16) | 3]),  // primary tier 1, layer 3
+    });
+    const counts = (tier1: number) => () => Uint16Array.from([1, tier1, 0, 0, 0, 0, 0, 0]);
+    expect(withState(rs, () => view, counts(4)).groups!.untexturedSpriteLight, 'layer 3 below the 4 in use').toBe(false);
+    expect(withState(rs, () => view, counts(3)).groups!.untexturedSpriteLight, 'layer 3 at the count').toBe(true);
+    expect(withState(rs, () => view).groups!.untexturedSpriteLight, 'no accessor (Mode A): layer 0 alone').toBe(false);
   });
 
   it("orders by slot when the render state has no id column (makeRenderState's default)", () => {

@@ -531,6 +531,42 @@ describe('deriveLightGroups', () => {
     expect(untexturedSpriteIds(g, { ...s, entityIds: s.entityIds!.slice(0, 2) })).toEqual([]);
     expect(untexturedSpriteIds(g, { ...s, texIndices: s.texIndices!.slice(0, 2) })).toEqual([]);
   });
+
+  it("with the texture arrays' used layers, a sprite light whose cookie names a layer at or past its array's count is untextured too: the flag, no SDF set, still listed (round step 8, sub-decision 4 (c))", () => {
+    // Used layers: primary tiers 0-3, then overflow 0-3, the reserved layer 0 included.
+    const used = Uint16Array.from([1, 4, 0, 0, 3, 0, 0, 0]);
+    // null, not undefined, for no counts: an undefined argument takes the default.
+    const run = (tex: number, counts: ArrayLike<number> | null = used) => {
+      const g = deriveLightGroups({ ...scene([sprite(1, { tex }), drawable(CAST | RECV)]), textureLayersUsed: counts ?? undefined });
+      return { flag: g.untexturedSpriteLight, sets: g.sdfSets.length, listed: [...g.lightOrder] };
+    };
+    // Below its array's count: a texture this renderer loaded.
+    expect(run(packTextureIndex(1, 3)), 'primary tier 1, layer 3 of 4').toEqual({ flag: false, sets: 1, listed: [0] });
+    expect(run(packTextureIndex(0, 2, true)), 'overflow tier 0: entry 4').toEqual({ flag: false, sets: 1, listed: [0] });
+    // At or past it: untextured, still listed (vs_main keeps its square; fs_main discards past the array).
+    for (const tex of [packTextureIndex(1, 4), packTextureIndex(1, 9), packTextureIndex(0, 3, true), packTextureIndex(2, 1), packTextureIndex(0, 1)]) {
+      expect(run(tex), `0x${(tex >>> 0).toString(16)}`).toEqual({ flag: true, sets: 0, listed: [0] });
+    }
+    // The primary and the overflow entries apart: overflow tier 1 holds nothing.
+    expect(run(packTextureIndex(1, 3, true)).flag, 'overflow tier 1: entry 5').toBe(true);
+    // A tier past 3 samples tier 0's array (sampleTier's default arm): it reads tier 0's count.
+    expect(run(packTextureIndex(5, 3), Uint16Array.from([4, 0, 0, 0, 0, 0, 0, 0])).flag, 'tier 5, layer 3 below 4').toBe(false);
+    expect(run(packTextureIndex(5, 3), Uint16Array.from([3, 4, 4, 4, 4, 4, 4, 4])).flag, 'tier 5, layer 3 at 3').toBe(true);
+    // Without the counts, or a short list: layer 0 alone.
+    for (const counts of [null, Uint16Array.from([1, 4, 0, 0])]) {
+      expect(run(packTextureIndex(1, 9), counts).flag, `${counts?.length ?? 'no'} counts`).toBe(false);
+      expect(run(packTextureIndex(1, 0), counts).flag, `${counts?.length ?? 'no'} counts, layer 0`).toBe(true);
+    }
+  });
+
+  it("renderer.ts hands deriveLightGroups the texture arrays' used layers, refreshed in every frame's FrameState (round step 8)", () => {
+    const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
+    const declaration = 'const textureLayersUsed = new Uint16Array(8);';
+    expect(renderer.split(declaration), 'one buffer, declared once').toHaveLength(2);
+    expect(renderer.indexOf(declaration), 'declared before render()').toBeLessThan(renderer.indexOf('render(state: GPURenderState'));
+    const literal = renderer.slice(renderer.indexOf('const frameState: FrameState = {'), renderer.indexOf('frameState.lightGroups = deriveLightGroups(frameState);'));
+    expect(literal).toMatch(/textureLayersUsed: textureLayerCounts\(textureManager, textureLayersUsed\),/);
+  });
 });
 
 // ── The light list (round step 7) ────────────────────────────────────────────

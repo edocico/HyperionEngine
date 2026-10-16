@@ -59,7 +59,7 @@ import { DebugProbe } from './render/debug-probe';
 import { TransparentSortProbe } from './render/transparent-sort-probe';
 import {
   normalizeTransparentCount, nextFrameStamp, uploadEntityIds, missingSortInputs, overCapacityWarning,
-  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS,
+  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, textureLayerCounts,
 } from './render/frame-inputs';
 import { MAX_GPU_ENTITIES } from './types';
 import pixelProbeShaderCode from './shaders/pixel-probe.wgsl?raw';
@@ -548,6 +548,9 @@ export async function createRenderer(
   // count, so a texture still loading is no fault and loads elsewhere do not
   // hide a missing one.
   const untexturedSpriteWarning = persistentWarning(UNTEXTURED_SPRITE_MS);
+  // Round step 8 (sub-decision 4 (c)): the texture arrays' used layers, one
+  // buffer refreshed in every frame's FrameState (textureLayerCounts).
+  const textureLayersUsed = new Uint16Array(8);
 
   // --- 8b''. Transparent sort inputs (phase 5b §4.2-4.3) ---
   // Closure locals, not pass state: they must survive graph swaps and the
@@ -1059,6 +1062,7 @@ export async function createRenderer(
         shadowSteps: lightingQuality.shadowSteps,
         transparentCount: normalizeTransparentCount(state.transparentCount, state.entityCount),
         frameStamp,
+        textureLayersUsed: textureLayerCounts(textureManager, textureLayersUsed),
       };
       // Light layers: which layers share a light buffer and an SDF, this frame.
       if (host.mode.lighting) {

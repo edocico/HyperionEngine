@@ -103,17 +103,21 @@ export class LightingAPI {
   private producer: BackpressuredProducer | null = null;
   private bridge: EngineBridge | null = null;
   private viewProjection: (() => Float32Array) | null = null;
+  private textureLayersUsed: (() => ArrayLike<number> | undefined) | null = null;
   private _quality: LightingQuality = { ...DEFAULT_LIGHTING_QUALITY };
   private _qualityDirty = false;
 
   /**
    * @internal Wired by `Hyperion` at construction.
    * @param viewProjection the main-thread camera, for {@link groups}.
+   * @param textureLayersUsed the main-thread renderer's texture counts
+   *   (`textureLayerCounts`), for {@link groups}; none in Mode A.
    */
-  _init(producer: BackpressuredProducer, bridge: EngineBridge, viewProjection?: () => Float32Array): void {
+  _init(producer: BackpressuredProducer, bridge: EngineBridge, viewProjection?: () => Float32Array, textureLayersUsed?: () => ArrayLike<number> | undefined): void {
     this.producer = producer;
     this.bridge = bridge;
     this.viewProjection = viewProjection ?? null;
+    this.textureLayersUsed = textureLayersUsed ?? null;
   }
 
   /**
@@ -127,12 +131,16 @@ export class LightingAPI {
    * renderer warns once in dev builds).
    *
    * And `untexturedSpriteLight` (round step 8): a sprite light in the light
-   * list has no texture (layer 0 of its packed index), so it lights nothing
-   * until it has one. The flag is readable in every build; only the warning
-   * is dev-only: the renderer warns once, when the flag has held for a second
-   * of lit frames with no texture load in flight. Await the texture before
-   * spawning, `const cookie = await engine.loadTexture(url)`. Textures do not
-   * load in Mode A.
+   * list has no texture this renderer loaded (layer 0 of its packed index,
+   * or a layer at or past those its array has in use, from the main-thread
+   * renderer's texture manager: in Mode A the main thread has none, so layer
+   * 0 alone counts here, while the render worker's own warning applies the
+   * whole rule), so it lights nothing until it has one. The flag is readable
+   * in every build; only the warning is dev-only: the renderer warns once,
+   * when the flag has held for a second of lit frames with no texture load
+   * in flight. Await the texture before spawning,
+   * `const cookie = await engine.loadTexture(url)`. Textures do not load in
+   * Mode A.
    *
    * It carries the frame's light list too (round step 7): `lightOrder`, the
    * slots of the lights the cull keeps, in the order they are drawn, and
@@ -148,7 +156,7 @@ export class LightingAPI {
   get groups(): LightGroups | null {
     const rs = this.bridge?.latestRenderState;
     if (!rs || !this.viewProjection) return null;
-    return deriveLightGroups({ ...rs, cameraViewProjection: this.viewProjection() });
+    return deriveLightGroups({ ...rs, cameraViewProjection: this.viewProjection(), textureLayersUsed: this.textureLayersUsed?.() });
   }
 
   /**
