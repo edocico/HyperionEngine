@@ -4,6 +4,7 @@ import { LightAccumStage, LIGHT_BLEND, MIN_LIGHT_ORDER_CAPACITY, SLICE } from '.
 import { ResourcePool } from '../resource-pool';
 import { SCENE_HDR_FORMAT } from '../formats';
 import { BLEND_MIX } from '../light-groups';
+import { textureTierLayoutEntries } from '../primitive-bindings';
 import type { FrameState } from '../render-pass';
 import lightShaderSource from '../../shaders/light-accum.wgsl?raw';
 import { bindingDecls, callGraph, functionBody, functionParams, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
@@ -16,9 +17,11 @@ import { structSize } from '../../shaders/uniform-layout';
 // every group draws the frame's ONE light list (deriveLightGroups), in one
 // direct draw, through ONE pipeline with a premultiplied "over" blend.
 
-const POOL_BUFFERS = ['entity-transforms', 'visible-indices', 'indirect-args', 'render-meta', 'prim-params'];
+const POOL_BUFFERS = ['entity-transforms', 'visible-indices', 'indirect-args', 'render-meta', 'prim-params', 'tex-indices'];
+/** The texture tier views createRenderer registers in the pool (the sampler too), group 1 of the light pipeline since round step 8. */
+const TIER_VIEWS = ['tier0', 'tier1', 'tier2', 'tier3', 'ovf0', 'ovf1', 'ovf2', 'ovf3'];
 
-function setUp(poolBuffers = POOL_BUFFERS) {
+function setUp(poolBuffers = POOL_BUFFERS, { tiers = true }: { tiers?: boolean } = {}) {
   const g = globalThis as Record<string, unknown>;
   g.GPUBufferUsage ??= { COPY_DST: 0x8, INDEX: 0x10, VERTEX: 0x20, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };
   g.GPUShaderStage ??= { VERTEX: 0x1, FRAGMENT: 0x2, COMPUTE: 0x4 };
@@ -28,6 +31,7 @@ function setUp(poolBuffers = POOL_BUFFERS) {
   const bindGroups: GPUBindGroupDescriptor[] = [];
   const writes: Array<{ buffer: unknown; offset: number; data: ArrayBuffer }> = [];
   const layouts: GPUBindGroupLayoutDescriptor[] = [];
+  const pipelineLayouts: GPUPipelineLayoutDescriptor[] = [];
   const device = {
     createBuffer: (d: GPUBufferDescriptor) => {
       const b = { size: d.size, usage: d.usage, label: d.label, destroyed: false, destroy() { b.destroyed = true; } };
@@ -35,8 +39,8 @@ function setUp(poolBuffers = POOL_BUFFERS) {
       return b;
     },
     createShaderModule: () => ({}),
-    createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return {}; },
-    createPipelineLayout: () => ({}),
+    createBindGroupLayout: (d: GPUBindGroupLayoutDescriptor) => { layouts.push(d); return { d }; },
+    createPipelineLayout: (d: GPUPipelineLayoutDescriptor) => { pipelineLayouts.push(d); return { d }; },
     createRenderPipeline: (d: GPURenderPipelineDescriptor) => { pipelines.push(d); return {}; },
     createBindGroup: (d: GPUBindGroupDescriptor) => { bindGroups.push(d); return { d }; },
     queue: {
@@ -58,6 +62,10 @@ function setUp(poolBuffers = POOL_BUFFERS) {
     poolBuffer.set(name, b);
     pool.setBuffer(name, b as unknown as GPUBuffer);
   }
+  if (tiers) {
+    for (const name of TIER_VIEWS) pool.setTextureView(name, view(name));
+    pool.setSampler('texSampler', { name: 'texSampler' } as unknown as GPUSampler);
+  }
   const stage = new LightAccumStage();
   stage.setup(device, pool);
   const frame = (over: Partial<FrameState> = {}) =>
@@ -67,23 +75,27 @@ function setUp(poolBuffers = POOL_BUFFERS) {
   const list = () => buffers.filter((b) => (b.usage & GPUBufferUsage.STORAGE) !== 0 && !b.destroyed).at(-1)!;
 
   const encode = (g: number, target: GPUTextureView, sdf: GPUTextureView, f = frame()) => {
-    const passes: Array<{ desc: GPURenderPassDescriptor; draws: number[]; indexed: number[][]; groups: unknown[] }> = [];
+    const passes: Array<{
+      desc: GPURenderPassDescriptor; draws: number[]; indexed: number[][]; groups: unknown[];
+      /** Every setBindGroup with its index, and the calls in order: `group <i>`, `draw`. */
+      sets: Array<[number, unknown]>; ops: string[];
+    }> = [];
     const encoder = {
       beginRenderPass: (desc: GPURenderPassDescriptor) => {
-        const rec = { desc, draws: [] as number[], indexed: [] as number[][], groups: [] as unknown[] };
+        const rec = { desc, draws: [] as number[], indexed: [] as number[][], groups: [] as unknown[], sets: [] as Array<[number, unknown]>, ops: [] as string[] };
         passes.push(rec);
         return {
           setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, end() {},
-          setBindGroup: (_i: number, bg: unknown) => { rec.groups.push(bg); },
+          setBindGroup: (i: number, bg: unknown) => { rec.groups.push(bg); rec.sets.push([i, bg]); rec.ops.push(`group ${i}`); },
           drawIndexedIndirect: (_b: GPUBuffer, offset: number) => { rec.draws.push(offset); },
-          drawIndexed: (...args: number[]) => { rec.indexed.push(args); },
+          drawIndexed: (...args: number[]) => { rec.indexed.push(args); rec.ops.push('draw'); },
         };
       },
     } as unknown as GPUCommandEncoder;
-    stage.encode(encoder, g, target, sdf, f);
+    stage.encode(encoder, g, target, sdf, f, pool);
     return passes[0];
   };
-  return { stage, device, pipelines, buffers, bindGroups, writes, layouts, pool, poolBuffer, frame, uniform, list, encode };
+  return { stage, device, pipelines, buffers, bindGroups, writes, layouts, pipelineLayouts, pool, poolBuffer, frame, uniform, list, encode };
 }
 
 /** drawIndexed's five arguments, WebGPU's defaults filled in. */
@@ -95,6 +107,10 @@ const bindingOf = (bg: unknown, binding: number) =>
 const NO_LIGHTS = new Uint32Array(0);
 /** A frame's light list: slots in draw order. */
 const lights = (...slots: number[]) => Uint32Array.from(slots);
+/** The bind group a recorded pass set last at group `index`. */
+const groupAt = (pass: { sets: Array<[number, unknown]> }, index: number): unknown => pass.sets.filter(([i]) => i === index).at(-1)?.[1];
+/** The descriptor a mock object was made from: the fake device's create* calls return `{ d }`. */
+const descOf = <T>(made: unknown): T => (made as { d: T }).d;
 
 const view = (name: string) => ({ name }) as unknown as GPUTextureView;
 const groups3 = [{ layers: 0b001, sdfSet: 0 }, { layers: 0b010, sdfSet: 1 }, { layers: 0b100, sdfSet: -1 }];
@@ -142,11 +158,9 @@ describe('LightAccumStage', () => {
   });
 
   it('binds slice g: offset g * 256, the 80 bytes of LightUniform', () => {
-    const { stage, device, frame, bindGroups, encode } = setUp();
+    const { stage, device, frame, encode } = setUp();
     stage.prepare(device, frame(), groups3, NO_LIGHTS);
-    encode(2, view('layer2'), view('sdf'));
-    const entry = [...bindGroups.at(-1)!.entries].find((e) => e.binding === 0)!;
-    expect(entry.resource).toMatchObject({ offset: 2 * 256, size: 80 });
+    expect(bindingOf(groupAt(encode(2, view('layer2'), view('sdf')), 0), 0)).toMatchObject({ offset: 2 * 256, size: 80 });
   });
 
   // Round step 7: every light comes from deriveLightGroups' list, in its order
@@ -287,7 +301,7 @@ describe('LightAccumStage', () => {
   });
 
   it('needs neither visible-indices nor indirect-args from the pool', () => {
-    const { stage, device, frame, encode } = setUp(['entity-transforms', 'render-meta', 'prim-params']);
+    const { stage, device, frame, encode } = setUp(['entity-transforms', 'render-meta', 'prim-params', 'tex-indices']);
     stage.prepare(device, frame(), groups3, lights(1));
     expect(encode(0, view('t'), view('sdf')).indexed.map(direct)).toEqual([[6, 1, 0, 0, 0]]);
   });
@@ -313,6 +327,115 @@ describe('LightAccumStage', () => {
       color: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
       alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
     });
+  });
+});
+
+// Round step 8: the prelude's group 1 (a TextureTierBinding resolved from the
+// pool in every encode(): a grown tier destroys its old texture) and binding 6,
+// the pool's tex-indices.
+describe('LightAccumStage: the texture tiers, group 1 (round step 8)', () => {
+  beforeAll(() => { LightAccumStage.SHADER_SOURCE = lightShaderSource; });
+
+  it("builds its one pipeline on two groups: its own group 0 (bindings 0-6) and the prelude's texture-tier layout as group 1", () => {
+    const { pipelines, pipelineLayouts, layouts } = setUp();
+    expect(pipelines).toHaveLength(1);
+    expect(pipelineLayouts).toHaveLength(1);
+    expect(descOf<GPUPipelineLayoutDescriptor>(pipelines[0].layout)).toBe(pipelineLayouts[0]);
+    const groups = [...pipelineLayouts[0].bindGroupLayouts].map((l) => descOf<GPUBindGroupLayoutDescriptor>(l));
+    // Group 0 is created first: the tests above read layouts[0] as group 0.
+    expect(groups).toEqual([layouts[0], layouts[1]]);
+    expect([...groups[0].entries].map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...groups[1].entries]).toEqual(textureTierLayoutEntries());
+  });
+
+  it("culls no face: a sprite light under a mirroring transform is wound clockwise, and both windings must draw", () => {
+    const { pipelines } = setUp();
+    expect(pipelines[0].primitive).toEqual({ topology: 'triangle-list', cullMode: 'none' });
+  });
+
+  it("binding 6 is the pool's tex-indices: vertex-only read-only storage, minBindingSize 4, in every group's bind group; setup() throws without it", () => {
+    const { stage, device, frame, layouts, pool, encode } = setUp();
+    const entry = [...layouts[0].entries].find((e) => e.binding === 6);
+    expect(entry, 'binding 6').toBeDefined();
+    expect(entry!.visibility).toBe(GPUShaderStage.VERTEX);
+    expect(entry!.buffer).toEqual({ type: 'read-only-storage', minBindingSize: 4 });
+    stage.prepare(device, frame(), groups3, lights(1));
+    for (let g = 0; g < groups3.length; g++) {
+      const bound = bindingOf(groupAt(encode(g, view(`layer${g}`), view('sdf')), 0), 6) as GPUBufferBinding;
+      expect(bound.buffer, `group ${g}`).toBe(pool.getBuffer('tex-indices'));
+    }
+    expect(() => setUp(POOL_BUFFERS.filter((n) => n !== 'tex-indices'))).toThrow(/'tex-indices'/);
+  });
+
+  it("sets group 1 in every group's pass, before its draw: the pool's eight tier views and the sampler, in binding order", () => {
+    const { stage, device, frame, encode } = setUp();
+    stage.prepare(device, frame(), groups3, lights(5, 9));
+    const want = ['tier0', 'tier1', 'tier2', 'tier3', 'texSampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3'].map((name, binding) => [binding, name]);
+    for (let g = 0; g < groups3.length; g++) {
+      const pass = encode(g, view(`layer${g}`), view('sdf'));
+      const tiers = groupAt(pass, 1);
+      expect(tiers, `group ${g}`).toBeDefined();
+      expect([...descOf<GPUBindGroupDescriptor>(tiers).entries].map((e) => [e.binding, (e.resource as unknown as { name: string }).name])).toEqual(want);
+      expect(pass.ops).toEqual(['group 0', 'group 1', 'draw']);
+      expect(pass.indexed.map(direct)).toEqual([[6, 2, 0, 0, 0]]);
+    }
+  });
+
+  it('builds group 1 in setup() already: the graph host and the HMR probes validate it there', () => {
+    const { bindGroups, pipelineLayouts } = setUp();
+    expect(bindGroups).toHaveLength(1);
+    expect([...bindGroups[0].entries].map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    // On the pipeline's group-1 layout, never group 0's.
+    expect(bindGroups[0].layout).toBe([...pipelineLayouts[0].bindGroupLayouts][1]);
+  });
+
+  it("rebuilds group 1 when a tier's view changes (a tier that grows destroys its old texture), keeps it while nothing changes, and group 0 does not follow the tiers", () => {
+    const { stage, device, frame, pool, encode, bindGroups } = setUp();
+    stage.prepare(device, frame(), groups3, lights(1));
+    const sdf = view('sdf');
+    const before = encode(0, view('t'), sdf);
+    const made = bindGroups.length;
+    expect(groupAt(encode(0, view('t'), sdf), 1)).toBe(groupAt(before, 1));
+    expect(bindGroups.length, 'nothing changed: no bind group made').toBe(made);
+    // What TextureManager.onViewsChanged -> registerTextureViews (renderer.ts) does on a growth.
+    const grown = view('ovf0 after growth');
+    pool.setTextureView('ovf0', grown);
+    const after = encode(0, view('t'), sdf);
+    expect(groupAt(after, 1)).not.toBe(groupAt(before, 1));
+    expect(bindingOf(groupAt(after, 1), 5)).toBe(grown);  // ovf0 is group-1 binding 5
+    expect(groupAt(after, 0)).toBe(groupAt(before, 0));
+    expect(after.indexed.map(direct)).toEqual([[6, 1, 0, 0, 0]]);
+  });
+
+  it('without the tier views in the pool it still clears the layer to the ambient, and draws nothing: the one pipeline has group 1', () => {
+    const { stage, device, frame, encode } = setUp(POOL_BUFFERS, { tiers: false });
+    stage.prepare(device, frame(), groups3, lights(5, 9));
+    const pass = encode(0, view('layer0'), view('sdf'), frame({ ambient: [0.2, 0.4, 0.6, 0.5] }));
+    expect([...pass.desc.colorAttachments][0]!.clearValue).toEqual({ r: 0.1, g: 0.2, b: 0.3, a: 1 });
+    expect(pass.indexed).toEqual([]);
+    expect(groupAt(pass, 1)).toBeUndefined();
+  });
+
+  it("an HMR probe on the same pool destroys no pool buffer, tex-indices included, and the live stage still binds the pool's tier views", () => {
+    const { stage, device, frame, pool, poolBuffer, encode } = setUp();
+    const probe = new LightAccumStage();
+    probe.setup(device, pool);
+    probe.destroy();
+    for (const [name, b] of poolBuffer) expect(b.destroyed, name).toBe(false);
+    stage.prepare(device, frame(), groups3, lights(1));
+    const g1 = groupAt(encode(0, view('t'), view('sdf')), 1);
+    expect(g1, 'group 1').toBeDefined();
+    expect(bindingOf(g1, 0)).toBe(pool.getTextureView('tier0'));
+  });
+
+  it('at most 8 storage buffers per shader stage, counted on the layout entries (an unread one counts too): vertex 5, fragment 3', () => {
+    const { layouts } = setUp();
+    const entries = layouts.flatMap((l) => [...l.entries]);
+    const storage = (stage: number) => entries.filter((e) => e.buffer?.type === 'read-only-storage' && (e.visibility & stage) !== 0).length;
+    expect(storage(GPUShaderStage.VERTEX)).toBe(5);
+    expect(storage(GPUShaderStage.FRAGMENT)).toBe(3);
+    // Sampled textures, of 16 per stage: the SDF and the eight tiers.
+    expect(entries.filter((e) => e.texture !== undefined && (e.visibility & GPUShaderStage.FRAGMENT) !== 0)).toHaveLength(9);
   });
 });
 
@@ -413,17 +536,20 @@ describe('light-accum.wgsl', () => {
     expect(callGraph(lightShaderSource).get('fs_main')!.has('lightFacing')).toBe(true);
   });
 
-  it('every binding an entry point reaches is visible to its stage: the SDF to vs_main too', () => {
+  it('every binding an entry point reaches is in its group of the pipeline layout, visible to its stage: the SDF to vs_main too', () => {
     // A binding the vertex stage uses but the layout hides fails
     // createRenderPipeline; GPU validation then rejects the lit graph and
-    // lighting silently stays off. No mock device sees it.
+    // lighting silently stays off. No mock device sees it. Keyed by group AND
+    // binding: group 1's bindings 0-8 are not group 0's (round step 8).
     LightAccumStage.SHADER_SOURCE = lightShaderSource;
-    const { layouts } = setUp();
-    const visibility = new Map([...layouts[0].entries].map((e) => [e.binding, e.visibility]));
+    const { pipelineLayouts } = setUp();
+    const groups = [...pipelineLayouts[0].bindGroupLayouts].map((l) => descOf<GPUBindGroupLayoutDescriptor>(l));
+    const visibility = (group: number, binding: number): number =>
+      [...(groups[group]?.entries ?? [])].find((e) => e.binding === binding)?.visibility ?? 0;
     for (const [entry, stage] of [['vs_main', GPUShaderStage.VERTEX], ['fs_main', GPUShaderStage.FRAGMENT]] as const) {
       const reached = reachableFrom(lightShaderSource, entry);
       for (const b of bindingDecls(lightShaderSource).filter((d) => reached.has(d.name))) {
-        expect((visibility.get(b.binding) ?? 0) & stage, `${entry} reaches ${b.name} (binding ${b.binding})`).not.toBe(0);
+        expect(visibility(b.group, b.binding) & stage, `${entry} reaches ${b.name} (group ${b.group}, binding ${b.binding})`).not.toBe(0);
       }
     }
     expect(reachableFrom(lightShaderSource, 'vs_main').has('sdf')).toBe(true);  // not vacuous

@@ -114,13 +114,13 @@ export class LightGroupsPass implements RenderPass {
       stage?.('accum');
       // Before the next set's seed overwrites the shared textures.
       lg.groups.forEach((group, g) => {
-        if (group.sdfSet === s) this.accum.encode(encoder, g, this.layerViews[g], sdf, frame);
+        if (group.sdfSet === s) this.accum.encode(encoder, g, this.layerViews[g], sdf, frame, resources);
       });
     }
     if (lg.groups.some((group) => group.sdfSet < 0)) {
       stage?.('accum');
       lg.groups.forEach((group, g) => {
-        if (group.sdfSet < 0) this.accum.encode(encoder, g, this.layerViews[g], this.noOccluderView!, frame);
+        if (group.sdfSet < 0) this.accum.encode(encoder, g, this.layerViews[g], this.noOccluderView!, frame, resources);
       });
     }
   }

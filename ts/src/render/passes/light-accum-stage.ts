@@ -2,6 +2,7 @@ import type { FrameState } from '../render-pass';
 import type { ResourcePool } from '../resource-pool';
 import type { LightGroup } from '../light-groups';
 import { SCENE_HDR_FORMAT } from '../formats';
+import { TextureTierBinding, textureTierLayoutEntries } from '../primitive-bindings';
 import { DEFAULT_LIGHTING_QUALITY } from '../../lighting-api';
 
 /**
@@ -72,6 +73,14 @@ const MAX_SHADOW_STEPS = 0x3fffffff;
  * uniform slices and the list are written once, in `prepare()`: a writeBuffer
  * between the passes of one frame would land only with its last write. The
  * list's buffer is this stage's own: an HMR probe runs setup() then destroy().
+ *
+ * Since round step 8 a second group, the prelude's group 1 (the texture
+ * tiers, FRAGMENT), holds a sprite light's cookie, and binding 6 of group 0 is
+ * the pool's `tex-indices` (vs_main). Group 1 is a `TextureTierBinding`
+ * resolved from the pool in every `encode()`: a tier that grows destroys its
+ * old texture. The stage registers nothing in the pool (an HMR probe's setup()
+ * then destroy() leaves it whole). No face is culled: a mirrored sprite light
+ * is wound clockwise (spriteAxes).
  */
 export class LightAccumStage {
   /** WGSL shader source (`light-accum.wgsl`). Set before calling `setup()`. */
@@ -90,8 +99,10 @@ export class LightAccumStage {
   private orderCapacity = 0;
   /** This frame's list length, set by every prepare(): a frame never draws an earlier one's list. */
   private lightCount = 0;
-  /** The pool's columns, by binding: transforms (1), primParams (3), renderMeta (4). */
+  /** The pool's columns, by binding: transforms (1), primParams (3), renderMeta (4), texIndices (6). */
   private columns: Array<[number, GPUBuffer]> = [];
+  /** Group 1, the texture tiers (round step 8): follows the pool's views. */
+  private tierBinding: TextureTierBinding | null = null;
   private device: GPUDevice | null = null;
 
   setup(device: GPUDevice, resources: ResourcePool): void {
@@ -107,7 +118,7 @@ export class LightAccumStage {
     this.indexBuffer = device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(this.indexBuffer, 0, indices);
 
-    const columns: Array<[number, string]> = [[1, 'entity-transforms'], [3, 'prim-params'], [4, 'render-meta']];
+    const columns: Array<[number, string]> = [[1, 'entity-transforms'], [3, 'prim-params'], [4, 'render-meta'], [6, 'tex-indices']];
     this.columns = columns.map(([binding, name]) => {
       const buffer = resources.getBuffer(name);
       if (!buffer) throw new Error(`LightAccumStage.setup: missing '${name}' in ResourcePool`);
@@ -132,20 +143,33 @@ export class LightAccumStage {
         { binding: 3, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // primParams
         { binding: 4, visibility: vsFs, buffer: { type: 'read-only-storage' } },  // renderMeta
         { binding: 5, visibility: vsFs, texture: { sampleType: 'unfilterable-float' } }, // signed SDF (vs_main reads its size: directionalRay)
+        // The packed texture index of every slot, read by vs_main only (a
+        // sprite light's cookie, round step 8). 4 bytes: one u32.
+        { binding: 6, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage', minBindingSize: 4 } },
       ],
     });
+    // Group 1: the prelude's texture-tier layout, created after group 0.
+    const tierLayout = device.createBindGroupLayout({ entries: textureTierLayoutEntries() });
 
     const module = device.createShaderModule({ code: LightAccumStage.SHADER_SOURCE });
     this.pipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayout] }),
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayout, tierLayout] }),
       vertex: {
         module,
         entryPoint: 'vs_main',
         buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }],
       },
       fragment: { module, entryPoint: 'fs_main', targets: [{ format: SCENE_HDR_FORMAT, blend: LIGHT_BLEND }] },
-      primitive: { topology: 'triangle-list' },
+      // Both windings draw: spriteAxes winds a sprite light under a mirroring
+      // transform (scale(1, -1) included) clockwise. Never cullMode 'back'
+      // here, as the entity pipelines have it: those lights would vanish.
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
     });
+    this.tierBinding = new TextureTierBinding(tierLayout);
+    // Built now too, as ForwardPass does: the graph host and the HMR probes
+    // run setup() inside their GPU error scopes, so a layout that does not
+    // fit the pool's views rejects the graph instead of a later frame.
+    this.tierBinding.current(device, resources);
   }
 
   /**
@@ -192,11 +216,19 @@ export class LightAccumStage {
     if (lightOrder.length > 0) device.queue.writeBuffer(this.orderBuffer, 0, lightOrder);
   }
 
-  /** Clear `target` to the ambient light, then draw the frame's light list into group `g`, shadowed by `sdf`. */
-  encode(encoder: GPUCommandEncoder, g: number, target: GPUTextureView, sdf: GPUTextureView, frame: FrameState): void {
-    if (!this.pipeline || !this.vertexBuffer || !this.indexBuffer) return;
+  /**
+   * Clear `target` to the ambient light, then draw the frame's light list into
+   * group `g`, shadowed by `sdf`, with the texture tiers `resources` holds now
+   * (a sprite light's cookie).
+   */
+  encode(encoder: GPUCommandEncoder, g: number, target: GPUTextureView, sdf: GPUTextureView, frame: FrameState, resources: ResourcePool): void {
+    if (!this.device || !this.pipeline || !this.vertexBuffer || !this.indexBuffer) return;
     const bindGroup = this.bindGroupFor(g, sdf);
     if (!bindGroup) return;
+    // Rebuilt when a tier's view changed. null only while the pool has never
+    // held every tier view (tests): the layer is then cleared and nothing
+    // drawn, since the one pipeline's layout has group 1 for every light.
+    const tiers = this.tierBinding?.current(this.device, resources) ?? null;
     const [r, gr, b, intensity] = frame.ambient ?? [0, 0, 0, 1];
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -210,10 +242,11 @@ export class LightAccumStage {
     pass.setVertexBuffer(0, this.vertexBuffer);
     pass.setIndexBuffer(this.indexBuffer, 'uint16');
     pass.setBindGroup(0, bindGroup);
+    if (tiers) pass.setBindGroup(1, tiers);
     // Instance i is the list's i-th light, firstInstance 0 (no
     // indirect-first-instance). WebGPU blends in primitive order: the list's
     // order is the blend order.
-    if (this.lightCount > 0) pass.drawIndexed(6, this.lightCount, 0, 0, 0);
+    if (tiers && this.lightCount > 0) pass.drawIndexed(6, this.lightCount, 0, 0, 0);
     pass.end();
   }
 
@@ -250,6 +283,7 @@ export class LightAccumStage {
     this.pipeline = null;
     this.bindGroupLayout = null;
     this.columns = [];
+    this.tierBinding = null;
     this.device = null;
   }
 }

@@ -67,11 +67,12 @@ function setUp() {
   /** Render one frame. Returns the events: one per render pass (its target) or stage name. */
   const frame = (lightGroups: LightGroups | undefined, w = 128, h = 64, withStage = false) => {
     const f = { canvasWidth: w, canvasHeight: h, cameraViewProjection: new Float32Array(16), lightGroups } as unknown as FrameState;
-    const events: Array<{ kind: 'pass'; target: View; sdf?: View; indexed: number[][]; indirect: number[] } | { kind: 'stage'; name: string }> = [];
+    const events: Array<{ kind: 'pass'; target: View; sdf?: View; tiers?: GPUBindGroupEntry[]; indexed: number[][]; indirect: number[] } | { kind: 'stage'; name: string }> = [];
     const encoder = {
       beginRenderPass: (desc: GPURenderPassDescriptor) => {
         const ev = {
           kind: 'pass' as const, target: [...desc.colorAttachments][0]!.view as unknown as View, sdf: undefined as View | undefined,
+          tiers: undefined as GPUBindGroupEntry[] | undefined,
           indexed: [] as number[][], indirect: [] as number[],
         };
         events.push(ev);
@@ -79,7 +80,10 @@ function setUp() {
           setPipeline() {}, setVertexBuffer() {}, setIndexBuffer() {}, draw() {}, end() {},
           drawIndexed: (...args: number[]) => { ev.indexed.push(args); },
           drawIndexedIndirect: (_b: GPUBuffer, offset: number) => { ev.indirect.push(offset); },
-          setBindGroup: (_i: number, bg: { entries: GPUBindGroupEntry[] }) => {
+          // Group 0 holds the SDF at binding 5; group 1 (the texture tiers) has its own binding 5, ovf0.
+          setBindGroup: (i: number, bg: { entries: GPUBindGroupEntry[] }) => {
+            if (i === 1) ev.tiers = bg.entries;
+            if (i !== 0) return;
             const sdf = bg.entries.find((e) => e.binding === 5);
             if (sdf) ev.sdf = sdf.resource as unknown as View;
           },
@@ -92,7 +96,7 @@ function setUp() {
   };
   const label = (v: View) => `${v.tex.desc.label}${v.d?.baseArrayLayer !== undefined ? `#${v.d.baseArrayLayer}` : ''}`;
   const passes = (events: ReturnType<typeof frame>) =>
-    events.filter((e): e is { kind: 'pass'; target: View; sdf?: View; indexed: number[][]; indirect: number[] } => e.kind === 'pass');
+    events.filter((e): e is { kind: 'pass'; target: View; sdf?: View; tiers?: GPUBindGroupEntry[]; indexed: number[][]; indirect: number[] } => e.kind === 'pass');
   /** LightAccumStage's light-list buffer: the only STORAGE buffer the node creates. */
   const listBuffer = () => buffers.filter((b) => (b.usage & GPUBufferUsage.STORAGE) !== 0).at(-1);
   return { pass, pool, textures, frame, label, passes, device, writes, listBuffer };
@@ -190,6 +194,27 @@ describe('LightGroupsPass', () => {
     const accum = passes(events).filter((e) => label(e.target).startsWith('light-buffer'));
     expect(accum.map((e) => label(e.target))).toEqual(['light-buffer#0', 'light-buffer#2', 'light-buffer#1']);
     for (const e of accum) expect(e.indexed.map((a) => a.slice(0, 2)), label(e.target)).toEqual([[6, 4]]);
+  });
+
+  it("binds the pool's texture tiers as group 1 in every accumulation pass, and a tier view that changes reaches every group of the next frame", () => {
+    // Round step 8: a sprite light's cookie. A tier that grows replaces its
+    // view in the pool (renderer.ts registerTextureViews) and destroys the old
+    // texture, so every group of the next frame must bind the new one.
+    const { frame, label, passes, pool } = setUp();
+    const lg = groups([[1, 0], [2, -1], [4, 0]], [5], [3]);
+    const names = (tiers: GPUBindGroupEntry[] | undefined) => tiers?.map((e) => (e.resource as unknown as { name?: string }).name ?? 'sampler');
+    const accum = (events: ReturnType<typeof frame>) => passes(events).filter((e) => label(e.target).startsWith('light-buffer'));
+    const first = accum(frame(lg));
+    expect(first).toHaveLength(3);
+    for (const e of first) {
+      expect(names(e.tiers), label(e.target)).toEqual(['tier0', 'tier1', 'tier2', 'tier3', 'sampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3']);
+    }
+    pool.setTextureView('ovf0', { name: 'ovf0 grown' } as unknown as GPUTextureView);
+    for (const e of accum(frame(lg))) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown');
+    // Set-less groups alone (no shadowed light), right after a growth: no set's
+    // accumulation rebuilds the stage's group 1 before them in this frame.
+    pool.setTextureView('ovf0', { name: 'ovf0 grown again' } as unknown as GPUTextureView);
+    for (const e of accum(frame(groups([[1, -1], [2, -1]], [], [3])))) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown again');
   });
 
   it('no shadowed light: no seed and no flood at all', () => {
