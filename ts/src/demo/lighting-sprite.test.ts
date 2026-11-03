@@ -403,10 +403,12 @@ interface FakeHandle {
  * unless 'tsGate'. PNGs go to the
  * overflow tier (16 layers, doubling). 'staleGroup': every frame after a
  * growth is dropped, each probe raising an uncaptured GPU error;
- * 'staleFirst': the same from the tier's first allocation. `full`: the tier
- * at its 256-layer cap (MAX_LAYERS_PER_TIER; a number: at that many layers)
- * with 129 layers used (half plus one), the state a fifth entry in one page
- * finds, the cookie cached. `stall`: that load never resolves.
+ * 'staleFirst': the same from the tier's first allocation. `full`, the cookie
+ * cached in both forms: `true`, the tier at its 256-layer cap
+ * (MAX_LAYERS_PER_TIER) with 129 layers used (half plus one), the state a
+ * fifth entry in one page finds; a number N, N layers allocated with N/2 + 1
+ * used (a fourth entry is `full: 128`, 65 used). `stall`: that load never
+ * resolves.
  * `loadErrors`: uncaptured GPU errors raised while the cookie loads, the
  * pixels right.
  */
