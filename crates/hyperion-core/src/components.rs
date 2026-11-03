@@ -56,9 +56,11 @@ pub struct ModelMatrix(pub [f32; 16]);
 /// selects which Texture2DArray, the layer (bits 0-15) the slice within it,
 /// and the overflow bit the rgba8 overflow arrays (a PNG or JPEG on a device
 /// with a compressed format; `packTextureIndex` in texture-manager.ts).
-/// Default 0 = tier 0, layer 0: white on a primitive (the prelude's
-/// `sampleTierOrWhite`), and no light at all on a sprite light, whose cookie
-/// it is (round step 8).
+/// Default 0 = tier 0, layer 0: white on the primitives that sample the
+/// tiers through the prelude's `sampleTierOrWhite` (quad, line, bezier; a
+/// gradient packs stop1's green and blue here, and msdf samples its atlas
+/// raw), and no light at all on a sprite light, whose cookie it is: a sprite
+/// light lights nothing at layer 0 of any array (round step 8).
 #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
 #[repr(C)]
 pub struct TextureLayerIndex(pub u32);
