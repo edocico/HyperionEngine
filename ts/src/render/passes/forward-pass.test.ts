@@ -11,7 +11,7 @@ import {
   type PrimitiveLibrary, type PrimitiveLibraryName,
 } from '../primitive-shaders';
 import { loadPrimitivePieces } from '../primitive-pieces.fixture';
-import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments } from '../../shaders/wgsl-analysis';
+import { bindingDecls, callGraph, functionBody, reachableFrom, stripComments, topLevelDecls } from '../../shaders/wgsl-analysis';
 import { structSize } from '../../shaders/uniform-layout';
 import lightAccumSource from '../../shaders/light-accum.wgsl?raw';
 
@@ -390,13 +390,26 @@ describe('packed index 0: white in every tier-sampling primitive, no light in li
   // row order (no flipY at upload), so sampleTierOrWhite turns v over once,
   // after the white answer. No library changes its vertex uv, and msdf, whose
   // atlas rect is in texture coordinates, keeps the raw sampleTier.
-  it('a tier image is drawn upright: sampleTierOrWhite turns v over after the white answer, and no vertex uv changes', () => {
+  it('a tier image is drawn upright: sampleTierOrWhite turns v over after the white answer, the one turn-over of every composed module, and no vertex uv changes', () => {
     const fn = body(prelude, 'sampleTierOrWhite');
     const white = fn.search(/in\.isOverflow == 0u && in\.texTier == 0u && in\.texLayer == 0u\s*\)\s*\{\s*return vec4f\(1\.0\);\s*\}/);
     const flip = fn.search(/var image = in;\s*image\.uv = vec2f\(in\.uv\.x, 1\.0 - in\.uv\.y\);\s*return sampleTier\(image\);/);
     expect(white, 'the white answer').toBeGreaterThan(-1);
     expect(flip, 'the flip, then the raw sample').toBeGreaterThan(white);
     expect(body(prelude, 'sampleTier'), 'sampleTier stays in texture coordinates').not.toMatch(/1\.0 - in\.uv/);
+    // Once per composed module, in sampleTierOrWhite: a second turn-over in a library's <p>_shade or <p>_fs would
+    // draw that library's images upside down again, and no other headless test sees it (on the GPU, 2D Twins reads
+    // a textured quad and a textured line only). No library computes 1.0 - in.uv.y for another purpose; one that had
+    // to would be named here.
+    const flips = (text: string): number => text.match(/1\.0\s*-\s*in\.uv\.y/g)?.length ?? 0;
+    const composed: Array<[string, string]> = [...PRIMITIVE_LIBRARIES.map((l): [string, string] => [l.name, moduleOf(l.name)]), ['uber', uber]];
+    // Every module at once (each count over the whole comment-stripped module, and the functions holding them).
+    const found = composed.map(([name, src]) => ({
+      module: name,
+      count: flips(src),
+      in: topLevelDecls(src).filter((d) => d.kind === 'fn' && flips(body(src, d.name)) > 0).map((d) => d.name),
+    }));
+    expect(found).toEqual(composed.map(([name]) => ({ module: name, count: 1, in: ['sampleTierOrWhite'] })));
     for (const name of ['quad', 'bezier'] as PrimitiveLibraryName[]) {
       expect(body(moduleOf(name), fnOf(name, 'vs'))).toMatch(/unitQuadVertex\(position, entityIdx, position\.xy \+ 0\.5\)/);
     }
