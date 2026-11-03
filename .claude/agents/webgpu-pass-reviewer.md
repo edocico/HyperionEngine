@@ -74,12 +74,12 @@ Given a change (a diff range or a list of files), check each pass it touches:
     `prepare()`, which also sets the light count; binding 2 is VERTEX-only `read-only-storage`
     with `minBindingSize: 4`. Since round step 8 (sprite lights) its pipeline layout has a second
     group, the prelude's group 1 (`textureTierLayoutEntries()`, FRAGMENT), bound in every
-    `encode()`, with no draw while the pool lacks a tier view; group 0's binding 6 is the pool's
-    `tex-indices`, VERTEX-only `read-only-storage` with `minBindingSize: 4`, which the stage reads
-    and never registers. Its storage buffers are 5 of 8 in the vertex stage (bindings 1, 2, 3, 4,
-    6) and 3 of 8 in the fragment stage (1, 3, 4). The pipeline is `cullMode: 'none'`: a sprite
-    light under a mirroring transform is wound clockwise, and `'back'`, which the entity pipelines
-    keep, would drop it.
+    `encode()`, with no draw until the pool has held every tier view; group 0's binding 6 is the
+    pool's `tex-indices`, VERTEX-only `read-only-storage` with `minBindingSize: 4`, which the stage
+    reads and never registers. Its storage buffers are 5 of 8 in the vertex stage (bindings 1, 2,
+    3, 4, 6) and 3 of 8 in the fragment stage (1, 3, 4). The pipeline is `cullMode: 'none'`: a
+    sprite light under a mirroring transform is wound clockwise, and `'back'`, which the entity
+    pipelines keep, would drop it.
 
 Method: read the pass, its shader and its test side by side; compute sizes and offsets explicitly
 rather than trusting comments. For each problem report file:line, the rule broken, the concrete
