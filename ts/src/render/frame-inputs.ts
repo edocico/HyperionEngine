@@ -123,9 +123,9 @@ export const HELD_STEP_CAP_MS = 100;
  * call adds the time since the previous counted call, at most
  * HELD_STEP_CAP_MS, to every key it shares with that call; a key new in it
  * starts at 0 (no time from before it was there), and a key it lacks is
- * dropped (its count resets). A paused call (a texture load in flight)
- * neither adds nor drops, whatever its keys, and the next counted call does
- * not bridge the pause. Returns the keys that reached `ms`, in the order they
+ * dropped (its count resets). A paused call (a texture load in flight, or a
+ * frame without the lit graph) neither adds nor drops, whatever its keys, and
+ * the next counted call does not bridge the pause. Returns the keys that reached `ms`, in the order they
  * first came, on the first call where any did, and [] on every other call:
  * once only.
  */

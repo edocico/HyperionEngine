@@ -474,6 +474,18 @@ describe('deriveLightGroups', () => {
     expect(lit, "in the lit graph's block: one key per light, paused while a texture loads, the lights named").toMatch(
       /if \(dev\) \{\s*const due = untexturedSpriteWarning\.update\(untexturedSpriteKeys\(frameState\.lightGroups, frameState\), textureManager\.pendingLoads > 0, performance\.now\(\)\);\s*if \(due\.length > 0\) console\.warn\(untexturedSpriteMessage\(due\)\);\s*\}/,
     );
+    // A frame the lit graph does not draw pauses the count (Task 4 review, k10): it is lit time, so the
+    // first lit frame after an unlit stretch must not bridge it. The block's own braces, then its else.
+    const head = 'if (host.mode.lighting) {';
+    expect(renderer.split(head), 'one lit block').toHaveLength(2);
+    let close = renderer.indexOf(head) + head.length - 1;
+    for (let depth = 0; close < renderer.length; close++) {
+      if (renderer[close] === '{') depth++;
+      else if (renderer[close] === '}' && --depth === 0) break;
+    }
+    expect(renderer.slice(close + 1, close + 600), "the lit block's else: the tracker paused, dev builds only").toMatch(
+      /^\s*else if \(dev\) \{(?:\s*\/\/[^\n]*)*\s*untexturedSpriteWarning\.update\(\[\], true, performance\.now\(\)\);\s*\}/,
+    );
   });
 
   /**

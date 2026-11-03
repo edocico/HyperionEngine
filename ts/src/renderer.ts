@@ -547,8 +547,9 @@ export async function createRenderer(
   // Round step 8: once per renderer, dev builds, when a listed sprite light
   // has stayed without a texture for UNTEXTURED_SPRITE_MS of lit time with no
   // texture load in flight, each light timed on its own (untexturedSpriteKeys):
-  // a load in flight pauses the count, so a texture still loading is no fault
-  // and loads elsewhere do not hide a missing one.
+  // a load in flight pauses the count (a texture still loading is no fault,
+  // and loads elsewhere do not hide a missing one), and so does a frame
+  // without the lit graph.
   const untexturedSpriteWarning = persistentWarning(UNTEXTURED_SPRITE_MS);
   // Round step 8 (sub-decision 4 (c)): the texture arrays' used layers, one
   // buffer refreshed in every frame's FrameState (textureLayerCounts).
@@ -1081,6 +1082,11 @@ export async function createRenderer(
           const due = untexturedSpriteWarning.update(untexturedSpriteKeys(frameState.lightGroups, frameState), textureManager.pendingLoads > 0, performance.now());
           if (due.length > 0) console.warn(untexturedSpriteMessage(due));
         }
+      } else if (dev) {
+        // The untextured-sprite count is lit time: a frame without the lit
+        // graph pauses it as a load in flight does (it neither adds nor
+        // resets), so the next lit frame does not bridge the unlit stretch.
+        untexturedSpriteWarning.update([], true, performance.now());
       }
 
       // Dev readback (engine.debug.readTransparentSort, design §6.5). On a

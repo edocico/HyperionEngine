@@ -254,6 +254,16 @@ describe('persistentWarning', () => {
     it(`two lights untextured past a second warn once, naming both (${hz} Hz)`, () => {
       expect(warnedAt(frames(hz, 1500, () => [10, 11]))).toEqual([[1000, [10, 11]]]);
     });
+
+    it(`frames without the lit graph, paused as renderer.ts pauses them, neither add nor reset: only lit time counts (${hz} Hz; Task 4 review, k10)`, () => {
+      // Lit with light 10 untextured up to 900 ms, the lit graph off while 900 < t < 4000, lit again: 1000 ms of lit time at t = 4100.
+      const unlit = (t: number): boolean => t > 900 && t < 4000;
+      // renderer.ts calls the tracker on every frame: paused, with no keys, on an unlit one.
+      const calls = frames(hz, 5000, (t) => (unlit(t) ? [] : [10]), unlit);
+      expect(warnedAt(calls)).toEqual([[4100, [10]]]);
+      // Without those calls the first lit frame bridges the unlit stretch with a capped step: 100 ms of unlit time counted.
+      expect(warnedAt(calls.filter(([, paused]) => !paused))).toEqual([[4000, [10]]]);
+    });
   }
 });
 
