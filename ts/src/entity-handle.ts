@@ -78,12 +78,18 @@ export const enum RenderPrimitiveType {
  *   one fills only the corner at the light's local (−x, +y), a larger one
  *   fails to upload. Keep a
  *   transparent border of a few texels (the square's edge is not
- *   anti-aliased in the half-resolution light buffer), and give fully
- *   transparent texels the colour of their opaque neighbours (rgb and alpha
- *   are filtered apart). Texels hold straight alpha and are sampled
- *   bilinearly at full resolution only: a cookie with more texels across
- *   than its square spans in the light buffer (half the canvas) is
- *   undersampled, and fine detail shimmers as the light moves or turns. With
+ *   anti-aliased in the half-resolution light buffer), and give the cookie a
+ *   soft alpha edge, a ramp of a few texels, where its edge matters: rgb and
+ *   alpha are filtered apart, and Chrome decodes a PNG or JPEG premultiplied
+ *   (`createImageBitmap`'s default there), so a fully transparent texel
+ *   loses its colour (it is stored as transparent black, whatever the image
+ *   holds). Across a hard alpha edge the light then fades faster than the
+ *   alpha: an add or sub light's edge is thinner, and a mix light's is
+ *   darkened, by up to a quarter of its target at the edge's middle. Texels
+ *   hold straight alpha and are sampled bilinearly at full resolution only: a
+ *   cookie with more texels across than its square spans in the light buffer
+ *   (half the canvas) is undersampled, and fine detail shimmers as the light
+ *   moves or turns. With
  *   `shadowIntensity` > 0 it casts shadows from its centre, like a point
  *   light of its range, whatever the cookie. Its culling radius is the
  *   square's half-diagonal, `range`·√2. An index that names no texture this
