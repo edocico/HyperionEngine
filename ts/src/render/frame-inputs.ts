@@ -12,6 +12,7 @@
 import type { GPURenderState } from '../worker-bridge';
 import { MAX_GPU_ENTITIES } from '../types';
 import type { TextureManager } from '../texture-manager';
+import { untexturedSpriteIds, type LightGroups, type LightGroupsInput } from './light-groups';
 
 /** The gather's bound: a finite count as a non-negative integer, else `entityCount`. */
 export function normalizeTransparentCount(count: number | undefined, entityCount: number): number {
@@ -104,9 +105,9 @@ export function overCapacityWarning(entityCount: number): string | null {
 
 /**
  * Lit frame time, in ms, a sprite light must stay without a texture, with no
- * texture load in flight, before the renderer's dev warning (round step 8): a
- * texture awaited inside the spawn chain lands after `.light()`, and that is
- * no mistake.
+ * texture load in flight, before the renderer's dev warning (round step 8),
+ * each light on its own: a texture awaited inside the spawn chain lands after
+ * `.light()`, and that is no mistake.
  */
 export const UNTEXTURED_SPRITE_MS = 1000;
 
@@ -114,45 +115,83 @@ export const UNTEXTURED_SPRITE_MS = 1000;
 export const HELD_STEP_CAP_MS = 100;
 
 /**
- * A once-only warning for a condition that must HOLD for `ms` of frame time.
- * `update(raised, paused, now)` (`now` in ms, from performance.now(): Mode A's
- * render worker gets no frame dt) is true exactly once, when the time the
- * flag has held reaches `ms`. A call adds the time since the previous counted
- * call, at most HELD_STEP_CAP_MS; a call without the flag resets the count; a
- * paused call (a texture load in flight) neither adds nor resets, and the
- * next counted call does not bridge the pause.
+ * A once-only warning about keys that must each HOLD for `ms` of frame time:
+ * the renderer's keys are the listed sprite lights without a texture
+ * (`untexturedSpriteKeys`), so each light is timed on its own and stretches
+ * on different lights never add up. `update(keys, paused, now)` (`now` in ms,
+ * from performance.now(): Mode A's render worker gets no frame dt): a counted
+ * call adds the time since the previous counted call, at most
+ * HELD_STEP_CAP_MS, to every key it shares with that call; a key new in it
+ * starts at 0 (no time from before it was there), and a key it lacks is
+ * dropped (its count resets). A paused call (a texture load in flight)
+ * neither adds nor drops, whatever its keys, and the next counted call does
+ * not bridge the pause. Returns the keys that reached `ms`, in the order they
+ * first came, on the first call where any did, and [] on every other call:
+ * once only.
  */
-export function persistentWarning(ms: number): { update(raised: boolean, paused: boolean, now: number): boolean } {
-  let held = 0;
+export function persistentWarning(ms: number): { update(keys: readonly number[], paused: boolean, now: number): number[] } {
+  let held = new Map<number, number>();
+  let next = new Map<number, number>();
   let last = NaN;
   let warned = false;
   return {
-    update(raised: boolean, paused: boolean, now: number): boolean {
-      if (warned) return false;
+    update(keys: readonly number[], paused: boolean, now: number): number[] {
+      if (warned) return [];
       if (paused) {
         last = NaN;
-        return false;
+        return [];
       }
-      if (!raised) {
-        held = 0;
-        last = NaN;
-        return false;
-      }
-      if (!Number.isNaN(last)) held += Math.min(Math.max(now - last, 0), HELD_STEP_CAP_MS);
+      const step = Number.isNaN(last) ? 0 : Math.min(Math.max(now - last, 0), HELD_STEP_CAP_MS);
       last = now;
-      if (held < ms) return false;
-      warned = true;
-      return true;
+      next.clear();
+      for (const key of keys) {
+        const before = held.get(key);
+        next.set(key, before === undefined ? 0 : before + step);
+      }
+      const swap = held;
+      held = next;
+      next = swap;
+      const due: number[] = [];
+      for (const [key, time] of held) if (time >= ms) due.push(key);
+      if (due.length > 0) warned = true;
+      return due;
     },
   };
 }
 
 /**
- * The dev warning for listed sprite lights without a texture: up to three
- * external ids (`untexturedSpriteIds`; none when the render state has no id
- * column), why the light is dark and what to do.
+ * The key of the listed sprite lights without a texture when the render
+ * state has no usable id column (`untexturedSpriteIds` is then empty while
+ * the flag is raised): one anonymous key for all of them, so the warning
+ * still fires, naming nobody. Never an external id: those are unsigned.
  */
-export function untexturedSpriteMessage(ids: readonly number[]): string {
+export const UNNAMED_SPRITE_LIGHT = -1;
+
+/**
+ * What the renderer's untextured-sprite warning times on a lit frame (round
+ * step 8): one key per listed sprite light without a texture, its external
+ * id (`untexturedSpriteIds`, in list order), so each light is timed on its
+ * own; UNNAMED_SPRITE_LIGHT alone while the flag is raised without a usable
+ * id column; none otherwise. The ids are looked up only when the flag is
+ * raised.
+ */
+export function untexturedSpriteKeys(
+  groups: Pick<LightGroups, 'untexturedSpriteLight' | 'lightOrder' | 'lightIds'>,
+  input: LightGroupsInput,
+): number[] {
+  if (!groups.untexturedSpriteLight) return [];
+  const ids = untexturedSpriteIds(groups, input);
+  return ids.length > 0 ? ids : [UNNAMED_SPRITE_LIGHT];
+}
+
+/**
+ * The dev warning for listed sprite lights without a texture: up to three
+ * external ids (the keys `persistentWarning` returned; UNNAMED_SPRITE_LIGHT,
+ * the key without an id column, names none), why the light is dark and what
+ * to do.
+ */
+export function untexturedSpriteMessage(keys: readonly number[]): string {
+  const ids = keys.filter((key) => key !== UNNAMED_SPRITE_LIGHT);
   const who = ids.length === 0 ? 'A sprite light has'
     : ids.length === 1 ? `Sprite light ${ids[0]} has`
     : `Sprite lights ${ids.slice(0, 3).join(', ')}${ids.length > 3 ? ` and ${ids.length - 3} more` : ''} have`;

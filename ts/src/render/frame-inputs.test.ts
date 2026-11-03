@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   normalizeTransparentCount, normalizeIdsGeneration, nextFrameStamp,
   uploadEntityIds, missingSortInputs, overCapacityWarning,
-  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, HELD_STEP_CAP_MS, textureLayerCounts,
+  persistentWarning, untexturedSpriteMessage, UNTEXTURED_SPRITE_MS, HELD_STEP_CAP_MS, UNNAMED_SPRITE_LIGHT, textureLayerCounts,
 } from './frame-inputs';
 import { MAX_GPU_ENTITIES } from '../types';
 
@@ -169,44 +169,92 @@ describe('overCapacityWarning', () => {
   });
 });
 
-// Round step 8: the dev warning for a sprite light without a texture fires
-// once the flag has held for UNTEXTURED_SPRITE_MS of lit frame time, each
-// call adding at most HELD_STEP_CAP_MS; a call with a texture load in flight
-// pauses the count (it neither adds nor resets), a call without the flag
-// resets it. Whole milliseconds: exact in f64.
+// Round step 8: the dev warning for listed sprite lights without a texture
+// times each light on its own, by key (its external id): a counted call adds
+// the time since the previous counted call, at most HELD_STEP_CAP_MS, to every
+// key it shares with that call; a key new in it starts at 0 and a key it lacks
+// is dropped; a call with a texture load in flight pauses the count (it
+// neither adds nor drops, and the next counted call does not bridge it). The
+// warning fires once, naming the keys that reached UNTEXTURED_SPRITE_MS.
+// Whole milliseconds: exact in f64.
 describe('persistentWarning', () => {
-  type Call = [raised: boolean, paused: boolean, now: number];
-  const run = (w: { update(raised: boolean, paused: boolean, now: number): boolean }, calls: Call[]): number[] =>
-    calls.flatMap(([raised, paused, now], i) => (w.update(raised, paused, now) ? [i] : []));
-  /** `n` calls `stepMs` apart from `start`. */
-  const ticks = (stepMs: number, n: number, start = 0, raised = true, paused = false): Call[] =>
-    Array.from({ length: n }, (_, i): Call => [raised, paused, start + i * stepMs]);
+  type Call = [keys: number[], paused: boolean, now: number];
+  /** Each call that warned: its index and the keys it named. */
+  const run = (w: ReturnType<typeof persistentWarning>, calls: Call[]): Array<[number, number[]]> =>
+    calls.flatMap(([keys, paused, now], i): Array<[number, number[]]> => {
+      const due = w.update(keys, paused, now);
+      return due.length > 0 ? [[i, due]] : [];
+    });
+  /** `n` calls `stepMs` apart from `start`, each with `keys`. */
+  const ticks = (stepMs: number, n: number, start = 0, keys: number[] = [1], paused = false): Call[] =>
+    Array.from({ length: n }, (_, i): Call => [keys, paused, start + i * stepMs]);
+  /** One call per frame at `hz` from 0 to `to` ms, each time a whole ms as rAF gives it (exact sums): the keys at `t`, paused where `paused(t)`. */
+  const frames = (hz: number, to: number, keys: (t: number) => number[], paused: (t: number) => boolean = () => false): Call[] =>
+    Array.from({ length: Math.floor((to * hz) / 1000) + 1 }, (_, k): Call => {
+      const t = Math.round((k * 1000) / hz);
+      return [keys(t), paused(t), t];
+    });
+  /** Each warning of a fresh UNTEXTURED_SPRITE_MS tracker over `calls`: its time and the keys it named. */
+  const warnedAt = (calls: Call[]): Array<[number, number[]]> =>
+    run(persistentWarning(UNTEXTURED_SPRITE_MS), calls).map(([i, keys]) => [calls[i][2], keys]);
 
-  it('warns when the flag has held UNTEXTURED_SPRITE_MS (1000 ms), not before', () => {
+  it('warns when a key has held UNTEXTURED_SPRITE_MS (1000 ms), not before', () => {
     expect(UNTEXTURED_SPRITE_MS).toBe(1000);
     expect(HELD_STEP_CAP_MS).toBe(100);
     expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(8, 125)), '992 ms').toEqual([]);
-    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(8, 126)), '1000 ms').toEqual([125]);
-    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(16, 64)), '1008 ms').toEqual([63]);
+    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(8, 126)), '1000 ms').toEqual([[125, [1]]]);
+    expect(run(persistentWarning(UNTEXTURED_SPRITE_MS), ticks(16, 64)), '1008 ms').toEqual([[63, [1]]]);
   });
 
   it('warns once, never again, whatever follows', () => {
-    expect(run(persistentWarning(100), [...ticks(10, 11), [false, false, 110], ...ticks(10, 30, 120)])).toEqual([10]);
+    expect(run(persistentWarning(100), [...ticks(10, 11), [[], false, 110], ...ticks(10, 30, 120), ...ticks(10, 30, 420, [2])])).toEqual([[10, [1]]]);
   });
 
-  it('a call without the flag resets the count: a texture that lands in time raises nothing', () => {
-    expect(run(persistentWarning(100), [...ticks(10, 10), [false, false, 100], ...ticks(10, 10, 110)])).toEqual([]);
+  it('a counted call without a key drops it: a texture that lands in time raises nothing, even while another light is held', () => {
+    expect(run(persistentWarning(100), [...ticks(10, 10), [[], false, 100], ...ticks(10, 10, 110)])).toEqual([]);
+    // Key 1 is dropped at 100 and key 2 at 110: neither held 100 ms.
+    expect(run(persistentWarning(100), [...ticks(10, 10), [[2], false, 100], ...ticks(10, 10, 110)])).toEqual([]);
   });
 
-  it('a call with a texture load in flight neither adds nor resets, and the paused gap is not bridged', () => {
-    expect(run(persistentWarning(100), [...ticks(10, 6), ...ticks(10, 50, 60, true, true), ...ticks(10, 7, 560)])).toEqual([61]);
-    expect(run(persistentWarning(100), ticks(10, 500, 0, true, true)), 'a load always in flight').toEqual([]);
+  it('a key new in a call starts at 0 (no time from before it was there), and only the keys that reached the time are named', () => {
+    expect(run(persistentWarning(100), [[[1], false, 0], [[1], false, 50], [[1, 2], false, 90], [[1, 2], false, 100], [[1, 2], false, 300]])).toEqual([[3, [1]]]);
+  });
+
+  it('a call with a texture load in flight neither adds nor drops, and the paused gap is not bridged', () => {
+    expect(run(persistentWarning(100), [...ticks(10, 6), ...ticks(10, 50, 60, [1], true), ...ticks(10, 7, 560)])).toEqual([[61, [1]]]);
+    expect(run(persistentWarning(100), ticks(10, 500, 0, [1], true)), 'a load always in flight').toEqual([]);
+    // A paused call drops no key, whatever keys it carries: key 1 keeps its 50 ms and reaches 100 at t = 120.
+    expect(run(persistentWarning(100), [...ticks(10, 6), [[], true, 60], ...ticks(10, 10, 70)])).toEqual([[12, [1]]]);
   });
 
   it('one call adds at most HELD_STEP_CAP_MS, and slow frames still warn', () => {
-    expect(run(persistentWarning(1000), [[true, false, 0], [true, false, 5000], [true, false, 5008]]), 'a 5-s stall').toEqual([]);
-    expect(run(persistentWarning(1000), ticks(250, 11)), '250-ms frames').toEqual([10]);
+    expect(run(persistentWarning(1000), [[[1], false, 0], [[1], false, 5000], [[1], false, 5008]]), 'a 5-s stall').toEqual([]);
+    expect(run(persistentWarning(1000), ticks(250, 11)), '250-ms frames').toEqual([[10, [1]]]);
   });
+
+  // The review's scenarios (wf_a2ed3389-7aa, AR6), at the frame steps of 60 and 120 Hz.
+  for (const hz of [60, 120]) {
+    it(`untextured stretches on different lights never add up (${hz} Hz): light 10 below 700 ms, light 11 from 500 to 1200 ms`, () => {
+      expect(warnedAt(frames(hz, 1500, (t) => [...(t < 700 ? [10] : []), ...(t >= 500 && t < 1200 ? [11] : [])]))).toEqual([]);
+    });
+
+    it(`six lights untextured 300 ms each, the next one appearing in the frame the previous gets its texture, raise nothing (${hz} Hz)`, () => {
+      expect(warnedAt(frames(hz, 2000, (t) => (t < 1800 ? [20 + Math.floor(t / 300)] : [])))).toEqual([]);
+    });
+
+    it(`one light untextured for 1100 ms warns once, at 1000 ms, naming it; a later light held 1500 ms raises nothing more (${hz} Hz)`, () => {
+      expect(warnedAt(frames(hz, 3500, (t) => (t < 1100 ? [10] : t >= 1500 && t < 3000 ? [12] : [])))).toEqual([[1000, [10]]]);
+    });
+
+    it(`two seconds of a load in flight in the middle neither add nor reset: the warning comes after a second of counted time in all (${hz} Hz)`, () => {
+      // 600 ms counted, paused while 600 < t < 2600, counted again: 1000 ms at t = 3000.
+      expect(warnedAt(frames(hz, 4000, () => [10], (t) => t > 600 && t < 2600))).toEqual([[3000, [10]]]);
+    });
+
+    it(`two lights untextured past a second warn once, naming both (${hz} Hz)`, () => {
+      expect(warnedAt(frames(hz, 1500, () => [10, 11]))).toEqual([[1000, [10, 11]]]);
+    });
+  }
 });
 
 describe('untexturedSpriteMessage', () => {
@@ -215,6 +263,8 @@ describe('untexturedSpriteMessage', () => {
     expect(untexturedSpriteMessage([42, 57])).toMatch(/^\[Hyperion\] Sprite lights 42, 57 have no texture/);
     expect(untexturedSpriteMessage([42, 57, 61, 70, 71])).toMatch(/^\[Hyperion\] Sprite lights 42, 57, 61 and 2 more have no texture/);
     expect(untexturedSpriteMessage([])).toMatch(/^\[Hyperion\] A sprite light has no texture/);
+    // The anonymous key (no id column) names nobody.
+    expect(untexturedSpriteMessage([UNNAMED_SPRITE_LIGHT])).toBe(untexturedSpriteMessage([]));
     for (const ids of [[], [42], [42, 57, 61, 70, 71]]) {
       const message = untexturedSpriteMessage(ids);
       expect(message).toContain('no texture load in flight');

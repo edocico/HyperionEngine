@@ -61,8 +61,10 @@ export interface LightGroups {
    * count when `textureLayersUsed` is given), so it lights nothing (round
    * step 8; on an ASTC device a layer its array allocated but never loaded
    * shows the error colour instead). The renderer warns once (dev builds)
-   * when it holds for UNTEXTURED_SPRITE_MS of lit time with no texture load
-   * in flight. Never raised without a usable `texIndices` column.
+   * when one such light stays so for UNTEXTURED_SPRITE_MS of lit time with
+   * no texture load in flight, each light timed on its own
+   * (`untexturedSpriteKeys` in frame-inputs.ts). Never raised without a
+   * usable `texIndices` column.
    */
   untexturedSpriteLight: boolean;
   /** The distinct light mask values in view: what splits the groups. */
@@ -391,9 +393,10 @@ export function deriveLightGroups(input: LightGroupsInput): LightGroups {
 
 /**
  * The external ids of the listed sprite lights without a texture
- * (untexturedPredicate), in list order: the ones the renderer's dev warning
- * names (round step 8). Empty unless `entityIds` covers `entityCount` (a slot
- * is no id to name) and `texIndices` does (no rule without it).
+ * (untexturedPredicate), in list order: the keys the renderer's dev warning
+ * times, each light on its own, and the ids it names (round step 8,
+ * `untexturedSpriteKeys`). Empty unless `entityIds` covers `entityCount` (a
+ * slot is no id to name) and `texIndices` does (no rule without it).
  */
 export function untexturedSpriteIds(groups: Pick<LightGroups, 'lightOrder' | 'lightIds'>, input: LightGroupsInput): number[] {
   if (input.entityIds === undefined || input.entityIds.length < input.entityCount) return [];

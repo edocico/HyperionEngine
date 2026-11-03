@@ -4,6 +4,7 @@ import {
   deriveLightGroups, receiverLayer, LIT_PRIMITIVE_TYPES, SHADOWED_LIGHT_TYPES, BLEND_MIX, LIGHT2D, TEXTURE_LAYER_MASK, untexturedSpriteIds, type LightGroupsInput,
 } from './light-groups';
 import { packTextureIndex } from '../texture-manager';
+import { persistentWarning, untexturedSpriteKeys, untexturedSpriteMessage, UNNAMED_SPRITE_LIGHT, UNTEXTURED_SPRITE_MS } from './frame-inputs';
 import { PRIMITIVE_LIBRARIES, composeTypeModules, composeUberModule } from './primitive-shaders';
 import { RenderPrimitiveType } from '../entity-handle';
 import { RenderPrimitiveType as SchemaPrimitiveType } from '../prim-params-schema';
@@ -463,16 +464,74 @@ describe('deriveLightGroups', () => {
     expect(warnsOnce('shadowedGlobalLight', 'warnedShadowedGlobalLight')).toMatch(/^\[Hyperion\] A global light has shadowIntensity > 0/);
   });
 
-  it('renderer.ts warns once, in dev builds, about a sprite light that stays without a texture for UNTEXTURED_SPRITE_MS of lit time with no texture load in flight, naming it (round step 8)', () => {
+  it('renderer.ts warns once, in dev builds, about a sprite light that stays without a texture for UNTEXTURED_SPRITE_MS of lit time with no texture load in flight, each light timed on its own, naming them (round step 8)', () => {
     const renderer = readFileSync(new URL('../renderer.ts', import.meta.url), 'utf8');
     const declaration = 'const untexturedSpriteWarning = persistentWarning(UNTEXTURED_SPRITE_MS);';
     expect(renderer.split(declaration), 'declared once').toHaveLength(2);
     expect(renderer.indexOf(declaration), 'declared before render()').toBeLessThan(renderer.indexOf('render(state: GPURenderState'));
     const lit = renderer.slice(renderer.indexOf('frameState.lightGroups = deriveLightGroups(frameState);'), renderer.indexOf('// Dev readback (engine.debug.readTransparentSort'));
-    // The message itself: untexturedSpriteMessage (frame-inputs.test.ts).
-    expect(lit, "in the lit graph's block: paused while a texture loads, the lights named").toMatch(
-      /if \(dev && untexturedSpriteWarning\.update\(frameState\.lightGroups\.untexturedSpriteLight, textureManager\.pendingLoads > 0, performance\.now\(\)\)\) \{\s*console\.warn\(untexturedSpriteMessage\(untexturedSpriteIds\(frameState\.lightGroups, frameState\)\)\);/,
+    // The keys, the tracker and the message: frame-inputs.test.ts, and renderer.ts's frames below.
+    expect(lit, "in the lit graph's block: one key per light, paused while a texture loads, the lights named").toMatch(
+      /if \(dev\) \{\s*const due = untexturedSpriteWarning\.update\(untexturedSpriteKeys\(frameState\.lightGroups, frameState\), textureManager\.pendingLoads > 0, performance\.now\(\)\);\s*if \(due\.length > 0\) console\.warn\(untexturedSpriteMessage\(due\)\);\s*\}/,
     );
+  });
+
+  /**
+   * renderer.ts's lit frames, one every 1000/hz ms (each a whole ms, as rAF
+   * gives them) from 0 to `to`, with no texture load in flight: the scene of
+   * `t` through deriveLightGroups, its keys into one tracker, the message when
+   * it warns. `columns` edits the scene's columns (an id column lost in
+   * transport).
+   */
+  function litFrames(hz: number, to: number, at: (t: number) => E[], columns = (s: LightGroupsInput): LightGroupsInput => s): Array<[number, string]> {
+    const warning = persistentWarning(UNTEXTURED_SPRITE_MS);
+    const warned: Array<[number, string]> = [];
+    for (let k = 0; Math.round((k * 1000) / hz) <= to; k++) {
+      const t = Math.round((k * 1000) / hz);
+      const s = columns(scene(at(t)));
+      const due = warning.update(untexturedSpriteKeys(deriveLightGroups(s), s), false, t);
+      if (due.length > 0) warned.push([t, untexturedSpriteMessage(due)]);
+    }
+    return warned;
+  }
+
+  for (const hz of [60, 120]) {
+    it(`renderer.ts's frames time each listed sprite light without a texture on its own: stretches on different lights never add up (${hz} Hz; review wf_a2ed3389-7aa, AR6)`, () => {
+      // Light 10 untextured below 700 ms; light 11 spawned at 500 ms, untextured until 1200 ms.
+      expect(litFrames(hz, 1500, (t) => [
+        sprite(0, { id: 10, tex: t < 700 ? 0 : COOKIE }),
+        ...(t >= 500 ? [sprite(0, { id: 11, tex: t < 1200 ? 0 : COOKIE })] : []),
+      ]), 'two overlapping stretches').toEqual([]);
+      // Six lights, 300 ms each: the next one spawns in the frame the previous gets its texture.
+      expect(litFrames(hz, 2000, (t) => Array.from({ length: Math.min(6, Math.floor(t / 300) + 1) }, (_, n) =>
+        sprite(0, { id: 20 + n, tex: t < 300 * (n + 1) ? 0 : COOKIE }))), 'six stretches in sequence').toEqual([]);
+    });
+
+    it(`renderer.ts's frames: a sprite light untextured for a second warns once, naming it; without an id column one anonymous key still warns (${hz} Hz)`, () => {
+      // Light 10 untextured below 1100 ms; light 12, untextured from 1500 ms on, comes after the one warning.
+      const at = (t: number): E[] => [sprite(0, { id: 10, tex: t < 1100 ? 0 : COOKIE }), ...(t >= 1500 ? [sprite(0, { id: 12, tex: 0 })] : [])];
+      const named = litFrames(hz, 3000, at);
+      expect(named.map(([t]) => t)).toEqual([1000]);
+      expect(named[0][1]).toMatch(/^\[Hyperion\] Sprite light 10 has no texture/);
+      const anonymous = litFrames(hz, 3000, at, (s) => ({ ...s, entityIds: new Uint32Array(0) }));
+      expect(anonymous.map(([t]) => t)).toEqual([1000]);
+      expect(anonymous[0][1]).toMatch(/^\[Hyperion\] A sprite light has no texture/);
+    });
+  }
+
+  it('untexturedSpriteKeys: the ids of untexturedSpriteIds, each its own key; UNNAMED_SPRITE_LIGHT alone without an id column; none without the flag (round step 8)', () => {
+    // List order is z back to front: slot 1 (z 0.25) before slot 0 (z 0.5).
+    const s = scene([sprite(0, { tex: 0, id: 42, z: 0.5 }), sprite(0, { tex: 0, id: 7, z: 0.25 }), sprite(0, { id: 57 })]);
+    const g = deriveLightGroups(s);
+    expect(untexturedSpriteKeys(g, s)).toEqual([7, 42]);
+    expect(untexturedSpriteKeys(g, s)).toEqual(untexturedSpriteIds(g, s));
+    expect(untexturedSpriteKeys(g, { ...s, entityIds: s.entityIds!.slice(0, 2) }), 'a short id column: one anonymous key').toEqual([UNNAMED_SPRITE_LIGHT]);
+    expect(untexturedSpriteKeys({ ...g, untexturedSpriteLight: false }, s), 'the flag gates the lookup').toEqual([]);
+    const textured = scene([sprite(0, { id: 57 })]);
+    expect(untexturedSpriteKeys(deriveLightGroups(textured), textured), 'every sprite light textured').toEqual([]);
+    // Without a usable texIndices column the flag is never raised: no key, named or not.
+    const short = { ...s, texIndices: s.texIndices!.slice(0, 2) };
+    expect(untexturedSpriteKeys(deriveLightGroups(short), short)).toEqual([]);
   });
 
   it('raises untexturedSpriteLight for a listed sprite light at layer 0 (packed index 0 among them), and for no other (round step 8)', () => {

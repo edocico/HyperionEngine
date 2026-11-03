@@ -137,8 +137,10 @@ export class LightingAPI {
    * 0 alone counts here, while the render worker's own warning applies the
    * whole rule), so it lights nothing until it has one. The flag is readable
    * in every build; only the warning is dev-only: the renderer warns once,
-   * when the flag has held for a second of lit frames with no texture load
-   * in flight. Await the texture before spawning,
+   * when a listed sprite light has stayed without a texture for a second of
+   * lit frames with no texture load in flight (each light timed on its own,
+   * so short stretches on different lights never add up). Await the texture
+   * before spawning,
    * `const cookie = await engine.loadTexture(url)`. Textures do not load in
    * Mode A.
    *
