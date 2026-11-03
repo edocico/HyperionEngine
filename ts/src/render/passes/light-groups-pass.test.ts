@@ -210,11 +210,17 @@ describe('LightGroupsPass', () => {
       expect(names(e.tiers), label(e.target)).toEqual(['tier0', 'tier1', 'tier2', 'tier3', 'sampler', 'ovf0', 'ovf1', 'ovf2', 'ovf3']);
     }
     pool.setTextureView('ovf0', { name: 'ovf0 grown' } as unknown as GPUTextureView);
-    for (const e of accum(frame(lg))) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown');
+    // Each frame's accumulations are counted first: a frame that records none
+    // would pass its loop vacuously.
+    const second = accum(frame(lg));
+    expect(second).toHaveLength(3);
+    for (const e of second) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown');
     // Set-less groups alone (no shadowed light), right after a growth: no set's
     // accumulation rebuilds the stage's group 1 before them in this frame.
     pool.setTextureView('ovf0', { name: 'ovf0 grown again' } as unknown as GPUTextureView);
-    for (const e of accum(frame(groups([[1, -1], [2, -1]], [], [3])))) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown again');
+    const third = accum(frame(groups([[1, -1], [2, -1]], [], [3])));
+    expect(third).toHaveLength(2);
+    for (const e of third) expect(names(e.tiers)?.[5], label(e.target)).toBe('ovf0 grown again');
   });
 
   it('no shadowed light: no seed and no flood at all', () => {
