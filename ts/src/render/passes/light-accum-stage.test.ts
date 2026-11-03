@@ -101,9 +101,17 @@ function setUp(poolBuffers = POOL_BUFFERS, { tiers = true }: { tiers?: boolean }
 
 /** drawIndexed's five arguments, WebGPU's defaults filled in. */
 const direct = (args: number[]) => [args[0], args[1] ?? 1, args[2] ?? 0, args[3] ?? 0, args[4] ?? 0];
-/** The resource a recorded bind group (the mock returns { d: descriptor }) binds at `binding`. */
-const bindingOf = (bg: unknown, binding: number) =>
-  [...(bg as { d: GPUBindGroupDescriptor }).d.entries].find((e) => e.binding === binding)!.resource;
+/**
+ * The resource a recorded bind group (the mock returns { d: descriptor }) binds at `binding`. A missing bind group or
+ * entry throws an error that names the binding (a bare `find(…)!.resource` threw a TypeError naming none).
+ */
+const bindingOf = (bg: unknown, binding: number) => {
+  if (bg === undefined) throw new Error(`no bind group to read binding ${binding} from`);
+  const entries = [...(bg as { d: GPUBindGroupDescriptor }).d.entries];
+  const entry = entries.find((e) => e.binding === binding);
+  if (entry === undefined) throw new Error(`no binding ${binding} in the bind group (bindings: ${entries.map((e) => e.binding).join(', ')})`);
+  return entry.resource;
+};
 /** A frame without lights. */
 const NO_LIGHTS = new Uint32Array(0);
 /** A frame's light list: slots in draw order. */
