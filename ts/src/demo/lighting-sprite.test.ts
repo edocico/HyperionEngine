@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crc32 as zlibCrc32, inflateSync } from 'node:zlib';
 import {
-  blockCentres, blockLight, blockMix, checkSprite, cookiePixels, cookieTexel, cookieUv, cookieVerdict, crc32, decodeBlock, encodePng,
+  blockAt, blockCentres, blockLight, blockMix, checkSprite, cookiePixels, cookieTexel, cookieUv, cookieVerdict, crc32, decodeBlock, encodePng,
   fillerUrl, growthVerdict, mixVerdict, pokeGeometry, popVerdict, spriteShadowVerdict, COOKIE_SIZE, COOKIE_THETAS, COOKIE_URL, ENERGY,
   LOAD_TIMEOUT_MS, MIRRORS, POKE_DEPTH, POP_RANGE, POP_THETAS, SHADOW_POINTS, SPRITE_SCENE, TOL, type CookieRead, type GrowthReads,
   type PopRead,
@@ -77,6 +77,12 @@ describe('sprite-light geometry', () => {
     const turned = blockCentres([0, 0], Math.PI / 2, 4)[3];
     expect(turned.at[0]).toBeCloseTo(-3);
     expect(turned.at[1]).toBeCloseTo(3);
+  });
+
+  it('blockAt is the inverse of blockCentres: the block a turned sprite light shows at a world point', () => {
+    for (const theta of [0, Math.PI / 2, Math.PI / 6, -2]) {
+      for (const { i, j, at } of blockCentres([3, -1], theta, 4)) expect(blockAt([3, -1], theta, 4, at), `(${i},${j}) at ${theta}`).toEqual([i, j]);
+    }
   });
 
   it('decodes a read back to its block and alpha', () => {
@@ -322,6 +328,20 @@ describe('spriteShadowVerdict', () => {
       .toContain('the march runs away from the light');
   });
 
+  it("U on another block than L's is a cookie mapping, named by the block it reads, never a march (review wf_a2ed3389-7aa, AR8 + SP3)", () => {
+    // A half-turned cookie puts U, lit, on the translucent block (2,1): its blue share is 64/255.
+    const half = spriteShadowVerdict({ S: rgba(F), S2: rgba(sum(F, blockLight(2, 3, ENERGY))), U: rgba(sum(F, blockLight(2, 1, ENERGY))), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY);
+    expect(half.ok).toBe(false);
+    expect(half.detail).toContain("U reads block (2,1), not (1,2): L's cookie mapping is off (see 'Sprite cookie at known texels')");
+    expect(half.detail).not.toContain('the march runs away from the light');
+    // On its own block, dimmed or dark: the march, as before.
+    const dimmed = rgba(sum(F, blockLight(1, 2, ENERGY / 2)));
+    expect(spriteShadowVerdict({ S: rgba(F), S2: open, U: dimmed, floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY).detail)
+      .toContain('U, between the light and the wall, is shadowed (0.500): the march runs away from the light');
+    // Lit on another opaque block: the shadow is right; the mapping is the cookie check's.
+    expect(spriteShadowVerdict({ S: rgba(F), S2: open, U: rgba(sum(F, blockLight(1, 1, ENERGY))), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY).ok).toBe(true);
+  });
+
   it('names a non-finite read, never a pass', () => {
     const nan: Rgba = [NaN, NaN, NaN, 1];
     const v = spriteShadowVerdict({ S: nan, S2: open, U: nan, floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY);
@@ -334,7 +354,7 @@ describe('spriteShadowVerdict', () => {
 // ── checkSprite, end to end on a model of the engine ─────────────────────────
 
 /** The defects the model can carry, each one the cause one check names. */
-type Defect = 'none' | 'oldRadius' | 'flipV' | 'staleGroup' | 'staleFirst' | 'tsGate' | 'reversedMarch' | 'noMirror' | 'mixAsAdd' | 'mixAlphaIgnored';
+type Defect = 'none' | 'oldRadius' | 'flipV' | 'halfTurn' | 'staleGroup' | 'staleFirst' | 'tsGate' | 'reversedMarch' | 'noMirror' | 'mixAsAdd' | 'mixAlphaIgnored';
 
 interface FakeHandle {
   id: number;
@@ -353,7 +373,7 @@ interface FakeHandle {
 /**
  * A model of the engine: the probe reads F plus every listed sprite light
  * (radius range·√2, or range with 'oldRadius') lighting its turned square with
- * blockLight (v flipped with 'flipV'), mirrored by a negative scale as
+ * blockLight (v flipped with 'flipV', half a turn off with 'halfTurn'), mirrored by a negative scale as
  * spriteAxes does (not with 'noMirror'), or as a straight "over" for a mix
  * light (added like add with 'mixAsAdd', at weight 1 with 'mixAlphaIgnored'),
  * shadowed where the segment to its centre (away from it with
@@ -440,6 +460,10 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
       if (Math.max(Math.abs(local[0]), Math.abs(local[1])) > r) continue;
       let [u, v] = cookieUv(local, r);
       if (defect === 'flipV') v = 1 - v;
+      if (defect === 'halfTurn') {
+        u = 1 - u;
+        v = 1 - v;
+      }
       const i = Math.min(3, Math.max(0, Math.floor(u * 4)));
       const j = Math.min(3, Math.max(0, Math.floor(v * 4)));
       let shadow = 1;
@@ -597,6 +621,13 @@ describe('checkSprite', () => {
     expect((await failing('staleGroup'))[0]).toEqual(['Cookie tier grows while the light draws', expect.stringContaining('the frames since the growth did not run')]);
     expect(await failing('tsGate')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining('light-groups.ts does not count a shadowed sprite light')]]);
     expect(await failing('reversedMarch')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining('the march runs away from the light')]]);
+    // A half-turned cookie: the cookie check names it, and the shadow check reads U on another block, blaming the
+    // mapping, not the march (review wf_a2ed3389-7aa, AR8 + SP3).
+    const half = await failing('halfTurn');
+    expect(half.find(([n]) => n === 'Sprite cookie at known texels')?.[1]).toContain('at 0°: every block read half a turn off');
+    const halfShadow = half.find(([n]) => n === 'Sprite light shadow behind a wall')?.[1] ?? '';
+    expect(halfShadow).not.toContain('the march runs away from the light');
+    expect(halfShadow).toContain("U reads block (2,1), not (1,2): L's cookie mapping is off");
     // The mirror and the mix, read by the cookie check only.
     expect(await failing('noMirror')).toEqual([['Sprite cookie at known texels', expect.stringContaining('at y-mirrored 0°: every block read unmirrored')]]);
     expect(await failing('mixAsAdd')).toEqual([['Sprite cookie at known texels', expect.stringContaining('mix added like add')]]);
@@ -677,7 +708,10 @@ describe('checkSprite', () => {
       const [dx, dy] = [p[0] - 8, p[1]];
       const [u, v] = cookieUv([dy, -dx], 4);
       expect(cookieTexel(Math.floor(u * 4), Math.floor(v * 4))[3]).toBe(255);
+      // blockAt, which gives spriteShadowVerdict U's block, agrees.
+      expect(blockAt([8, 0], Math.PI / 2, 4, p)).toEqual([Math.floor(u * 4), Math.floor(v * 4)]);
     }
+    expect(blockAt([8, 0], Math.PI / 2, 4, SHADOW_POINTS.U), "U's block, an inner one").toEqual([1, 2]);
     expect(SPRITE_SCENE[0] - 17.6 - 6 * Math.SQRT2).toBeGreaterThan(30);
   });
 });

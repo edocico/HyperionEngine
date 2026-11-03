@@ -177,6 +177,16 @@ export function cookiePoint(centre: Xy, theta: number, range: number, uv: Xy): [
   return [centre[0] + lx * c - ly * s, centre[1] + lx * s + ly * c];
 }
 
+/** The block (column i, row j) a sprite light at `centre`, turned by `theta`, of half-side `range` shows at the world point `p`: cookieUv in the light's frame. */
+export function blockAt(centre: Xy, theta: number, range: number, p: Xy): [number, number] {
+  const dx = p[0] - centre[0];
+  const dy = p[1] - centre[1];
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  const [u, v] = cookieUv([dx * c + dy * s, -dx * s + dy * c], range);
+  return [Math.floor(u * BLOCKS), Math.floor(v * BLOCKS)];
+}
+
 /** The world centres of the 16 blocks, row by row (j, then i). */
 export function blockCentres(centre: Xy, theta: number, range: number): Array<{ i: number; j: number; at: [number, number] }> {
   const out: Array<{ i: number; j: number; at: [number, number] }> = [];
@@ -464,20 +474,34 @@ export interface ShadowReads {
   sdfSets: number;
 }
 
-/** L's blue: S at most 0.1, S' at least 0.9, U at least 0.8 (opaque blocks). NaN-safe. */
+/** L's block at U under the right mapping (an inner one: a wrong mapping can put U on a translucent block). */
+const U_BLOCK = blockAt(L_AT, L_THETA, L_RANGE, SHADOW_POINTS.U);
+
+/**
+ * L's blue: S at most 0.1, S' at least 0.9, U at least 0.8 (opaque blocks). U dimmed on another block than U_BLOCK is
+ * L's cookie mapping, which the cookie check names, not the march: decodeBlock reads the block from U's colour, which
+ * the shadow does not change. NaN-safe.
+ */
 export function spriteShadowVerdict(r: ShadowReads, energy: number): Verdict {
   const share = (v: Rgba): number => (v[2] - r.floor[2]) / energy;
   const [s, s2, u] = [share(r.S), share(r.S2), share(r.U)];
   const causes: string[] = [];
   const bad = (['S', 'S2', 'U', 'floor'] as const).filter((k) => !r[k].slice(0, 3).every(Number.isFinite));
   if (bad.length > 0) causes.push(`a non-finite read at ${bad.map((k) => (k === 'S2' ? "S'" : k)).join(', ')}`);
+  // U's block: null when dark.
+  const uRead = decodeBlock(r.U, r.floor, energy);
+  const uElsewhere = uRead !== null && (uRead.i !== U_BLOCK[0] || uRead.j !== U_BLOCK[1]);
   if (!(s <= 0.1) && bad.length === 0) {
     causes.push(r.sdfSets === 0
       ? 'S is lit behind the wall, and the frame has no SDF set: light-groups.ts does not count a shadowed sprite light'
       : 'S is lit behind the wall with an SDF set: light-accum.wgsl does not march for a sprite light, or marches along its facing');
   }
   if (!(s2 >= 0.9) && bad.length === 0) causes.push(`S' is shadowed in the open (${s2.toFixed(3)})`);
-  if (!(u >= 0.8) && bad.length === 0) causes.push(`U, between the light and the wall, is shadowed (${u.toFixed(3)}): the march runs away from the light`);
+  if (!(u >= 0.8) && bad.length === 0) {
+    causes.push(uElsewhere
+      ? `U reads block (${uRead.i},${uRead.j}), not (${U_BLOCK[0]},${U_BLOCK[1]}): L's cookie mapping is off (see 'Sprite cookie at known texels')`
+      : `U, between the light and the wall, is shadowed (${u.toFixed(3)}): the march runs away from the light`);
+  }
   const detail = `L's light at S ${s.toFixed(3)}, S' ${s2.toFixed(3)}, U ${u.toFixed(3)}; ${r.groups} group(s), ${r.sdfSets} SDF set(s)`;
   return { ok: causes.length === 0, detail: [detail, ...causes].join('; ') };
 }
