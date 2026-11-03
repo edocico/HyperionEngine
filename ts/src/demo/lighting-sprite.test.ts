@@ -329,6 +329,17 @@ describe('spriteShadowVerdict', () => {
       .toContain('the march runs away from the light');
   });
 
+  it("names S' shadowed in the open, on both sides of 0.9 (review wf_a2ed3389-7aa, SP1)", () => {
+    const at = (share: number): Rgba => rgba(sum(F, [0, 0, ENERGY * share]));
+    const base = { S: rgba(F), S2: open, U: open, floor: rgba(F), groups: 1, sdfSets: 1 };
+    // S and S' dark, U lit: a march running past L's centre (S' is S mirrored through it).
+    expect(spriteShadowVerdict({ ...base, S2: rgba(F) }, ENERGY)).toEqual({
+      ok: false, detail: "L's light at S 0.000, S' 0.000, U 1.000; 1 group(s), 1 SDF set(s); S' is shadowed in the open (0.000)",
+    });
+    expect(spriteShadowVerdict({ ...base, S2: at(0.85) }, ENERGY).ok).toBe(false);
+    expect(spriteShadowVerdict({ ...base, S2: at(0.95) }, ENERGY).ok).toBe(true);
+  });
+
   it('a reversed march (S lit, U dark, one set) is named alone: no WGSL gate, which would leave U lit (review wf_a2ed3389-7aa, SP2)', () => {
     const v = spriteShadowVerdict({ S: open, S2: open, U: rgba(F), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY);
     expect(v.ok).toBe(false);
@@ -365,7 +376,7 @@ describe('spriteShadowVerdict', () => {
 // ── checkSprite, end to end on a model of the engine ─────────────────────────
 
 /** The defects the model can carry, each one the cause one check names. */
-type Defect = 'none' | 'oldRadius' | 'flipV' | 'halfTurn' | 'staleGroup' | 'staleFirst' | 'tsGate' | 'reversedMarch' | 'noMirror' | 'mixAsAdd' | 'mixAlphaIgnored';
+type Defect = 'none' | 'oldRadius' | 'flipV' | 'halfTurn' | 'staleGroup' | 'staleFirst' | 'tsGate' | 'reversedMarch' | 'overshoot' | 'noMirror' | 'mixAsAdd' | 'mixAlphaIgnored';
 
 interface FakeHandle {
   id: number;
@@ -388,7 +399,8 @@ interface FakeHandle {
  * spriteAxes does (not with 'noMirror'), or as a straight "over" for a mix
  * light (added like add with 'mixAsAdd', at weight 1 with 'mixAlphaIgnored'),
  * shadowed where the segment to its centre (away from it with
- * 'reversedMarch') crosses the caster, unless 'tsGate'. PNGs go to the
+ * 'reversedMarch', on to twice that far with 'overshoot') crosses the caster,
+ * unless 'tsGate'. PNGs go to the
  * overflow tier (16 layers, doubling). 'staleGroup': every frame after a
  * growth is dropped, each probe raising an uncaptured GPU error;
  * 'staleFirst': the same from the tier's first allocation. `full`: the tier
@@ -480,7 +492,8 @@ function modelEngine(defect: Defect = 'none', opts: { modeA?: boolean; productio
       let shadow = 1;
       if (h.light!.shadow > 0 && shadowed()) {
         const away: [number, number] = [p[0] + (p[0] - h.x), p[1] + (p[1] - h.y)];
-        shadow = crosses(p, defect === 'reversedMarch' ? away : [h.x, h.y]) ? 0 : 1;
+        const past: [number, number] = [p[0] + 2 * (h.x - p[0]), p[1] + 2 * (h.y - p[1])];
+        shadow = crosses(p, defect === 'reversedMarch' ? away : defect === 'overshoot' ? past : [h.x, h.y]) ? 0 : 1;
       }
       if (h.light!.blend === 'mix' && defect !== 'mixAsAdd') {
         const [cr, cg, cb, ca] = cookieTexel(i, j).map((x) => x / 255);
@@ -634,6 +647,8 @@ describe('checkSprite', () => {
     expect(await failing('reversedMarch')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining('the march runs away from the light')]]);
     // Named alone: not also the WGSL gate (review wf_a2ed3389-7aa, SP2).
     expect((await failing('reversedMarch'))[0][1]).not.toContain('does not march');
+    // A march past L's centre darkens S' only, S mirrored through it (review wf_a2ed3389-7aa, SP1).
+    expect(await failing('overshoot')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining("S' is shadowed in the open")]]);
     // A half-turned cookie: the cookie check names it, and the shadow check reads U on another block, blaming the
     // mapping, not the march (review wf_a2ed3389-7aa, AR8 + SP3).
     const half = await failing('halfTurn');

@@ -478,9 +478,12 @@ export interface ShadowReads {
 const U_BLOCK = blockAt(L_AT, L_THETA, L_RANGE, SHADOW_POINTS.U);
 
 /**
- * L's blue: S at most 0.1, S' at least 0.9, U at least 0.8 (opaque blocks). U dimmed on another block than U_BLOCK is
- * L's cookie mapping, which the cookie check names, not the march: decodeBlock reads the block from U's colour, which
- * the shadow does not change. NaN-safe.
+ * L's blue over the floor, as a share of its energy: S at most 0.1, S' at least 0.9, U at least 0.8. The three points
+ * sit on opaque blocks of the cookie (a share of 1 lit, 0 in an umbra), and the device read S 0.000, S' 1.000 and
+ * U 1.000 in Modes B and C (docs/plans/assets/2026-10-14-step8/harness-task5-B.json and -C.json): the thresholds keep
+ * margins of 0.1, 0.1 and 0.2 from those reads. S' (S mirrored through L's centre) is the one point a march running
+ * past the centre darkens. U dimmed on another block than U_BLOCK is L's cookie mapping, which the cookie check names,
+ * not the march: decodeBlock reads the block from U's colour, which the shadow does not change. NaN-safe.
  */
 export function spriteShadowVerdict(r: ShadowReads, energy: number): Verdict {
   const share = (v: Rgba): number => (v[2] - r.floor[2]) / energy;
