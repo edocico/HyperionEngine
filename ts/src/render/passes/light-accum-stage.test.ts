@@ -721,7 +721,7 @@ describe('light-accum.wgsl: the sprite light (round step 8)', () => {
     expect(declsOf(lightShaderSource, 0)).toContain('6 texLayerIndices: <storage,read>array<u32>');
   });
 
-  it("sampleTier is the prelude's, text for text: the same eight arms at LOD 0, the only function that samples a tier; cookieLayers only counts their layers", () => {
+  it("sampleTier is the prelude's, text for text: the same eight arms at LOD 0, the only function that samples a tier; cookieLayers only counts their layers, arm for arm", () => {
     const squash = (t: string): string => t.replace(/\s+/g, ' ').trim();
     const reference = functionBody(PRELUDE, 'sampleTier');
     expect(reference).not.toBeNull();
@@ -738,6 +738,16 @@ describe('light-accum.wgsl: the sprite light (round step 8)', () => {
     expect(layers.match(/textureNumLayers\(/g)).toHaveLength(8);
     expect(layers).not.toMatch(/textureSample/);
     expect(functionParams(lightShaderSource, 'cookieLayers')).toEqual(functionParams(PRELUDE, 'sampleTier'));
+    // Arm for arm: each case counts the array that the same case of the prelude's sampleTier samples, whose body is
+    // cookieLayers' line for line once every sample is turned into a count. Two arms swapping their arrays (case 1u
+    // and case 2u, or case 3u and default) keep every count above, and would discard a cookie against another array's
+    // layer count, while the GPU checks put cookies in tier 0's arrays only.
+    const counted = reference!
+      .replace(/var\s+texColor\s*:\s*vec4f\s*;/, 'var layers: u32;')
+      .replace(/texColor\s*=\s*textureSampleLevel\(\s*(\w+)\s*,\s*texSampler\s*,\s*in\.uv\s*,\s*in\.texLayer\s*,\s*0\.0\s*\)/g, 'layers = textureNumLayers($1)')
+      .replace(/return\s+texColor\s*;/, 'return layers;');
+    expect(counted, "the prelude's sampleTier, every sample turned into a count").not.toMatch(/texColor|textureSample/);
+    expect(squash(layers)).toBe(squash(counted));
     // Explicit LOD 0: non-uniform control flow, and only mip 0 is filled.
     const code = stripComments(lightShaderSource);
     expect(code.match(/textureSampleLevel\(/g)).toHaveLength(8);
