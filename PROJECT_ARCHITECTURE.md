@@ -1294,7 +1294,7 @@ Lo switch a 8 vie sui tier sta in `sampleTier(in)` nel preludio (WGSL non indici
 
 - **Layer 0 di ogni tier**: texture bianca di default (1×1 px espanso)
 - **Concurrency limiter**: massimo 6 fetch concorrenti
-- **URL caching**: deduplicazione — stessa URL → stesso packed index
+- **URL caching**: la URL entra in cache quando un caricamento si risolve, e un caricamento della stessa URL iniziato dopo ritorna quel packed index; due caricamenti della stessa URL in volo insieme non si fondono (ognuno scarica il file, prende un layer suo e si risolve in un indice suo)
 - **Progress callback**: `onProgress(loaded, total)` per loading bars
 - **Tier override manuale**: per forzare la risoluzione
 
