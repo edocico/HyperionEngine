@@ -817,7 +817,9 @@ mod tests {
 
     #[test]
     fn sprite_light_radius_reaches_its_farthest_corner_at_any_rotation() {
-        // Turned by `a`, the square reaches range * (|cos a| + |sin a|).
+        // Turned by `a`, the square reaches range * (|cos a| + |sin a|)
+        // along a fixed axis (a frustum plane's normal); its corners are
+        // always range * sqrt(2) from its centre.
         let range = 50.0f32;
         let mut world = World::new();
         let e = spawn_sprite_light(&mut world, range, 1.0);
