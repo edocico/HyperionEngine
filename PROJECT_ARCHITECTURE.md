@@ -2774,7 +2774,7 @@ loadTexture(url) →
 @group(1) @binding(8) var ovf3Tex: texture_2d_array<f32>;
 ```
 
-Dalla fase 5b questo layout lo dichiara una sola volta il preludio (`shaders/primitives/prelude.wgsl`), che il compositore mette in testa a ogni modulo composto (i 6 per tipo e l'uber); nessuna libreria dichiara binding. Il lato TypeScript è `textureTierLayoutEntries()` in `render/primitive-bindings.ts`, condiviso da `ForwardPass`, `OccluderSeedStage` e, dal passo 8 del giro, `LightAccumStage`, il cui `light-accum.wgsl` dichiara il gruppo 1 come il preludio per il cookie di una luce sprite (fino alla fase 5b lo dichiaravano, identico, tutti e 6 gli shader per tipo). `texture_2d_array<f32>` funziona per tutti i formati (rgba8unorm, bc7-rgba-unorm, astc-4x4-unorm) — la GPU gestisce la decompressione trasparentemente nel sample.
+Dalla fase 5b questo layout lo dichiara una sola volta il preludio (`shaders/primitives/prelude.wgsl`; fino alla fase 5b lo dichiaravano, identico, tutti e 6 gli shader per tipo), che il compositore mette in testa a ogni modulo composto (i 6 per tipo e l'uber); nessuna libreria dichiara binding. Il lato TypeScript è `textureTierLayoutEntries()` in `render/primitive-bindings.ts`, condiviso da `ForwardPass`, `OccluderSeedStage` e, dal passo 8 del giro, `LightAccumStage`, il cui `light-accum.wgsl` dichiara il gruppo 1 come il preludio per il cookie di una luce sprite. `texture_2d_array<f32>` funziona per tutti i formati (rgba8unorm, bc7-rgba-unorm, astc-4x4-unorm) — la GPU gestisce la decompressione trasparentemente nel sample.
 
 ### 27.4 Scenario Matrix
 

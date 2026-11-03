@@ -232,7 +232,7 @@ Ognuno va corretto nel commit del passo che lo tocca:
 - **L:**
   - nel design Phase 17: §7.3:577 ("Mix in-shader") — ✅ passo 7; §4-B:221 e §7.3:571 (global = clear color) — ✅ passo 6 (`d381d92`) e passo 7 per il mix; §10.2:832-834 (determinismo, oggi `:842-844`) — ✅ passo 7; l'API di esempio del §11:861 — ✅ passo 6 (`d381d92`) e passo 7 per il mix;
   - il design dei light layers, righe 53 (✅ passo 6 per le directional, `d381d92`; ✅ passo 8 per le sprite) e 224 (✅ passo 6, `d381d92`);
-  - `light-groups.ts:110-113` — ✅ passo 6 per le directional (`3b61719`, poi `b05f09d` e `bbf7183`; oggi `:223-236`); ✅ passo 8 per le sprite (`95800b3`);
+  - `light-groups.ts:110-113` — ✅ passo 6 per le directional (`3b61719`, poi `b05f09d` e `bbf7183`; a `443dc7f` `:223-236`); ✅ passo 8 per le sprite (`95800b3`);
   - l'header di `light-accum.wgsl` — ✅ passo 6 (directional), passo 7 (mix) e passo 8 (sprite, `95800b3`);
   - la riga di `light-accum-stage.ts` in CLAUDE.md — ✅ passo 6 (directional), passo 7 (mix) e passo 8 (sprite);
   - trovati il 2026-09-30, nel design Phase 17:
