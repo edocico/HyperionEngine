@@ -306,7 +306,7 @@ describe('deriveLightGroups', () => {
     expect(deriveLightGroups(scene([sun(0), drawable(CAST | RECV)])).groups).toEqual([{ layers: 1, sdfSet: -1 }]);
   });
 
-  it('a shadowed light that draws nothing (range <= 0) gets no SDF set and splits no group: nothing would read the flood', () => {
+  it('a shadowed light that reads no SDF (range <= 0) gets no SDF set, and its shadow splits no group: nothing would read the flood', () => {
     // Review wf_cf354af4-c53 [5]: such a sun cost a seed and a full flood
     // (~1.8 ms at 1080p) every frame for an image identical to shadow 0.
     // Round step 8: point and spot lights too (step 6 fixed the sun only);
