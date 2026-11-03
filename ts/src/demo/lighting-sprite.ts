@@ -267,8 +267,8 @@ const SYMMETRIES: Array<{ map: BlockMap; cause: string; quarter?: true }> = [
   { map: (i, j) => [3 - j, i], cause: 'every block read a quarter turn off', quarter: true },
 ];
 
-/** blockCentres' order. */
-const BLOCK_ORDER = Array.from({ length: BLOCKS * BLOCKS }, (_, n) => ({ i: n % BLOCKS, j: Math.floor(n / BLOCKS) }));
+/** blockCentres' order: read `n` (`r.values[n]`) is block (i, j); a filtered list keeps each block's `n`. */
+const BLOCK_ORDER = Array.from({ length: BLOCKS * BLOCKS }, (_, n) => ({ n, i: n % BLOCKS, j: Math.floor(n / BLOCKS) }));
 
 /** A read's blocks, decoded (decodeBlock), in BLOCK_ORDER. */
 type Decoded = Array<{ i: number; j: number; got: { i: number; j: number; a: number } | null }>;
@@ -364,7 +364,7 @@ export function cookieVerdict(reads: readonly CookieRead[], energy: number): Ver
     }
     const misread = decoded.filter((d) => !showsAt(d, want)).slice(0, 4)
       .map((d) => `(${d.i},${d.j}) read ${d.got ? `(${d.got.i},${d.got.j}) a ${d.got.a.toFixed(2)}` : 'unlit'}`);
-    const offBy = wrong.slice(0, 4).map(({ i, j }) => `(${i},${j}) read (${fmt(r.values[j * BLOCKS + i].slice(0, 3))}) want (${fmt(plus(r.floor, blockLight(...want(i, j), energy)))})`);
+    const offBy = wrong.slice(0, 4).map(({ n, i, j }) => `(${i},${j}) read (${fmt(r.values[n].slice(0, 3))}) want (${fmt(plus(r.floor, blockLight(...want(i, j), energy)))})`);
     causes.push(`${at}: ${wrong.length} blocks off${misread.length > 0 ? `: ${misread.join(', ')}` : ` within their codes: ${offBy.join(', ')}`}`);
   }
   return { ok, detail: [`blocks ${parts.join(', ')}`, ...causes].join('; ') };
@@ -390,7 +390,7 @@ export function mixVerdict(r: CookieRead, energy: number): Verdict {
     ? 'mix added like add (floor + target × alpha)'
     : BLOCK_ORDER.every(({ i, j }, n) => near(n, target(i, j)))
       ? "the mix weight ignores the cookie's alpha (the target at every block)"
-      : `${off.length} blocks off: ${off.slice(0, 4).map(({ i, j }) => `(${i},${j}) read (${fmt(r.values[j * BLOCKS + i].slice(0, 3))}) want (${fmt(blockMix(r.floor, i, j, energy))})`).join(', ')}`;
+      : `${off.length} blocks off: ${off.slice(0, 4).map(({ n, i, j }) => `(${i},${j}) read (${fmt(r.values[n].slice(0, 3))}) want (${fmt(blockMix(r.floor, i, j, energy))})`).join(', ')}`;
   return { ok: false, detail: `${detail}; ${cause}` };
 }
 
