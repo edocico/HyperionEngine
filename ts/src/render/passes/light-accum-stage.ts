@@ -22,10 +22,10 @@ export const LIGHT_BLEND: GPUBlendState = {
 export const MIN_LIGHT_ORDER_CAPACITY = 64;
 
 /**
- * Soft-shadow hardness k of point and spot lights: their apparent angle is at
- * most 1/k. A directional light uses LIGHT_SOURCE_FRACTION instead (round
- * step 6). With h and t in texels of the half-resolution SDF, 8 gives a
- * visible, not blurry, penumbra.
+ * Soft-shadow hardness k of point, spot and sprite lights (pointShadow): their
+ * apparent angle is at most 1/k. A directional light uses LIGHT_SOURCE_FRACTION
+ * instead (round step 6). With h and t in texels of the half-resolution SDF, 8
+ * gives a visible, not blurry, penumbra.
  */
 export const SHADOW_HARDNESS = 8;
 

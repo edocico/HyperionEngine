@@ -844,6 +844,38 @@ describe('light-accum.wgsl: the sprite light (round step 8)', () => {
     expect(body('pointShadow')).toMatch(/let travel = distance\(origin, lightPos\);\s*if \(travel < 1\.0\) \{\s*return 1\.0;\s*\}\s*let dir = \(lightPos - origin\) \/ travel;/);
   });
 
+  it("SHADOW_HARDNESS's JSDoc names every light type whose shadow goes through pointShadow", () => {
+    // The stage writes SHADOW_HARDNESS into LightUniform.shadowHardness, which
+    // pointShadow alone reads: every kind of the fs_main conditions guarding
+    // its call takes its penumbra from the constant (sprite lights too, since
+    // round step 8), so the constant's doc must name each one.
+    const stage = readFileSync(new URL('./light-accum-stage.ts', import.meta.url), 'utf8');
+    const doc = /\/\*\*((?:(?!\*\/)[^])*)\*\/\s*export const SHADOW_HARDNESS\b/.exec(stage)?.[1];
+    expect(doc, 'the JSDoc right before export const SHADOW_HARDNESS').toBeDefined();
+    // Every `if` whose block holds the call guards it (the branches() idiom of
+    // light-groups.test.ts); its `kind == X` terms are the kinds that reach it.
+    const fs = body('fs_main');
+    const shut = (from: number, open: string, close: string): number => {
+      for (let i = from, depth = 0; i < fs.length; i++) {
+        if (fs[i] === open) depth++;
+        else if (fs[i] === close && --depth === 0) return i;
+      }
+      return fs.length;
+    };
+    const kinds = new Set<string>();
+    for (const m of fs.matchAll(/\bif\s*\(/g)) {
+      const p0 = m.index! + m[0].length - 1;
+      const p1 = shut(p0, '(', ')');
+      const b0 = fs.indexOf('{', p1);
+      if (!/\bpointShadow\(/.test(fs.slice(b0, shut(b0, '{', '}') + 1))) continue;
+      for (const k of fs.slice(p0 + 1, p1).matchAll(/kind\s*==\s*([A-Z_]+)/g)) kinds.add(k[1]);
+    }
+    expect([...kinds], 'the kinds of the conditions that guard the pointShadow call').not.toHaveLength(0);
+    for (const kind of kinds) {
+      expect(doc!, `the JSDoc names ${kind.toLowerCase()} lights`).toMatch(new RegExp(`\\b${kind.toLowerCase()}\\b`, 'i'));
+    }
+  });
+
   it("shadow(): a pixel inside an occluder leaves it from its first read on; res starts lit and leaves clamped", () => {
     const march = body('shadow');
     expect(march).toMatch(/var h = sdfDistance\(vec2i\(origin\), size\);\s*var i = 0u;\s*while \(h <= 0\.0 && i < steps\) \{/);
