@@ -240,19 +240,40 @@ interface Verdict {
 const deg = (theta: number): string => `${Math.round((theta * 180) / Math.PI)}°`;
 const plus = (a: readonly number[], b: readonly number[]): Rgb => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 
-/** The square's symmetries and what each says about the mapping. */
-const SYMMETRIES: Array<{ map: (i: number, j: number) => [number, number]; cause: string }> = [
+/** Block (i, j) to the block a read shows there. */
+type BlockMap = (i: number, j: number) => [number, number];
+
+/** The half turn: what a mirror of both axes is. */
+const HALF_TURN: BlockMap = (i, j) => [3 - i, 3 - j];
+
+/** The square's symmetries but the identity and what each says about the mapping; a quarter turn's cause depends on the read (cookieVerdict). */
+const SYMMETRIES: Array<{ map: BlockMap; cause: string; quarter?: true }> = [
   { map: (i, j) => [3 - i, j], cause: 'every block read as its mirror left to right: u is flipped' },
   { map: (i, j) => [i, 3 - j], cause: 'every block read as its mirror top to bottom: v is flipped (the uv convention): light-accum.wgsl misses the flip of sampleTierOrWhite before the cookie sample, or its out.uv is not the quad uv' },
-  { map: (i, j) => [3 - i, 3 - j], cause: 'every block read half a turn off' },
+  { map: HALF_TURN, cause: 'every block read half a turn off' },
   { map: (i, j) => [j, i], cause: 'every block read transposed: u and v are swapped' },
   { map: (i, j) => [3 - j, 3 - i], cause: 'every block read transposed across the other diagonal' },
-  { map: (i, j) => [j, 3 - i], cause: 'every block read a quarter turn off: the square or its uv does not turn with the light' },
-  { map: (i, j) => [3 - j, i], cause: 'every block read a quarter turn off: the square or its uv does not turn with the light' },
+  { map: (i, j) => [j, 3 - i], cause: 'every block read a quarter turn off', quarter: true },
+  { map: (i, j) => [3 - j, i], cause: 'every block read a quarter turn off', quarter: true },
 ];
 
 /** blockCentres' order. */
 const BLOCK_ORDER = Array.from({ length: BLOCKS * BLOCKS }, (_, n) => ({ i: n % BLOCKS, j: Math.floor(n / BLOCKS) }));
+
+/** A read's blocks, decoded (decodeBlock), in BLOCK_ORDER. */
+type Decoded = Array<{ i: number; j: number; got: { i: number; j: number; a: number } | null }>;
+
+const decodeRead = (r: CookieRead, energy: number): Decoded =>
+  BLOCK_ORDER.map(({ i, j }, n) => ({ i, j, got: decodeBlock(r.values[n], r.floor, energy) }));
+
+/** Centre (i, j) decodes to map(i, j). */
+const showsAt = (d: Decoded[number], map: BlockMap): boolean => {
+  const [ei, ej] = map(d.i, d.j);
+  return d.got !== null && d.got.i === ei && d.got.j === ej;
+};
+
+/** Every block decodes, and centre (i, j) shows map(i, j). */
+const showsMap = (decoded: Decoded, map: BlockMap): boolean => decoded.every((d) => showsAt(d, map));
 
 /** K at `theta`: the 16 block centres (blockCentres' order) and the floor, one frame. */
 export interface CookieRead {
@@ -267,11 +288,22 @@ export interface CookieRead {
 
 const same = (i: number, j: number): [number, number] => [i, j];
 
-/** floor + blockLight of the expected block at every centre; a failure names the symmetry, a missing mirror, the alpha, the misreads, or up to four blocks off within their codes, each read and the value it wants. NaN-safe. */
+/**
+ * floor + blockLight of the expected block at every centre; a failure names the symmetry, a missing mirror, the alpha, the
+ * misreads, or up to four blocks off within their codes, each read and the value it wants. The plain θ = 0 read (no
+ * `expect`) shows the uv mapping alone, with no turn and no mirror: a mirrored read is judged against it, so a u or v flip
+ * is named once, at 0°, and a missing mirror (spriteAxes) only when the mirrored read is not the 0° read's mapping
+ * mirrored; a quarter turn at θ = 0 is the uv's, at another angle the uv's only if 0° shows the same one. Without a plain
+ * θ = 0 read, the identity stands for it. NaN-safe.
+ */
 export function cookieVerdict(reads: readonly CookieRead[], energy: number): Verdict {
   const parts: string[] = [];
   const causes: string[] = [];
   let ok = true;
+  const plainZero = reads.find((r) => r.theta === 0 && r.expect === undefined);
+  // The 0° read's mapping: an index into [identity, ...SYMMETRIES], -1 when it shows none of them.
+  const maps = [same, ...SYMMETRIES.map((s) => s.map)];
+  const zero = plainZero === undefined ? 0 : maps.findIndex((map) => showsMap(decodeRead(plainZero, energy), map));
   for (const r of reads) {
     const want = r.expect ?? same;
     const wrong = BLOCK_ORDER.filter(({ i, j }, n) => !(maxChannelDiff(r.values[n], plus(r.floor, blockLight(...want(i, j), energy))) <= TOL));
@@ -279,26 +311,39 @@ export function cookieVerdict(reads: readonly CookieRead[], energy: number): Ver
     parts.push(`${name} ${BLOCK_ORDER.length - wrong.length}/${BLOCK_ORDER.length}`);
     if (wrong.length === 0) continue;
     ok = false;
-    const decoded = BLOCK_ORDER.map(({ i, j }, n) => ({ i, j, got: decodeBlock(r.values[n], r.floor, energy) }));
-    const shows = (d: (typeof decoded)[number], [ei, ej]: [number, number]): boolean => d.got !== null && d.got.i === ei && d.got.j === ej;
+    const decoded = decodeRead(r, energy);
     const at = `at ${name}`;
     if (decoded.every((d) => d.got === null)) {
       causes.push(`${at}: nothing lit at any block (the light is culled, untextured, or not drawn)`);
       continue;
     }
-    if (r.expect) {
-      const plain = decoded.every((d) => shows(d, [d.i, d.j]));
-      if (plain || decoded.every((d) => shows(d, [3 - d.i, 3 - d.j]))) {
-        causes.push(`${at}: every block read ${plain ? 'unmirrored' : 'half a turn off, not mirrored'}: the side axis does not follow the transform's determinant (spriteAxes)`);
+    // A mirrored read that does not show its expected blocks: its mirror judged against the 0° read's mapping z. A
+    // right mirror M shows z∘M; none, z; both axes turned over, z∘(half turn).
+    if (r.expect && zero >= 0 && !showsMap(decoded, want)) {
+      const z = maps[zero];
+      const after = (m: BlockMap): BlockMap => (i, j) => z(...m(i, j));
+      if (showsMap(decoded, after(r.expect))) {
+        causes.push(`${at}: the 0° read's mapping, mirrored as expected`);
+        continue;
+      }
+      const unmirrored = showsMap(decoded, z);
+      if (unmirrored || showsMap(decoded, after(HALF_TURN))) {
+        const against = zero === 0 ? '' : `${unmirrored ? '' : ','} relative to the 0° read`;
+        causes.push(`${at}: every block read ${unmirrored ? 'unmirrored' : 'half a turn off, not mirrored'}${against}: the side axis does not follow the transform's determinant (spriteAxes)`);
         continue;
       }
     }
-    const symmetry = SYMMETRIES.find(({ map }) => decoded.every((d) => shows(d, map(...want(d.i, d.j)))));
+    const symmetry = SYMMETRIES.find(({ map }) => showsMap(decoded, (i, j) => map(...want(i, j))));
     if (symmetry) {
-      causes.push(`${at}: ${symmetry.cause}`);
+      // No turn is asked for at θ = 0: a quarter turn there is the uv's, and at another angle too if 0° shows the same
+      // one (maps[-1], a 0° read with no symmetry, is undefined: never the same).
+      const turn = r.theta === 0 ? 'a fixed quarter turn of the uv'
+        : maps[zero] === symmetry.map ? 'a fixed quarter turn of the uv, as at 0°'
+        : 'the square or its uv does not turn with the light';
+      causes.push(`${at}: ${symmetry.quarter ? `${symmetry.cause}: ${turn}` : symmetry.cause}`);
       continue;
     }
-    const sameBlocks = decoded.every((d) => shows(d, want(d.i, d.j)));
+    const sameBlocks = showsMap(decoded, want);
     const translucentOnly = wrong.every(({ i, j }) => {
       const [wi, wj] = want(i, j);
       return wi === 2 && (wj === 1 || wj === 2);
@@ -307,7 +352,7 @@ export function cookieVerdict(reads: readonly CookieRead[], energy: number): Ver
       causes.push(`${at}: only the translucent blocks (2,1) and (2,2) are off: the cookie's alpha is not the weight`);
       continue;
     }
-    const misread = decoded.filter((d) => !shows(d, want(d.i, d.j))).slice(0, 4)
+    const misread = decoded.filter((d) => !showsAt(d, want)).slice(0, 4)
       .map((d) => `(${d.i},${d.j}) read ${d.got ? `(${d.got.i},${d.got.j}) a ${d.got.a.toFixed(2)}` : 'unlit'}`);
     const offBy = wrong.slice(0, 4).map(({ i, j }) => `(${i},${j}) read (${fmt(r.values[j * BLOCKS + i].slice(0, 3))}) want (${fmt(plus(r.floor, blockLight(...want(i, j), energy)))})`);
     causes.push(`${at}: ${wrong.length} blocks off${misread.length > 0 ? `: ${misread.join(', ')}` : ` within their codes: ${offBy.join(', ')}`}`);

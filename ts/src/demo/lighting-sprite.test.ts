@@ -158,6 +158,49 @@ describe('cookieVerdict', () => {
     expect(cookieVerdict([{ ...cookieRead(0, x.expect), label: y.label, expect: y.expect }], ENERGY).detail).toContain('half a turn off');
   });
 
+  /** K's mirrored read `m` at θ = 0, showing `map` at each centre. */
+  const mirrored = (m: (typeof MIRRORS)[number], map: (i: number, j: number) => [number, number]): CookieRead => ({ ...cookieRead(0, map), label: m.label, expect: m.expect });
+
+  it('judges the mirrored reads against the plain 0° read: a u or v flip of the lookup is named once, at 0°, never as a missing mirror (review wf_a2ed3389-7aa, AR7)', () => {
+    const [y, x] = MIRRORS;
+    // v flipped, the mirrors right: the y-mirror reads unmirrored, the x-mirror half a turn off.
+    const v = cookieVerdict([cookieRead(0, (i, j) => [i, 3 - j]), mirrored(y, (i, j) => [i, j]), mirrored(x, (i, j) => [3 - i, 3 - j])], ENERGY);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('at 0°: every block read as its mirror top to bottom: v is flipped');
+    expect(v.detail).not.toContain('spriteAxes');
+    expect(v.detail).toContain("at y-mirrored 0°: the 0° read's mapping, mirrored as expected");
+    expect(v.detail).toContain("at x-mirrored 0°: the 0° read's mapping, mirrored as expected");
+    // u flipped: the same two reads, the mirrors swapped.
+    const u = cookieVerdict([cookieRead(0, (i, j) => [3 - i, j]), mirrored(y, (i, j) => [3 - i, 3 - j]), mirrored(x, (i, j) => [i, j])], ENERGY);
+    expect(u.detail).toContain('at 0°: every block read as its mirror left to right: u is flipped');
+    expect(u.detail).not.toContain('spriteAxes');
+  });
+
+  it('still names a mirror not applied: against a 0° read that passes (noMirror), and against one that shows a u flip', () => {
+    const [y, x] = MIRRORS;
+    // No mirror: the y-mirror reads unmirrored; the x-mirror, both axes turned over, half a turn off.
+    const plain = cookieVerdict([cookieRead(0), mirrored(y, (i, j) => [i, j]), mirrored(x, (i, j) => [3 - i, 3 - j])], ENERGY).detail;
+    expect(plain).toContain("at y-mirrored 0°: every block read unmirrored: the side axis does not follow the transform's determinant (spriteAxes)");
+    expect(plain).toContain("at x-mirrored 0°: every block read half a turn off, not mirrored: the side axis does not follow the transform's determinant (spriteAxes)");
+    // A u flip and no mirror: each mirrored read shows the 0° read's flip, unmirrored or half a turn off.
+    const both = cookieVerdict([cookieRead(0, (i, j) => [3 - i, j]), mirrored(y, (i, j) => [3 - i, j]), mirrored(x, (i, j) => [i, 3 - j])], ENERGY).detail;
+    expect(both).toContain('at 0°: every block read as its mirror left to right: u is flipped');
+    expect(both).toContain("at y-mirrored 0°: every block read unmirrored relative to the 0° read: the side axis does not follow the transform's determinant (spriteAxes)");
+    expect(both).toContain("at x-mirrored 0°: every block read half a turn off, not mirrored, relative to the 0° read: the side axis does not follow the transform's determinant (spriteAxes)");
+  });
+
+  it('a quarter turn at 0° is a fixed quarter turn of the uv; at another angle the square does not turn with the light, unless 0° shows the same one', () => {
+    const quarter = (i: number, j: number): [number, number] => [j, 3 - i];
+    const zero = cookieVerdict([cookieRead(0, quarter)], ENERGY).detail;
+    expect(zero).toContain('at 0°: every block read a quarter turn off: a fixed quarter turn of the uv');
+    expect(zero).not.toContain('does not turn with the light');
+    expect(cookieVerdict([cookieRead(0), cookieRead(Math.PI / 2, quarter)], ENERGY).detail)
+      .toContain('at 90°: every block read a quarter turn off: the square or its uv does not turn with the light');
+    const fixed = cookieVerdict([cookieRead(0, quarter), cookieRead(Math.PI / 2, quarter)], ENERGY).detail;
+    expect(fixed).toContain('at 90°: every block read a quarter turn off: a fixed quarter turn of the uv, as at 0°');
+    expect(fixed).not.toContain('does not turn with the light');
+  });
+
   it('a non-finite read is off, never within TOL', () => {
     const one = cookieRead(0);
     one.values[5] = [NaN, NaN, NaN, 1];
@@ -547,6 +590,8 @@ describe('checkSprite', () => {
     const [cookie] = await failing('flipV');
     expect(cookie[0]).toBe('Sprite cookie at known texels');
     expect(cookie[1]).toMatch(/v is flipped \(the uv convention\)/);
+    // The mirrors are right: the flip is not blamed on spriteAxes (review wf_a2ed3389-7aa, AR7).
+    expect(cookie[1]).not.toContain('spriteAxes');
     expect(await failing('oldRadius')).toEqual([['Sprite light: no pop at the frustum edge', expect.stringContaining('its culling radius is under range·√2')]]);
     // A stale group 1 drops every frame after the growth: the growth check names it, and the later checks read a frozen buffer too.
     expect((await failing('staleGroup'))[0]).toEqual(['Cookie tier grows while the light draws', expect.stringContaining('the frames since the growth did not run')]);
