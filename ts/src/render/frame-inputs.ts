@@ -125,9 +125,9 @@ export const HELD_STEP_CAP_MS = 100;
  * starts at 0 (no time from before it was there), and a key it lacks is
  * dropped (its count resets). A paused call (a texture load in flight, or a
  * frame without the lit graph) neither adds nor drops, whatever its keys, and
- * the next counted call does not bridge the pause. Returns the keys that reached `ms`, in the order they
- * first came, on the first call where any did, and [] on every other call:
- * once only.
+ * the next counted call does not bridge the pause. Returns the keys that
+ * reached `ms`, in that call's order (the renderer's: the light list's), on
+ * the first call where any did, and [] on every other call: once only.
  */
 export function persistentWarning(ms: number): { update(keys: readonly number[], paused: boolean, now: number): number[] } {
   let held = new Map<number, number>();

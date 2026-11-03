@@ -496,7 +496,7 @@ describe('light-accum.wgsl', () => {
     expect(march).toMatch(/let\s+start\s*=\s*t\s*;/);
   });
 
-  it("caps a point or spot light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
+  it("caps a point, spot or sprite light's apparent size by its real one: min(1/k, sourceRadius / distance)", () => {
     expect(body('pointShadow')).toMatch(/min\(\s*1\.0\s*\/\s*u\.shadowHardness\s*,\s*sourceRadius\s*\/\s*travel\s*\)/);
   });
 

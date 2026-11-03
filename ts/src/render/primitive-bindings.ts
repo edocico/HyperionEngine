@@ -59,7 +59,10 @@ export class TextureTierBinding {
 
   constructor(private readonly layout: GPUBindGroupLayout) {}
 
-  /** The bind group for the pool's current views, or null while any is missing. */
+  /**
+   * The bind group for the pool's current views: null only until a call finds
+   * all nine at once; after that, while any is missing, the last group built.
+   */
   current(device: GPUDevice, resources: ResourcePool): GPUBindGroup | null {
     const views = GROUP1.map((name) =>
       name === 'texSampler' ? resources.getSampler(name) : resources.getTextureView(name));

@@ -550,16 +550,18 @@ export class Hyperion implements Disposable {
    * or JPEG is resized to the square of the smallest tier that holds its
    * larger side (64, 128, 256 or 512 px; a larger image to 512) and, on a
    * device with a compressed format (BC7/ASTC), goes to the rgba8 overflow
-   * tiers. `tier` (0-3), when given, forces the tier: a PNG or JPEG is then
-   * resized to that tier's square whatever its own size (a 512-px image
-   * loaded with tier 0 is stored at 64 px; a KTX2 is never resized). The URL
-   * is the cache key once a load has resolved: a load started after one of
-   * the same URL has resolved returns the cached handle (that of the latest
-   * load to resolve), valid in this session only. Loads of one URL in flight
-   * at the same time are not merged: each fetches the file, takes a layer of
-   * its own and resolves to a handle of its own. So await one load, before the
-   * spawn chain that uses it, and reuse its handle (`const cookie = await
-   * engine.loadTexture(url)` before the spawns: see `LightType`'s `sprite`).
+   * tiers. `tier` (0-3), when given, forces the tier of a load that fetches:
+   * a PNG or JPEG is then resized to that tier's square whatever its own size
+   * (a 512-px image loaded with tier 0 is stored at 64 px; a KTX2 is never
+   * resized). The URL is the cache key once a load has resolved: a load
+   * started after one of the same URL has resolved fetches nothing and
+   * returns the cached handle (that of the latest load to resolve), valid in
+   * this session only, whatever `tier` it passes (then neither applied nor
+   * checked). Loads of one URL in flight at the same time are not merged:
+   * each fetches the file, takes a layer of its own and resolves to a handle
+   * of its own. So await one load, before the spawn chain that uses it, and
+   * reuse its handle (`const cookie = await engine.loadTexture(url)` before
+   * the spawns: see `LightType`'s `sprite`).
    * Throws if no renderer is available: in Mode A (the render worker loads no
    * textures) and without WebGPU, where a sprite light therefore lights
    * nothing. Throws too when the target array of that tier (primary, or the
