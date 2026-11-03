@@ -227,8 +227,8 @@ fn vs_main(
             // ASTC's error colour (opaque magenta, or NaN) in an ASTC one, a
             // light that would depend on the device. A range of 0 or less gets
             // culling radius 0, which still lists the light while its centre
-            // is in view (a negative range would draw a mirrored square): drop
-            // it here. A sprite light has no shape but its cookie.
+            // is in view (a negative range would draw the square turned half a
+            // turn): drop it here. A sprite light has no shape but its cookie.
             if (layer == 0u || !(range > 0.0)) {
                 out.position = vec4f(0.0, 0.0, 0.0, 1.0);
                 return out;
