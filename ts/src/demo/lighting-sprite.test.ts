@@ -254,7 +254,17 @@ describe('mixVerdict', () => {
   it('any other miss names up to four blocks, each read and the value it wants', () => {
     // The mix at 1.1 times its value.
     const scaled = read((i, j) => blockMix(F, i, j, ENERGY).map((v) => 1.1 * v));
-    expect(mixVerdict(scaled, ENERGY).detail).toContain('mix 0° 0/16; 16 blocks off: (0,0) read (0.000, 0.000, 2.200) want (0.000, 0.000, 2.000), ');
+    const detail = mixVerdict(scaled, ENERGY).detail;
+    expect(detail).toContain('mix 0° 0/16; 16 blocks off: (0,0) read (0.000, 0.000, 2.200) want (0.000, 0.000, 2.000), ');
+    // Four blocks of the 16, the last (3,0): the fourth off in BLOCK_ORDER (row by row).
+    expect(detail.match(/ read \(/g), detail).toHaveLength(4);
+    expect(detail).toMatch(/, \(3,0\) read \(2\.200, 0\.000, 2\.200\) want \(2\.000, 0\.000, 2\.000\)$/);
+    // Five blocks off, scattered: the first four in BLOCK_ORDER are named, each with its own read; (3,3) is not.
+    const offAt = ['1,0', '3,1', '0,2', '2,2', '3,3'];
+    const scattered = read((i, j) => blockMix(F, i, j, ENERGY).map((v) => (offAt.includes(`${i},${j}`) ? 1.1 * v : v)));
+    expect(mixVerdict(scattered, ENERGY).detail).toBe('mix 0° 11/16; 5 blocks off: '
+      + '(1,0) read (0.733, 0.000, 2.200) want (0.667, 0.000, 2.000), (3,1) read (2.200, 0.733, 2.200) want (2.000, 0.667, 2.000), '
+      + '(0,2) read (0.000, 1.467, 2.200) want (0.000, 1.333, 2.000), (2,2) read (0.838, 0.829, 1.266) want (0.761, 0.754, 1.151)');
   });
 });
 
