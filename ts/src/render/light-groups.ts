@@ -102,10 +102,12 @@ export interface LightGroupsInput {
   entityIds?: Uint32Array;
   /**
    * Slot -> packed texture index (round step 8): a sprite light's cookie. A
-   * sprite light without one (layer 0, TEXTURE_LAYER_MASK) draws nothing, so
-   * its shadows need no SDF. A column shorter than `entityCount`, or none, is
-   * ignored whole, and every sprite light counts as textured: a flood too
-   * many costs time, one too few would cost shadows.
+   * sprite light without one (layer 0, TEXTURE_LAYER_MASK; with
+   * `textureLayersUsed`, also a layer at or past its array's used count
+   * (`untexturedPredicate`)) draws nothing, so its shadows need no SDF. A
+   * column shorter than `entityCount`, or none, is ignored whole, and every
+   * sprite light counts as textured: a flood too many costs time, one too few
+   * would cost shadows.
    */
   texIndices?: Uint32Array;
   /**
