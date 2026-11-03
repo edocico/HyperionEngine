@@ -491,7 +491,10 @@ export function spriteShadowVerdict(r: ShadowReads, energy: number): Verdict {
   // U's block: null when dark.
   const uRead = decodeBlock(r.U, r.floor, energy);
   const uElsewhere = uRead !== null && (uRead.i !== U_BLOCK[0] || uRead.j !== U_BLOCK[1]);
-  if (!(s <= 0.1) && bad.length === 0) {
+  // S lit and U shadowed with an SDF set: a march away from the light (S's ray leaves W behind, U's meets it), which
+  // the U cause names alone. No march for a sprite light, or one along its facing, would have left U lit.
+  const reversed = r.sdfSets > 0 && !(u >= 0.8) && !uElsewhere;
+  if (!(s <= 0.1) && bad.length === 0 && !reversed) {
     causes.push(r.sdfSets === 0
       ? 'S is lit behind the wall, and the frame has no SDF set: light-groups.ts does not count a shadowed sprite light'
       : 'S is lit behind the wall with an SDF set: light-accum.wgsl does not march for a sprite light, or marches along its facing');

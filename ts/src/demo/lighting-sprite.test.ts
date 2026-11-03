@@ -324,8 +324,19 @@ describe('spriteShadowVerdict', () => {
       .toContain('light-groups.ts does not count a shadowed sprite light');
     expect(spriteShadowVerdict({ S: open, S2: open, U: open, floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY).detail)
       .toContain('light-accum.wgsl does not march for a sprite light');
-    expect(spriteShadowVerdict({ S: rgba(F), S2: open, U: rgba(F), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY).detail)
+    // A reversed march: S's ray heads away from the wall (lit), U's meets it (dark).
+    expect(spriteShadowVerdict({ S: open, S2: open, U: rgba(F), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY).detail)
       .toContain('the march runs away from the light');
+  });
+
+  it('a reversed march (S lit, U dark, one set) is named alone: no WGSL gate, which would leave U lit (review wf_a2ed3389-7aa, SP2)', () => {
+    const v = spriteShadowVerdict({ S: open, S2: open, U: rgba(F), floor: rgba(F), groups: 1, sdfSets: 1 }, ENERGY);
+    expect(v.ok).toBe(false);
+    expect(v.detail).toContain('the march runs away from the light');
+    expect(v.detail).not.toContain('does not march');
+    // Without an SDF set nothing marches: the TS gate stays named.
+    expect(spriteShadowVerdict({ S: open, S2: open, U: rgba(F), floor: rgba(F), groups: 1, sdfSets: 0 }, ENERGY).detail)
+      .toContain('light-groups.ts does not count a shadowed sprite light');
   });
 
   it("U on another block than L's is a cookie mapping, named by the block it reads, never a march (review wf_a2ed3389-7aa, AR8 + SP3)", () => {
@@ -621,6 +632,8 @@ describe('checkSprite', () => {
     expect((await failing('staleGroup'))[0]).toEqual(['Cookie tier grows while the light draws', expect.stringContaining('the frames since the growth did not run')]);
     expect(await failing('tsGate')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining('light-groups.ts does not count a shadowed sprite light')]]);
     expect(await failing('reversedMarch')).toEqual([['Sprite light shadow behind a wall', expect.stringContaining('the march runs away from the light')]]);
+    // Named alone: not also the WGSL gate (review wf_a2ed3389-7aa, SP2).
+    expect((await failing('reversedMarch'))[0][1]).not.toContain('does not march');
     // A half-turned cookie: the cookie check names it, and the shadow check reads U on another block, blaming the
     // mapping, not the march (review wf_a2ed3389-7aa, AR8 + SP3).
     const half = await failing('halfTurn');
