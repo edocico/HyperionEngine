@@ -2056,7 +2056,7 @@ Nessun oggetto allocato per entita. Nessun pool. Solo numeri e chiamate dirette 
 | **Bounding sphere** | Sfera che racchiude un'entita, definita da centro (xyz) e raggio (w). Usata per il frustum culling approssimato |
 | **Frustum planes** | 6 piani (left, right, bottom, top, near, far) estratti dalla matrice view-projection. Ogni piano e vec4 normalizzato (nx, ny, nz, d) |
 | **Texture2DArray** | Tipo di texture GPU che contiene N layer (slice) della stessa dimensione. Accesso via `textureSample(tex, sampler, uv, layer)` |
-| **TextureManager** | Classe TypeScript che gestisce 4 tier di Texture2DArray (64/128/256/512px) con lazy allocation ed exponential growth, loading asincrono e deduplicazione URL |
+| **TextureManager** | Classe TypeScript che gestisce 4 tier di Texture2DArray (64/128/256/512px) con lazy allocation ed exponential growth, loading asincrono e cache per URL |
 | **Packed texture index** | Singolo u32 che codifica tier e layer: `(tier << 16) \| layer`. I 16 bit alti sono il tier, i 16 bassi il layer |
 | **RenderState** | Struttura Rust che raccoglie SoA GPU buffers (transforms/bounds/renderMeta/texIndices) + DirtyTracker per partial upload optimization |
 | **BitSet** | Struttura compatta per dirty flags per entity slot: un bit per entita, packed in u64 words (~12.5 KB per 100k entita) |
